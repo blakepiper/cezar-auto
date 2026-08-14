@@ -123,6 +123,11 @@ export function agentAccountsPath(): string {
   return join(cezarHomeDir(), 'agent-accounts.json');
 }
 
+/** Sanitized provider quota snapshots. Credentials never belong in this cache. */
+export function providerUsagePath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(cezarHomeDir(env), 'provider-usage.json');
+}
+
 /**
  * Expand a leading `~` to the user's home. Lives here with the other homedir
  * logic (see the module note above — one place owns `homedir()`): the
