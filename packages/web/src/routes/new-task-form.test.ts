@@ -13,6 +13,7 @@ import {
   pushRecentSource,
   resolveModel,
   resolveRunner,
+  resolveRunnerSelection,
   resolveSource,
   sourceExists,
   startedRunPath,
@@ -53,6 +54,12 @@ describe('resolveRunner (legacy preselection order)', () => {
 
   it('falls back to the first available when even the default is missing', () => {
     expect(resolveRunner(null, ['codex', 'opencode'], 'claude')).toBe('codex')
+  })
+})
+
+describe('resolveRunnerSelection', () => {
+  it('preserves an untouched Auto default for the quota-aware server router', () => {
+    expect(resolveRunnerSelection(null, ['claude', 'codex'], 'auto')).toBe('auto')
   })
 })
 

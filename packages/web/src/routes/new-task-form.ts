@@ -181,9 +181,13 @@ export function resolveRunner(
 export function resolveRunnerSelection(
   picked: RunnerSelection | null,
   available: readonly Runner[],
-  preferred: Runner,
+  preferred: RunnerSelection,
 ): RunnerSelection {
-  return picked === 'auto' ? 'auto' : resolveRunner(picked, available, preferred)
+  if (picked === 'auto') return 'auto'
+  if (picked === null && preferred === 'auto' && available.includes('claude') && available.includes('codex')) {
+    return 'auto'
+  }
+  return resolveRunner(picked, available, preferred === 'auto' ? 'claude' : preferred)
 }
 
 /** The runner field shared by every NEW-run surface. Explicit/sticky intent always rides the

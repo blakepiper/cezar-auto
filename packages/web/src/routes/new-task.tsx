@@ -213,7 +213,7 @@ export function NewTaskRoute() {
   const providers = useProviderStatus()
   const runners = usableRunners(providers.data)
   const defaultRunner = config.data?.defaultRunner
-  const preferredRunner = defaultRunner === 'auto' ? 'claude' : defaultRunner ?? 'claude'
+  const preferredRunner: RunnerSelection = defaultRunner ?? 'claude'
   const runner = runners.length > 0 ? resolveRunnerSelection(draft.runner, runners, preferredRunner) : null
   const selectedRunner: RunnerSelection = runner ?? preferredRunner
   const autoRunner = selectedRunner === 'auto'
