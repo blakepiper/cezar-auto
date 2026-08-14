@@ -306,15 +306,43 @@ class OpencodeSession implements AgentSession {
     // v2 turn boundary — the prompt POST is the turn start (§7.1); the end
     // comes from the SSE `session.idle`, never from the HTTP response below.
     this.emitUi(opencodeTurnStarted);
-    const body: Record<string, unknown> = { parts: [{ type: 'text', text }] };
+    const body: Record<string, unknown> = {
+      parts: [{ type: 'text', text }],
+      // OpenCode's prompt API takes the variant separately from the model. This also works
+      // when the model is left to OpenCode's configured default.
+      ...(this.spec.reasoningEffort ? { variant: this.spec.reasoningEffort } : {}),
+    };
     // `spec.model` arrives already normalised to canonical `provider/model`
     // (the run wiring's fail-loud gate). Split it with the shared parser — the
     // one every runner uses — into opencode's `{ providerID, modelID }`.
     const id = parseModelIdentity(this.spec.model);
-    if (id) body.model = { providerID: id.provider, modelID: id.model };
+    if (id) {
+      body.model = {
+        providerID: id.provider,
+        modelID: id.model,
+      };
+    }
     try {
       const res = await this.http('POST', `/session/${this.sessionId}/message`, body);
       this.absorbUsage(res);
+    } catch (error) {
+      // OpenCode variants are model-specific. A generic Auto decision can name a level the
+      // selected model does not advertise; retry once with the provider default instead of
+      // turning a valid task into a hard failure.
+      if (this.spec.reasoningEffort && isModelVariantError(error)) {
+        this.emit({
+          type: 'note',
+          message: `opencode: reasoning variant "${this.spec.reasoningEffort}" is unavailable; using the model default`,
+        });
+        const fallbackBody: Record<string, unknown> = {
+          parts: body.parts,
+          ...(id ? { model: { providerID: id.provider, modelID: id.model } } : {}),
+        };
+        const res = await this.http('POST', `/session/${this.sessionId}/message`, fallbackBody);
+        this.absorbUsage(res);
+      } else {
+        throw error;
+      }
     } finally {
       this.turnInFlight = false;
       // A part that never saw `time.end` (abort, server quirk) still surfaces
@@ -524,6 +552,11 @@ function textOf(content: ContentBlock[]): string {
 function stringField(obj: Record<string, unknown>, key: string): string | undefined {
   const v = obj[key];
   return typeof v === 'string' ? v : undefined;
+}
+
+function isModelVariantError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /variant|reasoning|model.*(not found|invalid|unsupported)/i.test(message);
 }
 
 function numField(obj: Record<string, unknown>, key: string): number {

@@ -14,8 +14,10 @@ import { parseUsageLimit } from '../core/usage-limit.ts';
 import { createRunner } from '../core/runner-factory.ts';
 import type { RunnerId } from '../core/agent-runner.ts';
 import type { RunnerSelection } from '../core/runner-selection.ts';
+import type { ReasoningEffort } from '@open-mercato/cezar-contract';
 import { detectEnvironment } from '../core/backend-detect.ts';
 import { modelConflictsWithRunner } from '../core/model-presets.ts';
+import { resolveReasoningEffort } from '../core/reasoning.ts';
 import { AGENT_MODELS_LOCKED_ERROR, agentModelsLocked } from '../core/agent-model-policy.ts';
 import {
   ModelIdentityError,
@@ -369,6 +371,8 @@ function formatWakeInstant(at: Date): string {
 export interface StartRunInput {
   task: string;
   model?: string;
+  /** User-authored reasoning policy. Auto is resolved independently for each agent chunk. */
+  reasoningEffort?: ReasoningEffort;
   /** Agent backend chosen for this task (GUI). Unset = the config default. */
   runner?: RunnerSelection;
   /** Agent account for this task (spec 2026-07-29-agent-profiles), applying to steps that run
@@ -802,6 +806,7 @@ export class RunManager {
       workflow: workflow.name,
       task: input.task,
       model: effectiveInput.model,
+      reasoningEffort: input.reasoningEffort,
       ...(input.runner === 'auto' ? {} : { runner: input.runner }),
       requestedRunner: input.runner,
       // The composer's per-task account (spec 2026-07-29-agent-profiles). Persisted at creation
@@ -1118,6 +1123,7 @@ export class RunManager {
       input: this.hydrateQueuedInput(run.id, {
         task: run.task,
         model: run.model,
+        reasoningEffort: run.reasoningEffort,
         runner: run.requestedRunner ?? run.runner,
         generateFollowups,
         // Re-thread autonomy (#489): the rebuilt input feeds `execute`, whose mid-run auto-nudge
@@ -2514,6 +2520,12 @@ export class RunManager {
       return;
     }
     this.store.updateStep(runId, stepId, { profileId: continueProfile.profileId });
+    const continuationReasoningEffort = resolveReasoningEffort(record?.reasoningEffort, {
+      task: record?.task ?? prompt,
+      prompt,
+      stepName: 'Continue',
+    });
+    this.store.updateStep(runId, stepId, { reasoningEffort: continuationReasoningEffort });
 
     const runner = createRunner(continueBackend);
     state.currentStepId = stepId;
@@ -2543,6 +2555,7 @@ export class RunManager {
         additionalDirectories: agentDirectories(join(this.dataDir, 'runs'), continueProfile.env),
         env: continueProfile.env,
         model: continueModel,
+        reasoningEffort: continuationReasoningEffort,
         sessionId,
         resume: sessionId !== undefined,
         timeoutMs: 0,
@@ -3348,6 +3361,13 @@ export class RunManager {
     }
     this.store.updateStep(runId, step.id, { profileId: stepProfile.profileId });
 
+    const reasoningEffort = resolveReasoningEffort(input.reasoningEffort, {
+      task: input.task,
+      prompt: userPrompt,
+      stepName: step.name ?? step.id,
+    });
+    this.store.updateStep(runId, step.id, { reasoningEffort });
+
     const runner = createRunner(stepBackend);
     let session: AgentSession;
     state.currentStepId = step.id;
@@ -3373,6 +3393,7 @@ export class RunManager {
           additionalDirectories: agentDirectories(join(this.dataDir, 'runs'), stepProfile.env),
           env: stepProfile.env,
           model: backendModel,
+          reasoningEffort,
           sessionId,
           // Interactive sessions have no wall clock — the idle timer rules.
           timeoutMs: interactive ? 0 : undefined,

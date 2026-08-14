@@ -83,6 +83,11 @@ describe('a dry-run pi session emits normalized AgentEvents', () => {
 });
 
 describe('pi RPC argv', () => {
+  it('passes the selected thinking level to pi', () => {
+    expect(buildPiArgs({ cwd: '/repo', userPrompt: 'task', reasoningEffort: 'xhigh' })).toContain('--thinking');
+    expect(buildPiArgs({ cwd: '/repo', userPrompt: 'task', reasoningEffort: 'xhigh' })).toContain('xhigh');
+  });
+
   it('uses pi RPC mode, exact session selection, provider/model, and pi tool names', () => {
     expect(
       buildPiArgs({

@@ -67,6 +67,14 @@ describe('buildClaudeArgs approval gate', () => {
   });
 });
 
+describe('buildClaudeArgs reasoning effort', () => {
+  it('passes the selected native effort to Claude Code', () => {
+    const args = buildClaudeArgs({ userPrompt: 'do it', cwd: '/tmp', reasoningEffort: 'high' });
+    const idx = args.indexOf('--effort');
+    expect(args[idx + 1]).toBe('high');
+  });
+});
+
 /**
  * #703 — a session cezar tore down itself must not settle as an agent
  * failure. Every agent CLI installs its own stop-signal handler and exits

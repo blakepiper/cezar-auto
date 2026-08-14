@@ -259,6 +259,7 @@ export function buildPiArgs(spec: AgentRunSpec): string[] {
   if (spec.sessionId) args.push(spec.resume ? '--session' : '--session-id', spec.sessionId);
   if (spec.systemPrompt) args.push('--append-system-prompt', spec.systemPrompt);
   if (spec.model) args.push('--model', spec.model);
+  if (spec.reasoningEffort) args.push('--thinking', spec.reasoningEffort);
   const tools = piTools(spec.allowedTools ?? [], spec.bashAllowlist);
   if (tools.length > 0) args.push('--tools', tools.join(','));
   return args;

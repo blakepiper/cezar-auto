@@ -5,6 +5,7 @@ import type {
   CreateRunResponse,
   ImageInput,
   ModelDiscoveryRunner,
+  ReasoningEffort,
   Runner,
   RunnerSelection,
   RunnerModelCatalogResponse,
@@ -61,6 +62,7 @@ export interface ModelPreset {
   id: string
   label: string
   desc: string
+  reasoningEfforts?: readonly string[]
 }
 
 /** Static model presets per runner. `id: ''` is always "auto" — no model flag, the runner
@@ -129,7 +131,12 @@ export function modelsForRunner(
     for (const model of catalog?.models ?? []) {
       if (!model.id || seen.has(model.id)) continue
       seen.add(model.id)
-      base.push({ id: model.id, label: model.label || model.id, desc: model.description })
+      base.push({
+        id: model.id,
+        label: model.label || model.id,
+        desc: model.description,
+        reasoningEfforts: model.reasoningEfforts,
+      })
     }
   }
   // Native settings may contain a provider-specific/custom id that is not in
@@ -226,6 +233,26 @@ export function resolveModel(
   return ''
 }
 
+const REASONING_LEVELS: readonly { value: ReasoningEffort; label: string; desc: string }[] = [
+  { value: 'auto', label: 'Auto', desc: 'Choose per work chunk' },
+  { value: 'low', label: 'Low', desc: 'Fast, focused execution' },
+  { value: 'medium', label: 'Medium', desc: 'Balanced reasoning' },
+  { value: 'high', label: 'High', desc: 'Careful reasoning for harder work' },
+  { value: 'xhigh', label: 'Max', desc: 'Deepest available reasoning' },
+]
+
+/** The available reasoning choices for the currently selected model. Catalogs may advertise a
+ * narrower native set; Auto remains available because the backend can use its own default. */
+export function reasoningOptionsForModel(
+  model: string,
+  models: readonly ModelPreset[],
+): readonly { value: string; label: string; desc: string }[] {
+  const advertised = models.find((entry) => entry.id === model)?.reasoningEfforts
+  if (!advertised || advertised.length === 0) return REASONING_LEVELS
+  const supported = new Set(advertised)
+  return REASONING_LEVELS.filter((option) => option.value === 'auto' || supported.has(option.value))
+}
+
 export function sourceExists(
   source: TaskSource,
   skills: readonly Skill[],
@@ -266,6 +293,7 @@ export function buildCreateRunBody(opts: {
   task: string
   source: TaskSource
   model: string
+  reasoningEffort?: ReasoningEffort
   /** Native coding-agent settings stay visible, but a locked model is never a request override. */
   modelsLocked?: boolean
   runner: RunnerSelection
@@ -294,6 +322,7 @@ export function buildCreateRunBody(opts: {
     task,
     source,
     model,
+    reasoningEffort,
     modelsLocked,
     runner,
     runnerExplicit,
@@ -314,6 +343,7 @@ export function buildCreateRunBody(opts: {
         ? { steps: [{ id: 'task', name: source.ref, skill: source.ref, prompt: '{{task}}' }] }
         : { workflow: source.ref }),
     model: modelsLocked ? undefined : model || undefined,
+    ...(reasoningEffort && reasoningEffort !== 'auto' ? { reasoningEffort } : {}),
     runner: runnerOverride(runner, defaultRunner, runnerExplicit),
     // Sent only when the user picked one — an absent key is "follow the project", which is what
     // every launch that never touched the control means.

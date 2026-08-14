@@ -507,6 +507,8 @@ export const runnerModelOptionSchema = z.object({
   id: z.string(),
   label: z.string(),
   description: z.string(),
+  /** Model-advertised effort levels, when the backend exposes them. */
+  reasoningEfforts: z.array(z.string().min(1)).optional(),
 });
 export type RunnerModelOption = z.infer<typeof runnerModelOptionSchema>;
 

@@ -14,6 +14,7 @@
  */
 
 import type { UiEvent } from './ui-events.ts';
+import type { ConcreteReasoningEffort } from '@open-mercato/cezar-contract';
 
 /**
  * The user-selectable runners (what config/GUI expose), in display order — the SINGLE source of
@@ -56,6 +57,8 @@ export interface AgentRunSpec {
    *  e.g. CEZ_HANDOFF_FILE / CEZ_TODOS_FILE / CEZ_TASK_ID (spec 007). */
   env?: Record<string, string>;
   model?: string;
+  /** Concrete reasoning level for this session. The run manager resolves `auto` before spawn. */
+  reasoningEffort?: ConcreteReasoningEffort;
   /** Wall-clock kill switch for the run (ms). */
   timeoutMs?: number;
   /**

@@ -343,6 +343,7 @@ class CodexSession implements AgentSession {
 
     const overrides = {
       model: this.spec.model,
+      effort: this.spec.reasoningEffort,
       cwd: this.spec.cwd,
       // Full access is the `auto` preset shared by all backends. Besides avoiding prompts, this
       // keeps container installs working when bubblewrap cannot create a UID map (#563).

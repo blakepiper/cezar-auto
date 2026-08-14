@@ -1,4 +1,4 @@
-import type { RunnerSelection } from '@open-mercato/cezar-api-client'
+import type { ReasoningEffort, RunnerSelection } from '@open-mercato/cezar-api-client'
 import type { TaskSource } from './new-task-form'
 
 /**
@@ -22,6 +22,8 @@ export interface NewTaskDraft {
    *  other pickers — which login a repo's work runs under is a way of working, not a whim. */
   agentProfile: string | null
   model: string | null
+  /** Per-task reasoning policy. null → Auto, so older drafts keep the new default. */
+  reasoningEffort?: ReasoningEffort | null
   variants: number
   /** Worktree opt-out (#worktree-toggle): false runs in the repo working tree. null → the
    *  remembered `lastWorktree` / default (isolated worktree). */
@@ -86,6 +88,7 @@ const EMPTY: NewTaskDraft = {
   runner: null,
   agentProfile: null,
   model: null,
+  reasoningEffort: null,
   variants: 1,
   worktree: null,
   generateFollowups: null,
@@ -118,11 +121,16 @@ function normalize(raw: unknown): NewTaskDraft {
     runner: typeof obj.runner === 'string' ? (obj.runner as RunnerSelection) : null,
     agentProfile: typeof obj.agentProfile === 'string' ? obj.agentProfile : null,
     model: typeof obj.model === 'string' ? obj.model : null,
+    reasoningEffort: isReasoningEffort(obj.reasoningEffort) ? obj.reasoningEffort : null,
     variants: obj.variants === 2 || obj.variants === 3 ? obj.variants : 1,
     worktree: typeof obj.worktree === 'boolean' ? obj.worktree : null,
     generateFollowups:
       typeof obj.generateFollowups === 'boolean' ? obj.generateFollowups : null,
   }
+}
+
+function isReasoningEffort(raw: unknown): raw is ReasoningEffort {
+  return raw === 'auto' || raw === 'low' || raw === 'medium' || raw === 'high' || raw === 'xhigh'
 }
 
 function isSource(raw: unknown): raw is TaskSource {

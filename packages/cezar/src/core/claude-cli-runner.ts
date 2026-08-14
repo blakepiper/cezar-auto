@@ -375,6 +375,9 @@ export function buildClaudeArgs(
   if (spec.model) {
     args.push('--model', spec.model);
   }
+  if (spec.reasoningEffort) {
+    args.push('--effort', spec.reasoningEffort);
+  }
   for (const dir of spec.additionalDirectories ?? []) {
     args.push('--add-dir', dir);
   }

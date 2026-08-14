@@ -35,6 +35,7 @@ import type {
   RepoResponse,
   Runner,
   RunnerSelection,
+  ReasoningEffort,
   Skill,
   WorkflowDef,
 } from '@open-mercato/cezar-api-client'
@@ -93,6 +94,7 @@ import {
   modelCatalogStatus,
   pushRecentSource,
   resolveModel,
+  reasoningOptionsForModel,
   resolveRunner,
   resolveRunnerSelection,
   resolveSource,
@@ -223,6 +225,10 @@ export function NewTaskRoute() {
   const model = runner === null || autoRunner
     ? ''
     : resolveModel(modelsLocked ? null : draft.model, displayRunner, config.data?.defaultModels, catalog.data)
+  const reasoningOptions = reasoningOptionsForModel(model, models)
+  const reasoningEffort: ReasoningEffort = reasoningOptions.some((option) => option.value === draft.reasoningEffort)
+    ? (draft.reasoningEffort as ReasoningEffort)
+    : 'auto'
   // Agent accounts (spec 2026-07-29-agent-profiles). These are rows of the RUNNER pill rather than
   // a pill of their own — `claude · Default` / `claude · Klaudiusz` / `codex` — so what will run is
   // readable at a glance instead of assembled from two controls. An agent with a single login stays
@@ -422,6 +428,7 @@ export function NewTaskRoute() {
         task: text,
         source,
         model,
+        reasoningEffort,
         modelsLocked,
         runner,
         runnerExplicit: draft.runner !== null,
@@ -572,7 +579,7 @@ export function NewTaskRoute() {
                     update({
                       runner: next,
                       agentProfile: picked,
-                      ...(next === selectedRunner ? {} : { model: null }),
+                      ...(next === selectedRunner ? {} : { model: null, reasoningEffort: null }),
                     })
                   }
                   disabled={!providersReady}
@@ -590,10 +597,20 @@ export function NewTaskRoute() {
                     ? 'Model selection is locked to native coding-agent settings.'
                     : undefined
                 }
-                onPick={(next) => update({ model: next })}
+                onPick={(next) => update({ model: next, reasoningEffort: null })}
                 options={models.map((m) => ({ value: m.id, label: m.label, desc: m.desc }))}
                 status={modelCatalogStatus(displayRunner, catalog.data, catalog.isError)}
               /> : null}
+              <PickerPill
+                slot="reasoning-pill"
+                ariaLabel="Reasoning level"
+                label={reasoningOptions.find((option) => option.value === reasoningEffort)?.label ?? 'Auto'}
+                value={reasoningEffort}
+                disabled={!providersReady}
+                hint="How much reasoning to use. Auto chooses independently for each workflow chunk."
+                onPick={(next) => update({ reasoningEffort: next as ReasoningEffort })}
+                options={reasoningOptions}
+              />
               <PickerPill
                 slot="variants-pill"
                 ariaLabel="Parallel variants"

@@ -12,6 +12,7 @@ import {
   modelCatalogStatus,
   pushRecentSource,
   resolveModel,
+  reasoningOptionsForModel,
   resolveRunner,
   resolveRunnerSelection,
   resolveSource,
@@ -80,6 +81,17 @@ describe('model option resolution', () => {
     const catalog = { runner: 'codex' as const, models: [{ id: 'gpt-future', label: 'Future', description: 'New' }], source: 'live' as const, stale: false }
     expect(modelsForRunner('codex', catalog, ['legacy-id']).map((m) => m.id)).toEqual(['', 'gpt-future', 'legacy-id'])
     expect(modelsForRunner('codex', catalog, ['legacy-id']).at(-1)?.desc).toBe('Custom or legacy model')
+  })
+
+  it('limits reasoning choices to a model-advertised set while keeping Auto', () => {
+    const models = modelsForRunner('codex', {
+      runner: 'codex',
+      models: [{ id: 'gpt-limited', label: 'Limited', description: '', reasoningEfforts: ['medium'] }],
+      source: 'live',
+      stale: false,
+    })
+    expect(reasoningOptionsForModel('gpt-limited', models).map((option) => option.value)).toEqual(['auto', 'medium'])
+    expect(reasoningOptionsForModel('', models).map((option) => option.value)).toEqual(['auto', 'low', 'medium', 'high', 'xhigh'])
   })
 
   it('reports stale and unavailable Codex catalogs without exposing reasons', () => {
@@ -256,6 +268,15 @@ describe('buildCreateRunBody — the exact POST /api/v1/runs payloads legacy sen
     }
     expect(buildCreateRunBody(opts).model).toBeUndefined()
     expect(buildAutomationTask(opts).model).toBeUndefined()
+  })
+
+  it('sends an explicit reasoning level and omits the Auto default', () => {
+    const base = {
+      task: 't', source: { source: 'baseline' as const }, model: 'sonnet',
+      runner: 'claude' as const, defaultRunner: 'claude' as const, variants: 1, images: [],
+    }
+    expect(buildCreateRunBody(base).reasoningEffort).toBeUndefined()
+    expect(buildCreateRunBody({ ...base, reasoningEffort: 'high' }).reasoningEffort).toBe('high')
   })
 
   it('omits runner when the chosen connected runner equals the server default', () => {

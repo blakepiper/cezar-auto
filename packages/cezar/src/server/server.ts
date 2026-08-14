@@ -40,6 +40,7 @@ import {
 import {
   modelDiscoveryRunnerSchema,
   openProjectInSchema,
+  reasoningEffortSchema,
   updateProjectInputSchema,
 } from '@open-mercato/cezar-contract';
 import { detectEnvironment } from '../core/backend-detect.ts';
@@ -544,6 +545,7 @@ const startRunSchema = z
     // (~25k tokens) is well past any hand-written task.
     task: z.string().min(1).max(100_000, 'must be at most 100000 characters'),
     model: z.string().optional(),
+    reasoningEffort: reasoningEffortSchema.optional(),
     // Agent backend for this task (falls back to config `defaultRunner`).
     runner: z.union([z.enum(RUNNER_IDS), z.literal('auto')]).optional(),
     // Agent account for this task (spec 2026-07-29-agent-profiles). Falls back to the project's
@@ -3555,6 +3557,7 @@ export function createApp(deps: ServerDeps) {
       const input = {
         task: parsed.data.task,
         model: parsed.data.model,
+        reasoningEffort: parsed.data.reasoningEffort,
         runner: parsed.data.runner,
         agentProfile: parsed.data.agentProfile,
         images,

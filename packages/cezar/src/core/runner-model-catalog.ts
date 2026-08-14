@@ -4,6 +4,7 @@ export interface ModelOption {
   id: string;
   label: string;
   description: string;
+  reasoningEfforts?: string[];
 }
 
 export type ModelCatalogSource = 'live' | 'cache' | 'unavailable';

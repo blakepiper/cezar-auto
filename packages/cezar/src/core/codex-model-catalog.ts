@@ -22,6 +22,7 @@ const modelSchema = z.object({
   displayName: z.string().optional(),
   description: z.string().optional(),
   hidden: z.boolean().optional(),
+  supportedReasoningEfforts: z.array(z.string().min(1)).optional(),
 }).passthrough();
 
 const pageSchema = z.object({
@@ -113,6 +114,9 @@ async function discoverPages(rpc: CodexAppServerRpc): Promise<ModelOption[]> {
         id,
         label: model.displayName?.trim() || id,
         description: model.description ?? '',
+        ...(model.supportedReasoningEfforts
+          ? { reasoningEfforts: model.supportedReasoningEfforts }
+          : {}),
       });
     }
 

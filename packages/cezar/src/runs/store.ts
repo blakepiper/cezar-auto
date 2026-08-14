@@ -95,6 +95,8 @@ const stepStateSchema = z.object({
    *  a PAIR. Without it, changing the project's account would silently make Continue resume
    *  against the wrong account's session store. Absent = the discovered default. */
   profileId: z.string().optional(),
+  /** Concrete reasoning level selected for this agent chunk. */
+  reasoningEffort: z.enum(['low', 'medium', 'high', 'xhigh']).optional(),
   /** Dollar cost reported by the claude CLI for this step's turns. */
   costUsd: z.number().optional(),
 });
@@ -147,6 +149,8 @@ export const runRecordSchema = z.object({
    *  (#image-display) — persisted like agent screenshots, served from `/images/`. */
   taskImages: z.array(z.string()).optional(),
   model: z.string().optional(),
+  /** User-authored reasoning policy; `auto` is resolved separately for each agent step. */
+  reasoningEffort: z.enum(['auto', 'low', 'medium', 'high', 'xhigh']).optional(),
   /** Canonical provider/model identity (#405) — the normalised `provider/model`
    *  (e.g. `anthropic/claude-opus-4-8`) the run actually used, resolved from the
    *  free-text `model` against the chosen runner. Additive and optional: pre-#405
@@ -543,6 +547,7 @@ export class RunStore extends EventEmitter {
     workflow: string;
     task: string;
     model?: string;
+    reasoningEffort?: 'auto' | 'low' | 'medium' | 'high' | 'xhigh';
     runner?: RunnerId;
     requestedRunner?: RunnerId | 'auto';
     /** Composer's per-task agent account (spec 2026-07-29-agent-profiles). */
@@ -566,6 +571,7 @@ export class RunStore extends EventEmitter {
       workflow: input.workflow,
       task: input.task,
       model: input.model,
+      reasoningEffort: input.reasoningEffort,
       runner: input.runner,
       requestedRunner: input.requestedRunner,
       agentProfile: input.agentProfile,

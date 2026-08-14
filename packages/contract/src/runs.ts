@@ -4,6 +4,7 @@ import { referenceStatusSchema } from './github.ts';
 // The chain shapes belong to the workflows family; the run record embeds one, so this file
 // consumes them rather than redeclaring. One-way on purpose — see the header of `./workflows.ts`.
 import { workflowDefSchema, workflowStepDefSchema } from './workflows.ts';
+import { reasoningEffortSchema } from './reasoning.ts';
 
 /**
  * The RUNS family of `/api/v1` — a task's record, its lifecycle mutations, and the artifacts
@@ -95,6 +96,9 @@ export const stepStateSchema = z.object({
    *  that created it, so resume and Continue read this rather than the project's current
    *  selection. Absent on records written before accounts existed. */
   profileId: z.string().optional(),
+  /** Concrete reasoning level used for this step. `auto` is resolved before spawn and is never
+   * written here, so the run history shows what each chunk actually received. */
+  reasoningEffort: reasoningEffortSchema.exclude(['auto']).optional(),
   costUsd: z.number().optional(),
 });
 export type StepState = z.infer<typeof stepStateSchema>;
@@ -156,6 +160,8 @@ export const runRecordSchema = z.object({
   /** URLs of images attached to the initial task prompt (#image-display). */
   taskImages: z.array(z.string()).optional(),
   model: z.string().optional(),
+  /** User-authored reasoning policy. `auto` is resolved independently for each agent step. */
+  reasoningEffort: reasoningEffortSchema.optional(),
   /** Normalized provider/model identity used for attribution and reproducible replay. */
   modelIdentity: z.string().optional(),
   runner: runnerSchema.optional(),
@@ -628,6 +634,8 @@ export const createRunInputBaseSchema = z
     steps: z.array(workflowStepDefSchema).min(1).max(8).optional(),
     task: z.string().min(1).max(100_000, 'must be at most 100000 characters'),
     model: z.string().optional(),
+    /** Reasoning policy for the task. `auto` chooses a concrete level per agent chunk. */
+    reasoningEffort: reasoningEffortSchema.optional(),
     runner: runnerSelectionSchema.optional(),
     /** Agent account for this task (spec 2026-07-29-agent-profiles). Omit to follow the
      *  project's own selection; an id that no longer exists is a 400, not a silent default. */
