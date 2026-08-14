@@ -1,4 +1,13 @@
 import { z } from 'zod';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import { readNdjson } from '../ndjson.ts';
+import {
+  CodexAppServerRpc,
+  endCodexAppServer,
+  resolveCodexExecutable,
+  spawnCodexAppServer,
+  type CodexAppServerMessage,
+} from '../codex-app-server-transport.ts';
 import type { ProviderUsageAdapter, ProviderUsageReading } from './usage-service.ts';
 import type { ProviderAccountRef } from './types.ts';
 
@@ -25,6 +34,63 @@ const rateLimitsSchema = z.object({
 const codexResponseSchema = z.union([z.object({ rateLimits: rateLimitsSchema }), rateLimitsSchema]);
 
 export type ReadCodexRateLimits = (account: ProviderAccountRef) => Promise<unknown>;
+
+export interface CodexRateLimitReadOptions {
+  cwd: string;
+  bin?: string;
+  env?: Record<string, string>;
+  timeoutMs?: number;
+  spawn?: (bin: string, cwd: string, env?: Record<string, string>) => ChildProcessWithoutNullStreams;
+}
+
+/**
+ * One bounded authenticated app-server read. The long-lived usage service
+ * caches the answer, so this process is never spawned per UI render.
+ */
+export async function readCodexRateLimitsFromAppServer(options: CodexRateLimitReadOptions): Promise<unknown> {
+  const child = (options.spawn ?? spawnCodexAppServer)(resolveCodexExecutable(options.bin), options.cwd, options.env);
+  const rpc = new CodexAppServerRpc(child);
+  const reader = (async () => {
+    try {
+      for await (const line of readNdjson(child.stdout)) {
+        const message = JSON.parse(line) as CodexAppServerMessage;
+        rpc.dispatchResponse(message);
+      }
+    } catch (error) {
+      rpc.rejectPending(error instanceof Error ? error.message : 'Codex usage reader failed');
+    }
+  })();
+  let timeout: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      rpc.rejectPending('Codex usage read timed out');
+      reject(new Error('Codex usage read timed out'));
+    }, options.timeoutMs ?? 8_000);
+    timeout.unref?.();
+  });
+  const exited = new Promise<never>((_, reject) => {
+    child.once('error', () => reject(new Error('Codex usage reader failed')));
+    child.once('exit', (code) => {
+      const error = new Error(`Codex usage reader exited (${code ?? 'unknown'})`);
+      rpc.rejectPending(error.message);
+      reject(error);
+    });
+  });
+  try {
+    return await Promise.race([
+      (async () => {
+        await rpc.initialize();
+        return rpc.request('account/rateLimits/read', {});
+      })(),
+      deadline,
+      exited,
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    endCodexAppServer(child);
+    void reader.catch(() => undefined);
+  }
+}
 
 function isoTime(value: number | null | undefined): string | undefined {
   if (value === null || value === undefined || !Number.isFinite(value)) return undefined;
