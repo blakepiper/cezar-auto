@@ -151,7 +151,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   {
     id: 'resources',
     title: 'Resources',
-    description: 'Parallel tasks and per-task memory limit, across every project.',
+    description: 'Provider usage, parallel tasks and per-task memory limit, across every project.',
     icon: GaugeIcon,
     component: ResourcesSection,
     scope: 'global',

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { queryKeys, workspaceQueryKeys } from '@/api/queries'
 import { createQueryClient } from '@/api/query-client'
-import type { WorkspaceConfigResponse } from '@open-mercato/cezar-api-client'
+import type { WorkspaceConfigResponse, WorkspaceUsageResponse } from '@open-mercato/cezar-api-client'
 import { Toaster, resetToasts } from '@/components/ui/toaster'
 import { AppRoutes } from '@/routes'
 
@@ -22,7 +22,10 @@ import { AppRoutes } from '@/routes'
 
 let requests: Array<{ method: string; url: string; body?: unknown }> = []
 
-function serve(resources: Partial<WorkspaceConfigResponse['resources']> = {}) {
+function serve(
+  resources: Partial<WorkspaceConfigResponse['resources']> = {},
+  usage: WorkspaceUsageResponse = { providers: [] },
+) {
   requests = []
   const state: WorkspaceConfigResponse = {
     agentDefaults: {},
@@ -56,6 +59,7 @@ function serve(resources: Partial<WorkspaceConfigResponse['resources']> = {}) {
       const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined
       requests.push({ method, url, body })
       if (url === '/api/v1/workspace/config' && method === 'GET') return json(state)
+      if (url === '/api/v1/workspace/usage' && method === 'GET') return json(usage)
       if (url === '/api/v1/workspace/config' && method === 'PUT') {
         Object.assign(state.resources, (body?.resources ?? {}) as object)
         return json(state)
@@ -108,6 +112,32 @@ afterEach(() => {
 })
 
 describe('Global settings → Resources', () => {
+  it('shows remaining session and weekly capacity even when Auto routing is off', async () => {
+    serve({}, {
+      providers: [{
+        provider: 'claude',
+        profileId: 'default',
+        health: 'available',
+        fetchedAt: '2026-08-14T15:00:00.000Z',
+        source: 'fake',
+        stale: false,
+        windows: [
+          { kind: 'short', usedPercent: 25, resetsAt: '2026-08-14T18:00:00.000Z' },
+          { kind: 'long', usedPercent: 60, resetsAt: '2026-08-20T18:00:00.000Z' },
+        ],
+      }],
+    })
+    renderResources()
+
+    expect(await screen.findByText('75% left')).not.toBeNull()
+    expect(screen.getByText('40% left')).not.toBeNull()
+    expect(screen.getByText('Session (5-hour)')).not.toBeNull()
+    expect(screen.getByText('Week (7-day)')).not.toBeNull()
+    expect(screen.getAllByRole('progressbar')[0]?.getAttribute('aria-valuenow')).toBe('75')
+    expect(screen.getAllByText(/Resets/).length).toBe(2)
+    expect((screen.getByLabelText('Enable Auto routing') as HTMLInputElement).checked).toBe(false)
+  })
+
   it('renders the workspace values, read from /api/v1/workspace/config', async () => {
     serve({ maxParallel: 5, memoryLimitMb: 4096 })
     renderResources()

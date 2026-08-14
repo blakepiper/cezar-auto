@@ -5,7 +5,11 @@ import { Link } from 'react-router'
 
 import { putWorkspaceConfig } from '@/api/client'
 import { useWorkspaceConfig, useWorkspaceUsage, workspaceQueryKeys } from '@/api/queries'
-import type { SetWorkspaceConfigInput, WorkspaceConfigResponse } from '@open-mercato/cezar-api-client'
+import type {
+  SetWorkspaceConfigInput,
+  WorkspaceConfigResponse,
+  WorkspaceUsageResponse,
+} from '@open-mercato/cezar-api-client'
 import { CenteredState } from '@/components/centered-state'
 import { Button } from '@/components/ui/button'
 import { toast } from '@/components/ui/toaster'
@@ -36,6 +40,103 @@ const WAKE_INTERVAL_MAX = 60
 /** Below this a limit would pause almost any real agent immediately — reject it as a footgun. */
 const MEMORY_MIN_MB = 256
 
+type UsageProvider = WorkspaceUsageResponse['providers'][number]
+type UsageWindow = UsageProvider['windows'][number]
+
+function usageProviderLabel(provider: UsageProvider['provider']): string {
+  return provider === 'claude' ? 'Claude' : 'Codex'
+}
+
+function usageWindowLabel(kind: UsageWindow['kind']): string {
+  switch (kind) {
+    case 'short':
+      return 'Session (5-hour)'
+    case 'long':
+      return 'Week (7-day)'
+    case 'model':
+      return 'Model limit'
+    default:
+      return 'Usage window'
+  }
+}
+
+function remainingPercent(usedPercent: number | null): number | null {
+  return usedPercent === null ? null : Math.max(0, Math.min(100, Math.round(100 - usedPercent)))
+}
+
+function formatDate(value: string): string {
+  const date = new Date(value)
+  return Number.isFinite(date.getTime())
+    ? date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+    : 'time unavailable'
+}
+
+function UsageWindowCard({ window }: { window: UsageWindow }) {
+  const remaining = remainingPercent(window.usedPercent)
+  const reset = window.resetsAt ? formatDate(window.resetsAt) : 'time unavailable'
+
+  return (
+    <div
+      data-slot="quota-window"
+      data-window={window.kind}
+      className="rounded-md border border-border/80 bg-muted/20 px-3 py-2.5"
+    >
+      <div className="flex items-baseline justify-between gap-2 text-xs">
+        <span className="font-medium">{usageWindowLabel(window.kind)}</span>
+        <span className="font-semibold tabular-nums">
+          {remaining === null ? 'Remaining unknown' : `${remaining}% left`}
+        </span>
+      </div>
+      {remaining === null ? null : (
+        <div
+          role="progressbar"
+          aria-label={`${usageWindowLabel(window.kind)} remaining`}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={remaining}
+          className="mt-2 h-1.5 overflow-hidden rounded-full bg-border"
+        >
+          <div className="h-full rounded-full bg-foreground" style={{ width: `${remaining}%` }} />
+        </div>
+      )}
+      <p className="mt-1.5 text-[11px] text-soft-foreground">
+        {window.usedPercent === null ? 'Used percentage unavailable' : `${Math.round(window.usedPercent)}% used`}
+        {' · '}
+        {window.resetsAt ? (
+          <time dateTime={window.resetsAt}>Resets {reset}</time>
+        ) : (
+          <>Reset time unavailable</>
+        )}
+      </p>
+    </div>
+  )
+}
+
+function UsageProviderCard({ provider }: { provider: UsageProvider }) {
+  return (
+    <div data-slot="quota-provider" data-provider={provider.provider} className="rounded-md border border-border px-3 py-3">
+      <div className="flex items-center justify-between gap-2 text-sm">
+        <span className="font-medium">{usageProviderLabel(provider.provider)}</span>
+        <span className="text-xs capitalize text-soft-foreground">
+          {provider.health.replace(/_/g, ' ')}{provider.stale ? ' · last known' : ''}
+        </span>
+      </div>
+      {provider.windows.length > 0 ? (
+        <div className="mt-2 grid gap-2 sm:grid-cols-2">
+          {provider.windows.map((window, index) => (
+            <UsageWindowCard key={`${window.kind}-${index}`} window={window} />
+          ))}
+        </div>
+      ) : (
+        <p className="mt-2 text-xs text-soft-foreground">
+          {provider.error?.message ?? 'No usage windows reported'}
+        </p>
+      )}
+      <p className="mt-2 text-[11px] text-soft-foreground">Updated {formatDate(provider.fetchedAt)}</p>
+    </div>
+  )
+}
+
 export function ResourcesSection() {
   const config = useWorkspaceConfig()
 
@@ -62,7 +163,7 @@ export function ResourcesSection() {
 
 function ResourcesForm({ config }: { config: WorkspaceConfigResponse }) {
   const queryClient = useQueryClient()
-  const usage = useWorkspaceUsage(config.quotaRouting?.enabled === true)
+  const usage = useWorkspaceUsage()
   const quotaEnabled = config.quotaRouting?.enabled === true
 
   const save = useMutation({
@@ -148,32 +249,24 @@ function ResourcesForm({ config }: { config: WorkspaceConfigResponse }) {
           Enable Auto routing
         </label>
       </SettingsField>
-      {config.quotaRouting?.enabled === true ? (
-        <SettingsField
-          title="Provider quota"
-          hint="Auto routing consults this sanitized usage snapshot before starting new work."
-        >
-          <div data-slot="quota-usage" className="flex flex-col gap-2">
-            {usage.isPending ? <p className="text-xs text-soft-foreground">Refreshing provider usage…</p> : null}
-            {usage.isError ? <p className="text-xs text-danger">Provider usage could not be refreshed.</p> : null}
-            {usage.data?.providers.map((provider) => {
-              const windows = provider.windows
-                .map((window) => `${window.kind}: ${window.usedPercent === null ? 'unknown' : `${window.usedPercent}%`}${window.resetsAt ? ` · resets ${new Date(window.resetsAt).toLocaleString()}` : ''}`)
-                .join(' · ')
-              return (
-                <div key={provider.provider} className="rounded-md border border-border px-3 py-2 text-xs">
-                  <span className="font-medium capitalize">{provider.provider}</span>{' '}
-                  <span className="text-soft-foreground">{provider.health.replace('_', ' ')}{provider.stale ? ' · stale' : ''}</span>
-                  <p className="mt-1 text-soft-foreground">{windows || 'No usage windows reported'}</p>
-                </div>
-              )
-            })}
-            <Button type="button" variant="outline" size="sm" className="w-fit" disabled={usage.isFetching} onClick={() => usage.refetch()}>
-              {usage.isFetching ? 'Refreshing…' : 'Refresh usage'}
-            </Button>
-          </div>
-        </SettingsField>
-      ) : null}
+      <SettingsField
+        title="Provider usage"
+        hint="See how much Claude and Codex capacity remains in the current session and weekly windows."
+      >
+        <div data-slot="quota-usage" className="flex flex-col gap-2">
+          {usage.isPending ? <p className="text-xs text-soft-foreground">Refreshing provider usage…</p> : null}
+          {usage.isError ? <p className="text-xs text-danger">Provider usage could not be refreshed.</p> : null}
+          {usage.data?.providers.map((provider) => (
+            <UsageProviderCard key={provider.provider} provider={provider} />
+          ))}
+          {usage.data?.providers.length === 0 ? (
+            <p className="text-xs text-soft-foreground">No provider usage data is available on this installation.</p>
+          ) : null}
+          <Button type="button" variant="outline" size="sm" className="w-fit" disabled={usage.isFetching} onClick={() => usage.refetch()}>
+            {usage.isFetching ? 'Refreshing…' : 'Refresh usage'}
+          </Button>
+        </div>
+      </SettingsField>
       <SettingsField
         title="Max parallel tasks"
         hint="How many tasks run at once across every project. The rest wait in the queue. A non-git directory always runs one at a time."
