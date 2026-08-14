@@ -88,6 +88,9 @@ export class ClaudeUsageAdapter implements ProviderUsageAdapter {
       if (response.status === 401 || response.status === 403) {
         return { health: 'auth_error', source: 'claude-oauth', windows: [], error: { code: 'auth_error', message: 'Claude authentication was rejected.' } };
       }
+      if (response.status === 429) {
+        return { health: 'unknown', source: 'claude-oauth', windows: [], error: { code: 'rate_limited', message: 'Claude usage is temporarily rate limited.' } };
+      }
       if (!response.ok) {
         return { health: 'unknown', source: 'claude-oauth', windows: [], error: { code: 'request_failed', message: 'Claude usage could not be refreshed.' } };
       }

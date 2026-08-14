@@ -109,6 +109,38 @@ describe('ProviderUsageService', () => {
     service.dispose();
   });
 
+  it('keeps the last successful snapshot when a refresh fails', async () => {
+    let now = Date.parse('2026-08-14T00:00:00.000Z');
+    const read = vi.fn()
+      .mockResolvedValueOnce({
+        health: 'available' as const,
+        source: 'fake',
+        windows: [{ kind: 'short' as const, usedPercent: 20 }],
+      })
+      .mockResolvedValueOnce({
+        health: 'unknown' as const,
+        source: 'fake',
+        windows: [],
+        error: { code: 'rate_limited', message: 'Provider usage is temporarily rate limited.' },
+      });
+    const service = new ProviderUsageService({ adapters: [adapter(read)], cacheTtlMs: 30_000, now: () => now });
+
+    const first = await service.refresh(account);
+    now += 30_000;
+    const second = await service.refresh(account);
+
+    expect(first).toMatchObject({ health: 'available', stale: false, windows: [{ usedPercent: 20 }] });
+    expect(second).toMatchObject({
+      health: 'available',
+      source: 'fake',
+      fetchedAt: first.fetchedAt,
+      stale: true,
+      windows: [{ usedPercent: 20 }],
+      error: { code: 'rate_limited' },
+    });
+    service.dispose();
+  });
+
   it('sanitizes malformed adapter values before they reach the cache or API layer', async () => {
     const token = 'bearer-secret-value';
     const service = new ProviderUsageService({

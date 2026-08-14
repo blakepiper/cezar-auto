@@ -37,6 +37,18 @@ describe('Claude usage adapter', () => {
     expect(result).toMatchObject({ health: 'auth_error', error: { code: 'auth_error' } });
   });
 
+  it('reports provider rate limiting separately from authentication failure', async () => {
+    const adapter = new ClaudeUsageAdapter({
+      resolveAccessToken: vi.fn().mockResolvedValue('token'),
+      fetch: vi.fn().mockResolvedValue(new Response('rate limited', { status: 429 })),
+    });
+
+    await expect(adapter.read(claude)).resolves.toMatchObject({
+      health: 'unknown',
+      error: { code: 'rate_limited', message: 'Claude usage is temporarily rate limited.' },
+    });
+  });
+
   it('turns malformed and missing credentials into sanitized states', async () => {
     const missing = new ClaudeUsageAdapter({ resolveAccessToken: vi.fn().mockResolvedValue(undefined) });
     expect(await missing.read(claude)).toMatchObject({ health: 'auth_error' });

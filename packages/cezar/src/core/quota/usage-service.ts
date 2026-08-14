@@ -41,11 +41,12 @@ const HEALTHS = new Set<ProviderQuotaHealth>([
 const WINDOW_KINDS = new Set<ProviderUsageWindow['kind']>(['short', 'long', 'model', 'unknown']);
 const SAFE_SOURCES = new Set(['claude-oauth', 'codex-app-server', 'cache', 'runtime', 'none', 'fake']);
 const SAFE_ERROR_CODES = new Set([
-  'auth_error', 'request_failed', 'invalid_response', 'adapter_unavailable', 'refresh_failed', 'provider_error',
+  'auth_error', 'rate_limited', 'request_failed', 'invalid_response', 'adapter_unavailable', 'refresh_failed', 'provider_error',
 ]);
 const GENERIC_ERROR_MESSAGE = 'Provider usage could not be refreshed.';
 const ERROR_MESSAGES: Record<string, string> = {
   auth_error: 'Provider authentication is unavailable.',
+  rate_limited: 'Provider usage is temporarily rate limited.',
   request_failed: 'Provider usage could not be refreshed.',
   invalid_response: 'Provider usage response was invalid.',
   adapter_unavailable: 'Usage is not available for this provider.',
@@ -196,6 +197,7 @@ export class ProviderUsageService {
 
   async #read(account: ProviderAccountRef): Promise<ProviderUsageSnapshot> {
     const adapter = this.#adapters.get(account.provider);
+    const prior = this.#cache.get(cacheKey(account));
     let reading: ProviderUsageReading;
     if (!adapter) {
       reading = {
@@ -213,14 +215,19 @@ export class ProviderUsageService {
       }
     }
 
-    const snapshot: ProviderUsageSnapshot = {
-      ...account,
-      ...reading,
-      fetchedAt: new Date(this.#now()).toISOString(),
-      stale: false,
-    };
     const key = cacheKey(account);
-    const prior = this.#cache.get(key);
+    // A transient provider failure must not erase useful telemetry. Keep the last successful
+    // snapshot visible, mark it stale, and attach the current sanitized error. Routing already
+    // treats stale snapshots as unknown, so this improves the cockpit without making dispatch
+    // trust data that failed to refresh.
+    const snapshot: ProviderUsageSnapshot = prior && reading.error && (prior.windows.length > 0 || prior.health !== 'unknown')
+      ? { ...prior, source: reading.source, stale: true, error: reading.error }
+      : {
+        ...account,
+        ...reading,
+        fetchedAt: new Date(this.#now()).toISOString(),
+        stale: false,
+      };
     this.#cache.set(key, snapshot);
     this.#scheduleReset(account, snapshot);
     void this.#persist();

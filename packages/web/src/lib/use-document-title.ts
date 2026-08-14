@@ -15,10 +15,10 @@ export function documentTitleOf({ projectName, pageLabel }: DocumentTitleParts):
   const project = titlePart(projectName)
   const page = titlePart(pageLabel)
 
-  if (project && page) return `${project} — ${page} · cezar`
-  if (project) return `${project} · cezar`
-  if (page) return `${page} · cezar`
-  return 'cezar'
+  if (project && page) return `${project} — ${page} · coducktor`
+  if (project) return `${project} · coducktor`
+  if (page) return `${page} · coducktor`
+  return 'coducktor'
 }
 
 /** The cockpit's single runtime document-title writer. */

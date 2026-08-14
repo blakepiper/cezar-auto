@@ -40,13 +40,6 @@ import {
   writeStoredSidebarWidth,
 } from '@/lib/sidebar-width'
 import { cn } from '@/lib/utils'
-// The Open Mercato brand mark. A `public/` asset, not a bundled import: the service serves the
-// same file at this exact path (`GET /open-mercato.svg` — the favicon index.html points at), so
-// a second, hashed URL for the same picture would be one cache entry too many. Vite serves
-// `public/` at the root in dev and copies it into the build, so the path holds in both.
-// Its own gradient + rounded corners ARE the tile.
-const brandLogoUrl = '/open-mercato.svg'
-
 /** Tailwind's `md`. The drawer is the `<md` affordance, so this must stay in step with the
  *  `md:hidden` / `md:flex` classes below — they are the same breakpoint expressed twice, once
  *  for CSS and once for the state machine. */
@@ -244,7 +237,7 @@ export function AppShell({
         <MobileNavDrawer {...nav} onNavigate={() => setMenuOpen(false)} />
 
         <div className="grid min-w-0 flex-1 grid-rows-[auto_auto_1fr_auto] overflow-hidden">
-          <MobileTopBar title={current?.label ?? 'cezar'} />
+          <MobileTopBar title={current?.label ?? 'coducktor'} />
 
           {banner ? (
             <div data-slot="banner-slot" className="row-start-2">
@@ -489,7 +482,7 @@ function SidebarContent({
     >
       <div className="flex items-center gap-[9px] px-3.5 pt-3.5 pb-2.5">
         <BrandTile />
-        <span className="text-[15px] font-semibold">cezar</span>
+        <span className="text-[15px] font-semibold">coducktor</span>
         {/* With project groups mounted the boot repo/branch is one group header among many —
             a chip repeating it up here would just be the first group's header said twice. */}
         {repo && !projectGroups ? (
@@ -824,17 +817,16 @@ function VersionChip({ version, latestVersion }: { version: string; latestVersio
   )
 }
 
-/** The Open Mercato brand mark. The SVG carries its own gradient and rounded corners, so it is
- *  the tile — no wrapper background. */
+/** The cockpit's decorative duck mark. */
 function BrandTile() {
   return (
-    <img
-      src={brandLogoUrl}
-      alt=""
+    <span
       aria-hidden="true"
       data-slot="brand-tile"
-      className="size-[26px] shrink-0 rounded-sm"
-    />
+      className="flex size-[26px] shrink-0 items-center justify-center text-[22px] leading-none"
+    >
+      🦆
+    </span>
   )
 }
 
