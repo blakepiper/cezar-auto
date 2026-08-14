@@ -536,6 +536,7 @@ export class RunStore extends EventEmitter {
     task: string;
     model?: string;
     runner?: RunnerId;
+    requestedRunner?: RunnerId | 'auto';
     /** Composer's per-task agent account (spec 2026-07-29-agent-profiles). */
     agentProfile?: string;
     generateFollowups?: boolean;
@@ -558,6 +559,7 @@ export class RunStore extends EventEmitter {
       task: input.task,
       model: input.model,
       runner: input.runner,
+      requestedRunner: input.requestedRunner,
       agentProfile: input.agentProfile,
       generateFollowups: input.generateFollowups,
       autonomous: input.autonomous,

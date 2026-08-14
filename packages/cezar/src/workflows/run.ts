@@ -729,6 +729,7 @@ export class RunManager {
       task: input.task,
       model: effectiveInput.model,
       runner: input.runner,
+      requestedRunner: input.runner,
       // The composer's per-task account (spec 2026-07-29-agent-profiles). Persisted at creation
       // so a queued run picks it up at dequeue and every later resume reads the same answer.
       agentProfile: input.agentProfile,
@@ -2490,6 +2491,7 @@ export class RunManager {
       status: 'running',
       startedAt: new Date().toISOString(),
       runner: taskBackend,
+      requestedRunner: input.runner ?? taskBackend,
       systemPrompt: extraSystemPrompt,
       modelIdentity,
     });
@@ -2808,7 +2810,7 @@ export class RunManager {
 
     const sessionId = randomUUID();
     const backend = step.runner ?? taskBackend;
-    this.store.updateStep(runId, step.id, { sessionId, backend });
+    this.store.updateStep(runId, step.id, { sessionId, backend, requestedRunner: step.runner ?? taskBackend });
 
     const stepRecord = this.store.getRun(runId)?.steps.find((s) => s.id === step.id);
     const startTokens = stepRecord?.tokensUsed ?? 0;
