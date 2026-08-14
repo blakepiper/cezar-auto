@@ -20,9 +20,16 @@ import type {
  * table-testable and so drift from legacy is a diff in ONE file, not a scavenger hunt.
  */
 
-/** What the composer runs: a named workflow or a single skill. The same shape the server's
- *  `ui-state.json` stores as `lastTask`, so persistence needs no mapping. */
+/** What the composer runs: the plain-task baseline, a named workflow, or a single skill. */
 export type TaskSource = NonNullable<UiState['lastTask']>
+
+export const BASELINE_SOURCE: TaskSource = { source: 'baseline' }
+
+function sameSource(a: TaskSource, b: TaskSource): boolean {
+  if (a.source === 'baseline' || b.source === 'baseline') return a.source === b.source
+  if (a.source !== b.source) return false
+  return a.ref === b.ref
+}
 
 /** Prepend `source` to the recency list (newest first), dropping any earlier occurrence of the
  *  same source+ref, and cap the length. Pure so the picker's recency sort is table-testable. */
@@ -31,7 +38,7 @@ export function pushRecentSource(
   source: TaskSource,
   cap = 24,
 ): TaskSource[] {
-  const rest = (recent ?? []).filter((s) => !(s.source === source.source && s.ref === source.ref))
+  const rest = (recent ?? []).filter((s) => !sameSource(s, source))
   return [source, ...rest].slice(0, cap)
 }
 
@@ -224,6 +231,7 @@ export function sourceExists(
   skills: readonly Skill[],
   workflows: readonly WorkflowDef[],
 ): boolean {
+  if (source.source === 'baseline') return true
   return source.source === 'skill'
     ? skills.some((s) => s.name === source.ref)
     : workflows.some((w) => w.name === source.ref)
@@ -231,7 +239,7 @@ export function sourceExists(
 
 /**
  * The effective source: the first candidate that still exists (the draft pick, then the
- * persisted `lastTask`), else the zero-config cold default: built-in quick-task.
+ * persisted `lastTask`), else the zero-config cold default: the plain-task baseline.
  */
 export function resolveSource(
   candidates: ReadonlyArray<TaskSource | null | undefined>,
@@ -241,19 +249,14 @@ export function resolveSource(
   for (const candidate of candidates) {
     if (candidate && sourceExists(candidate, skills, workflows)) return candidate
   }
-  if (workflows.some((workflow) => workflow.name === 'quick-task')) {
-    return { source: 'workflow', ref: 'quick-task' }
-  }
-  const firstSkill = skills[0]
-  if (firstSkill) return { source: 'skill', ref: firstSkill.name }
-  return { source: 'workflow', ref: workflows[0]?.name ?? 'quick-task' }
+  return BASELINE_SOURCE
 }
 
 /**
- * The exact `POST /api/runs` body the legacy form sends:
+ * The exact `POST /api/runs` body the composer sends:
  *  - a skill runs as a one-step inline chain (spec 008's API — the same shape the inbox and
  *    the bookmarklet auto-start use): `steps: [{ id: 'task', name, skill, prompt: '{{task}}' }]`;
- *  - a workflow goes by name;
+ *  - the baseline and a skill run as one-step inline chains; a workflow goes by name;
  *  - an explicit/sticky `runner` always rides the request; an untouched runner is omitted only
  *    when it equals the active project's known default (unknown defaults and connected fallbacks
  *    stay explicit);
@@ -305,9 +308,11 @@ export function buildCreateRunBody(opts: {
   } = opts
   return {
     task,
-    ...(source.source === 'skill'
-      ? { steps: [{ id: 'task', name: source.ref, skill: source.ref, prompt: '{{task}}' }] }
-      : { workflow: source.ref }),
+    ...(source.source === 'baseline'
+      ? { steps: [{ id: 'task', name: 'Baseline', prompt: '{{task}}' }] }
+      : source.source === 'skill'
+        ? { steps: [{ id: 'task', name: source.ref, skill: source.ref, prompt: '{{task}}' }] }
+        : { workflow: source.ref }),
     model: modelsLocked ? undefined : model || undefined,
     runner: runnerOverride(runner, defaultRunner, runnerExplicit),
     // Sent only when the user picked one — an absent key is "follow the project", which is what

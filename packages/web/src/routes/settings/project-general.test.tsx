@@ -98,7 +98,7 @@ function seededClient({
     composerDefaults: {
       autonomous: null,
       worktree: null,
-      inheritedAutonomous: 'source-dependent',
+      inheritedAutonomous: true,
       inheritedWorktree: true,
     },
     resources: {

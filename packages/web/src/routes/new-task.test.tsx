@@ -161,7 +161,7 @@ const WORKSPACE_CONFIG: WorkspaceConfigResponse = {
   composerDefaults: {
     autonomous: null,
     worktree: null,
-    inheritedAutonomous: 'source-dependent',
+    inheritedAutonomous: true,
     inheritedWorktree: true,
   },
   resources: {
@@ -298,11 +298,11 @@ function renderNewTask(entry = '/new') {
 }
 
 const textarea = () => screen.getByLabelText('Describe a task for the agent') as HTMLTextAreaElement
-const sourcePill = () => screen.getByRole('button', { name: 'Choose a skill or workflow' })
+const sourcePill = () => screen.getByRole('button', { name: 'Choose a skill, workflow, or baseline' })
 const location = () => screen.getByTestId('location').textContent
 
 /** The pickers resolve once workflows+skills+ui-state answered — wait for the real label. */
-async function pillReady(label = 'quick-task') {
+async function pillReady(label = 'Baseline') {
   await waitFor(() => {
     expect(sourcePill().textContent).toContain(label)
     expect(textarea().disabled).toBe(false)
@@ -444,7 +444,7 @@ describe('picker data flows', () => {
   it('drops a persisted model preset that belongs to another runner', async () => {
     writeDraft({
       text: '', source: null, runner: 'codex', agentProfile: null, model: 'claude-opus-4-8', variants: 1,
-      worktree: null, autonomous: null, generateFollowups: null,
+      worktree: null, generateFollowups: null,
     })
     serve({ health: HEALTH_MULTI, providerStatus: PROVIDERS_MULTI })
     renderNewTask()
@@ -558,10 +558,10 @@ describe('picker data flows', () => {
     await pillReady('fix-and-verify')
   })
 
-  it('falls back to quick-task when lastTask names something gone', async () => {
+  it('falls back to Baseline when lastTask names something gone', async () => {
     serve({ uiState: { lastTask: { source: 'skill', ref: 'deleted-skill' } } })
     renderNewTask()
-    await pillReady('quick-task')
+    await pillReady('Baseline')
   })
 
   it('the source menu groups: Project skills (bold), Workflows, Global last', async () => {
@@ -572,11 +572,11 @@ describe('picker data flows', () => {
     await screen.findByPlaceholderText('search skills & workflows…')
 
     const options = [...document.querySelectorAll('[data-slot="source-option"]')]
-    expect(options.map((o) => o.getAttribute('data-source-ref'))).toEqual([
-      'om-fix', 'quick-task', 'fix-and-verify', 'deploy',
+    expect(options.map((o) => `${o.getAttribute('data-source-kind')}:${o.getAttribute('data-source-ref') ?? ''}`)).toEqual([
+      'baseline:', 'skill:om-fix', 'workflow:quick-task', 'workflow:fix-and-verify', 'skill:deploy',
     ])
     const headings = [...document.querySelectorAll('[cmdk-group-heading]')].map((h) => h.textContent)
-    expect(headings).toEqual(['Project skills', 'Workflows', 'Global'])
+    expect(headings).toEqual(['Task mode', 'Project skills', 'Workflows', 'Global'])
   })
 
   it('multi-keyword search: "fix issue" matches om-fix via hyphen-split keywords (#411)', async () => {
@@ -624,7 +624,7 @@ describe('provider authentication gate', () => {
     })
     renderNewTask()
 
-    await waitFor(() => expect(sourcePill().textContent).toContain('quick-task'))
+    await waitFor(() => expect(sourcePill().textContent).toContain('Baseline'))
     expect(textarea().disabled).toBe(true)
     expect(textarea().placeholder).toBe('Checking agent providers…')
     expect(screen.queryByRole('link', { name: 'Configure providers' })).toBeNull()
@@ -770,7 +770,7 @@ describe('submit', () => {
     expect(postedBody()).toEqual({
       task: 'Fix the flaky worktree test',
       steps: [{ id: 'task', name: 'om-fix', skill: 'om-fix', prompt: '{{task}}' }],
-      // Skills default to autonomous (#autonomous).
+      // Tasks are autonomous by default.
       autonomous: true,
     })
     await waitFor(() => expect(location()).toBe('/tasks/run-9'))
@@ -795,7 +795,7 @@ describe('submit', () => {
     // lands in its errored state immediately and the test stays deterministic.
     writeDraft({
       text: '', source: { source: 'skill', ref: 'om-fix' }, runner: null, agentProfile: null, model: null,
-      variants: 1, worktree: null, autonomous: null, generateFollowups: null,
+      variants: 1, worktree: null, generateFollowups: null,
     })
     serve({ createRun: { id: 'run-9' }, uiStateStatus: 404 })
     renderNewTask()
@@ -809,6 +809,20 @@ describe('submit', () => {
     expect(put?.body).not.toHaveProperty('skillUsage')
   })
 
+  it('the baseline source posts a plain inline agent step', async () => {
+    serve()
+    renderNewTask()
+    await pillReady('Baseline')
+    fireEvent.change(textarea(), { target: { value: 'Ship it' } })
+    await startTask()
+
+    expect(postedBody()).toEqual({
+      task: 'Ship it',
+      steps: [{ id: 'task', name: 'Baseline', prompt: '{{task}}' }],
+      autonomous: true,
+    })
+  })
+
   it('a WORKFLOW source posts { workflow, task }', async () => {
     serve({ uiState: { lastTask: { source: 'workflow', ref: 'quick-task' } } })
     renderNewTask()
@@ -816,7 +830,7 @@ describe('submit', () => {
     fireEvent.change(textarea(), { target: { value: 'Ship it' } })
     await startTask()
 
-    expect(postedBody()).toEqual({ task: 'Ship it', workflow: 'quick-task' })
+    expect(postedBody()).toEqual({ task: 'Ship it', workflow: 'quick-task', autonomous: true })
   })
 
   it('posts worktree:false after opt-out for every single-step source shape', async () => {
@@ -826,9 +840,9 @@ describe('submit', () => {
       expected: Record<string, unknown>
     }> = [
       {
-        label: 'quick-task',
+        label: 'Baseline',
         overrides: {},
-        expected: { workflow: 'quick-task' },
+        expected: { steps: [{ id: 'task', name: 'Baseline', prompt: '{{task}}' }] },
       },
       {
         label: 'om-fix',
@@ -882,7 +896,10 @@ describe('submit', () => {
     expect(worktree.getAttribute('aria-checked')).toBe('false')
     fireEvent.change(textarea(), { target: { value: 'Use the environment seed' } })
     await startTask()
-    expect(postedBody()).toMatchObject({ workflow: 'quick-task', worktree: false })
+    expect(postedBody()).toMatchObject({
+      steps: [{ id: 'task', name: 'Baseline', prompt: '{{task}}' }],
+      worktree: false,
+    })
   })
 
   it('picking a model and ×2 variants rides along; {runs} answer navigates to the FIRST variant', async () => {
@@ -907,9 +924,10 @@ describe('submit', () => {
 
     expect(postedBody()).toEqual({
       task: 'Race two attempts',
-      workflow: 'quick-task',
+      steps: [{ id: 'task', name: 'Baseline', prompt: '{{task}}' }],
       model: 'sonnet',
       variants: 2,
+      autonomous: true,
     })
     await waitFor(() => expect(location()).toBe('/tasks/v-a'))
   })
@@ -942,8 +960,9 @@ describe('submit', () => {
     await startTask()
     expect(postedBody()).toEqual({
       task: 'Use native settings',
-      workflow: 'quick-task',
+      steps: [{ id: 'task', name: 'Baseline', prompt: '{{task}}' }],
       runner: 'codex',
+      autonomous: true,
     })
   })
 
@@ -1014,9 +1033,7 @@ describe('submit', () => {
     ).toBe('false')
   })
 
-  it('applies an interactive skill hint to untouched controls while keeping both overridable', async () => {
-    // The cold default is now quick-task, so an interactive skill only drives the recommendation
-    // once it is the selected source — here via the persisted lastTask.
+  it('keeps tasks autonomous while applying an interactive skill hint to the Worktree control', async () => {
     serve({
       skills: [{ ...SKILLS[0]!, interactive: true }, SKILLS[1]!],
       uiState: { lastTask: { source: 'skill', ref: 'om-fix' } },
@@ -1024,17 +1041,11 @@ describe('submit', () => {
     renderNewTask()
     await pillReady('om-fix')
 
-    const autonomous = document.querySelector(
-      '[data-slot="autonomous-toggle"]',
-    ) as HTMLButtonElement
     const worktree = document.querySelector('[data-slot="worktree-toggle"]') as HTMLButtonElement
-    expect(autonomous.getAttribute('aria-checked')).toBe('false')
     expect(worktree.getAttribute('aria-checked')).toBe('false')
-    expect(screen.getByText(/recommends an interactive run in the current checkout/i)).toBeTruthy()
+    expect(screen.getByText(/recommends running in the current checkout/i)).toBeTruthy()
 
-    fireEvent.click(autonomous)
     fireEvent.click(worktree)
-    expect(autonomous.getAttribute('aria-checked')).toBe('true')
     expect(worktree.getAttribute('aria-checked')).toBe('true')
   })
 
@@ -1081,8 +1092,8 @@ describe('submit', () => {
     renderNewTask()
     await pillReady()
     await waitFor(() => expect(followupsToggle()).toBeNull())
-    // The neighbouring toggles are untouched — the gate owns exactly one control.
-    expect(document.querySelector('[data-slot="autonomous-toggle"]')).not.toBeNull()
+    // The composer no longer exposes a per-task autonomy control.
+    expect(document.querySelector('[data-slot="autonomous-toggle"]')).toBeNull()
   })
 
   it('posts generateFollowups:false from an inbox-less server', async () => {
@@ -1264,6 +1275,7 @@ describe('bookmarklet auto-start', () => {
       {
         task: 'hello',
         steps: [{ id: 'task', name: 'deploy', skill: 'deploy', prompt: '{{task}}' }],
+        autonomous: true,
       },
     ])
   })
@@ -1294,6 +1306,7 @@ describe('bookmarklet auto-start', () => {
       {
         task: 'hello',
         steps: [{ id: 'task', name: 'deploy', skill: 'deploy', prompt: '{{task}}' }],
+        autonomous: true,
         runner: 'claude',
       },
     ])
@@ -1308,7 +1321,11 @@ describe('bookmarklet auto-start', () => {
     // The body pin: Step 1.1's skill-source shape, nothing else on the wire — no model, no
     // runner, no variants (legacy's bookmarklet start never sent them either).
     expect(runsPosted().map((r) => r.body)).toEqual([
-      { task: 'hello', steps: [{ id: 'task', name: 'deploy', skill: 'deploy', prompt: '{{task}}' }] },
+      {
+        task: 'hello',
+        steps: [{ id: 'task', name: 'deploy', skill: 'deploy', prompt: '{{task}}' }],
+        autonomous: true,
+      },
     ])
     expect(location()).toBe('/tasks/r1')
     // Unattended starts do not rewrite the sticky lastTask (legacy parity).
@@ -1332,6 +1349,7 @@ describe('bookmarklet auto-start', () => {
       {
         task: 'hello',
         steps: [{ id: 'task', name: 'deploy', skill: 'deploy', prompt: '{{task}}' }],
+        autonomous: true,
         runner: 'codex',
       },
     ])
@@ -1349,18 +1367,26 @@ describe('bookmarklet auto-start', () => {
     expect(screen.getByRole('link', { name: 'Configure providers' })).toBeTruthy()
   })
 
-  it('ref only (no skill) + valid key → quick-task, exactly like legacy', async () => {
+  it('ref only (no skill) + valid key → Baseline plain task', async () => {
     serve()
     renderNewTask('/new?ref=hello&auto=1&key=k-real')
     await waitFor(() => expect(screen.queryByTestId('elsewhere')).not.toBeNull())
-    expect(runsPosted().map((r) => r.body)).toEqual([{ task: 'hello', workflow: 'quick-task' }])
+    expect(runsPosted().map((r) => r.body)).toEqual([{
+      task: 'hello',
+      steps: [{ id: 'task', name: 'Baseline', prompt: '{{task}}' }],
+      autonomous: true,
+    }])
   })
 
   it('the legacy `task` alias for ref still auto-starts', async () => {
     serve()
     renderNewTask('/new?task=hello&auto=1&key=k-real')
     await waitFor(() => expect(screen.queryByTestId('elsewhere')).not.toBeNull())
-    expect(runsPosted().map((r) => r.body)).toEqual([{ task: 'hello', workflow: 'quick-task' }])
+    expect(runsPosted().map((r) => r.body)).toEqual([{
+      task: 'hello',
+      steps: [{ id: 'task', name: 'Baseline', prompt: '{{task}}' }],
+      autonomous: true,
+    }])
   })
 
   it('an unknown skill with a valid key STILL starts (legacy never validated it client-side)', async () => {
@@ -1370,7 +1396,11 @@ describe('bookmarklet auto-start', () => {
     renderNewTask('/new?skill=ghost&ref=hello&auto=1&key=k-real')
     await waitFor(() => expect(screen.queryByTestId('elsewhere')).not.toBeNull())
     expect(runsPosted().map((r) => r.body)).toEqual([
-      { task: 'hello', steps: [{ id: 'task', name: 'ghost', skill: 'ghost', prompt: '{{task}}' }] },
+      {
+        task: 'hello',
+        steps: [{ id: 'task', name: 'ghost', skill: 'ghost', prompt: '{{task}}' }],
+        autonomous: true,
+      },
     ])
   })
 
@@ -1421,13 +1451,13 @@ describe('bookmarklet auto-start', () => {
     expect(keyFetched()).toBe(false)
   })
 
-  it('an unknown skill on the prefill path → honest toast + the legacy quick-task embedding', async () => {
+  it('an unknown skill on the prefill path → honest toast + the Baseline embedding', async () => {
     serve()
     renderNewTask('/new?skill=ghost&ref=hello')
-    await screen.findByText('Unknown skill "ghost" — prefilled for quick-task; review and press Start')
-    // Legacy initFromQuery verbatim: the intent goes into the text, quick-task resolves it.
+    await screen.findByText('Unknown skill "ghost" — prefilled with Baseline; review and press Start')
+    // The intent stays in the text, and Baseline runs it without a selected skill.
     expect(textarea().value).toBe('Use the "ghost" skill on: hello')
-    await pillReady('quick-task')
+    await pillReady('Baseline')
     expect(runsPosted()).toHaveLength(0)
   })
 

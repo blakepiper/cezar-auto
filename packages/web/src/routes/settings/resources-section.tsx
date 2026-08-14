@@ -230,7 +230,7 @@ function ResourcesForm({ config }: { config: WorkspaceConfigResponse }) {
   const composerDefaults = config.composerDefaults ?? {
     autonomous: null,
     worktree: null,
-    inheritedAutonomous: 'source-dependent' as const,
+    inheritedAutonomous: true,
     inheritedWorktree: true,
   }
   const saveComposerDefault = (

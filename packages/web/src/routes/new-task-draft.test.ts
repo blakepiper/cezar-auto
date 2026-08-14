@@ -15,35 +15,26 @@ describe('resolveComposerRunMode', () => {
   const base = {
     hasGit: true,
     variants: 1,
-    explicitAutonomous: null,
     explicitWorktree: null,
     configuredAutonomous: 'source-dependent' as const,
     configuredWorktree: true,
-    source: 'workflow' as const,
   }
 
-  it('combines source fallback, configured policy, and explicit values', () => {
-    expect(resolveComposerRunMode(base)).toEqual({ autonomous: false, worktree: true })
-    expect(resolveComposerRunMode({ ...base, source: 'skill' })).toEqual({ autonomous: true, worktree: true })
+  it('combines configured autonomy policy with explicit Worktree values', () => {
+    expect(resolveComposerRunMode(base)).toEqual({ autonomous: true, worktree: true })
     expect(resolveComposerRunMode({
       ...base,
-      configuredAutonomous: true,
+      configuredAutonomous: false,
       configuredWorktree: false,
-      explicitAutonomous: false,
       explicitWorktree: true,
     })).toEqual({ autonomous: false, worktree: true })
   })
 
-  it('applies an interactive recommendation only to untouched fields', () => {
+  it('applies an interactive recommendation only to the worktree field', () => {
     expect(resolveComposerRunMode({ ...base, interactive: true })).toEqual({
-      autonomous: false,
+      autonomous: true,
       worktree: false,
     })
-    expect(resolveComposerRunMode({
-      ...base,
-      interactive: true,
-      explicitAutonomous: true,
-    })).toEqual({ autonomous: true, worktree: false })
   })
 
   it('keeps parallel and no-git constraints authoritative', () => {
@@ -67,7 +58,6 @@ describe('the new-task draft store', () => {
       model: null,
       variants: 1,
       worktree: null,
-      autonomous: null,
       generateFollowups: null,
     })
   })
@@ -81,7 +71,6 @@ describe('the new-task draft store', () => {
       model: 'gpt-5-codex',
       variants: 2,
       worktree: false,
-      autonomous: null,
       generateFollowups: false,
     })
     const first = readDraft()
@@ -101,7 +90,6 @@ describe('the new-task draft store', () => {
       model: 'opus',
       variants: 3,
       worktree: null,
-      autonomous: null,
       generateFollowups: true,
     })
     clearDraftText()
@@ -113,7 +101,6 @@ describe('the new-task draft store', () => {
       model: 'opus',
       variants: 3,
       worktree: null,
-      autonomous: null,
       generateFollowups: true,
     })
   })
@@ -127,7 +114,6 @@ describe('the new-task draft store', () => {
       model: 'sonnet',
       variants: 2,
       worktree: false,
-      autonomous: null,
       generateFollowups: false,
     })
     // A fresh page has no in-memory cache but keeps localStorage: resetDraft removes storage, so
@@ -137,7 +123,6 @@ describe('the new-task draft store', () => {
       text: 'do not lose me',
       variants: 2,
       worktree: false,
-      autonomous: null,
       generateFollowups: false,
     })
   })
@@ -154,7 +139,6 @@ describe('the new-task draft store', () => {
       model: null,
       variants: 1,
       worktree: null,
-      autonomous: null,
       generateFollowups: null,
     })
 
@@ -168,7 +152,6 @@ describe('the new-task draft store', () => {
       model: null,
       variants: 1,
       worktree: null,
-      autonomous: null,
       generateFollowups: null,
     })
   })

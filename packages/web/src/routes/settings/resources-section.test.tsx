@@ -36,7 +36,7 @@ function serve(
     composerDefaults: {
       autonomous: null,
       worktree: null,
-      inheritedAutonomous: 'source-dependent',
+      inheritedAutonomous: true,
       inheritedWorktree: true,
     },
     resources: {
@@ -261,7 +261,7 @@ describe('Global settings → Resources', () => {
     const autonomous = await screen.findByLabelText('Autonomous by default')
     const worktree = screen.getByLabelText('Use a worktree by default')
     expect((autonomous as HTMLSelectElement).value).toBe('inherit')
-    expect(screen.getByText(/Source-dependent — skills on, workflows off/)).toBeTruthy()
+    expect(screen.getAllByText('Inherited: On')).toHaveLength(2)
 
     fireEvent.change(autonomous, { target: { value: 'off' } })
     await waitFor(() => expect(puts().at(-1)?.body).toEqual({

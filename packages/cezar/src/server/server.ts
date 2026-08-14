@@ -27,6 +27,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { z } from 'zod';
 import {
   setWorkspaceUiStateInputSchema,
+  taskSourceSchema,
   type GroupResponse,
   type GroupVariant,
   type PickVariantResponse,
@@ -663,23 +664,10 @@ const appearanceSchema = z.object({
 
 const uiStateSchema = z
   .object({
-    lastTask: z
-      .object({
-        source: z.enum(['workflow', 'skill']),
-        ref: z.string().min(1).max(200),
-      })
-      .optional(),
+    lastTask: taskSourceSchema.optional(),
     // Composer picker recency (newest first, capped) + the remembered worktree
     // choice for single-skill runs. Additive prefs, like the rest of ui-state.
-    recentSources: z
-      .array(
-        z.object({
-          source: z.enum(['workflow', 'skill']),
-          ref: z.string().min(1).max(200),
-        }),
-      )
-      .max(50)
-      .optional(),
+    recentSources: z.array(taskSourceSchema).max(50).optional(),
     lastWorktree: z.boolean().optional(),
     lastAutonomous: z.boolean().optional(),
     lastGenerateFollowups: z.boolean().optional(),
@@ -2775,7 +2763,7 @@ export function createApp(deps: ServerDeps) {
           ? false
           : process.env.CEZ_AUTONOMOUS_DEFAULT === '1'
             ? true
-            : 'source-dependent',
+            : true,
       inheritedWorktree: effectiveComposerDefault(
         undefined,
         process.env.CEZ_WORKTREE_DEFAULT,

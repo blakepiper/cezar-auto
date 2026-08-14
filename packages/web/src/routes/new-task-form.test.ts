@@ -154,7 +154,7 @@ describe('model option resolution', () => {
   })
 })
 
-describe('resolveSource (candidate validation + cold quick-task default)', () => {
+describe('resolveSource (candidate validation + cold baseline default)', () => {
   const skills = [skill('om-fix'), skill('deploy', 'global')]
   const workflows = [workflow('quick-task'), workflow('fix-and-verify')]
 
@@ -168,21 +168,38 @@ describe('resolveSource (candidate validation + cold quick-task default)', () =>
     ).toEqual({ source: 'workflow', ref: 'fix-and-verify' })
   })
 
-  it('defaults cold to quick-task, then first skill when quick-task is unavailable', () => {
-    expect(resolveSource([], skills, workflows)).toEqual({ source: 'workflow', ref: 'quick-task' })
-    expect(resolveSource([], skills, [workflow('fix-and-verify')])).toEqual({ source: 'skill', ref: 'om-fix' })
-    expect(resolveSource([], [], workflows)).toEqual({ source: 'workflow', ref: 'quick-task' })
-    expect(resolveSource([], [], [])).toEqual({ source: 'workflow', ref: 'quick-task' })
+  it('defaults cold to the plain-task baseline regardless of the catalogs', () => {
+    expect(resolveSource([], skills, workflows)).toEqual({ source: 'baseline' })
+    expect(resolveSource([], skills, [workflow('fix-and-verify')])).toEqual({ source: 'baseline' })
+    expect(resolveSource([], [], workflows)).toEqual({ source: 'baseline' })
+    expect(resolveSource([], [], [])).toEqual({ source: 'baseline' })
   })
 
   it('sourceExists checks the matching catalog only', () => {
     // A workflow name does not validate a skill ref, and vice versa.
     expect(sourceExists({ source: 'skill', ref: 'quick-task' }, skills, workflows)).toBe(false)
     expect(sourceExists({ source: 'workflow', ref: 'om-fix' }, skills, workflows)).toBe(false)
+    expect(sourceExists({ source: 'baseline' }, [], [])).toBe(true)
   })
 })
 
 describe('buildCreateRunBody — the exact POST /api/v1/runs payloads legacy sends', () => {
+  it('baseline source → a plain one-step inline chain with no skill', () => {
+    const body = buildCreateRunBody({
+      task: 'do the thing',
+      source: { source: 'baseline' },
+      model: '',
+      runner: 'claude',
+      defaultRunner: 'claude',
+      variants: 1,
+      images: [],
+    })
+    expect(JSON.parse(JSON.stringify(body))).toEqual({
+      task: 'do the thing',
+      steps: [{ id: 'task', name: 'Baseline', prompt: '{{task}}' }],
+    })
+  })
+
   it('workflow source → { workflow, task }, defaults omitted', () => {
     const body = buildCreateRunBody({
       task: 'do the thing',
@@ -319,7 +336,7 @@ describe('startedRunPath (legacy handleStarted: select the first run)', () => {
 })
 
 describe('pushRecentSource (recency, #picker)', () => {
-  const s = (ref: string, source: TaskSource['source'] = 'skill'): TaskSource => ({ source, ref })
+  const s = (ref: string, source: 'skill' | 'workflow' = 'skill'): TaskSource => ({ source, ref })
 
   it('prepends newest and dedups the same source+ref', () => {
     const after = pushRecentSource([s('a'), s('b')], s('b'))

@@ -26,9 +26,6 @@ export interface NewTaskDraft {
   /** Worktree opt-out (#worktree-toggle): false runs in the repo working tree. null → the
    *  remembered `lastWorktree` / default (isolated worktree). */
   worktree: boolean | null
-  /** Autonomous (#autonomous): true never pauses for the user. null → remembered
-   *  `lastAutonomous` / default (off). */
-  autonomous: boolean | null
   /** Follow-up generation is default-on. null → remembered value / on. */
   generateFollowups: boolean | null
 }
@@ -36,34 +33,29 @@ export interface NewTaskDraft {
 export interface ComposerRunModeInput {
   hasGit: boolean
   variants: number
-  explicitAutonomous: boolean | null
   explicitWorktree: boolean | null
   interactive?: boolean
   configuredAutonomous: boolean | 'source-dependent'
   configuredWorktree: boolean
-  source: TaskSource['source']
 }
 
 /** Resolve run-mode values once, in precedence order: hard constraints, explicit draft
- * choices, an interactive-skill recommendation, then the configured (or source-dependent)
- * default. Parallel variants are the only hard Worktree constraint; ordinary workflows can
- * run in place when the user or workspace policy opts out. `configuredAutonomous`/
- * `configuredWorktree` carry the workspace run defaults; `'source-dependent'` autonomy means
- * skills default on and everything else off. */
+ * choices, an interactive-skill worktree recommendation, then configured defaults. Autonomous
+ * runs are on when the environment has no explicit policy. */
 export function resolveComposerRunMode(input: ComposerRunModeInput): {
   autonomous: boolean
   worktree: boolean
 } {
   const autonomousFallback = input.configuredAutonomous === 'source-dependent'
-    ? input.source === 'skill'
+    ? true
     : input.configuredAutonomous
-  const recommended = input.interactive === true ? false : undefined
-  const autonomous = input.explicitAutonomous ?? recommended ?? autonomousFallback
+  const worktreeRecommendation = input.interactive === true ? false : undefined
+  const autonomous = autonomousFallback
   const worktree = !input.hasGit
     ? false
     : input.variants > 1
       ? true
-      : (input.explicitWorktree ?? recommended ?? input.configuredWorktree)
+      : (input.explicitWorktree ?? worktreeRecommendation ?? input.configuredWorktree)
   return { autonomous, worktree }
 }
 
@@ -96,7 +88,6 @@ const EMPTY: NewTaskDraft = {
   model: null,
   variants: 1,
   worktree: null,
-  autonomous: null,
   generateFollowups: null,
 }
 
@@ -129,18 +120,17 @@ function normalize(raw: unknown): NewTaskDraft {
     model: typeof obj.model === 'string' ? obj.model : null,
     variants: obj.variants === 2 || obj.variants === 3 ? obj.variants : 1,
     worktree: typeof obj.worktree === 'boolean' ? obj.worktree : null,
-    autonomous: typeof obj.autonomous === 'boolean' ? obj.autonomous : null,
     generateFollowups:
       typeof obj.generateFollowups === 'boolean' ? obj.generateFollowups : null,
   }
 }
 
 function isSource(raw: unknown): raw is TaskSource {
+  const source = raw && typeof raw === 'object' ? (raw as { source?: unknown }).source : undefined
   return (
-    !!raw &&
-    typeof raw === 'object' &&
-    ((raw as TaskSource).source === 'skill' || (raw as TaskSource).source === 'workflow') &&
-    typeof (raw as TaskSource).ref === 'string'
+    source === 'baseline'
+    || ((source === 'skill' || source === 'workflow')
+      && typeof (raw as { ref?: unknown }).ref === 'string')
   )
 }
 

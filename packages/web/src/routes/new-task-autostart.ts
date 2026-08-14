@@ -1,6 +1,6 @@
 import type { CreateRunInput, RunnerSelection } from '@open-mercato/cezar-api-client'
 
-import { buildCreateRunBody, type TaskSource } from './new-task-form'
+import { BASELINE_SOURCE, buildCreateRunBody, type TaskSource } from './new-task-form'
 import type { NewTaskParams } from './new-task-params'
 
 /**
@@ -8,7 +8,7 @@ import type { NewTaskParams } from './new-task-params'
  * protected by BACKWARD_COMPATIBILITY.md: `/new?skill=&ref=&auto=1&key=` from a saved
  * bookmarklet must behave EXACTLY as it did on the legacy page.
  *
- * Legacy semantics, verified against `web/app.js`:
+ * Link semantics, retaining the same guarded auto-start behavior as the legacy page:
  *  - no `ref` (nor the `task` alias) → nothing to do beyond a plain composer;
  *  - `auto=1` + the correct launch key → POST /api/runs immediately, unattended;
  *  - `auto=1` + a wrong/missing key (or an unreachable key endpoint) → BLOCKED: prefill
@@ -19,21 +19,18 @@ import type { NewTaskParams } from './new-task-params'
  *    unknown skill here would break saved bookmarklets that legacy honored.
  */
 
-/** The exact unattended-start body. Legacy sent the ref as the literal step prompt with
- *  `task: ref` alongside; Step 1.1's `buildCreateRunBody` sends `prompt: '{{task}}'` with the
- *  same `task` — identical after template substitution, and pinned that way so the bookmarklet
- *  path and the composer submit can never drift apart. The runner stays absent when the
- *  resolved connected runner is the server default; a connected fallback is explicit so the
- *  server cannot resolve the request back to a disconnected default. */
+/** The unattended-start body. The runner stays absent when the resolved connected runner is the
+ *  server default; a connected fallback is explicit so the server cannot resolve the request
+ *  back to a disconnected default. */
 export function bookmarkletRunBody(
   params: NewTaskParams,
   runner: RunnerSelection,
   defaultRunner: RunnerSelection,
 ): CreateRunInput {
   const source: TaskSource =
-    params.skill !== ''
-      ? { source: 'skill', ref: params.skill }
-      : { source: 'workflow', ref: 'quick-task' }
+      params.skill !== ''
+        ? { source: 'skill', ref: params.skill }
+      : BASELINE_SOURCE
   return buildCreateRunBody({
     task: params.ref,
     source,
@@ -42,9 +39,9 @@ export function bookmarkletRunBody(
     defaultRunner,
     variants: 1,
     images: [],
-    // Absent for every saved bookmarklet (legacy links have no `todo`), so this stays off the
-    // wire exactly as before — but if an in-app link ever arms auto, the inbox bookkeeping
-    // (#374) rides along here too rather than being silently lost on this path.
+    autonomous: true,
+    // Absent for every saved bookmarklet (legacy links have no `todo`); if an in-app link ever
+    // arms auto, the inbox bookkeeping (#374) rides along here rather than being lost.
     todoId: params.todo,
   })
 }
@@ -70,7 +67,7 @@ export function deepLinkToast(
   }
   if (unknownSkill !== '') {
     return {
-      message: `Unknown skill "${unknownSkill}" — prefilled for quick-task; review and press Start`,
+      message: `Unknown skill "${unknownSkill}" — prefilled with Baseline; review and press Start`,
       tone: 'danger',
     }
   }

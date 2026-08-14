@@ -88,6 +88,7 @@ import {
 } from './new-task-draft'
 import {
   buildCreateRunBody,
+  BASELINE_SOURCE,
   modelsForRunner,
   modelCatalogStatus,
   pushRecentSource,
@@ -277,24 +278,21 @@ export function NewTaskRoute() {
   const worktreeToggleShown = hasGit
   const worktreeForced = variants > 1
 
-  // Autonomous (#autonomous): the run never pauses for the user. An explicit toggle this session
-  // wins; then an interactive skill recommends handing the ball back; otherwise the configured
-  // workspace default applies ('source-dependent' → skills default ON, everything else OFF).
+  // Autonomous runs are now the composer default. The backend/config escape hatch remains for
+  // existing environments that explicitly set an off policy, but there is no per-task toggle.
   const runMode = resolveComposerRunMode({
     hasGit,
     variants,
-    explicitAutonomous: draft.autonomous,
     explicitWorktree: draft.worktree,
     interactive: selectedSkill?.interactive,
     configuredAutonomous:
       workspaceConfig.data?.composerDefaults?.autonomous
       ?? workspaceConfig.data?.composerDefaults?.inheritedAutonomous
-      ?? 'source-dependent',
+      ?? true,
     configuredWorktree:
       workspaceConfig.data?.composerDefaults?.worktree
       ?? workspaceConfig.data?.composerDefaults?.inheritedWorktree
       ?? true,
-    source: source.source,
   })
   const worktreeOn = runMode.worktree
   const autonomousOn = runMode.autonomous
@@ -381,7 +379,7 @@ export function NewTaskRoute() {
   }, [config.isPending, defaultRunner, providers.isPending, providersReady, runner]) // eslint-disable-line react-hooks/exhaustive-deps
   // The prefill toast waits for the pickers' data: whether the skill exists decides the
   // wording, and the unknown-skill case rewrites the draft the way legacy did (intent into
-  // the text, quick-task as the source — its planner resolves skills from prose).
+  // the text, baseline as the source — the task runs with no selected skill).
   useEffect(() => {
     if (notice === null || !sourcesReady) return
     setNotice(null)
@@ -392,9 +390,7 @@ export function NewTaskRoute() {
     if (unknownSkill !== '') {
       update({
         text: unknownSkillPrefillText(deepLink.skill, deepLink.ref),
-        ...(workflowList.some((w) => w.name === 'quick-task')
-          ? { source: { source: 'workflow', ref: 'quick-task' } as TaskSource }
-          : {}),
+        source: BASELINE_SOURCE,
       })
     }
     const { message, tone } = deepLinkToast(notice, unknownSkill)
@@ -621,13 +617,9 @@ export function NewTaskRoute() {
                   onChange={(on) => update({ worktree: on })}
                 />
               ) : null}
-              <AutonomousToggle
-                on={autonomousOn}
-                onChange={(on) => update({ autonomous: on })}
-              />
-              {selectedSkill?.interactive && (draft.autonomous === null || draft.worktree === null) ? (
+              {selectedSkill?.interactive && draft.worktree === null ? (
                 <p className="basis-full text-xs text-muted-foreground" data-slot="interactive-skill-hint">
-                  This skill recommends an interactive run in the current checkout. You can change either setting.
+                  This skill recommends running in the current checkout. You can change the Worktree setting.
                 </p>
               ) : null}
               {followupsToggleShown ? (
@@ -702,44 +694,6 @@ function WorktreeToggle({
         <SquareIcon aria-hidden="true" className="size-3 shrink-0 text-soft-foreground" />
       )}
       Worktree
-    </button>
-  )
-}
-
-/** Autonomous toggle (#autonomous): checked = the run never pauses for you, auto-continuing
- *  until the agent is done. No "needs you" is ever raised. */
-function AutonomousToggle({
-  on,
-  disabled,
-  onChange,
-}: {
-  on: boolean
-  disabled?: boolean
-  onChange: (on: boolean) => void
-}) {
-  return (
-    <button
-      type="button"
-      role="checkbox"
-      aria-checked={on}
-      disabled={disabled}
-      data-slot="autonomous-toggle"
-      onClick={() => onChange(!on)}
-      title={
-        disabled
-          ? 'Plan-first runs are interactive — autonomous is unavailable'
-          : on
-            ? 'Autonomous — the agent runs to completion without pausing for you'
-            : 'Runs interactively — check to let the agent finish without pausing for you'
-      }
-      className={cn(chipClass, on && !disabled && 'border-primary/60 text-foreground')}
-    >
-      {on ? (
-        <CheckIcon aria-hidden="true" className="size-3 shrink-0 text-primary" />
-      ) : (
-        <SquareIcon aria-hidden="true" className="size-3 shrink-0 text-soft-foreground" />
-      )}
-      Autonomous
     </button>
   )
 }
@@ -911,9 +865,9 @@ function ProjectPill({
 }
 
 /**
- * The workflow/skill picker (#385's searchable cmdk dropdown, #519's tier ordering): ONE pill
- * for both kinds of source. Groups render Most used (skills picked before, frequency
- * descending), Project skills (bold), Workflows, then Global.
+ * The task-source picker (#385's searchable cmdk dropdown, #519's tier ordering): ONE pill
+ * for the plain-task baseline, skills, and workflows. Groups render Baseline, Most used
+ * (skills picked before, frequency descending), Project skills (bold), Workflows, then Global.
  */
 function SourcePill({
   source,
@@ -939,8 +893,13 @@ function SourcePill({
   const matched = searchSkills(skills, search, skillUsage)
   const { mostUsed, project, global } = partitionSkillsForDisplay(matched, skillUsage)
   const matchedWorkflows = searchWorkflows(workflows, search)
+  const baselineMatches = 'baseline no skill plain task'.includes(search.trim().toLowerCase())
   const nothingMatches =
-    mostUsed.length === 0 && project.length === 0 && global.length === 0 && matchedWorkflows.length === 0
+    !baselineMatches &&
+    mostUsed.length === 0 &&
+    project.length === 0 &&
+    global.length === 0 &&
+    matchedWorkflows.length === 0
   const pick = (next: TaskSource) => {
     onPick(next)
     setOpen(false)
@@ -1002,7 +961,7 @@ function SourcePill({
           <button
             type="button"
             data-slot="source-pill"
-            aria-label="Choose a skill or workflow"
+            aria-label="Choose a skill, workflow, or baseline"
             disabled={!ready}
             className={cn(chipClass, 'border-foreground/60 font-mono text-[11.5px] font-semibold text-foreground')}
           >
@@ -1011,7 +970,9 @@ function SourcePill({
             ) : (
               <WorkflowIcon aria-hidden="true" className="size-3 shrink-0 text-violet" />
             )}
-            <span className="max-w-44 truncate">{ready ? source.ref : '…'}</span>
+            <span className="max-w-44 truncate">
+              {ready ? source.source === 'baseline' ? 'Baseline' : source.ref : '…'}
+            </span>
             {chevron}
           </button>
         </PopoverTrigger>
@@ -1035,6 +996,24 @@ function SourcePill({
               className="max-h-[min(18rem,calc(var(--radix-popover-content-available-height)-3rem))]"
             >
               {nothingMatches ? <CommandEmpty>Nothing matches.</CommandEmpty> : null}
+              {baselineMatches ? (
+                <CommandGroup heading="Task mode">
+                  <CommandItem
+                    value="baseline no skill plain task"
+                    data-slot="source-option"
+                    data-source-kind="baseline"
+                    onSelect={() => pick(BASELINE_SOURCE)}
+                  >
+                    <span className="shrink-0 font-mono text-xs">Baseline</span>
+                    <span className="min-w-0 flex-1 truncate text-xs text-soft-foreground">
+                      Run the task as written, without a skill or workflow
+                    </span>
+                    {source.source === 'baseline' ? (
+                      <CheckIcon aria-hidden="true" className="ml-auto size-3.5 shrink-0 text-primary" />
+                    ) : null}
+                  </CommandItem>
+                </CommandGroup>
+              ) : null}
               {/* Most used leads (#519), then Project skills before Global — the closer a
                   skill lives to the repo, the more likely it's the one being picked. */}
               {mostUsed.length > 0 ? (

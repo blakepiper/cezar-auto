@@ -25,6 +25,7 @@ describe('bookmarkletRunBody', () => {
       {
         task: 'https://github.com/o/r/pull/1',
         steps: [{ id: 'task', name: 'om-fix', skill: 'om-fix', prompt: '{{task}}' }],
+        autonomous: true,
         model: undefined,
         runner: undefined,
         variants: undefined,
@@ -32,11 +33,12 @@ describe('bookmarkletRunBody', () => {
       },
     ],
     [
-      'no skill → quick-task (legacy verbatim)',
+      'no skill → Baseline plain task',
       params({ ref: 'do the thing' }),
       {
         task: 'do the thing',
-        workflow: 'quick-task',
+        steps: [{ id: 'task', name: 'Baseline', prompt: '{{task}}' }],
+        autonomous: true,
         model: undefined,
         runner: undefined,
         variants: undefined,
@@ -54,14 +56,19 @@ describe('bookmarkletRunBody', () => {
     const sent = JSON.parse(
       JSON.stringify(bookmarkletRunBody(params({ ref: 'x' }), 'claude', 'claude')),
     ) as object
-    expect(Object.keys(sent).sort()).toEqual(['task', 'workflow'])
+    expect(Object.keys(sent).sort()).toEqual(['autonomous', 'steps', 'task'])
   })
 
   it('sends an explicit connected fallback when the server default is disconnected', () => {
     const sent = JSON.parse(
       JSON.stringify(bookmarkletRunBody(params({ ref: 'x' }), 'codex', 'claude')),
     ) as CreateRunInput
-    expect(sent).toEqual({ task: 'x', workflow: 'quick-task', runner: 'codex' })
+    expect(sent).toEqual({
+      task: 'x',
+      steps: [{ id: 'task', name: 'Baseline', prompt: '{{task}}' }],
+      autonomous: true,
+      runner: 'codex',
+    })
   })
 })
 
@@ -80,7 +87,7 @@ describe('deepLinkToast', () => {
   })
   it('an unknown skill on a plain prefill is called out honestly', () => {
     expect(deepLinkToast({ kind: 'prefill' }, 'ghost')).toEqual({
-      message: 'Unknown skill "ghost" — prefilled for quick-task; review and press Start',
+      message: 'Unknown skill "ghost" — prefilled with Baseline; review and press Start',
       tone: 'danger',
     })
   })

@@ -23,7 +23,7 @@ function serve(
     composerDefaults: {
       autonomous: null,
       worktree: null,
-      inheritedAutonomous: 'source-dependent',
+      inheritedAutonomous: true,
       inheritedWorktree: false,
     },
     resources: {

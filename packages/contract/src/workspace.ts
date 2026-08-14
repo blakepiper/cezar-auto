@@ -36,7 +36,7 @@ export const workspaceConfigResponseSchema = z.object({
   composerDefaults: z.object({
     autonomous: z.boolean().nullable(),
     worktree: z.boolean().nullable(),
-    /** `'source-dependent'` when no `CEZ_AUTONOMOUS_DEFAULT` pins it either way. */
+    /** The environment-derived fallback when no workspace override is stored. */
     inheritedAutonomous: z.union([z.boolean(), z.literal('source-dependent')]),
     inheritedWorktree: z.boolean(),
   }),
@@ -155,6 +155,12 @@ const taskTableUiStateSchema = z.looseObject({
   expandedColumns: z.record(z.string(), z.boolean()).optional(),
 });
 
+/** The composer source: a named workflow/skill, or the plain-task baseline. */
+export const taskSourceSchema = z.union([
+  z.object({ source: z.literal('baseline') }),
+  z.object({ source: z.enum(['workflow', 'skill']), ref: z.string().min(1).max(200) }),
+]);
+
 /**
  * `GET/PUT /api/v1/ui-state` — the per-repo GUI prefs in `.ai/cezar/ui-state.json`.
  *
@@ -170,14 +176,10 @@ const taskTableUiStateSchema = z.looseObject({
  * listed it, which made it wider than the route.
  */
 export const uiStateSchema = z.looseObject({
-  lastTask: z
-    .object({ source: z.enum(['workflow', 'skill']), ref: z.string() })
-    .optional(),
+  lastTask: taskSourceSchema.optional(),
   /** Most-recently-run sources, newest first (deduped, capped). Feeds the composer picker's
    *  recency sort. */
-  recentSources: z
-    .array(z.object({ source: z.enum(['workflow', 'skill']), ref: z.string() }))
-    .optional(),
+  recentSources: z.array(taskSourceSchema).optional(),
   /** The last worktree choice for a single-skill run. Absent → the default (isolated worktree). */
   lastWorktree: z.boolean().optional(),
   /** The last autonomous choice — remembered like `lastWorktree`. Absent → off. */

@@ -82,7 +82,7 @@ function serve({
     composerDefaults: {
       autonomous: null,
       worktree: null,
-      inheritedAutonomous: 'source-dependent',
+      inheritedAutonomous: true,
       inheritedWorktree: true,
     },
     resources: {
@@ -195,7 +195,7 @@ describe('Agent accounts → Defaults for new projects', () => {
             composerDefaults: {
               autonomous: null,
               worktree: null,
-              inheritedAutonomous: 'source-dependent',
+              inheritedAutonomous: true,
               inheritedWorktree: true,
             },
             resources: {

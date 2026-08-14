@@ -96,7 +96,7 @@ describe('the workspace settings API (step 2.7)', () => {
       composerDefaults: {
         autonomous: null,
         worktree: null,
-        inheritedAutonomous: 'source-dependent',
+        inheritedAutonomous: true,
         inheritedWorktree: true,
       },
       resources: {
@@ -147,7 +147,7 @@ describe('the workspace settings API (step 2.7)', () => {
       composerDefaults: {
         autonomous: null,
         worktree: null,
-        inheritedAutonomous: 'source-dependent',
+        inheritedAutonomous: true,
         inheritedWorktree: true,
       },
       resources: {
