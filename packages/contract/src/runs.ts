@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { runnerSchema } from './health.ts';
+import { runnerSchema, runnerSelectionSchema } from './health.ts';
 import { referenceStatusSchema } from './github.ts';
 // The chain shapes belong to the workflows family; the run record embeds one, so this file
 // consumes them rather than redeclaring. One-way on purpose — see the header of `./workflows.ts`.
@@ -81,6 +81,7 @@ export const stepStateSchema = z.object({
   sessionId: z.string().optional(),
   /** Backend that owns `sessionId`; absent on records written before backend affinity. */
   backend: runnerSchema.optional(),
+  requestedRunner: runnerSelectionSchema.optional(),
   /** Agent account (spec 2026-07-29-agent-profiles) that owns `sessionId` — `default`, or a
    *  stored profile id. The two are a PAIR: a session id only resolves inside the config dir
    *  that created it, so resume and Continue read this rather than the project's current
@@ -150,6 +151,7 @@ export const runRecordSchema = z.object({
   /** Normalized provider/model identity used for attribution and reproducible replay. */
   modelIdentity: z.string().optional(),
   runner: runnerSchema.optional(),
+  requestedRunner: runnerSelectionSchema.optional(),
   /** The composer's per-task agent account (spec 2026-07-29-agent-profiles), applying to steps
    *  on `runner`. Absent = the run follows the project's own selection. */
   agentProfile: z.string().optional(),

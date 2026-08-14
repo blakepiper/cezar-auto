@@ -56,6 +56,9 @@ const storedRunnerSchema = z
   .enum([...RUNNER_IDS, 'claude-cli'])
   .transform((id) => (id === 'claude-cli' ? ('claude' as const) : id));
 
+/** Authored selection is additive; concrete affinity above must never be `auto`. */
+const runnerSelectionSchema = z.union([z.enum(RUNNER_IDS), z.literal('auto')]);
+
 const stepStateSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -78,6 +81,8 @@ const stepStateSchema = z.object({
   /** Backend that owns `sessionId`. Optional so pre-affinity runs.json files still parse;
    *  `storedRunnerSchema` so a legacy `claude-cli` folds to `claude` instead of failing (#547). */
   backend: storedRunnerSchema.optional(),
+  /** The authored policy for this step; `backend` is the resolved executable runner. */
+  requestedRunner: runnerSelectionSchema.optional(),
   /** Agent profile (account) this step actually spawned under — `default`, or a stored profile
    *  id (spec 2026-07-29-agent-profiles). Recorded rather than re-derived because a session id
    *  only means something inside the config dir that created it: `sessionId` and `profileId` are
@@ -149,6 +154,8 @@ export const runRecordSchema = z.object({
   /** Agent backend this run used — drives "open in CLI" resume command. `storedRunnerSchema`
    *  so a legacy `claude-cli` record folds to `claude` instead of failing the whole index (#547). */
   runner: storedRunnerSchema.optional(),
+  /** The task's authored selection. `runner` remains the resolved concrete backend. */
+  requestedRunner: runnerSelectionSchema.optional(),
   /** Per-task agent-account override from the composer (spec 2026-07-29-agent-profiles), applying
    *  to steps that run on `runner`. Steps on a DIFFERENT backend still resolve from the project's
    *  own selection — an override for Claude says nothing about which Codex account a mixed
