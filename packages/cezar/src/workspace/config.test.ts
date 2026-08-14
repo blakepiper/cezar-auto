@@ -69,6 +69,15 @@ describe('workspace config', () => {
     expect(config.browseRoot).toBe('~/');
     expect(config.projectsDir).toBe('~/cezar/projects');
     expect(config.resources).toEqual({ maxParallel: 2, maxMonitoringSessions: 2, monitoringWakeIntervalMinutes: 5, autoResumeOnUsageLimit: true, memoryLimitMb: null, worktreeRetentionDefault: 10 });
+    expect(config.quotaRouting).toMatchObject({
+      enabled: false,
+      providerOrder: ['claude', 'codex'],
+      unknownUsagePolicy: 'allow',
+      providers: {
+        claude: { stopNewWorkAtPercent: 90, longWindowStopAtPercent: 95, resumeBelowPercent: 80, maxConcurrent: 1 },
+        codex: { stopNewWorkAtPercent: 90, longWindowStopAtPercent: 90, resumeBelowPercent: 80, maxConcurrent: 1 },
+      },
+    });
     expect(config.composerDefaults).toEqual({});
     expect(config.projects).toEqual([]);
     expect(warn).not.toHaveBeenCalled();
@@ -137,6 +146,39 @@ describe('workspace config', () => {
   it('degrades invalid composer defaults per key and preserves unknown nested keys', async () => {
     write({ composerDefaults: { autonomous: 'yes', worktree: false, future: 42 } });
     expect((await loadWorkspaceConfig()).composerDefaults).toEqual({ worktree: false, future: 42 });
+  });
+
+  it('keeps quota routing opt-in, salvages invalid values, and preserves future policy keys', async () => {
+    write({
+      quotaRouting: {
+        enabled: true,
+        providerOrder: ['codex', 'claude'],
+        unknownUsagePolicy: 'deny',
+        providers: {
+          claude: { stopNewWorkAtPercent: 'too high', futureProviderKey: true },
+          codex: { maxConcurrent: 3 },
+        },
+        futurePolicyKey: 'kept',
+      },
+    });
+    const config = await loadWorkspaceConfig();
+    expect(config.quotaRouting).toMatchObject({
+      enabled: true,
+      providerOrder: ['codex', 'claude'],
+      unknownUsagePolicy: 'deny',
+      providers: {
+        claude: { stopNewWorkAtPercent: 90 },
+        codex: { maxConcurrent: 3 },
+      },
+      futurePolicyKey: 'kept',
+    });
+    await mergeWriteWorkspaceConfig((next) => {
+      next.resources.maxParallel = 3;
+    });
+    const raw = JSON.parse(readFileSync(workspaceConfigPath(), 'utf8')) as Record<string, unknown>;
+    const routing = raw.quotaRouting as Record<string, unknown>;
+    expect(routing.futurePolicyKey).toBe('kept');
+    expect((routing.providers as Record<string, Record<string, unknown>>).claude?.futureProviderKey).toBe(true);
   });
 
   it('degrades a bad stored preference per-key and preserves raw absence on unrelated writes', async () => {

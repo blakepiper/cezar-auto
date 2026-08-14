@@ -4,6 +4,10 @@ import { z } from 'zod';
 export const runnerSchema = z.enum(['claude', 'codex', 'opencode', 'pi']);
 export type Runner = z.infer<typeof runnerSchema>;
 
+/** An authored runner choice. `auto` is a selection policy, never a concrete backend. */
+export const runnerSelectionSchema = z.union([runnerSchema, z.literal('auto')]);
+export type RunnerSelection = z.infer<typeof runnerSelectionSchema>;
+
 /** Git facts about the project root, or `null` when it is not a repository. */
 export const repoInfoSchema = z.object({
   root: z.string(),

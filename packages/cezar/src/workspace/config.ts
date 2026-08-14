@@ -76,6 +76,56 @@ export type WorkspaceProject = z.infer<typeof workspaceProjectSchema>;
  */
 export const DEFAULT_MONITORING_WAKE_MINUTES = 5;
 
+/** The quota router is deliberately opt-in until its execution lifecycle lands. */
+const DEFAULT_QUOTA_PROVIDER_ORDER = ['claude', 'codex'] as const;
+
+const quotaProviderPolicySchema = z
+  .object({
+    enabled: z.boolean().default(true).catch(true),
+    stopNewWorkAtPercent: z.number().min(0).max(100).default(90).catch(90),
+    longWindowStopAtPercent: z.number().min(0).max(100).default(95).catch(95),
+    resumeBelowPercent: z.number().min(0).max(100).default(80).catch(80),
+    maxConcurrent: z.number().int().min(1).max(16).default(1).catch(1),
+  })
+  .passthrough();
+
+const quotaProviderOrderSchema = z
+  .array(z.enum(['claude', 'codex']))
+  .length(2)
+  .refine((providers) => new Set(providers).size === providers.length)
+  .default(() => [...DEFAULT_QUOTA_PROVIDER_ORDER])
+  .catch(() => [...DEFAULT_QUOTA_PROVIDER_ORDER]);
+
+/**
+ * Per-machine policy for the future quota-aware `auto` selection. This is
+ * parsed and preserved before the runner consumes it so users can configure
+ * the policy once; with `enabled: false` (the shipped default) it has no
+ * execution effect.
+ */
+const quotaRoutingSchema = z
+  .object({
+    enabled: z.boolean().default(false).catch(false),
+    providerOrder: quotaProviderOrderSchema,
+    refreshIntervalSeconds: z.number().int().min(5).max(3600).default(60).catch(60),
+    cacheTtlSeconds: z.number().int().min(1).max(3600).default(30).catch(30),
+    requestTimeoutSeconds: z.number().int().min(1).max(60).default(8).catch(8),
+    unknownUsagePolicy: z.enum(['allow', 'deny']).default('allow').catch('allow'),
+    providers: z
+      .object({
+        claude: quotaProviderPolicySchema.prefault(() => ({})).catch(() => quotaProviderPolicySchema.parse({})),
+        codex: quotaProviderPolicySchema
+          .prefault(() => ({ longWindowStopAtPercent: 90 }))
+          .catch(() => quotaProviderPolicySchema.parse({ longWindowStopAtPercent: 90 })),
+      })
+      .passthrough()
+      .prefault(() => ({ claude: {}, codex: { longWindowStopAtPercent: 90 } }))
+      .catch(() => ({
+        claude: quotaProviderPolicySchema.parse({}),
+        codex: quotaProviderPolicySchema.parse({ longWindowStopAtPercent: 90 }),
+      })),
+  })
+  .passthrough();
+
 const resourcesSchema = z
   .object({
     /** Workspace-wide parallel-task cap (moved from per-repo config.json). */
@@ -201,6 +251,8 @@ const workspaceConfigSchema = z
     disabledProviders: disabledProvidersSchema,
     /** Machine-wide agent/model defaults for repos that set none of their own. */
     agentDefaults: agentDefaultsSchema.default(() => ({})).catch(() => ({})),
+    /** Opt-in policy for choosing Claude/Codex automatically by subscription usage. */
+    quotaRouting: quotaRoutingSchema.prefault(() => ({})).catch(() => quotaRoutingSchema.parse({})),
     /** Per-entry salvage: a corrupt entry is dropped, the rest of the registry
      *  survives (a whole-array `.catch([])` would evict every project over one
      *  bad row). */
