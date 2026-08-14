@@ -8,6 +8,7 @@ import {
   spawnCodexAppServer,
   type CodexAppServerMessage,
 } from '../codex-app-server-transport.ts';
+import { resolveProfileEnvForRoot } from '../../workspace/agent-profiles.ts';
 import type { ProviderUsageAdapter, ProviderUsageReading } from './usage-service.ts';
 import type { ProviderAccountRef } from './types.ts';
 
@@ -34,6 +35,15 @@ const rateLimitsSchema = z.object({
 const codexResponseSchema = z.union([z.object({ rateLimits: rateLimitsSchema }), rateLimitsSchema]);
 
 export type ReadCodexRateLimits = (account: ProviderAccountRef) => Promise<unknown>;
+
+export interface InstalledCodexUsageAdapterOptions {
+  /** Any accessible project root; account identity comes from CODEX_HOME. */
+  cwd: string;
+  bin?: string;
+  timeoutMs?: number;
+  /** Fixture seam; production uses the app-server request below. */
+  readRateLimits?: ReadCodexRateLimits;
+}
 
 export interface CodexRateLimitReadOptions {
   cwd: string;
@@ -134,4 +144,20 @@ export class CodexUsageAdapter implements ProviderUsageAdapter {
       return { health: 'unknown', source: 'codex-app-server', windows: [], error: { code: 'request_failed', message: 'Codex usage could not be refreshed.' } };
     }
   }
+}
+
+/** Build the production Codex adapter with the selected profile's CODEX_HOME. */
+export function createInstalledCodexUsageAdapter(
+  options: InstalledCodexUsageAdapterOptions,
+): CodexUsageAdapter {
+  if (options.readRateLimits) return new CodexUsageAdapter(options.readRateLimits);
+  return new CodexUsageAdapter(async (account) => {
+    const { env } = await resolveProfileEnvForRoot(undefined, 'codex', account.profileId);
+    return readCodexRateLimitsFromAppServer({
+      cwd: options.cwd,
+      bin: options.bin,
+      timeoutMs: options.timeoutMs,
+      env,
+    });
+  });
 }

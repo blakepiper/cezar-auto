@@ -53,7 +53,7 @@ describe('provider action gating', () => {
     title: 'Task',
     workflow: 'quick-task',
     task: input.task,
-    runner: input.runner,
+    ...(input.runner === 'auto' ? {} : { runner: input.runner }),
     steps: [],
   });
 
@@ -278,7 +278,7 @@ describe('the gate verifies before it refuses', () => {
       title: 'Task',
       workflow: 'quick-task',
       task: input.task,
-      runner: input.runner,
+      ...(input.runner === 'auto' ? {} : { runner: input.runner }),
       steps: [],
     }));
   });

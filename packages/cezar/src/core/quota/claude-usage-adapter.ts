@@ -1,4 +1,9 @@
 import { z } from 'zod';
+import {
+  createClaudeAccessTokenResolver,
+  createInstalledClaudeCredentialReader,
+  type ReadClaudeOAuthCredential,
+} from './claude-credentials.ts';
 import type { ProviderUsageAdapter, ProviderUsageReading } from './usage-service.ts';
 import type { ProviderAccountRef } from './types.ts';
 
@@ -20,6 +25,12 @@ export interface ClaudeUsageAdapterOptions {
   resolveAccessToken: ResolveClaudeAccessToken;
   fetch?: typeof fetch;
   timeoutMs?: number;
+}
+
+/** Options for the installed-Claude factory. Test seams stop before a token is exposed. */
+export interface InstalledClaudeUsageAdapterOptions extends Omit<ClaudeUsageAdapterOptions, 'resolveAccessToken'> {
+  readCredential?: ReadClaudeOAuthCredential;
+  now?: () => number;
 }
 
 function window(kind: 'short' | 'long', value: z.infer<typeof usageWindowSchema>) {
@@ -87,4 +98,22 @@ export class ClaudeUsageAdapter implements ProviderUsageAdapter {
       clearTimeout(timeout);
     }
   }
+}
+
+/**
+ * Production adapter for the locally authenticated Claude Code installation.
+ * The credential object is consumed immediately by the token resolver and is
+ * never visible to the usage service, coordinator, or API layer.
+ */
+export function createInstalledClaudeUsageAdapter(
+  options: InstalledClaudeUsageAdapterOptions = {},
+): ClaudeUsageAdapter {
+  const { readCredential, now, ...adapterOptions } = options;
+  return new ClaudeUsageAdapter({
+    ...adapterOptions,
+    resolveAccessToken: createClaudeAccessTokenResolver(
+      readCredential ?? createInstalledClaudeCredentialReader(),
+      now,
+    ),
+  });
 }

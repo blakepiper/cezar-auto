@@ -59,6 +59,12 @@ const storedRunnerSchema = z
 /** Authored selection is additive; concrete affinity above must never be `auto`. */
 const runnerSelectionSchema = z.union([z.enum(RUNNER_IDS), z.literal('auto')]);
 
+const providerQuotaBlockedReasonSchema = z.object({
+  type: z.literal('provider_quota'),
+  providers: z.array(z.enum(['claude', 'codex'])),
+  retryAt: z.string().optional().catch(undefined),
+});
+
 const stepStateSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -206,6 +212,8 @@ export const runRecordSchema = z.object({
   /** Consecutive automatic resumes since the last human turn — the safety cap's counter.
    *  Persisted so a restart cannot reset a loop back to zero. */
   autoResumeAttempts: z.number().int().min(0).optional().catch(undefined),
+  /** A queued auto-routed run that is waiting for provider capacity/quota. */
+  blockedReason: providerQuotaBlockedReasonSchema.optional(),
   createdAt: z.string(),
   startedAt: z.string().optional(),
   finishedAt: z.string().optional(),
@@ -607,6 +615,7 @@ export class RunStore extends EventEmitter {
     if (normalized.status && ['running', 'waiting', 'queued'].includes(normalized.status)) {
       normalized.autoResumeAt = undefined;
     }
+    if (normalized.status && normalized.status !== 'queued') normalized.blockedReason = undefined;
     Object.assign(run, this.redactPatch(normalized));
     this.touch(run);
     return run;

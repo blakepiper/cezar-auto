@@ -393,12 +393,13 @@ function DefaultsForNewProjects({ profiles }: { profiles: AgentProfilesResponse 
         providerStatus={providerStatus}
         disabled={save.isPending}
         accountDisabled={select.isPending}
+        includeAuto={config.data.quotaRouting?.enabled === true}
         onPick={(picked, account, hasAccountChoice) => {
           if (picked !== runner) save.mutate({ agentDefaults: { runner: picked } })
           // `projectId: null` targets the machine-wide default rather than one repo. Only for an
           // agent that HAS a choice of accounts: a single-login agent must not write a selection,
           // or the store fills up with rows that say nothing.
-          if (hasAccountChoice) {
+          if (hasAccountChoice && picked !== 'auto') {
             select.mutate(
               { projectId: null, provider: picked, profileId: account },
               { onError: (error: Error) => toast(error.message, { tone: 'danger' }) },

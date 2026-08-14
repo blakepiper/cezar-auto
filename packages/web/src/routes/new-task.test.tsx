@@ -438,6 +438,22 @@ describe('picker data flows', () => {
     expect(options.some((option) => option.textContent?.includes('opencode'))).toBe(false)
   })
 
+  it('offers Auto only when quota-aware routing is enabled', async () => {
+    serve({
+      health: HEALTH_ALL,
+      providerStatus: PROVIDERS_MULTI,
+      workspaceConfig: {
+        ...WORKSPACE_CONFIG,
+        quotaRouting: { enabled: true, providerOrder: ['claude', 'codex'], unknownUsagePolicy: 'allow' },
+      },
+    })
+    renderNewTask()
+    await pillReady()
+
+    fireEvent.pointerDown(document.querySelector('[data-slot="runner-pill"]') as HTMLElement)
+    expect((await screen.findAllByRole('menuitemradio')).some((option) => option.textContent?.includes('Auto'))).toBe(true)
+  })
+
   it('excludes connected but disabled providers while retaining an enabled runner choice', async () => {
     serve({
       health: HEALTH_ALL,

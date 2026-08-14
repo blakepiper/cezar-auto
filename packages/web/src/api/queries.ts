@@ -49,6 +49,7 @@ import {
   getUiState,
   getWorkflows,
   getWorkspaceConfig,
+  getWorkspaceUsage,
   getWorkspaceUiState,
   getSkillsUpdate,
   checkSkillsUpdate,
@@ -225,6 +226,7 @@ export const workspaceQueryKeys = {
   /** `~/.cezar/config.json`'s settings slice via `GET/PUT /api/workspace/config` (step 2.7):
    *  the global Resources knobs and the checkout root. */
   config: ['workspace', 'config'] as const,
+  usage: ['workspace', 'usage'] as const,
   /** Agent accounts via `GET /api/v1/workspace/agent-profiles` (spec 2026-07-29-agent-profiles).
    *  Workspace-led like the registry: an account describes the machine, not a repo. */
   agentProfiles: ['workspace', 'agent-profiles'] as const,
@@ -1095,6 +1097,15 @@ export function useWorkspaceConfig() {
   return useQuery({
     queryKey: workspaceQueryKeys.config,
     queryFn: ({ signal }) => getWorkspaceConfig({ signal }),
+  })
+}
+
+/** Quota telemetry is fetched on demand by the settings surface; routing refreshes its own cache. */
+export function useWorkspaceUsage(enabled = true) {
+  return useQuery({
+    queryKey: workspaceQueryKeys.usage,
+    queryFn: ({ signal }) => getWorkspaceUsage({ signal }),
+    enabled,
   })
 }
 

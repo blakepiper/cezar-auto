@@ -6,6 +6,7 @@ import { pruneOrphans } from '../git-worktree.ts';
 import { reclaimWorktrees } from '../runs/retention.ts';
 import { RunStore } from '../runs/store.ts';
 import { WorkspaceSemaphore } from '../workspace/semaphore.ts';
+import type { QuotaCoordinator } from '../core/quota/coordinator.ts';
 import { RunManager } from '../workflows/run.ts';
 import { ensureLaunchKey } from './launch-key.ts';
 import { getRepoInfo } from './git.ts';
@@ -63,6 +64,8 @@ export interface ProjectContextDeps {
    *  When omitted, the map still shares one private instance across the
    *  managers it builds (workspace defaults, never refreshed). */
   semaphore?: WorkspaceSemaphore;
+  /** Process-wide provider reservations; never create one per project. */
+  quotaCoordinator?: QuotaCoordinator;
 }
 
 export type ProjectContextFailure = 'unknown-project' | 'missing-root';
@@ -213,7 +216,10 @@ export class ProjectContexts {
       ?? AutomationStore.open(dataDir);
     reconcileAutomationReceipts(automationStore, store);
     this.notifyStoreCreated(store);
-    const manager = new RunManager(store, project.root, { semaphore: this.semaphore });
+    const manager = new RunManager(store, project.root, {
+      semaphore: this.semaphore,
+      quotaCoordinator: this.deps.quotaCoordinator,
+    });
     try {
       const launchKey = ensureLaunchKey(dataDir);
       // Startup reconcile (spec 006) + count-based retention (#483) — the same

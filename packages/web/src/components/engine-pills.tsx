@@ -1,5 +1,5 @@
 import { useConfig, useProviderStatus, useRunnerModels } from '@/api/queries'
-import type { CreateRunInput, Runner } from '@open-mercato/cezar-api-client'
+import type { CreateRunInput, Runner, RunnerSelection } from '@open-mercato/cezar-api-client'
 import { PickerPill, RunnerPill } from '@/components/picker-pill'
 import { usableRunners } from '@/lib/provider-status'
 import {
@@ -27,7 +27,7 @@ import {
 
 /** What the user actually touched. `null` on either field means "never touched". */
 export interface EnginePick {
-  runner: Runner | null
+  runner: RunnerSelection | null
   model: string | null
 }
 
@@ -40,7 +40,7 @@ export interface ResolvedEngine {
   /** The backends this host offers — the runner pill renders only when there is a choice. */
   runners: readonly Runner[]
   /** What the active project's server context would pick from its authoritative config. */
-  defaultRunner?: Runner
+  defaultRunner?: RunnerSelection
   /** True only after provider status confirms at least one connected backend. */
   canRun: boolean
   /** Native agent settings are authoritative; model overrides must be omitted. */
@@ -56,7 +56,8 @@ export function useResolvedEngine(pick: EnginePick): ResolvedEngine {
   // `/api/health` is deliberately boot-project-only. Runner policy is per project, so every
   // scoped start surface must read the active project's `/api/config` instead (#699).
   const defaultRunner = config.data?.defaultRunner
-  const runner = resolveRunner(pick.runner, runners, defaultRunner ?? runners[0] ?? 'claude')
+  const preferredRunner = defaultRunner === 'auto' ? runners[0] ?? 'claude' : defaultRunner ?? runners[0] ?? 'claude'
+  const runner = resolveRunner(pick.runner === 'auto' ? null : pick.runner, runners, preferredRunner)
   // Resolved first: each runner has its own host catalog (#794), so the fetch follows the pick.
   const catalog = useRunnerModels(runner)
   const modelsLocked = config.data?.modelsLocked === true
@@ -92,7 +93,9 @@ export function useResolvedEngine(pick: EnginePick): ResolvedEngine {
  */
 export function engineBody(resolved: ResolvedEngine): Pick<CreateRunInput, 'runner' | 'model'> {
   return {
-    runner: runnerOverride(resolved.runner, resolved.defaultRunner, resolved.runnerExplicit),
+    runner: !resolved.runnerExplicit && resolved.defaultRunner === 'auto'
+      ? 'auto'
+      : runnerOverride(resolved.runner, resolved.defaultRunner, resolved.runnerExplicit),
     model: resolved.modelsLocked ? undefined : resolved.model || undefined,
   }
 }
@@ -121,7 +124,9 @@ export function EnginePills({
           disabled={unavailable}
           // Switching backend drops the model pick: the presets are per-runner, so a kept
           // model would be a preset the new runner does not have (composer rule).
-          onPick={(next) => onChange({ runner: next, model: null })}
+          onPick={(next) => {
+            if (next !== 'auto') onChange({ runner: next, model: null })
+          }}
         />
       ) : null}
       <PickerPill

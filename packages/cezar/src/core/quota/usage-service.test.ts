@@ -64,6 +64,23 @@ describe('ProviderUsageService', () => {
     service.dispose();
   });
 
+  it('sanitizes restored cache entries before exposing them', async () => {
+    const token = 'restored-secret-value';
+    const store: ProviderUsageSnapshotStore = {
+      load: vi.fn().mockResolvedValue([{
+        ...account, health: 'available', source: token, fetchedAt: '2026-08-14T00:00:00.000Z', stale: false,
+        windows: [], error: { code: 'provider_error', message: token },
+      }]),
+      save: vi.fn().mockResolvedValue(undefined),
+    };
+    const service = new ProviderUsageService({ adapters: [adapter()], cacheTtlMs: 30_000, store });
+    await service.restore();
+    const snapshot = service.get(account);
+    expect(snapshot).toMatchObject({ source: 'claude', stale: true, error: { code: 'provider_error' } });
+    expect(JSON.stringify(snapshot)).not.toContain(token);
+    service.dispose();
+  });
+
   it('refreshes at the earliest provider reset and stops doing so after disposal', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-14T00:00:00.000Z'));
@@ -91,5 +108,43 @@ describe('ProviderUsageService', () => {
     expect(JSON.stringify(snapshot)).not.toContain('top-secret-value');
     service.dispose();
   });
-});
 
+  it('sanitizes malformed adapter values before they reach the cache or API layer', async () => {
+    const token = 'bearer-secret-value';
+    const service = new ProviderUsageService({
+      adapters: [adapter(vi.fn().mockResolvedValue({
+        health: 'available',
+        source: token,
+        windows: [
+          { kind: 'short', usedPercent: 101, resetsAt: token },
+          { kind: 'long', usedPercent: 42, resetsAt: '2026-08-14T01:00:00.000Z', hardLimitReached: true },
+        ],
+        error: { code: token, message: token },
+      }))],
+      cacheTtlMs: 30_000,
+    });
+
+    const snapshot = await service.refresh(account);
+    expect(snapshot).toEqual(expect.objectContaining({
+      health: 'available', source: 'claude',
+      windows: [{ kind: 'long', usedPercent: 42, resetsAt: '2026-08-14T01:00:00.000Z', hardLimitReached: true }],
+      error: { code: 'provider_error', message: 'Provider usage could not be refreshed.' },
+    }));
+    expect(JSON.stringify(snapshot)).not.toContain(token);
+    service.dispose();
+  });
+
+  it('refreshes cached accounts periodically and stops after disposal', async () => {
+    vi.useFakeTimers();
+    const read = vi.fn().mockResolvedValue({ health: 'available' as const, source: 'fake', windows: [] });
+    const service = new ProviderUsageService({
+      adapters: [adapter(read)], cacheTtlMs: 30_000, refreshIntervalMs: 1_000,
+    });
+    await service.refresh(account);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(read).toHaveBeenCalledTimes(2);
+    service.dispose();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+});

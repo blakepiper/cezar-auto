@@ -3,6 +3,7 @@ import type {
   ImageInput,
   PlanResponse,
   Runner,
+  RunnerSelection,
   WorkflowStepDef,
 } from '@open-mercato/cezar-api-client'
 
@@ -91,10 +92,10 @@ export function buildPlannedRunBody(opts: {
   model: string
   /** Native coding-agent settings stay visible, but a locked model is never a request override. */
   modelsLocked?: boolean
-  runner: Runner
+  runner: RunnerSelection
   /** True when the draft contains a sticky/user runner choice rather than an untouched default. */
   runnerExplicit?: boolean
-  defaultRunner?: Runner
+  defaultRunner?: RunnerSelection
   variants: number
   images: readonly ImageInput[]
   generateFollowups?: boolean

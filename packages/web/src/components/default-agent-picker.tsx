@@ -1,4 +1,4 @@
-import type { AgentProfile, ProviderStatusResponse, Runner } from '@open-mercato/cezar-api-client'
+import type { AgentProfile, ProviderStatusResponse, Runner, RunnerSelection } from '@open-mercato/cezar-api-client'
 import { cn } from '@/lib/utils'
 import { providerStatusFor } from '@/lib/provider-status'
 import { RUNNERS } from '@/routes/new-task-form'
@@ -60,10 +60,11 @@ export function DefaultAgentPicker({
   providerStatus,
   disabled = false,
   accountDisabled = false,
+  includeAuto = false,
   onPick,
 }: {
   rows: readonly AgentPickerRow[]
-  runner: Runner
+  runner: RunnerSelection
   /** The account currently in force for a runner, or null for the discovered one. */
   accountFor: (runner: Runner) => string | null
   providerStatus: {
@@ -74,9 +75,14 @@ export function DefaultAgentPicker({
   disabled?: boolean
   /** Account rows only: the write target is not known yet (e.g. the project registry is loading). */
   accountDisabled?: boolean
-  onPick: (runner: Runner, account: string | null, hasAccountChoice: boolean) => void
+  includeAuto?: boolean
+  onPick: (runner: RunnerSelection, account: string | null, hasAccountChoice: boolean) => void
 }) {
   const stacked = hasAgentAccounts(rows)
+  const displayRows: Array<AgentPickerRow | { runner: 'auto'; account: null; label: string; desc: string; missing: boolean }> = [
+    ...(includeAuto ? [{ runner: 'auto' as const, account: null, label: 'Auto', desc: 'Quota-aware routing', missing: false }] : []),
+    ...rows,
+  ]
   return (
     <div
       role="radiogroup"
@@ -89,8 +95,8 @@ export function DefaultAgentPicker({
         stacked ? 'flex max-w-md flex-col' : 'inline-flex w-fit',
       )}
     >
-      {rows.map((row) => {
-        const provider = providerStatusFor(providerStatus.data, row.runner.id)
+      {displayRows.map((row) => {
+        const provider = row.runner === 'auto' ? undefined : providerStatusFor(providerStatus.data, row.runner.id)
         const providerConnected =
           !providerStatus.isPending &&
           !providerStatus.isError &&
@@ -105,21 +111,22 @@ export function DefaultAgentPicker({
             : providerConnected
               ? undefined
               : 'Connect this provider before selecting it.'
-        const hasAccountChoice = rows.filter((other) => other.runner.id === row.runner.id).length > 1
-        const checked = row.runner.id === runner && row.account === accountFor(row.runner.id)
+        const hasAccountChoice = row.runner !== 'auto' && rows.filter((other) => other.runner.id === row.runner.id).length > 1
+        const rowRunner = row.runner === 'auto' ? 'auto' : row.runner.id
+        const checked = rowRunner === runner && (row.runner === 'auto' || row.account === accountFor(row.runner.id))
         return (
           <button
-            key={`${row.runner.id}:${row.account ?? ''}`}
+            key={`${rowRunner}:${row.account ?? ''}`}
             type="button"
             role="radio"
             aria-checked={checked}
-            data-value={row.runner.id}
+            data-value={rowRunner}
             data-account={row.account ?? ''}
             title={providerReason ?? row.desc}
             disabled={
-              disabled || !providerConnected || (hasAccountChoice && accountDisabled)
+              disabled || (row.runner !== 'auto' && !providerConnected) || (hasAccountChoice && accountDisabled)
             }
-            onClick={() => onPick(row.runner.id, row.account, hasAccountChoice)}
+            onClick={() => onPick(rowRunner, row.account, hasAccountChoice)}
             className={cn(
               'rounded-sm px-3 py-1.5 text-left font-mono text-[13px] font-medium transition-colors disabled:opacity-50',
               checked ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground',
@@ -129,7 +136,7 @@ export function DefaultAgentPicker({
             {stacked ? (
               <span
                 data-slot={row.missing ? 'agents-account-missing' : 'agents-account-dir'}
-                data-runner={row.runner.id}
+                data-runner={rowRunner}
                 className="ml-2 font-sans text-[11.5px] text-soft-foreground"
               >
                 {row.desc}

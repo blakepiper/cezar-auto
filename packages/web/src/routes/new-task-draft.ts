@@ -1,4 +1,4 @@
-import type { Runner } from '@open-mercato/cezar-api-client'
+import type { RunnerSelection } from '@open-mercato/cezar-api-client'
 import type { TaskSource } from './new-task-form'
 
 /**
@@ -16,7 +16,7 @@ import type { TaskSource } from './new-task-form'
 export interface NewTaskDraft {
   text: string
   source: TaskSource | null
-  runner: Runner | null
+  runner: RunnerSelection | null
   /** Per-task agent account (spec 2026-07-29-agent-profiles). `null` = follow the project's own
    *  selection, which is what every draft that never touched the control means. Sticky like the
    *  other pickers — which login a repo's work runs under is a way of working, not a whim. */
@@ -131,7 +131,7 @@ function normalize(raw: unknown): NewTaskDraft {
   return {
     text: typeof obj.text === 'string' ? obj.text : '',
     source: isSource(obj.source) ? obj.source : null,
-    runner: typeof obj.runner === 'string' ? (obj.runner as Runner) : null,
+    runner: typeof obj.runner === 'string' ? (obj.runner as RunnerSelection) : null,
     agentProfile: typeof obj.agentProfile === 'string' ? obj.agentProfile : null,
     model: typeof obj.model === 'string' ? obj.model : null,
     variants: obj.variants === 2 || obj.variants === 3 ? obj.variants : 1,
@@ -193,7 +193,12 @@ export function clearDraftText(projectId: string | null = null): void {
 export function resetDraft(): void {
   cache.clear()
   try {
-    for (const key of Object.keys(localStorage)) {
+    const keys: string[] = []
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index)
+      if (key !== null) keys.push(key)
+    }
+    for (const key of keys) {
       if (key === STORAGE_KEY || key.startsWith(`${STORAGE_KEY}:`)) localStorage.removeItem(key)
     }
   } catch {

@@ -10,6 +10,11 @@
 // and handles SIGTERM itself, exiting 143 rather than dying from the signal.
 import { createInterface } from 'node:readline';
 
+if (process.argv.includes('--version')) {
+  process.stdout.write('mock-codex/0.0.0\n');
+  process.exit(0);
+}
+
 const emit = (obj) => process.stdout.write(`${JSON.stringify(obj)}\n`);
 const rl = createInterface({ input: process.stdin });
 

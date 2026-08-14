@@ -12,9 +12,10 @@ import {
   useRepo,
   useRunnerModelCatalogs,
   useSelectAgentProfile,
+  useWorkspaceConfig,
 } from '@/api/queries'
 import { useProjectScope } from '@/api/project-scope-context'
-import type { ConfigResponse, Runner, SetConfigInput } from '@open-mercato/cezar-api-client'
+import type { ConfigResponse, Runner, RunnerSelection, SetConfigInput } from '@open-mercato/cezar-api-client'
 import { CenteredState } from '@/components/centered-state'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
@@ -49,6 +50,7 @@ const SYSTEM_PROMPT_MAX = 20_000
 
 export function AgentsSection() {
   const config = useConfig()
+  const workspaceConfig = useWorkspaceConfig()
   // One row per runner here, so every runner's own host catalog is needed at once (#794) —
   // unlike the composer, which only ever renders the runner the user picked.
   const catalogs = useRunnerModelCatalogs()
@@ -72,17 +74,19 @@ export function AgentsSection() {
       />
     )
   }
-  return <AgentsForm config={config.data} catalogs={catalogs} providerStatus={providerStatus} />
+  return <AgentsForm config={config.data} catalogs={catalogs} providerStatus={providerStatus} quotaEnabled={workspaceConfig.data?.quotaRouting?.enabled === true} />
 }
 
 function AgentsForm({
   config,
   catalogs,
   providerStatus,
+  quotaEnabled,
 }: {
   config: ConfigResponse
   catalogs: ReturnType<typeof useRunnerModelCatalogs>
   providerStatus: ReturnType<typeof useProviderStatus>
+  quotaEnabled: boolean
 }) {
   const repo = useRepo()
   const queryClient = useQueryClient()
@@ -127,6 +131,7 @@ function AgentsForm({
         defaultRunner={config.defaultRunner}
         providerStatus={providerStatus}
         saving={save.isPending}
+        includeAuto={quotaEnabled}
         onPick={(runner) => save.mutate({ defaultRunner: runner })}
       />
 
@@ -347,12 +352,14 @@ function DefaultAgentField({
   defaultRunner,
   providerStatus,
   saving,
+  includeAuto,
   onPick,
 }: {
-  defaultRunner: Runner
+  defaultRunner: RunnerSelection
   providerStatus: ReturnType<typeof useProviderStatus>
   saving: boolean
-  onPick: (runner: Runner) => void
+  includeAuto: boolean
+  onPick: (runner: RunnerSelection) => void
 }) {
   const profiles = useAgentProfiles()
   const projects = useProjects()
@@ -384,6 +391,7 @@ function DefaultAgentField({
       <DefaultAgentPicker
         rows={rows}
         runner={defaultRunner}
+        includeAuto={includeAuto}
         accountFor={(id) => selection?.[id] ?? machine?.[id] ?? null}
         providerStatus={providerStatus}
         disabled={saving}
@@ -394,7 +402,7 @@ function DefaultAgentField({
           if (runner !== defaultRunner) onPick(runner)
           // Only when this agent HAS a choice of accounts: a single-login agent must not write a
           // selection, or the store would fill up with rows that say nothing.
-          if (hasAccountChoice) {
+          if (hasAccountChoice && runner !== 'auto') {
             select.mutate(
               { projectId, provider: runner, profileId: account },
               { onError: (error: Error) => toast(error.message, { tone: 'danger' }) },
@@ -402,7 +410,7 @@ function DefaultAgentField({
           }
         }}
       />
-      {!providerStatus.isPending &&
+      {defaultRunner !== 'auto' && !providerStatus.isPending &&
       !providerStatus.isError &&
       providerStatusFor(providerStatus.data, defaultRunner)?.enabled === false ? (
         <p className="text-[13px] text-muted-foreground">

@@ -84,7 +84,7 @@ export const healthResponseSchema = z.object({
   repoRoot: z.string(),
   repo: repoInfoSchema.nullable(),
   checks: z.array(backendCheckSchema),
-  defaultRunner: runnerSchema,
+  defaultRunner: runnerSelectionSchema,
   forge: forgeInfoSchema.nullable(),
   capabilities: capabilitiesSchema,
   // Always sent: `workspaceSummary()` returns both unconditionally, and an unreadable workspace

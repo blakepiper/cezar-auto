@@ -68,7 +68,7 @@ describe('RunManager agent-profile resolution', () => {
       title: 't',
       workflow: 'quick-task',
       task: over.task,
-      runner: over.runner,
+      ...(over.runner === 'auto' ? {} : { runner: over.runner }),
       agentProfile: over.agentProfile,
       steps: [{ id: 'work', name: 'work', kind: 'agent' }],
     });

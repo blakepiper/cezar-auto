@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { RUNNER_IDS } from '../core/agent-runner.ts';
+import { type RunnerSelection } from '../core/runner-selection.ts';
 
 /**
  * A workflow is an ordered list of steps. Two step kinds:
@@ -27,7 +28,7 @@ export const workflowStepSchema = z
      *  data loss. It also gates the persisted `workflowDef` (`runs/store.ts`), but nothing
      *  has ever been able to write the legacy id THERE either, because this same enum was
      *  the only way in: there is no legacy shape to keep parseable. */
-    runner: z.enum(RUNNER_IDS).optional(),
+    runner: z.union([z.enum(RUNNER_IDS), z.literal('auto')]).optional(),
     allowedTools: z.array(z.string()).optional(),
     bashAllowlist: z.array(z.string()).optional(),
     // check step
@@ -59,7 +60,7 @@ export const workflowFileSchema = z
     message: 'a workflow lists either "steps" or "skills", not both',
   });
 
-export type WorkflowStepDef = z.infer<typeof workflowStepSchema>;
+export type WorkflowStepDef = z.infer<typeof workflowStepSchema> & { runner?: RunnerSelection };
 export type WorkflowDoc = z.infer<typeof workflowFileSchema>;
 
 /**

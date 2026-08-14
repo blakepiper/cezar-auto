@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { type Runner, runnerSchema } from './health.ts';
+import { type Runner, runnerSchema, runnerSelectionSchema } from './health.ts';
 
 /**
  * The workspace + settings families: `~/.cezar/config.json`'s settings slice, both GUI-pref bags
@@ -49,6 +49,12 @@ export const workspaceConfigResponseSchema = z.object({
     memoryLimitMb: z.number().nullable(),
     worktreeRetentionDefault: z.number(),
   }),
+  /** Absent means quota-aware routing is disabled (the zero-config default). */
+  quotaRouting: z.object({
+    enabled: z.literal(true),
+    providerOrder: z.tuple([z.enum(['claude', 'codex']), z.enum(['claude', 'codex'])]),
+    unknownUsagePolicy: z.enum(['allow', 'deny']),
+  }).optional(),
   /**
    * What a repo that has set none of its own runs (spec 2026-07-29-agent-profiles).
    *
@@ -58,7 +64,7 @@ export const workspaceConfigResponseSchema = z.object({
    * the repo's own `.ai/cezar/config.json` is silent — a repo that chose is never overruled.
    */
   agentDefaults: z.object({
-    runner: runnerSchema.optional(),
+    runner: runnerSelectionSchema.optional(),
     models: z.object({
       claude: z.string().optional(),
       codex: z.string().optional(),
@@ -90,7 +96,7 @@ export const setWorkspaceConfigInputSchema = z.object({
    *  absent key cannot say in a partial patch. */
   agentDefaults: z
     .object({
-      runner: runnerSchema.nullable().optional(),
+      runner: runnerSelectionSchema.nullable().optional(),
       models: z
         .object({
           claude: z.string().trim().min(1).max(200).nullable().optional(),
@@ -101,6 +107,7 @@ export const setWorkspaceConfigInputSchema = z.object({
         .optional(),
     })
     .optional(),
+  quotaRouting: z.object({ enabled: z.boolean().optional() }).optional(),
   resources: z
     .object({
       maxParallel: z.number().int().min(1).max(16).optional(),
@@ -113,6 +120,23 @@ export const setWorkspaceConfigInputSchema = z.object({
     .optional(),
 });
 export type SetWorkspaceConfigInput = z.infer<typeof setWorkspaceConfigInputSchema>;
+
+/** Sanitized provider quota telemetry; credentials and raw adapter payloads never cross HTTP. */
+export const providerUsageSnapshotSchema = z.object({
+  provider: z.enum(['claude', 'codex']),
+  profileId: z.string(),
+  health: z.enum(['available', 'soft_exhausted', 'hard_exhausted', 'auth_error', 'unavailable', 'unknown']),
+  fetchedAt: z.string(),
+  source: z.string(),
+  stale: z.boolean(),
+  windows: z.array(z.object({
+    kind: z.enum(['short', 'long', 'model', 'unknown']), usedPercent: z.number().nullable(),
+    resetsAt: z.string().optional(), hardLimitReached: z.boolean().optional(),
+  })),
+  error: z.object({ code: z.string(), message: z.string() }).optional(),
+});
+export const workspaceUsageResponseSchema = z.object({ providers: z.array(providerUsageSnapshotSchema) });
+export type WorkspaceUsageResponse = z.infer<typeof workspaceUsageResponseSchema>;
 
 // ---- GUI prefs — the two open bags ----------------------------------------------------------
 
@@ -310,7 +334,7 @@ export type RunnerModels = z.infer<typeof runnerModelsSchema>;
 /** `GET /api/v1/config` — every Settings → Agents knob in one read. */
 export const configResponseSchema = z.object({
   baseBranch: z.string().nullable(),
-  defaultRunner: runnerSchema,
+  defaultRunner: runnerSelectionSchema,
   systemPrompt: z.string().nullable(),
   defaultModels: runnerModelsSchema,
   /** True when native coding-agent settings are authoritative and model picks are read-only. */
@@ -343,7 +367,7 @@ export type SetConfigResponse = z.infer<typeof setConfigResponseSchema>;
  */
 export const setConfigInputSchema = z.object({
   baseBranch: z.string().trim().min(1).max(200).nullable().optional(),
-  defaultRunner: runnerSchema.optional(),
+  defaultRunner: runnerSelectionSchema.optional(),
   systemPrompt: z.string().trim().max(20_000).nullable().optional(),
   defaultModels: z
     .object({

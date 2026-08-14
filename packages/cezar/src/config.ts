@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { loadWorkspaceConfig, type WorkspaceConfig } from './workspace/config.ts';
 import { RUNNER_IDS } from './core/agent-runner.ts';
+import type { RunnerSelection } from './core/runner-selection.ts';
 
 /**
  * Optional advanced config at `.ai/cezar/config.json`. Zero-config rule:
@@ -29,6 +30,7 @@ export const DEFAULT_WORKTREE_RETENTION = 10;
  *  "does this repo set its own?" question is answered by the same rule the
  *  schema enforces (and mirrors the workspace default's bounds). */
 const worktreeRetentionSchema = z.number().int().min(0).max(1000);
+const runnerSelectionSchema = z.union([z.enum(RUNNER_IDS), z.literal('auto')]);
 
 const configSchema = z.object({
   skillsRepos: z.array(skillsRepoSchema).default(DEFAULT_SKILLS_REPOS),
@@ -54,7 +56,7 @@ const configSchema = z.object({
    * step (workflow). The GUI only offers runners actually installed; this is
    * the preselected default. Also the runner the chain planner uses.
    */
-  defaultRunner: z.enum(RUNNER_IDS).default('claude'),
+  defaultRunner: runnerSelectionSchema.default('claude'),
   /** Model for the chain planner (spec 008) — cheap but reliable at JSON. */
   plannerModel: z.string().min(1).default('sonnet'),
   /** Model for the task namer (spec 2026-07-17-task-auto-naming) — the cheapest
@@ -108,6 +110,11 @@ const configSchema = z.object({
 });
 
 export type CezConfig = z.infer<typeof configSchema>;
+
+/** Auxiliary planner/namer calls are outside MVP quota routing and need a concrete backend. */
+export function auxiliaryRunner(selection: RunnerSelection): Exclude<RunnerSelection, 'auto'> {
+  return selection === 'auto' ? 'claude' : selection;
+}
 
 /**
  * Fold the machine-wide agent defaults under a repo's own config (spec 2026-07-29-agent-profiles).

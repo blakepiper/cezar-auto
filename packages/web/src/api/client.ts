@@ -79,11 +79,13 @@ import type {
   RunHistoryPage,
   RepoResponse,
   Runner,
+  RunnerSelection,
   ModelDiscoveryRunner,
   RunnerModelCatalogResponse,
   RunRecord,
   RunsIndexResponse,
   WorktreeEntry,
+  WorkspaceUsageResponse,
   SaveWorkflowInput,
   SaveWorkflowResponse,
   SetConfigInput,
@@ -1231,7 +1233,7 @@ export async function removeTodo(id: string): Promise<RemoveTodoResponse> {
  *  `defaultRunner`, not "keep the run's". `prompt` (#413) is extra instructions appended to the
  *  suggested/summary task text — e.g. a template inserted in the Inbox composer. */
 export interface StartTodoOptions {
-  runner?: Runner
+  runner?: RunnerSelection
   model?: string
   prompt?: string
 }
@@ -1616,6 +1618,11 @@ export async function getWorkspaceConfig(opts?: ReadOptions): Promise<WorkspaceC
     '/workspace/config',
   )
   return { ...answer, agentDefaults: answer.agentDefaults ?? {} }
+}
+
+/** Sanitized quota telemetry for the workspace's default Claude and Codex profiles. */
+export async function getWorkspaceUsage(opts?: ReadOptions): Promise<WorkspaceUsageResponse> {
+  return unwrap(await cez.api.v1.workspace.usage.$get({}, init(opts)), '/workspace/usage')
 }
 
 /**

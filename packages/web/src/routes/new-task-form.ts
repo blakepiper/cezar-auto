@@ -6,6 +6,7 @@ import type {
   ImageInput,
   ModelDiscoveryRunner,
   Runner,
+  RunnerSelection,
   RunnerModelCatalogResponse,
   Skill,
   UiState,
@@ -175,13 +176,23 @@ export function resolveRunner(
   return available[0] ?? 'claude'
 }
 
+/** `auto` is an authored policy, not a constructible backend. Preserve it for the composer;
+ * concrete picker consumers keep using `resolveRunner` above. */
+export function resolveRunnerSelection(
+  picked: RunnerSelection | null,
+  available: readonly Runner[],
+  preferred: Runner,
+): RunnerSelection {
+  return picked === 'auto' ? 'auto' : resolveRunner(picked, available, preferred)
+}
+
 /** The runner field shared by every NEW-run surface. Explicit/sticky intent always rides the
  * request; only an untouched pick matching the active project's known default may be omitted. */
 export function runnerOverride(
-  runner: Runner,
-  defaultRunner: Runner | undefined,
+  runner: RunnerSelection,
+  defaultRunner: RunnerSelection | undefined,
   explicit = false,
-): Runner | undefined {
+): RunnerSelection | undefined {
   return !explicit && runner === defaultRunner ? undefined : runner
 }
 
@@ -250,10 +261,10 @@ export function buildCreateRunBody(opts: {
   model: string
   /** Native coding-agent settings stay visible, but a locked model is never a request override. */
   modelsLocked?: boolean
-  runner: Runner
+  runner: RunnerSelection
   /** True when the draft contains a sticky/user runner choice rather than an untouched default. */
   runnerExplicit?: boolean
-  defaultRunner?: Runner
+  defaultRunner?: RunnerSelection
   /** Per-task agent account (spec 2026-07-29-agent-profiles) — the composer's override of the
    *  project's own selection, applying to `runner`. Absent/empty follows the project. */
   agentProfile?: string | null

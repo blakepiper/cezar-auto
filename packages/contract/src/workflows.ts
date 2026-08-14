@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { runnerSchema } from './health.ts';
+import { runnerSelectionSchema } from './health.ts';
 
 /**
  * The WORKFLOWS family: the chain catalog, the save/parse routes, and the planner.
@@ -28,7 +28,7 @@ export const workflowStepDefSchema = z
     skill: z.string().optional(),
     model: z.string().optional(),
     /** Per-step agent backend override (falls back to the task / config default). */
-    runner: runnerSchema.optional(),
+    runner: runnerSelectionSchema.optional(),
     allowedTools: z.array(z.string()).optional(),
     bashAllowlist: z.array(z.string()).optional(),
     // check step

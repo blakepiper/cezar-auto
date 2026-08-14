@@ -23,6 +23,8 @@ export interface ProviderUsageSnapshotStore {
 export interface ProviderUsageServiceOptions {
   adapters: readonly ProviderUsageAdapter[];
   cacheTtlMs: number;
+  /** Refresh cached accounts in the background without tying refreshes to UI reads. */
+  refreshIntervalMs?: number;
   store?: ProviderUsageSnapshotStore;
   now?: () => number;
 }
@@ -31,6 +33,75 @@ type UsageListener = (snapshot: ProviderUsageSnapshot) => void;
 
 function cacheKey(account: ProviderAccountRef): string {
   return `${account.provider}:${account.profileId}`;
+}
+
+const HEALTHS = new Set<ProviderQuotaHealth>([
+  'available', 'soft_exhausted', 'hard_exhausted', 'auth_error', 'unavailable', 'unknown',
+]);
+const WINDOW_KINDS = new Set<ProviderUsageWindow['kind']>(['short', 'long', 'model', 'unknown']);
+const SAFE_SOURCES = new Set(['claude-oauth', 'codex-app-server', 'cache', 'runtime', 'none', 'fake']);
+const SAFE_ERROR_CODES = new Set([
+  'auth_error', 'request_failed', 'invalid_response', 'adapter_unavailable', 'refresh_failed', 'provider_error',
+]);
+const GENERIC_ERROR_MESSAGE = 'Provider usage could not be refreshed.';
+const ERROR_MESSAGES: Record<string, string> = {
+  auth_error: 'Provider authentication is unavailable.',
+  request_failed: 'Provider usage could not be refreshed.',
+  invalid_response: 'Provider usage response was invalid.',
+  adapter_unavailable: 'Usage is not available for this provider.',
+  refresh_failed: 'Provider usage could not be refreshed.',
+  provider_error: GENERIC_ERROR_MESSAGE,
+};
+
+/**
+ * Adapters are an internal seam, but their input is still provider-controlled.
+ * Normalize again here before a reading can enter the cache or an API response;
+ * this keeps a malformed adapter/plugin from smuggling raw response text or a
+ * credential into durable state.
+ */
+function sanitizeReading(provider: AutoProvider, value: unknown): ProviderUsageReading {
+  if (typeof value !== 'object' || value === null) {
+    return {
+      health: 'unknown', source: provider, windows: [],
+      error: { code: 'provider_error', message: GENERIC_ERROR_MESSAGE },
+    };
+  }
+  const reading = value as Record<string, unknown>;
+  const health = typeof reading.health === 'string' && HEALTHS.has(reading.health as ProviderQuotaHealth)
+    ? reading.health as ProviderQuotaHealth
+    : 'unknown';
+  const source = typeof reading.source === 'string' && SAFE_SOURCES.has(reading.source)
+    ? reading.source
+    : provider;
+  const windows: ProviderUsageWindow[] = [];
+  if (Array.isArray(reading.windows)) {
+    for (const value of reading.windows.slice(0, 8)) {
+      if (typeof value !== 'object' || value === null) continue;
+      const window = value as Record<string, unknown>;
+      if (typeof window.kind !== 'string' || !WINDOW_KINDS.has(window.kind as ProviderUsageWindow['kind'])) continue;
+      const usedPercent = window.usedPercent;
+      if (usedPercent !== null && (typeof usedPercent !== 'number' || !Number.isFinite(usedPercent) || usedPercent < 0 || usedPercent > 100)) continue;
+      const resetsAt = typeof window.resetsAt === 'string'
+        && window.resetsAt.length <= 64
+        && Number.isFinite(Date.parse(window.resetsAt))
+        ? window.resetsAt
+        : undefined;
+      windows.push({
+        kind: window.kind as ProviderUsageWindow['kind'],
+        usedPercent: usedPercent as number | null,
+        ...(resetsAt ? { resetsAt } : {}),
+        ...(window.hardLimitReached === true ? { hardLimitReached: true } : {}),
+      });
+    }
+  }
+  const rawError = reading.error;
+  let error: ProviderUsageReading['error'];
+  if (typeof rawError === 'object' && rawError !== null) {
+    const code = (rawError as Record<string, unknown>).code;
+    const safeCode = typeof code === 'string' && SAFE_ERROR_CODES.has(code) ? code : 'provider_error';
+    error = { code: safeCode, message: ERROR_MESSAGES[safeCode] ?? GENERIC_ERROR_MESSAGE };
+  }
+  return { health, source, windows, ...(error ? { error } : {}) };
 }
 
 function staleSnapshot(snapshot: ProviderUsageSnapshot, now: number, ttlMs: number): ProviderUsageSnapshot {
@@ -68,11 +139,20 @@ export class ProviderUsageService {
   readonly #inFlight = new Map<string, Promise<ProviderUsageSnapshot>>();
   readonly #listeners = new Set<UsageListener>();
   readonly #resetTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  readonly #refreshTimer?: ReturnType<typeof setInterval>;
   readonly #now: () => number;
 
   constructor(private readonly options: ProviderUsageServiceOptions) {
     this.#now = options.now ?? Date.now;
     for (const adapter of options.adapters) this.#adapters.set(adapter.provider, adapter);
+    if (options.refreshIntervalMs !== undefined && options.refreshIntervalMs > 0) {
+      this.#refreshTimer = setInterval(() => {
+        for (const snapshot of this.#cache.values()) {
+          void this.refresh({ provider: snapshot.provider, profileId: snapshot.profileId }, true);
+        }
+      }, options.refreshIntervalMs);
+      this.#refreshTimer.unref?.();
+    }
   }
 
   /** Load a prior sanitized cache. Restored values always begin stale. */
@@ -80,7 +160,8 @@ export class ProviderUsageService {
     if (!this.options.store) return;
     const snapshots = await this.options.store.load().catch(() => []);
     for (const snapshot of snapshots) {
-      this.#cache.set(cacheKey(snapshot), { ...snapshot, stale: true });
+      const reading = sanitizeReading(snapshot.provider, snapshot);
+      this.#cache.set(cacheKey(snapshot), { ...snapshot, ...reading, stale: true });
     }
   }
 
@@ -107,6 +188,7 @@ export class ProviderUsageService {
   }
 
   dispose(): void {
+    if (this.#refreshTimer) clearInterval(this.#refreshTimer);
     for (const timer of this.#resetTimers.values()) clearTimeout(timer);
     this.#resetTimers.clear();
     this.#listeners.clear();
@@ -122,7 +204,7 @@ export class ProviderUsageService {
       };
     } else {
       try {
-        reading = await adapter.read(account);
+        reading = sanitizeReading(account.provider, await adapter.read(account));
       } catch {
         reading = {
           health: 'unknown', source: adapter.provider, windows: [],

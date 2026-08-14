@@ -232,6 +232,13 @@ describe('the config API', () => {
     expect(body.defaultRunner).toBe('codex');
   });
 
+  it('accepts auto as the project default runner', async () => {
+    const res = await put({ defaultRunner: 'auto' });
+    expect(res.status).toBe(200);
+    expect((await res.json() as { defaultRunner: string }).defaultRunner).toBe('auto');
+    expect(rawFile().defaultRunner).toBe('auto');
+  });
+
   it('rejects an over-limit systemPrompt and a malformed defaultModels with 400 + reason', async () => {
     const tooLong = await put({ systemPrompt: 'x'.repeat(20_001) });
     expect(tooLong.status).toBe(400);

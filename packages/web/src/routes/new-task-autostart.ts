@@ -1,4 +1,4 @@
-import type { CreateRunInput, Runner } from '@open-mercato/cezar-api-client'
+import type { CreateRunInput, RunnerSelection } from '@open-mercato/cezar-api-client'
 
 import { buildCreateRunBody, type TaskSource } from './new-task-form'
 import type { NewTaskParams } from './new-task-params'
@@ -27,8 +27,8 @@ import type { NewTaskParams } from './new-task-params'
  *  server cannot resolve the request back to a disconnected default. */
 export function bookmarkletRunBody(
   params: NewTaskParams,
-  runner: Runner,
-  defaultRunner: Runner,
+  runner: RunnerSelection,
+  defaultRunner: RunnerSelection,
 ): CreateRunInput {
   const source: TaskSource =
     params.skill !== ''

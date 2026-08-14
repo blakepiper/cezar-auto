@@ -1,7 +1,7 @@
 import { ChevronDownIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
 
-import { DEFAULT_AGENT_ACCOUNT_ID, type Runner } from '@open-mercato/cezar-api-client'
+import { DEFAULT_AGENT_ACCOUNT_ID, type Runner, type RunnerSelection } from '@open-mercato/cezar-api-client'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -165,11 +165,12 @@ export function RunnerPill({
   accounts = [],
   account = null,
   repoAccount,
+  includeAuto = false,
 }: {
   runners: readonly Runner[]
-  value: Runner
+  value: RunnerSelection
   /** `account` is `null` only while the repo's own choice is still the one in force. */
-  onPick: (runner: Runner, account: string | null) => void
+  onPick: (runner: RunnerSelection, account: string | null) => void
   disabled?: boolean
   /** Every login for every runner, discovered accounts included. Empty = the zero-config host. */
   accounts?: readonly RunnerAccountChoice[]
@@ -177,9 +178,12 @@ export function RunnerPill({
   account?: string | null
   /** What the repo's setting resolves to per runner — the row that is selected until overridden. */
   repoAccount?: Partial<Record<Runner, string>>
+  includeAuto?: boolean
 }) {
   const available = RUNNERS.filter((r) => runners.includes(r.id))
-  const options = available.flatMap((runner) => {
+  const options = [
+    ...(includeAuto ? [{ value: 'auto', label: 'Auto', desc: 'Quota-aware routing' }] : []),
+    ...available.flatMap((runner) => {
     const logins = accounts.filter((entry) => entry.provider === runner.id)
     // One login is not a choice, so it does not become a row of its own — the agent is the row.
     if (logins.length < 2) return [{ value: choiceValue(runner.id, null), label: runner.id, desc: runner.desc }]
@@ -189,14 +193,15 @@ export function RunnerPill({
       // The folder, because the label is cezar's invention and the folder is the account.
       desc: login.configDir,
     }))
-  })
+    }),
+  ]
 
   // What is selected right now: the override if the user made one, else whatever the repo resolves
   // to, else the discovered account. Falls back to the plain runner row for an agent with one login
   // — and for an override naming an account that has since been deleted, which must not leave the
   // pill pointing at nothing.
-  const selected = account ?? repoAccount?.[value] ?? DEFAULT_AGENT_ACCOUNT_ID
-  const value_ = options.some((option) => option.value === choiceValue(value, selected))
+  const selected = value === 'auto' ? null : account ?? repoAccount?.[value] ?? DEFAULT_AGENT_ACCOUNT_ID
+  const value_ = value === 'auto' ? 'auto' : options.some((option) => option.value === choiceValue(value, selected))
     ? choiceValue(value, selected)
     : choiceValue(value, null)
 
@@ -209,7 +214,7 @@ export function RunnerPill({
       disabled={disabled}
       onPick={(next) => {
         const [runner, picked] = next.split(':')
-        onPick(runner as Runner, picked ?? null)
+        onPick(runner as RunnerSelection, runner === 'auto' ? null : picked ?? null)
       }}
       options={options}
     />

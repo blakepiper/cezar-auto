@@ -45,6 +45,14 @@ export type RunStatus = z.infer<typeof runStatusSchema>;
 export const runActivitySchema = z.enum(['monitoring']);
 export type RunActivity = z.infer<typeof runActivitySchema>;
 
+/** A queued auto-routed run has no provider that may start new work yet. */
+export const providerQuotaBlockedReasonSchema = z.object({
+  type: z.literal('provider_quota'),
+  providers: z.array(z.enum(['claude', 'codex'])),
+  retryAt: z.string().optional(),
+});
+export type ProviderQuotaBlockedReason = z.infer<typeof providerQuotaBlockedReasonSchema>;
+
 export const stepStatusSchema = z.enum([
   'pending',
   'running',
@@ -194,6 +202,8 @@ export const runRecordSchema = z.object({
   autoResumeAt: z.string().optional(),
   /** Consecutive automatic resumes since the last human turn, against the safety cap. */
   autoResumeAttempts: z.number().optional(),
+  /** Why a queued auto-routed run is intentionally not dispatching yet. */
+  blockedReason: providerQuotaBlockedReasonSchema.optional(),
   createdAt: z.string(),
   startedAt: z.string().optional(),
   finishedAt: z.string().optional(),
@@ -618,7 +628,7 @@ export const createRunInputBaseSchema = z
     steps: z.array(workflowStepDefSchema).min(1).max(8).optional(),
     task: z.string().min(1).max(100_000, 'must be at most 100000 characters'),
     model: z.string().optional(),
-    runner: runnerSchema.optional(),
+    runner: runnerSelectionSchema.optional(),
     /** Agent account for this task (spec 2026-07-29-agent-profiles). Omit to follow the
      *  project's own selection; an id that no longer exists is a 400, not a silent default. */
     agentProfile: z.string().max(64).optional(),

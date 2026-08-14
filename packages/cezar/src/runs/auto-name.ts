@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { loadConfig } from '../config.ts';
+import { auxiliaryRunner, loadConfig } from '../config.ts';
 import { createRunner } from '../core/runner-factory.ts';
 import { parseStructured } from '../planner.ts';
 import { resolveProfileEnvForRoot } from '../workspace/agent-profiles.ts';
@@ -153,12 +153,13 @@ export function postValidateTitle(title: string, refNumber?: number): string {
 export async function generateRunName(repoRoot: string, ctx: NamerContext): Promise<NameResult | null> {
   try {
     const config = await loadConfig(repoRoot);
-    const runner = createRunner(config.defaultRunner);
-    const model = config.defaultRunner === 'claude' ? config.namerModel : undefined;
+    const runnerId = auxiliaryRunner(config.defaultRunner);
+    const runner = createRunner(runnerId);
+    const model = runnerId === 'claude' ? config.namerModel : undefined;
     // Name under the project's own agent account (spec 2026-07-29-agent-profiles) — naming is
     // a model call like any other, and billing it to the personal subscription for a work
     // project is the exact confusion accounts exist to remove.
-    const { env: profileEnv } = await resolveProfileEnvForRoot(repoRoot, config.defaultRunner);
+    const { env: profileEnv } = await resolveProfileEnvForRoot(repoRoot, runnerId);
     for (let attempt = 0; attempt < 2; attempt++) {
       const result = await runner.run({
         systemPrompt: NAMER_SYSTEM_PROMPT,

@@ -5,6 +5,7 @@ import type {
 import { PROVIDER_IDS } from '../core/provider-auth.ts';
 import type { RunRecord } from '../runs/store.ts';
 import { stepKind, type WorkflowDef } from '../workflows/types.ts';
+import type { RunnerSelection } from '../core/runner-selection.ts';
 
 const ORDER: readonly ProviderId[] = PROVIDER_IDS;
 const LABEL: Record<ProviderId, string> = {
@@ -16,11 +17,12 @@ const LABEL: Record<ProviderId, string> = {
 
 export function providersRequiredByWorkflow(
   workflow: WorkflowDef,
-  fallback: ProviderId,
+  fallback: RunnerSelection,
 ): ProviderId[] {
   const required = new Set<ProviderId>();
   for (const step of workflow.steps) {
-    if (stepKind(step) === 'agent') required.add(step.runner ?? fallback);
+    const selected = step.runner ?? fallback;
+    if (stepKind(step) === 'agent' && selected !== 'auto') required.add(selected);
   }
   return ORDER.filter((provider) => required.has(provider));
 }

@@ -13,6 +13,8 @@ import { onUsage, registerRunProcess, unregisterRunProcess, type ProcessUsage } 
 import { parseUsageLimit } from '../core/usage-limit.ts';
 import { createRunner } from '../core/runner-factory.ts';
 import type { RunnerId } from '../core/agent-runner.ts';
+import type { RunnerSelection } from '../core/runner-selection.ts';
+import { detectEnvironment } from '../core/backend-detect.ts';
 import { modelConflictsWithRunner } from '../core/model-presets.ts';
 import { AGENT_MODELS_LOCKED_ERROR, agentModelsLocked } from '../core/agent-model-policy.ts';
 import {
@@ -53,6 +55,8 @@ import { reviewGateEnabled } from '../runs/review-gate.ts';
 import { resolveProfileEnvForRoot } from '../workspace/agent-profiles.ts';
 import { WorkspaceSemaphore, type AccountHolds } from '../workspace/semaphore.ts';
 import type { QuotaCoordinator } from '../core/quota/coordinator.ts';
+import { classifyRunnerFailure } from '../core/quota/failure-classifier.ts';
+import { isAutoProvider, type AutoProvider } from '../core/runner-selection.ts';
 import { UiEventSink } from '../runs/ui-event-sink.ts';
 import type { UiEvent } from '../core/ui-events.ts';
 import { chainStepNote, DEFAULT_ALLOWED_TOOLS, stepKind, type WorkflowDef, type WorkflowStepDef } from './types.ts';
@@ -193,12 +197,24 @@ interface ActiveRun {
   };
 }
 
+interface QuotaBlocked {
+  kind: 'quota-blocked';
+  retryAt?: string;
+}
+
+function isQuotaBlocked(value: unknown): value is QuotaBlocked {
+  return typeof value === 'object' && value !== null && (value as { kind?: unknown }).kind === 'quota-blocked';
+}
+
 /** Safety cap on autonomous auto-continues per run — stops a stuck agent from nudging forever. */
 const MAX_AUTO_CONTINUES = 40;
 const AUTONOMOUS_NUDGE =
   'Continue working autonomously until the task is fully complete. Do not ask me for confirmation or clarification — make reasonable assumptions and proceed. When everything is done, end the session with your done signal.';
 const MONITORING_WAKE_NUDGE =
   'Re-check the downstream work you were monitoring. Continue toward the task goal; emit CEZ:MONITORING again only if it is still pending.';
+const QUOTA_FAILOVER_PREAMBLE = `A previous coding-agent attempt was interrupted because its provider became unavailable.
+
+Continue the current workflow step in this existing worktree. Before editing, inspect git status and git diff, preserve correct work already present, then complete the original task and verification. Do not restart blindly.`;
 
 /**
  * Auto-resume after a provider usage limit (spec 2026-08-03-auto-resume-after-usage-limit).
@@ -308,7 +324,7 @@ export interface StartRunInput {
   task: string;
   model?: string;
   /** Agent backend chosen for this task (GUI). Unset = the config default. */
-  runner?: RunnerId;
+  runner?: RunnerSelection;
   /** Agent account for this task (spec 2026-07-29-agent-profiles), applying to steps that run
    *  on `runner`. Unset = the project's own selection. Persisted on the record so the choice
    *  survives into resume and Continue, and so the thread can say which account did the work. */
@@ -457,7 +473,7 @@ const RESTART_CONTINUATION_PROMPT =
 interface PendingContinuation {
   stepId: string;
   sessionId: string | undefined;
-  backend: RunnerId;
+  backend: RunnerSelection;
   prompt: string;
   images: ContentBlock[];
 }
@@ -516,6 +532,9 @@ export class RunManager {
    *  from the record rather than losing the wait. Runs here are `failed` and therefore NOT in
    *  `active`, which is why the timer cannot live on an `ActiveRun` like the monitoring one. */
   private readonly autoResumeTimers = new Map<string, NodeJS.Timeout>();
+  /** Known provider-reset wakes for queued auto-routed work. */
+  private readonly quotaWakeTimers = new Map<string, NodeJS.Timeout>();
+  private readonly offQuotaWake?: () => void;
   private pumping = false;
   /** A pump that arrived while one was in flight — replayed by `pump()`'s own
    *  loop so a slot freed mid-sweep is never a lost wakeup. */
@@ -566,6 +585,11 @@ export class RunManager {
     this.dataDir = join(repoRoot, '.ai/cezar');
     this.semaphore = options.semaphore ?? new WorkspaceSemaphore();
     this.quotaCoordinator = options.quotaCoordinator;
+    // Minimal test/dry-run coordinators from the dispatch integration expose
+    // only `acquire`; waking is additive rather than a new required seam.
+    this.offQuotaWake = typeof this.quotaCoordinator?.onWake === 'function'
+      ? this.quotaCoordinator.onWake(() => this.wakeQuotaBlockedRuns())
+      : undefined;
     this.offSemaphore = this.semaphore.register({
       busySlots: () => this.busySlots(),
       pump: () => this.pump(),
@@ -602,6 +626,9 @@ export class RunManager {
     }
     for (const timer of this.autoResumeTimers.values()) clearTimeout(timer);
     this.autoResumeTimers.clear();
+    for (const timer of this.quotaWakeTimers.values()) clearTimeout(timer);
+    this.quotaWakeTimers.clear();
+    this.offQuotaWake?.();
     this.active.clear();
     this.waiting.clear();
     this.starting.clear();
@@ -728,7 +755,7 @@ export class RunManager {
       workflow: workflow.name,
       task: input.task,
       model: effectiveInput.model,
-      runner: input.runner,
+      ...(input.runner === 'auto' ? {} : { runner: input.runner }),
       requestedRunner: input.runner,
       // The composer's per-task account (spec 2026-07-29-agent-profiles). Persisted at creation
       // so a queued run picks it up at dequeue and every later resume reads the same answer.
@@ -905,12 +932,13 @@ export class RunManager {
         while (this.queue.length > 0 && capacity()) {
           // FIFO among the runs that CAN start; a held one keeps its place in the queue rather
           // than being dequeued and re-queued (which would churn its position and its record).
-          const next = !anyHold
-            ? 0
-            : this.queue.findIndex((id) => {
-                const queued = this.store.getRun(id);
-                return !queued || !accountHeldFor(queued, holds, defaultRunner ?? 'claude');
-              });
+          const next = this.queue.findIndex((id) => {
+            const queued = this.store.getRun(id);
+            // A quota-blocked row stays in FIFO order but must not be picked
+            // by unrelated slot releases; only a provider wake clears it.
+            if (queued?.blockedReason?.type === 'provider_quota') return false;
+            return !anyHold || !queued || defaultRunner === 'auto' || !accountHeldFor(queued, holds, defaultRunner ?? 'claude');
+          });
           if (next === -1) break; // everything queued is waiting on a held account
           const runId = this.queue.splice(next, 1)[0];
           if (!runId) break;
@@ -997,7 +1025,7 @@ export class RunManager {
       ? [...run.steps].reverse().find((step) => step.id !== queuedContinuation.id && step.sessionId)
       : undefined;
     if (queuedContinuation && sessionStep?.sessionId) {
-      const backend = run.runner ?? 'claude';
+      const backend = run.requestedRunner ?? run.runner ?? 'claude';
       const sessionBackend = sessionStep.backend ?? backend;
       this.pendingContinuations.set(run.id, {
         stepId: queuedContinuation.id,
@@ -1042,7 +1070,7 @@ export class RunManager {
       input: this.hydrateQueuedInput(run.id, {
         task: run.task,
         model: run.model,
-        runner: run.runner,
+        runner: run.requestedRunner ?? run.runner,
         generateFollowups,
         // Re-thread autonomy (#489): the rebuilt input feeds `execute`, whose mid-run auto-nudge
         // reads `input.autonomous`. Without this a recovered autonomous run would run
@@ -1053,6 +1081,7 @@ export class RunManager {
       }),
     });
     this.queue.push(run.id);
+    this.armQuotaWake(run.id, run.blockedReason?.retryAt);
     this.store.appendEvent(run.id, { type: 'lifecycle', message: `${reason} — task re-queued` });
   }
 
@@ -1127,6 +1156,11 @@ export class RunManager {
     // from it. `pump()` reconciles again on every sweep, so this is the fast path, not the only
     // one — see `reconcileAutoResumes`.
     this.reconcileAutoResumes();
+    // A parked Auto run is deliberately ineligible during ordinary queue
+    // sweeps. Restart is an explicit provider wake, though: retry its durable
+    // checkpoint against fresh telemetry instead of leaving it behind that
+    // ineligibility gate until some unrelated usage event happens.
+    this.wakeQuotaBlockedRuns();
     void this.pump();
   }
 
@@ -1978,7 +2012,7 @@ export class RunManager {
    */
   continueRun(
     runId: string,
-    opts: { text?: string; images?: ContentBlock[]; runner?: RunnerId; model?: string } = {},
+    opts: { text?: string; images?: ContentBlock[]; runner?: RunnerSelection; model?: string } = {},
     /** Restart recovery may discover several interrupted tasks at once. Those
      *  continuations are queued; an explicit user Continue remains immediate. */
     deferForCapacity = false,
@@ -1995,12 +2029,15 @@ export class RunManager {
     }
     const sessionStep = [...run.steps].reverse().find((s) => s.sessionId);
     if (!sessionStep?.sessionId) return { ok: false, error: 'no agent session to resume' };
-    const targetRunner = opts.runner ?? run.runner ?? 'claude';
+    const targetRunner = opts.runner ?? run.requestedRunner ?? run.runner ?? 'claude';
+    if (targetRunner === 'auto' && opts.model?.trim()) {
+      return { ok: false, error: 'a model override cannot be used with quota-aware routing' };
+    }
     // Session ids are provider-owned opaque values. New records carry explicit
     // affinity; for legacy records, the run's current runner is the conservative
     // owner until a continuation emits a new, attributed session id (#562).
     const sessionBackend = sessionStep.backend ?? run.runner ?? 'claude';
-    const resume = sessionBackend === targetRunner;
+    const resume = targetRunner !== 'auto' && sessionBackend === targetRunner;
 
     // Follow-up runner/model override (#401): the composer lets the user pick which backend and
     // model handle this continuation. Omitted → the run's current backend/model is kept
@@ -2013,7 +2050,7 @@ export class RunManager {
       // this continuation will actually use (`opts.runner ?? record.runner ?? 'claude'` — the
       // same resolution `runContinuation` reads off the record). A model that is recognizably
       // another runner's preset would corrupt the run; free-form/custom ids pass untouched.
-      if (opts.model && modelConflictsWithRunner(opts.model, targetRunner)) {
+      if (targetRunner !== 'auto' && opts.model && modelConflictsWithRunner(opts.model, targetRunner)) {
         return { ok: false, error: `model '${opts.model}' is not a ${targetRunner} model` };
       }
       // A runner switch that carries NO explicit model must not leave the previous backend's pin
@@ -2025,12 +2062,13 @@ export class RunManager {
       const inheritedPinIsForeign =
         opts.model === undefined &&
         run.model !== undefined &&
-        modelConflictsWithRunner(run.model, targetRunner);
+        targetRunner !== 'auto' && modelConflictsWithRunner(run.model, targetRunner);
       this.store.updateRun(runId, {
-        ...(opts.runner !== undefined ? { runner: opts.runner } : {}),
+        ...(opts.runner !== undefined && opts.runner !== 'auto' ? { runner: opts.runner } : {}),
+        ...(opts.runner !== undefined ? { requestedRunner: opts.runner } : {}),
         ...(opts.model !== undefined
           ? { model: opts.model === '' ? undefined : opts.model }
-          : inheritedPinIsForeign
+          : inheritedPinIsForeign || targetRunner === 'auto'
             ? { model: undefined }
             : {}),
       });
@@ -2095,7 +2133,7 @@ export class RunManager {
     runId: string,
     stepId: string,
     sessionId: string | undefined,
-    backend: RunnerId,
+    backend: RunnerSelection,
     prompt: string,
     /** Screenshots pasted into the follow-up composer — delivered with the
      *  reopened session's opening message, exactly like a live-session
@@ -2156,6 +2194,35 @@ export class RunManager {
     // expanded against an empty registry and leaked `/om-...` verbatim to the backend, which
     // answered "Unknown skill" (#811). Best-effort — discovery must never break Continue.
     state.skills = await discoverSkills(this.repoRoot).catch(() => [] as Skill[]);
+    const resolvedRunner = await this.resolveRunnerSelection(backend);
+    if (isQuotaBlocked(resolvedRunner)) {
+      this.pendingContinuations.set(runId, { stepId, sessionId, backend, prompt, images });
+      if (!this.queue.includes(runId)) this.queue.push(runId);
+      this.store.updateStep(runId, stepId, { status: 'pending', error: undefined });
+      this.store.updateRun(runId, {
+        status: 'queued',
+        currentStepId: undefined,
+        blockedReason: {
+          type: 'provider_quota', providers: ['claude', 'codex'],
+          ...(resolvedRunner.retryAt ? { retryAt: resolvedRunner.retryAt } : {}),
+        },
+      });
+      this.store.appendEvent(runId, { type: 'lifecycle', message: 'continue waiting for provider quota' });
+      this.armQuotaWake(runId, resolvedRunner.retryAt);
+      this.parkActiveForProviderQuota(runId, state);
+      return;
+    }
+    if (typeof resolvedRunner === 'string') {
+      const finishedAt = new Date().toISOString();
+      this.store.updateStep(runId, stepId, { status: 'failed', error: resolvedRunner, finishedAt });
+      this.store.updateRun(runId, {
+        status: 'failed', error: `continue failed: ${resolvedRunner}`, finishedAt, currentStepId: undefined,
+      });
+      this.store.appendEvent(runId, { type: 'lifecycle', message: `continue failed — ${resolvedRunner}` });
+      this.dropActive(runId);
+      return;
+    }
+    const { backend: continueBackend, profileId: resolvedProfileId, release } = resolvedRunner;
 
     this.store.updateRun(runId, {
       status: 'running',
@@ -2169,7 +2236,7 @@ export class RunManager {
       iterations: 1,
       startedAt: new Date().toISOString(),
       sessionId,
-      backend,
+      backend: continueBackend,
     });
     this.store.appendEvent(runId, { type: 'step-start', stepId, name: 'Continue', kind: 'agent', iteration: 1 });
     // Attachments pasted into the follow-up composer, on the same terms as a live-session
@@ -2215,7 +2282,7 @@ export class RunManager {
       }
       if (sessionError) return;
       if (event.type === 'session') {
-        this.store.updateStep(runId, stepId, { sessionId: event.sessionId, backend });
+        this.store.updateStep(runId, stepId, { sessionId: event.sessionId, backend: continueBackend });
       }
       if (event.type === 'token-usage') {
         this.store.updateStep(runId, stepId, { tokensUsed: event.tokensUsed });
@@ -2307,7 +2374,6 @@ export class RunManager {
 
     // Backend + model come off the record: the run's current backend by default, or the
     // follow-up override that `continueRun` persisted before scheduling (#401).
-    const continueBackend = backend;
     /** Settle this turn as a failure before anything is spawned — the shape both
      *  pre-spawn gates below need (model identity, #405; temp directory, #785). */
     const failBeforeSpawn = (message: string): void => {
@@ -2328,6 +2394,7 @@ export class RunManager {
         type: 'lifecycle',
         message: `continue failed — ${message}`,
       });
+      release?.();
       this.dropActive(runId);
     };
     // Apply the SAME canonical-identity gate the first spawn applies (#405, review M1).
@@ -2348,7 +2415,10 @@ export class RunManager {
         modelIdentity: normalized ? formatModelIdentity(normalized.identity) : undefined,
       });
     } catch (err) {
-      if (!(err instanceof ModelIdentityError)) throw err;
+      if (!(err instanceof ModelIdentityError)) {
+        release?.();
+        throw err;
+      }
       failBeforeSpawn(err.message);
       return;
     }
@@ -2365,10 +2435,13 @@ export class RunManager {
     try {
       continueProfile = await this.agentEnvForStep(runId, continueBackend, {
         generateFollowups,
-        recordedProfileId: resumedProfileId,
+        recordedProfileId: resolvedProfileId ?? resumedProfileId,
       });
     } catch (err) {
-      if (!(err instanceof AgentTempDirError)) throw err;
+      if (!(err instanceof AgentTempDirError)) {
+        release?.();
+        throw err;
+      }
       failBeforeSpawn(err.message);
       return;
     }
@@ -2382,7 +2455,9 @@ export class RunManager {
     // live path applies (#811). Delivery-only: the `user-message` event above already
     // persisted the user's original text, and the transcript must keep showing that.
     const openingPrompt = expandRegistrySlashSkillText(prompt, state.skills ?? []);
-    const session = runner.startSession(
+    let session: AgentSession;
+    try {
+      session = runner.startSession(
       {
         // The Continue step is a fresh agent session on the same run — the
         // run's extra system prompt (already resolved at execute time and
@@ -2406,7 +2481,12 @@ export class RunManager {
       },
       onEvent,
       { onUiEvent: (event) => this.handleRunnerUiEvent(runId, state, sink, event) },
-    );
+      );
+    } catch (err) {
+      release?.();
+      failBeforeSpawn(err instanceof Error ? err.message : String(err));
+      return;
+    }
     state.session = session;
     state.sessionEverOpened = true;
     this.flushDeferred(runId);
@@ -2446,6 +2526,7 @@ export class RunManager {
       this.clearIdleTimer(state);
       this.clearAutosaveTimer(state);
       if (state.cwd !== this.repoRoot) await autosaveCommit(state.cwd, 'turn end');
+      release?.();
       this.dropActive(runId);
     }
   }
@@ -2468,12 +2549,12 @@ export class RunManager {
     // Resolve the agent backend for this run: the task choice (GUI) wins over
     // the config default. Per-step `runner` can still override it below.
     const config = await loadConfig(this.repoRoot);
-    const taskBackend: RunnerId = input.runner ?? config.defaultRunner;
+    const taskBackend: RunnerSelection = input.runner ?? config.defaultRunner;
     // The account may have gone into a usage-limit hold since this run was dequeued — the queue
     // gate cannot be the only one, because dequeue is not the moment of no return. Nothing has
     // happened yet here, so the run goes back to the queue untouched (spec
     // 2026-08-03-auto-resume-after-usage-limit).
-    if (this.requeueWhileHeld(runId, workflow, input, taskBackend)) return;
+    if (taskBackend !== 'auto' && this.requeueWhileHeld(runId, workflow, input, taskBackend)) return;
     // Extra system prompt (R2 2.3): POST override > config default; echoed on
     // the record so the UI/API can show what the run actually used.
     const extraSystemPrompt = resolveExtraSystemPrompt(input.systemPrompt, config.systemPrompt);
@@ -2483,7 +2564,7 @@ export class RunManager {
     // can still override below); the authoritative fail-loud gate is at spawn.
     let modelIdentity: string | undefined;
     try {
-      const normalized = normalizeModelForBackend(
+      const normalized = taskBackend === 'auto' ? undefined : normalizeModelForBackend(
         taskBackend,
         agentModelsLocked(this.repoRoot) ? undefined : input.model,
         { configuredProvider: await configuredModelProvider(taskBackend, this.repoRoot) },
@@ -2496,10 +2577,11 @@ export class RunManager {
     this.store.updateRun(runId, {
       status: 'running',
       startedAt: new Date().toISOString(),
-      runner: taskBackend,
+      ...(taskBackend === 'auto' ? {} : { runner: taskBackend }),
       requestedRunner: input.runner ?? taskBackend,
       systemPrompt: extraSystemPrompt,
       modelIdentity,
+      blockedReason: undefined,
     });
     emit({ type: 'lifecycle', message: `run started — workflow "${workflow.name}" (runner: ${taskBackend})` });
 
@@ -2601,7 +2683,7 @@ export class RunManager {
       // is a spawn, and hand the run back to the queue if the account closed meanwhile. This
       // check also covers the explicit lock-bypass path, where the account may close while the
       // run is preparing its first step.
-      if (this.requeueWhileHeld(runId, workflow, input, taskBackend, state)) return;
+      if (taskBackend !== 'auto' && this.requeueWhileHeld(runId, workflow, input, taskBackend, state)) return;
     }
 
     // Handoff journal (spec 007) — seeded after the worktree exists so the
@@ -2637,7 +2719,14 @@ export class RunManager {
 
     const lastAgentIdx = findLastAgentStepIndex(workflow);
 
-    let i = 0;
+    // A quota-blocked run re-enters this executor after its earlier steps have
+    // already completed. Resume at the first unfinished step; this also makes
+    // a restarted queued record replay only the interrupted boundary.
+    let i = workflow.steps.findIndex((step) => {
+      const persisted = this.store.getRun(runId)?.steps.find((candidate) => candidate.id === step.id);
+      return persisted?.status !== 'done';
+    });
+    if (i < 0) i = workflow.steps.length;
     while (i < workflow.steps.length) {
       if (state.cancelled) break;
       const step = workflow.steps[i] as WorkflowStepDef;
@@ -2658,25 +2747,49 @@ export class RunManager {
         // The last agent step of the workflow is interactive: after its turn
         // the session stays open for follow-ups until finish/idle/cancel.
         const interactive = i === lastAgentIdx && i === workflow.steps.length - 1;
-        const failure = await this.runAgentStep(
-          runId,
-          state,
-          step,
-          input,
-          skills,
-          checkFailure,
-          interactive,
-          emit,
-          startImages,
-          taskBackend,
-          extraSystemPrompt,
-          chainStepNote(workflow.steps, i),
-          startAttachments,
-        );
+        const requestedRunner = step.runner ?? taskBackend;
+        const attemptedProviders = new Set<AutoProvider>();
+        let failure: string | QuotaBlocked | null;
+        do {
+          failure = await this.runAgentStep(
+            runId,
+            state,
+            step,
+            input,
+            skills,
+            checkFailure,
+            interactive,
+            emit,
+            startImages,
+            taskBackend,
+            extraSystemPrompt,
+            chainStepNote(workflow.steps, i),
+            startAttachments,
+            attemptedProviders,
+            attemptedProviders.size > 0 ? QUOTA_FAILOVER_PREAMBLE : undefined,
+          );
+          const actualProvider = this.store.getRun(runId)?.steps.find((candidate) => candidate.id === step.id)?.backend;
+          if (
+            typeof failure === 'string' &&
+            requestedRunner === 'auto' &&
+            (actualProvider === 'claude' || actualProvider === 'codex') &&
+            classifyRunnerFailure(failure) === 'quota_exhausted' &&
+            !attemptedProviders.has(actualProvider)
+          ) {
+            attemptedProviders.add(actualProvider);
+            emit({ type: 'note', stepId: step.id, message: `${actualProvider} quota exhausted — trying another eligible provider` });
+            continue;
+          }
+          break;
+        } while (true);
         startImages = undefined;
         startAttachments = [];
         checkFailure = null;
         if (state.cancelled) break;
+        if (isQuotaBlocked(failure)) {
+          this.blockForProviderQuota(runId, workflow, input, state, failure.retryAt);
+          return;
+        }
         if (failure) {
           this.finishStep(runId, step.id, 'failed', failure, emit);
           runError = `step "${step.id}" failed: ${failure}`;
@@ -2744,6 +2857,141 @@ export class RunManager {
     this.dropActive(runId);
   }
 
+  /** Park an auto-routed workflow at the exact agent-step boundary that could
+   * not acquire a provider. Completed steps and the worktree remain intact. */
+  private blockForProviderQuota(
+    runId: string,
+    workflow: WorkflowDef,
+    input: StartRunInput,
+    state: ActiveRun,
+    retryAt?: string,
+  ): void {
+    const run = this.store.getRun(runId);
+    if (!run || state.cancelled) return;
+    this.pendingJobs.set(runId, { workflow, input });
+    if (!this.queue.includes(runId)) this.queue.push(runId);
+    if (run.currentStepId) this.store.updateStep(runId, run.currentStepId, { status: 'pending', error: undefined });
+    this.store.updateRun(runId, {
+      status: 'queued',
+      currentStepId: undefined,
+      error: undefined,
+      blockedReason: {
+        type: 'provider_quota',
+        providers: ['claude', 'codex'],
+        ...(retryAt ? { retryAt } : {}),
+      },
+    });
+    this.store.appendEvent(runId, {
+      type: 'lifecycle',
+      message: retryAt
+        ? `waiting for provider quota — next known reset at ${retryAt}`
+        : 'waiting for provider quota — provider availability will be retried automatically',
+    });
+    this.armQuotaWake(runId, retryAt);
+    this.parkActiveForProviderQuota(runId, state);
+  }
+
+  /**
+   * A provider wait is a live workflow checkpoint, not a completed run. Keep
+   * its worktree and durable execution state, but release the workspace slot
+   * so another eligible task can run. This deliberately does not use
+   * `dropActive()`, whose terminal-only cleanup can reclaim artifacts and
+   * schedule an unrelated explicit-run auto-resume.
+   */
+  private parkActiveForProviderQuota(runId: string, state: ActiveRun): void {
+    state.releaseRepoRoot?.();
+    state.releaseRepoRoot = undefined;
+    this.clearIdleTimer(state);
+    this.clearMonitoringWakeTimer(state, runId);
+    this.clearAutosaveTimer(state);
+    this.waiting.delete(runId);
+    this.monitoring.delete(runId);
+    this.active.delete(runId);
+    this.memoryPausing.delete(runId);
+    this.lastNamerKey.delete(runId);
+    this.forceStarted.delete(runId);
+    this.releaseSlot();
+  }
+
+  /** Provider telemetry and released provider leases both wake this. A read
+   * made by the blocked attempt can yield one extra pass, but no spin: an
+   * unchanged snapshot emits no coordinator wake. */
+  private wakeQuotaBlockedRuns(): void {
+    if (![...this.queue, ...this.quotaWakeTimers.keys()].some(
+      (id) => this.store.getRun(id)?.blockedReason?.type === 'provider_quota',
+    )) return;
+    for (const [runId, timer] of this.quotaWakeTimers) {
+      clearTimeout(timer);
+      this.quotaWakeTimers.delete(runId);
+    }
+    for (const run of this.store.listRuns()) {
+      if (run.status === 'queued' && run.blockedReason?.type === 'provider_quota') {
+        this.store.updateRun(run.id, { blockedReason: undefined });
+      }
+    }
+    void this.pump();
+  }
+
+  private armQuotaWake(runId: string, retryAt?: string): void {
+    const prior = this.quotaWakeTimers.get(runId);
+    if (prior) clearTimeout(prior);
+    this.quotaWakeTimers.delete(runId);
+    const at = retryAt ? Date.parse(retryAt) : NaN;
+    if (!Number.isFinite(at) || at <= Date.now()) return;
+    const timer = setTimeout(() => {
+      this.quotaWakeTimers.delete(runId);
+      const run = this.store.getRun(runId);
+      if (run?.status === 'queued' && run.blockedReason?.type === 'provider_quota') {
+        this.store.updateRun(runId, { blockedReason: undefined });
+      }
+      void this.pump();
+    }, at - Date.now());
+    timer.unref?.();
+    this.quotaWakeTimers.set(runId, timer);
+  }
+
+  /** Resolve `auto` at the last responsible moment, after queue/worktree work
+   * but immediately before model/profile/session construction. */
+  private async resolveRunnerSelection(selection: RunnerSelection, attemptedProviders?: ReadonlySet<AutoProvider>): Promise<
+    | { backend: RunnerId; profileId?: string; release?: () => void }
+    | QuotaBlocked
+    | string
+  > {
+    if (selection !== 'auto') return { backend: selection };
+    if (!this.quotaCoordinator) return 'quota-aware routing is unavailable';
+
+    const [checks, claude, codex] = await Promise.all([
+      detectEnvironment(),
+      resolveProfileEnvForRoot(this.repoRoot, 'claude'),
+      resolveProfileEnvForRoot(this.repoRoot, 'codex'),
+    ]);
+    const available = new Map(checks.map((check) => [check.name, check.available]));
+    const result = await this.quotaCoordinator.acquire({
+      attemptedProviders,
+      forceRefresh: attemptedProviders !== undefined && attemptedProviders.size > 0,
+      candidates: {
+        claude: {
+          account: { provider: 'claude', profileId: claude.profile.id },
+          available: available.get('claude') === true,
+          // The usage adapter performs the authoritative authenticated read.
+          authenticated: true,
+        },
+        codex: {
+          account: { provider: 'codex', profileId: codex.profile.id },
+          available: available.get('codex') === true,
+          authenticated: true,
+        },
+      },
+    });
+    if (result.kind === 'selected') {
+      return { backend: result.provider, profileId: result.lease.profileId, release: result.lease.release };
+    }
+    if (result.kind === 'wait') return { kind: 'quota-blocked', retryAt: result.retryAt };
+    return result.kind === 'error'
+      ? result.message
+      : 'no quota-eligible provider is currently available';
+  }
+
   /** Returns an error message, or null on success. */
   private async runAgentStep(
     runId: string,
@@ -2755,7 +3003,7 @@ export class RunManager {
     interactive: boolean,
     emit: (event: { type: string; stepId?: string; [k: string]: unknown }) => void,
     images: ContentBlock[] | undefined,
-    taskBackend: RunnerId,
+    taskBackend: RunnerSelection,
     extraSystemPrompt: string | undefined,
     /** The chain-boundary note for this step (#410), or undefined when the
      *  workflow has a single agent step and there is no boundary to explain. */
@@ -2764,7 +3012,9 @@ export class RunManager {
      *  paths are appended to `userPrompt` so the agent can operate on the
      *  real files, not just view the inline image blocks. */
     attachments: PersistedAttachment[] = [],
-  ): Promise<string | null> {
+    attemptedProviders?: ReadonlySet<AutoProvider>,
+    failoverPreamble?: string,
+  ): Promise<string | QuotaBlocked | null> {
     let systemPrompt: string | undefined;
     if (step.skill) {
       const skill = skills.find((s) => s.name === step.skill);
@@ -2798,6 +3048,7 @@ export class RunManager {
     }
 
     let userPrompt = applyTemplate(step.prompt ?? '{{task}}', input.task);
+    if (failoverPreamble) userPrompt = `${failoverPreamble}\n\n---\n\n${userPrompt}`;
     if (chainNote) userPrompt = `${chainNote}\n\n---\n\n${userPrompt}`;
     if (checkFailure) {
       userPrompt += `\n\nA verification command failed after the previous attempt. Fix the cause. Failing output:\n\n${checkFailure}`;
@@ -2814,9 +3065,13 @@ export class RunManager {
       if (attachments.length) userPrompt += `\n\n${pastedAttachmentsText(attachments)}`;
     }
 
+    const requestedRunner = step.runner ?? taskBackend;
+    const resolvedRunner = await this.resolveRunnerSelection(requestedRunner, attemptedProviders);
+    if (isQuotaBlocked(resolvedRunner)) return resolvedRunner;
+    if (typeof resolvedRunner === 'string') return resolvedRunner;
+    const { backend, profileId: resolvedProfileId, release } = resolvedRunner;
     const sessionId = randomUUID();
-    const backend = step.runner ?? taskBackend;
-    this.store.updateStep(runId, step.id, { sessionId, backend, requestedRunner: step.runner ?? taskBackend });
+    this.store.updateStep(runId, step.id, { sessionId, backend, requestedRunner });
 
     const stepRecord = this.store.getRun(runId)?.steps.find((s) => s.id === step.id);
     const startTokens = stepRecord?.tokensUsed ?? 0;
@@ -2922,7 +3177,7 @@ export class RunManager {
       }
     };
 
-    const stepBackend = step.runner ?? taskBackend;
+    const stepBackend = backend;
     // Normalise the selected model to canonical `provider/model` and back to the
     // backend's own wire form via the ONE shared mapper (#405). Fail-loud: an
     // unresolvable model (e.g. a bare id on opencode) returns the step error
@@ -2943,7 +3198,11 @@ export class RunManager {
         modelIdentity: normalized ? formatModelIdentity(normalized.identity) : undefined,
       });
     } catch (err) {
-      if (err instanceof ModelIdentityError) return err.message;
+      if (err instanceof ModelIdentityError) {
+        release?.();
+        return err.message;
+      }
+      release?.();
       throw err;
     }
     // Which agent account this step spawns under, and — recorded on the step before the spawn —
@@ -2955,9 +3214,14 @@ export class RunManager {
     try {
       stepProfile = await this.agentEnvForStep(runId, stepBackend, {
         generateFollowups: followupsEnabled() && input.generateFollowups !== false,
+        recordedProfileId: resolvedProfileId,
       });
     } catch (err) {
-      if (err instanceof AgentTempDirError) return err.message;
+      if (err instanceof AgentTempDirError) {
+        release?.();
+        return err.message;
+      }
+      release?.();
       throw err;
     }
     this.store.updateStep(runId, step.id, { profileId: stepProfile.profileId });
@@ -2999,6 +3263,7 @@ export class RunManager {
       );
     } catch (err) {
       state.currentStepId = undefined;
+      release?.();
       return err instanceof Error ? err.message : String(err);
     }
     state.session = session;
@@ -3008,11 +3273,13 @@ export class RunManager {
     state.interrupt = () => session.interrupt();
     if (session.pid !== undefined) registerRunProcess(runId, session.pid);
 
+    let failureMessage: string | undefined;
     try {
       const result = await session.result;
       if (sessionError) {
         sink.sessionEnded('error', sessionError);
-        return sessionError;
+        failureMessage = sessionError;
+        return failureMessage;
       }
       // v2 counterpart of v1's `done` (spec: the mappers leave session-close
       // events to the RunManager — only it knows how the session settled).
@@ -3022,7 +3289,8 @@ export class RunManager {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       sink.sessionEnded('error', message); // alongside v1's fatal `error`
-      return message;
+      failureMessage = message;
+      return failureMessage;
     } finally {
       this.recordUsagePeaks(runId);
       this.clearIdleTimer(state);
@@ -3032,6 +3300,15 @@ export class RunManager {
       state.session = undefined;
       state.currentStepId = undefined;
       state.interrupt = () => undefined;
+      if (
+        requestedRunner === 'auto'
+        && failureMessage
+        && classifyRunnerFailure(failureMessage) === 'quota_exhausted'
+        && isAutoProvider(backend)
+      ) {
+        this.quotaCoordinator?.reportQuotaExhausted?.({ provider: backend, profileId: stepProfile.profileId });
+      }
+      release?.();
     }
   }
 

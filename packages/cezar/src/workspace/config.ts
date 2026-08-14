@@ -190,7 +190,7 @@ const composerDefaultsSchema = z
  */
 const agentDefaultsSchema = z
   .object({
-    runner: z.enum(PROVIDER_IDS).optional().catch(undefined),
+    runner: z.union([z.enum(PROVIDER_IDS), z.literal('auto')]).optional().catch(undefined),
     models: z
       .object({
         claude: z.string().trim().min(1).max(200).optional().catch(undefined),

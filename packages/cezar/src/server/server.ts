@@ -43,6 +43,7 @@ import {
 import { detectEnvironment } from '../core/backend-detect.ts';
 import { RUNNER_IDS } from '../core/agent-runner.ts';
 import type { ContentBlock } from '../core/agent-runner.ts';
+import type { RunnerSelection } from '../core/runner-selection.ts';
 import { AGENT_MODELS_LOCKED_ERROR, agentModelsLocked } from '../core/agent-model-policy.ts';
 import { discoverCodexModels } from '../core/codex-model-catalog.ts';
 import { discoverOpencodeModels } from '../core/opencode-model-catalog.ts';
@@ -152,6 +153,8 @@ import {
   type ProjectListEntry,
 } from '../workspace/projects.ts';
 import { WorkspaceSemaphore } from '../workspace/semaphore.ts';
+import type { ProviderUsageService } from '../core/quota/usage-service.ts';
+import type { QuotaCoordinator } from '../core/quota/coordinator.ts';
 import { mergeWriteWorkspaceUiState, readWorkspaceUiState } from '../workspace/ui-state.ts';
 import { checkoutRepo, type CloneRunner } from './checkout.ts';
 import { ProjectContextError, ProjectContexts, type ProjectContext } from './project-context.ts';
@@ -216,6 +219,10 @@ export interface ServerDeps {
    *  calls `semaphore.refresh()` after a write. Optional so legacy
    *  callers/tests change nothing. */
   semaphore?: WorkspaceSemaphore;
+  /** Shared process-wide quota cache and reservation authority. */
+  quotaCoordinator?: QuotaCoordinator;
+  quotaUsage?: ProviderUsageService;
+  quotaPolicyUpdate?: (config: WorkspaceConfig) => void;
   /** Workspace-level SSE bus (spec, step 2.8): `project-added` /
    *  `project-removed` / `checkout-progress` plus the host-wide unstamped
    *  `provider-status` event reach `/api/workspace/events` through this.
@@ -494,10 +501,15 @@ export interface WorkspaceConfigResponse {
     memoryLimitMb: number | null;
     worktreeRetentionDefault: number;
   };
+  quotaRouting?: {
+    enabled: true;
+    providerOrder: ['claude' | 'codex', 'claude' | 'codex'];
+    unknownUsagePolicy: 'allow' | 'deny';
+  };
   /** What a repo that has set none of its own runs (spec 2026-07-29-agent-profiles). Both keys
    *  optional: absent means "no opinion", which must stay distinguishable from a chosen value. */
   agentDefaults: {
-    runner?: ProviderId;
+    runner?: RunnerSelection;
     models?: { claude?: string; codex?: string; opencode?: string };
   };
 }
@@ -564,7 +576,7 @@ const startRunSchema = z
     task: z.string().min(1).max(100_000, 'must be at most 100000 characters'),
     model: z.string().optional(),
     // Agent backend for this task (falls back to config `defaultRunner`).
-    runner: z.enum(RUNNER_IDS).optional(),
+    runner: z.union([z.enum(RUNNER_IDS), z.literal('auto')]).optional(),
     // Agent account for this task (spec 2026-07-29-agent-profiles). Falls back to the project's
     // own selection, then the discovered default. Bounded like a profile id in the workspace
     // schema, so a value this route accepts can never be degraded away by the next load.
@@ -832,7 +844,7 @@ function foldedLength(task: string, stack: Array<{ text: string }>): number {
 const continueSchema = z.object({
   text: z.string().max(100_000, 'must be at most 100000 characters').optional(),
   images: z.array(imageInputSchema).max(4).optional(),
-  runner: z.enum(RUNNER_IDS).optional(),
+  runner: z.union([z.enum(RUNNER_IDS), z.literal('auto')]).optional(),
   model: z.string().max(200).optional(),
 });
 
@@ -845,7 +857,7 @@ const continueSchema = z.object({
 // absent so it never touches `task`.
 const startTodoSchema = z
   .object({
-    runner: z.enum(RUNNER_IDS).optional(),
+    runner: z.union([z.enum(RUNNER_IDS), z.literal('auto')]).optional(),
     model: z.string().max(200).optional(),
     prompt: z
       .string()
@@ -1183,6 +1195,7 @@ export function createApp(deps: ServerDeps) {
       return listProjects(selector);
     },
     semaphore: deps.semaphore,
+    quotaCoordinator: deps.quotaCoordinator,
   });
   // Workspace-level SSE bus (step 2.8) — the registry mutators and the
   // checkout flow (Phase 4) emit here; /api/workspace/events relays.
@@ -2809,6 +2822,13 @@ export function createApp(deps: ServerDeps) {
       memoryLimitMb: config.resources.memoryLimitMb,
       worktreeRetentionDefault: config.resources.worktreeRetentionDefault,
     },
+    ...(config.quotaRouting.enabled ? {
+      quotaRouting: {
+        enabled: true as const,
+        providerOrder: [config.quotaRouting.providerOrder[0]!, config.quotaRouting.providerOrder[1]!],
+        unknownUsagePolicy: config.quotaRouting.unknownUsagePolicy,
+      },
+    } : {}),
     // SPREAD, never `runner: maybeUndefined`: hono would type the key as always-present while
     // `JSON.stringify` drops it, which is the exact drift `contract-parity` catches. And absent has
     // to keep meaning "no opinion" here, or the fallback collapses into "always claude".
@@ -2819,11 +2839,24 @@ export function createApp(deps: ServerDeps) {
   });
   // ---- chained family: workspace settings + GUI prefs (workspace-level) ----
   const workspaceConfigRoutes = new Hono<ProjectApiEnv>()
+    .get('/workspace/usage', async (c) => {
+      if (!deps.quotaUsage) return c.json({ providers: [] });
+      const root = c.get('project').root;
+      const [claude, codex] = await Promise.all([
+        resolveProfileEnvForRoot(root, 'claude'),
+        resolveProfileEnvForRoot(root, 'codex'),
+      ]);
+      const providers = await Promise.all([
+        deps.quotaUsage.refresh({ provider: 'claude', profileId: claude.profile.id }),
+        deps.quotaUsage.refresh({ provider: 'codex', profileId: codex.profile.id }),
+      ]);
+      return c.json({ providers: providers.map((snapshot) => ({ ...snapshot, windows: [...snapshot.windows] })) });
+    })
     .get('/workspace/config', async (c) => c.json(workspaceConfigBody(await loadWorkspaceConfig())))
 
     .put('/workspace/config', jsonZodValidator(() => workspaceConfigUpdateSchema), async (c) => {
       const parsed = { data: c.req.valid('json') };
-      const { browseRoot, projectsDir, skillsAutoUpdate, composerDefaults, resources, agentDefaults } = parsed.data;
+      const { browseRoot, projectsDir, skillsAutoUpdate, composerDefaults, resources, agentDefaults, quotaRouting } = parsed.data;
       for (const [configuredRoot, create] of [
         [browseRoot, false],
         [projectsDir, true],
@@ -2881,6 +2914,7 @@ export function createApp(deps: ServerDeps) {
           if (resources?.worktreeRetentionDefault !== undefined) {
             config.resources.worktreeRetentionDefault = resources.worktreeRetentionDefault;
           }
+          if (quotaRouting?.enabled !== undefined) config.quotaRouting.enabled = quotaRouting.enabled;
           // `null` CLEARS back to "no opinion" — a partial patch cannot say that by omission,
           // and leaving a stale runner behind would keep overriding repos that never chose.
           if (agentDefaults?.runner === null) delete config.agentDefaults.runner;
@@ -2900,6 +2934,7 @@ export function createApp(deps: ServerDeps) {
         // e.g. a read-only home — nothing was persisted (atomic tmp+rename).
         return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
       }
+      deps.quotaPolicyUpdate?.(written);
       // A resource change takes effect WITHOUT a restart: refresh the shared
       // semaphore's in-memory snapshot and pump every manager (step 2.5's hook).
       if (resources !== undefined) await deps.semaphore?.refresh();
@@ -2960,7 +2995,7 @@ export function createApp(deps: ServerDeps) {
     // the next load's `.catch`. `null` clears a key back to "no opinion".
     agentDefaults: z
       .object({
-        runner: z.enum(PROVIDER_IDS).nullable().optional(),
+        runner: z.union([z.enum(PROVIDER_IDS), z.literal('auto')]).nullable().optional(),
         models: z
           .object({
             claude: z.string().trim().min(1).max(200).nullable().optional(),
@@ -2971,6 +3006,7 @@ export function createApp(deps: ServerDeps) {
           .optional(),
       })
       .optional(),
+    quotaRouting: z.object({ enabled: z.boolean().optional() }).optional(),
   });
   // ---- chained family: filesystem browse (workspace-level) ----
   const fsBrowseRoutes = new Hono<ProjectApiEnv>()
@@ -3158,7 +3194,8 @@ export function createApp(deps: ServerDeps) {
     .post('/plan', jsonZodValidator(planSchema), async (c) => {
       const { root: repoRoot } = c.get('project');
       const parsed = { data: c.req.valid('json') };
-      const blocked = await providerActionError([(await loadConfig(repoRoot)).defaultRunner]);
+      const configuredRunner = (await loadConfig(repoRoot)).defaultRunner;
+      const blocked = configuredRunner === 'auto' ? null : await providerActionError([configuredRunner]);
       if (blocked) return c.json({ error: blocked }, 409);
       return c.json(await planChain(repoRoot, parsed.data.task));
     });
@@ -3537,13 +3574,16 @@ export function createApp(deps: ServerDeps) {
         if (!workflow) return c.json({ error: `unknown workflow: ${parsed.data.workflow}` }, 404);
       }
       const fallback = parsed.data.runner ?? (await loadConfig(repoRoot)).defaultRunner;
-      const blocked = await providerActionError(providersRequiredByWorkflow(workflow, fallback));
+      const blocked = fallback === 'auto'
+        ? undefined
+        : await providerActionError(providersRequiredByWorkflow(workflow, fallback));
       if (blocked) return c.json({ error: blocked }, 409);
       // A composer override names an account the user just picked, so a stale id (deleted since
       // the page loaded) is answered honestly instead of quietly running on the default — the
       // opposite of how RESOLUTION treats a dangling reference, and deliberately so: a run
       // replaying a stored id has no better answer than the default, a user does.
       if (parsed.data.agentProfile !== undefined) {
+        if (fallback === 'auto') return c.json({ error: 'an agent profile requires an explicit runner' }, 400);
         const account = await resolveWorkspaceProfile(fallback, parsed.data.agentProfile);
         if ('error' in account) return c.json({ error: account.error }, 400);
       }
@@ -3823,7 +3863,10 @@ export function createApp(deps: ServerDeps) {
       if (agentModelsLocked(repoRoot) && parsed.data.model?.trim()) {
         return c.json({ error: AGENT_MODELS_LOCKED_ERROR }, 409);
       }
-      const blocked = await providerActionError([providerForExistingRun(run, parsed.data.runner)]);
+      const selectedRunner = parsed.data.runner ?? run.runner ?? 'claude';
+      const blocked = selectedRunner === 'auto'
+        ? undefined
+        : await providerActionError([providerForExistingRun(run, selectedRunner)]);
       if (blocked) return c.json({ error: blocked }, 409);
       const result = manager.continueRun(id, {
         text: parsed.data.text,
@@ -5139,7 +5182,7 @@ export function createApp(deps: ServerDeps) {
   const modelPresetSchema = z.string().trim().max(200).nullable().optional();
   const setConfigSchema = z.object({
     baseBranch: z.string().trim().min(1).max(200).nullable().optional(),
-    defaultRunner: z.enum(RUNNER_IDS).optional(),
+    defaultRunner: z.union([z.enum(RUNNER_IDS), z.literal('auto')]).optional(),
     systemPrompt: z.string().trim().max(20_000, 'must be at most 20000 characters').nullable().optional(),
     defaultModels: z
       .object({
@@ -5456,6 +5499,7 @@ export function startServer(deps: ServerDeps, port: number): ServerType {
   const sharedContexts = deps.contexts ?? new ProjectContexts({
     listProjects,
     semaphore: deps.semaphore,
+    quotaCoordinator: deps.quotaCoordinator,
     automationStore: (projectId, root) => automationCoordinator.store(projectId, root)!,
   });
   // #801: GitHub automations are opt-in. Off, the flag must remove the BEHAVIOR and not merely

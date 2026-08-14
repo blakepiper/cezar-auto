@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { createRunner } from './core/runner-factory.ts';
-import { loadConfig } from './config.ts';
+import { auxiliaryRunner, loadConfig } from './config.ts';
 import { discoverSkills, type Skill } from './skills.ts';
 import { resolveProfileEnvForRoot } from './workspace/agent-profiles.ts';
 import { workflowStepSchema, type WorkflowStepDef } from './workflows/types.ts';
@@ -64,12 +64,13 @@ export async function planChain(repoRoot: string, task: string): Promise<PlanRes
   // Plan with the configured default runner. `plannerModel` ("sonnet") is a
   // Claude alias, so only pass it when the planner runs on Claude — Codex /
   // OpenCode pick their own default model instead.
-  const runner = createRunner(config.defaultRunner);
-  const plannerModel = config.defaultRunner === 'claude' ? config.plannerModel : undefined;
+  const runnerId = auxiliaryRunner(config.defaultRunner);
+  const runner = createRunner(runnerId);
+  const plannerModel = runnerId === 'claude' ? config.plannerModel : undefined;
   // Plan under the SAME agent account this project's tasks run on (spec
   // 2026-07-29-agent-profiles). Without this the planner would quietly bill the personal
   // subscription for a project the user pointed at their work account.
-  const { env: profileEnv } = await resolveProfileEnvForRoot(repoRoot, config.defaultRunner);
+  const { env: profileEnv } = await resolveProfileEnvForRoot(repoRoot, runnerId);
   // One retry on an unparseable answer; a runner error goes straight to fallback.
   for (let attempt = 0; attempt < 2; attempt++) {
     let text: string;

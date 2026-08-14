@@ -1,6 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
-import { CLAUDE_USAGE_URL, ClaudeUsageAdapter, normalizeClaudeUsage } from './claude-usage-adapter.ts';
-import { CodexUsageAdapter, normalizeCodexRateLimits } from './codex-usage-adapter.ts';
+import {
+  CLAUDE_USAGE_URL,
+  ClaudeUsageAdapter,
+  createInstalledClaudeUsageAdapter,
+  normalizeClaudeUsage,
+} from './claude-usage-adapter.ts';
+import {
+  CodexUsageAdapter,
+  createInstalledCodexUsageAdapter,
+  normalizeCodexRateLimits,
+} from './codex-usage-adapter.ts';
 
 const claude = { provider: 'claude' as const, profileId: 'work' };
 const codex = { provider: 'codex' as const, profileId: 'work' };
@@ -34,6 +43,21 @@ describe('Claude usage adapter', () => {
     const malformed = new ClaudeUsageAdapter({ resolveAccessToken: vi.fn().mockResolvedValue('x'), fetch: vi.fn().mockResolvedValue(new Response('{}')) });
     expect(await malformed.read(claude)).toMatchObject({ health: 'unknown', error: { code: 'invalid_response' } });
   });
+
+  it('keeps the installed credential reader behind the adapter boundary', async () => {
+    const token = 'never-leave-the-adapter';
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ five_hour: null })));
+    const adapter = createInstalledClaudeUsageAdapter({
+      readCredential: vi.fn().mockResolvedValue({ accessToken: token }),
+      fetch,
+    });
+
+    await expect(adapter.read(claude)).resolves.toMatchObject({ health: 'available' });
+    expect(fetch).toHaveBeenCalledWith(
+      CLAUDE_USAGE_URL,
+      expect.objectContaining({ headers: expect.objectContaining({ authorization: `Bearer ${token}` }) }),
+    );
+  });
 });
 
 describe('Codex usage adapter', () => {
@@ -57,5 +81,12 @@ describe('Codex usage adapter', () => {
     const result = await adapter.read(codex);
     expect(result).toMatchObject({ health: 'unknown', error: { code: 'request_failed' } });
     expect(JSON.stringify(result)).not.toContain('credential token secret');
+  });
+
+  it('keeps the selected Codex profile behind the installed adapter boundary', async () => {
+    const readRateLimits = vi.fn().mockResolvedValue({ primary: { used_percent: 20 } });
+    const adapter = createInstalledCodexUsageAdapter({ cwd: '/repo', readRateLimits });
+    await expect(adapter.read(codex)).resolves.toMatchObject({ health: 'available' });
+    expect(readRateLimits).toHaveBeenCalledWith(codex);
   });
 });

@@ -85,4 +85,32 @@ describe('QuotaCoordinator', () => {
     coordinator.dispose();
     usage.dispose();
   });
+
+  it('keeps a runner-reported quota failure out of routing until changed telemetry proves recovery', async () => {
+    const claude: ProviderUsageAdapter = {
+      provider: 'claude',
+      read: vi.fn()
+        .mockResolvedValueOnce({ health: 'available', source: 'fake', windows: [{ kind: 'short', usedPercent: 50 }] })
+        .mockResolvedValueOnce({ health: 'available', source: 'fake', windows: [{ kind: 'short', usedPercent: 5 }] }),
+    };
+    const codex: ProviderUsageAdapter = {
+      provider: 'codex', read: vi.fn().mockResolvedValue({ health: 'available', source: 'fake', windows: [] }),
+    };
+    const usage = new ProviderUsageService({ adapters: [claude, codex], cacheTtlMs: 30_000 });
+    const coordinator = new QuotaCoordinator(usage, () => policy);
+
+    const first = await coordinator.acquire({ candidates });
+    expect(first).toMatchObject({ kind: 'selected', provider: 'claude' });
+    if (first.kind === 'selected') first.lease.release();
+    coordinator.reportQuotaExhausted(candidates.claude.account);
+
+    const fallback = await coordinator.acquire({ candidates });
+    expect(fallback).toMatchObject({ kind: 'selected', provider: 'codex' });
+    if (fallback.kind === 'selected') fallback.lease.release();
+
+    await usage.refresh(candidates.claude.account, true);
+    expect(await coordinator.acquire({ candidates })).toMatchObject({ kind: 'selected', provider: 'claude' });
+    coordinator.dispose();
+    usage.dispose();
+  });
 });

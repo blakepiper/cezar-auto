@@ -34,6 +34,9 @@ import { runMigrations } from './workspace/migrations.ts';
 import { registerProject, shouldRegisterProject } from './workspace/projects.ts';
 import { runProjectsCommand } from './workspace/projects-cli.ts';
 import { WorkspaceSemaphore } from './workspace/semaphore.ts';
+import { createQuotaRuntime } from './core/quota/runtime.ts';
+import { formatUsageReport, readUsageReport } from './core/quota/usage-report.ts';
+import { resolveProfileEnvForRoot } from './workspace/agent-profiles.ts';
 
 const HELP = `cezar — local cockpit for AI agent tasks in your repo
 
@@ -41,6 +44,7 @@ Usage:
   cezar                     start the cockpit (server + GUI) for the current repo
   cezar run "<task>"        run a task headless in the terminal
   cezar init                scaffold .ai/cezar/ (example workflow + skill)
+  cezar usage               show sanitized Claude and Codex quota telemetry
   cezar projects            list the projects this cockpit serves
                             (also: projects add [<dir>] · projects remove <id>)
   cezar server-install      interactive wizard to host cezar on a server
@@ -53,6 +57,8 @@ Options:
       --repo <dir>            repo to operate on (default: cwd)
       --workflow <name>       workflow for \`run\` (default: quick-task)
       --model <model>         model override for \`run\`
+      --json                  usage: emit stable JSON for scripts
+      --refresh               usage: bypass the local quota cache
       --no-open               don't open the browser
       --platform <id>         server-install target (ubuntu-vps | macosx-ngrok)
       --domain <host>         server-install (ubuntu-vps): host a SECOND, independent
@@ -83,6 +89,8 @@ async function main(): Promise<void> {
       repo: { type: 'string' },
       workflow: { type: 'string' },
       model: { type: 'string' },
+      json: { type: 'boolean', default: false },
+      refresh: { type: 'boolean', default: false },
       'no-open': { type: 'boolean', default: false },
       platform: { type: 'string' },
       domain: { type: 'string' },
@@ -123,6 +131,9 @@ async function main(): Promise<void> {
       return;
     case 'init':
       initCommand(repoRoot);
+      return;
+    case 'usage':
+      await usageCommand(repoRoot, Boolean(values.json), Boolean(values.refresh));
       return;
     case 'projects':
       // Registry-only (no server, no HTTP) — see workspace/projects-cli.ts.
@@ -209,10 +220,11 @@ async function serveCommand(
   // cache hook's first call; PUT /api/workspace/config (step 2.7) re-fires it.
   const semaphore = new WorkspaceSemaphore();
   await semaphore.refresh();
+  const quotaRuntime = await createQuotaRuntime(repoRoot);
   // keepLive + recover() (#367): runs that were queued/running/waiting when
   // the previous process exited are re-queued or resumed instead of failed.
   const store = openStore(repoRoot, { keepLive: true });
-  const manager = new RunManager(store, repoRoot, { semaphore });
+  const manager = new RunManager(store, repoRoot, { semaphore, quotaCoordinator: quotaRuntime.coordinator });
   const providerAuth = new ProviderAuthService();
   const workspaceEvents = new WorkspaceEventBus();
   const providerRuntimeAuth = new ProviderRuntimeAuthObserver(providerAuth, (status) => {
@@ -285,6 +297,9 @@ async function serveCommand(
     providerAuth,
     providerRuntimeAuth,
     workspaceEvents,
+    quotaCoordinator: quotaRuntime.coordinator,
+    quotaUsage: quotaRuntime.usage,
+    quotaPolicyUpdate: quotaRuntime.updateConfig,
   }, port);
   const url = `http://localhost:${port}`;
 
@@ -301,6 +316,7 @@ async function serveCommand(
   await printSkillsBanner(repoRoot);
 
   const shutdown = () => {
+    quotaRuntime.dispose();
     store.flush();
     process.exit(0);
   };
@@ -347,6 +363,24 @@ async function waitForHealth(healthUrl: string, timeoutMs: number): Promise<bool
 }
 
 // ---- run (headless) ----------------------------------------------------------
+
+async function usageCommand(repoRoot: string, json: boolean, refresh: boolean): Promise<void> {
+  const quotaRuntime = await createQuotaRuntime(repoRoot);
+  try {
+    const [claude, codex] = await Promise.all([
+      resolveProfileEnvForRoot(repoRoot, 'claude'),
+      resolveProfileEnvForRoot(repoRoot, 'codex'),
+    ]);
+    const providers = await readUsageReport(quotaRuntime.usage, {
+      claude: { provider: 'claude', profileId: claude.profile.id },
+      codex: { provider: 'codex', profileId: codex.profile.id },
+    }, refresh);
+    if (json) console.log(JSON.stringify({ providers }, null, 2));
+    else console.log(formatUsageReport(providers));
+  } finally {
+    quotaRuntime.dispose();
+  }
+}
 
 async function runCommand(
   repoRoot: string,
@@ -400,7 +434,8 @@ async function runCommand(
   // 2.5) — one refreshed semaphore, even with just one manager in play.
   const semaphore = new WorkspaceSemaphore();
   await semaphore.refresh();
-  const manager = new RunManager(store, repoRoot, { semaphore });
+  const quotaRuntime = await createQuotaRuntime(repoRoot);
+  const manager = new RunManager(store, repoRoot, { semaphore, quotaCoordinator: quotaRuntime.coordinator });
 
   store.on('event', ({ event }) => {
     switch (event.type) {
@@ -438,6 +473,7 @@ async function runCommand(
     });
   });
   store.flush();
+  quotaRuntime.dispose();
   const record = store.getRun(run.id);
   if (final === 'review') {
     console.log(`\n  changes ready for review on branch ${record?.branch ?? '?'} — inspect them in the cockpit: npx cezar`);

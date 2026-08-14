@@ -34,6 +34,7 @@ import type {
   ProjectListEntry,
   RepoResponse,
   Runner,
+  RunnerSelection,
   Skill,
   WorkflowDef,
 } from '@open-mercato/cezar-api-client'
@@ -92,6 +93,7 @@ import {
   pushRecentSource,
   resolveModel,
   resolveRunner,
+  resolveRunnerSelection,
   resolveSource,
   startedRunPath,
   type TaskSource,
@@ -211,18 +213,20 @@ export function NewTaskRoute() {
   const providers = useProviderStatus()
   const runners = usableRunners(providers.data)
   const defaultRunner = config.data?.defaultRunner
-  const preferredRunner = defaultRunner ?? 'claude'
-  const runner = runners.length > 0 ? resolveRunner(draft.runner, runners, preferredRunner) : null
-  const displayRunner = runner ?? preferredRunner
+  const preferredRunner = defaultRunner === 'auto' ? 'claude' : defaultRunner ?? 'claude'
+  const runner = runners.length > 0 ? resolveRunnerSelection(draft.runner, runners, preferredRunner) : null
+  const selectedRunner: RunnerSelection = runner ?? preferredRunner
+  const autoRunner = selectedRunner === 'auto'
+  const displayRunner: Runner = autoRunner ? 'claude' : selectedRunner
   const providersReady = providers.isSuccess && runners.length > 0
   const catalog = useRunnerModels(displayRunner)
   const modelsLocked = config.data?.modelsLocked === true
-  const models = runner === null
+  const models = runner === null || autoRunner
     ? []
-    : modelsForRunner(runner, catalog.data, [draft.model, config.data?.defaultModels?.[runner]])
-  const model = runner === null
+    : modelsForRunner(displayRunner, catalog.data, [draft.model, config.data?.defaultModels?.[displayRunner]])
+  const model = runner === null || autoRunner
     ? ''
-    : resolveModel(modelsLocked ? null : draft.model, runner, config.data?.defaultModels, catalog.data)
+    : resolveModel(modelsLocked ? null : draft.model, displayRunner, config.data?.defaultModels, catalog.data)
   // Agent accounts (spec 2026-07-29-agent-profiles). These are rows of the RUNNER pill rather than
   // a pill of their own — `claude · Default` / `claude · Klaudiusz` / `codex` — so what will run is
   // readable at a glance instead of assembled from two controls. An agent with a single login stays
@@ -370,7 +374,7 @@ export function NewTaskRoute() {
       }
       if (launchKey !== '' && deepLink.key === launchKey) {
         try {
-          const created = await createRun(bookmarkletRunBody(deepLink, runner, defaultRunner))
+          const created = await createRun(bookmarkletRunBody(deepLink, selectedRunner, defaultRunner))
           clearDraftText(draftProjectId)
           void queryClient.invalidateQueries({ queryKey: queryKeys.runs.all })
           void navigate(startedRunPath(created))
@@ -502,7 +506,7 @@ export function NewTaskRoute() {
           steps: plan.steps,
           model,
           modelsLocked,
-          runner,
+          runner: selectedRunner,
           runnerExplicit: draft.runner !== null,
           defaultRunner,
           variants,
@@ -627,10 +631,11 @@ export function NewTaskRoute() {
               || runners.some((id) => accountChoices.filter((c) => c.provider === id).length > 1) ? (
                 <RunnerPill
                   runners={runners}
-                  value={displayRunner}
+                  value={selectedRunner}
                   accounts={accountChoices}
                   account={agentProfile}
                   repoAccount={repoAccount}
+                  includeAuto={runners.length > 1 && workspaceConfig.data?.quotaRouting?.enabled === true}
                   // Changing the AGENT clears the model pin: presets are per-runner, so a kept
                   // model would be one the new runner does not have. Changing only the account
                   // keeps it — the model catalog is the same either way.
@@ -638,13 +643,13 @@ export function NewTaskRoute() {
                     update({
                       runner: next,
                       agentProfile: picked,
-                      ...(next === displayRunner ? {} : { model: null }),
+                      ...(next === selectedRunner ? {} : { model: null }),
                     })
                   }
                   disabled={!providersReady}
                 />
               ) : null}
-              <PickerPill
+              {!autoRunner ? <PickerPill
                 slot="model-pill"
                 ariaLabel="Model"
                 label={models.find((m) => m.id === model)?.label ?? 'auto'}
@@ -659,7 +664,7 @@ export function NewTaskRoute() {
                 onPick={(next) => update({ model: next })}
                 options={models.map((m) => ({ value: m.id, label: m.label, desc: m.desc }))}
                 status={modelCatalogStatus(displayRunner, catalog.data, catalog.isError)}
-              />
+              /> : null}
               <PickerPill
                 slot="variants-pill"
                 ariaLabel="Parallel variants"

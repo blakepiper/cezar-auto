@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { Link } from 'react-router'
 
 import { putWorkspaceConfig } from '@/api/client'
-import { useWorkspaceConfig, workspaceQueryKeys } from '@/api/queries'
+import { useWorkspaceConfig, useWorkspaceUsage, workspaceQueryKeys } from '@/api/queries'
 import type { SetWorkspaceConfigInput, WorkspaceConfigResponse } from '@open-mercato/cezar-api-client'
 import { CenteredState } from '@/components/centered-state'
 import { Button } from '@/components/ui/button'
@@ -62,6 +62,8 @@ export function ResourcesSection() {
 
 function ResourcesForm({ config }: { config: WorkspaceConfigResponse }) {
   const queryClient = useQueryClient()
+  const usage = useWorkspaceUsage(config.quotaRouting?.enabled === true)
+  const quotaEnabled = config.quotaRouting?.enabled === true
 
   const save = useMutation({
     mutationFn: (patch: SetWorkspaceConfigInput) => putWorkspaceConfig(patch),
@@ -131,6 +133,47 @@ function ResourcesForm({ config }: { config: WorkspaceConfigResponse }) {
       data-slot="resources-section"
       className="mx-auto flex w-full max-w-2xl flex-col gap-7 p-4 pb-[calc(90px+env(safe-area-inset-bottom))] md:p-6 md:pb-6"
     >
+      <SettingsField
+        title="Quota-aware routing"
+        hint="Allow Auto tasks to choose between Claude and Codex using subscription usage."
+      >
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            aria-label="Enable quota-aware routing"
+            checked={quotaEnabled}
+            disabled={save.isPending}
+            onChange={(event) => save.mutate({ quotaRouting: { enabled: event.target.checked } })}
+          />
+          Enable Auto routing
+        </label>
+      </SettingsField>
+      {config.quotaRouting?.enabled === true ? (
+        <SettingsField
+          title="Provider quota"
+          hint="Auto routing consults this sanitized usage snapshot before starting new work."
+        >
+          <div data-slot="quota-usage" className="flex flex-col gap-2">
+            {usage.isPending ? <p className="text-xs text-soft-foreground">Refreshing provider usage…</p> : null}
+            {usage.isError ? <p className="text-xs text-danger">Provider usage could not be refreshed.</p> : null}
+            {usage.data?.providers.map((provider) => {
+              const windows = provider.windows
+                .map((window) => `${window.kind}: ${window.usedPercent === null ? 'unknown' : `${window.usedPercent}%`}${window.resetsAt ? ` · resets ${new Date(window.resetsAt).toLocaleString()}` : ''}`)
+                .join(' · ')
+              return (
+                <div key={provider.provider} className="rounded-md border border-border px-3 py-2 text-xs">
+                  <span className="font-medium capitalize">{provider.provider}</span>{' '}
+                  <span className="text-soft-foreground">{provider.health.replace('_', ' ')}{provider.stale ? ' · stale' : ''}</span>
+                  <p className="mt-1 text-soft-foreground">{windows || 'No usage windows reported'}</p>
+                </div>
+              )
+            })}
+            <Button type="button" variant="outline" size="sm" className="w-fit" disabled={usage.isFetching} onClick={() => usage.refetch()}>
+              {usage.isFetching ? 'Refreshing…' : 'Refresh usage'}
+            </Button>
+          </div>
+        </SettingsField>
+      ) : null}
       <SettingsField
         title="Max parallel tasks"
         hint="How many tasks run at once across every project. The rest wait in the queue. A non-git directory always runs one at a time."

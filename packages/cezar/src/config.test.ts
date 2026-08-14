@@ -39,6 +39,11 @@ describe('loadConfig systemPrompt', () => {
     expect(config.baseBranch).toBe('develop');
   });
 
+  it('accepts auto as the project default runner', async () => {
+    write({ defaultRunner: 'auto' });
+    expect((await loadConfig(repoRoot)).defaultRunner).toBe('auto');
+  });
+
   it('roundtrips a configured prompt, trimmed', async () => {
     write({ systemPrompt: '  Always answer in Polish.  ' });
     expect((await loadConfig(repoRoot)).systemPrompt).toBe('Always answer in Polish.');
@@ -336,6 +341,11 @@ describe('loadConfig machine-wide agent defaults', () => {
     writeMachine({ runner: 'codex' });
     writeRepo({ systemPrompt: 'be brief' });
     expect((await loadConfig(repoRoot)).defaultRunner).toBe('codex');
+  });
+
+  it('preserves auto as a machine-wide default', async () => {
+    writeMachine({ runner: 'auto' });
+    expect((await loadConfig(repoRoot)).defaultRunner).toBe('auto');
   });
 
   it('NEVER overrules a repo that chose — that is what makes it a default', async () => {

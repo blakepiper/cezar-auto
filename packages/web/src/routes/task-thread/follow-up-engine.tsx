@@ -105,6 +105,7 @@ export function useContinueAction(run: ApiRun): ContinueAction {
             runners={runners}
             value={runner}
             onPick={(next) => {
+              if (next === 'auto') return
               setPickedRunner(next)
               setPickedModel(null) // a runner switch invalidates the previous model pick
             }}
