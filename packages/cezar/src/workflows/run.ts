@@ -52,6 +52,7 @@ import { autoNamingActive, generateRunName, liveTitleUpdatesEnabled, postValidat
 import { reviewGateEnabled } from '../runs/review-gate.ts';
 import { resolveProfileEnvForRoot } from '../workspace/agent-profiles.ts';
 import { WorkspaceSemaphore, type AccountHolds } from '../workspace/semaphore.ts';
+import type { QuotaCoordinator } from '../core/quota/coordinator.ts';
 import { UiEventSink } from '../runs/ui-event-sink.ts';
 import type { UiEvent } from '../core/ui-events.ts';
 import { chainStepNote, DEFAULT_ALLOWED_TOOLS, stepKind, type WorkflowDef, type WorkflowStepDef } from './types.ts';
@@ -481,6 +482,8 @@ interface PersistedImages {
  * The user's working tree is never touched.
  */
 export class RunManager {
+  /** Process-shared quota authority. Optional until Auto selection is exposed. */
+  private readonly quotaCoordinator?: QuotaCoordinator;
   private readonly active = new Map<string, ActiveRun>();
   // Queue + `starting` set (spec 006, janitor's pump() pattern): `starting`
   // covers the window between shifting a run off the queue and the run
@@ -558,10 +561,11 @@ export class RunManager {
   constructor(
     private readonly store: RunStore,
     private readonly repoRoot: string,
-    options: { semaphore?: WorkspaceSemaphore } = {},
+    options: { semaphore?: WorkspaceSemaphore; quotaCoordinator?: QuotaCoordinator } = {},
   ) {
     this.dataDir = join(repoRoot, '.ai/cezar');
     this.semaphore = options.semaphore ?? new WorkspaceSemaphore();
+    this.quotaCoordinator = options.quotaCoordinator;
     this.offSemaphore = this.semaphore.register({
       busySlots: () => this.busySlots(),
       pump: () => this.pump(),
