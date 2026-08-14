@@ -32,6 +32,7 @@ import {
   type PickVariantResponse,
   type RunIndexEntry,
   type RunsIndexResponse,
+  type WorkspaceConfigResponse as ContractWorkspaceConfigResponse,
 } from '@open-mercato/cezar-contract';
 // A contract VALUE, like `workspaceUiStateSchema` in workspace/migrations.ts — the request
 // schema this route validates with is the same one the client compiles against.
@@ -479,40 +480,7 @@ export interface UpdateProjectResponse {
 /** `GET/PUT /api/workspace/config` (multi-project spec, step 2.7) — the
  *  settings slice of `~/.cezar/config.json`: global knobs ONLY, never the
  *  project registry (that is `GET /api/projects`' job). */
-export interface WorkspaceConfigResponse {
-  /** Root exposed by the Add project directory browser (`~` kept). */
-  browseRoot: string;
-  /** Checkout root for GUI-cloned projects — stored as written (`~` kept). */
-  projectsDir: string;
-  /** Stored override; null means inherit CEZ_SKILLS_AUTO_UPDATE, then true. */
-  skillsAutoUpdate: boolean | null;
-  effectiveSkillsAutoUpdate: boolean;
-  composerDefaults: {
-    autonomous: boolean | null;
-    worktree: boolean | null;
-    inheritedAutonomous: boolean | 'source-dependent';
-    inheritedWorktree: boolean;
-  };
-  resources: {
-    maxParallel: number;
-    maxMonitoringSessions: number;
-    monitoringWakeIntervalMinutes: number | null;
-    autoResumeOnUsageLimit: boolean;
-    memoryLimitMb: number | null;
-    worktreeRetentionDefault: number;
-  };
-  quotaRouting?: {
-    enabled: true;
-    providerOrder: ['claude' | 'codex', 'claude' | 'codex'];
-    unknownUsagePolicy: 'allow' | 'deny';
-  };
-  /** What a repo that has set none of its own runs (spec 2026-07-29-agent-profiles). Both keys
-   *  optional: absent means "no opinion", which must stay distinguishable from a chosen value. */
-  agentDefaults: {
-    runner?: RunnerSelection;
-    models?: { claude?: string; codex?: string; opencode?: string };
-  };
-}
+export type WorkspaceConfigResponse = ContractWorkspaceConfigResponse;
 
 // ---- workspace SSE (multi-project spec, step 2.8) --------------------------
 
@@ -2819,6 +2787,7 @@ export function createApp(deps: ServerDeps) {
       maxMonitoringSessions: config.resources.maxMonitoringSessions,
       monitoringWakeIntervalMinutes: config.resources.monitoringWakeIntervalMinutes,
       autoResumeOnUsageLimit: config.resources.autoResumeOnUsageLimit,
+      intelligentContextRefresh: config.resources.intelligentContextRefresh,
       memoryLimitMb: config.resources.memoryLimitMb,
       worktreeRetentionDefault: config.resources.worktreeRetentionDefault,
     },
@@ -2910,6 +2879,9 @@ export function createApp(deps: ServerDeps) {
           if (resources?.autoResumeOnUsageLimit !== undefined) {
             config.resources.autoResumeOnUsageLimit = resources.autoResumeOnUsageLimit;
           }
+          if (resources?.intelligentContextRefresh !== undefined) {
+            config.resources.intelligentContextRefresh = resources.intelligentContextRefresh;
+          }
           if (resources?.memoryLimitMb !== undefined) config.resources.memoryLimitMb = resources.memoryLimitMb;
           if (resources?.worktreeRetentionDefault !== undefined) {
             config.resources.worktreeRetentionDefault = resources.worktreeRetentionDefault;
@@ -2987,6 +2959,7 @@ export function createApp(deps: ServerDeps) {
         maxMonitoringSessions: z.number().int().min(0).max(16).optional(),
         monitoringWakeIntervalMinutes: z.number().int().min(1).max(60).nullable().optional(),
         autoResumeOnUsageLimit: z.boolean().optional(),
+        intelligentContextRefresh: z.boolean().optional(),
         memoryLimitMb: z.number().int().min(0).max(1_048_576).nullable().optional(),
         worktreeRetentionDefault: z.number().int().min(0).max(1000).optional(),
       })

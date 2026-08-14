@@ -44,6 +44,8 @@ export interface WorkspaceResourceLimits {
   monitoringWakeIntervalMinutes?: number | null;
   /** Resume a run stopped by a provider usage limit when that limit resets. Default ON. */
   autoResumeOnUsageLimit?: boolean;
+  /** Start a fresh provider context after a completed in-session plan item. Default OFF. */
+  intelligentContextRefresh?: boolean;
   /** Per-task process-tree memory ceiling in MiB; null = no limit. */
   memoryLimitMb: number | null;
   /**
@@ -113,6 +115,7 @@ const DEFAULT_LIMITS: WorkspaceResourceLimits = {
   maxMonitoringSessions: 2,
   monitoringWakeIntervalMinutes: DEFAULT_MONITORING_WAKE_MINUTES,
   autoResumeOnUsageLimit: true,
+  intelligentContextRefresh: false,
   memoryLimitMb: null,
 };
 
@@ -133,6 +136,7 @@ async function loadResourceLimits(): Promise<WorkspaceResourceLimits> {
     maxMonitoringSessions: resources.maxMonitoringSessions,
     monitoringWakeIntervalMinutes: resources.monitoringWakeIntervalMinutes,
     autoResumeOnUsageLimit: resources.autoResumeOnUsageLimit,
+    intelligentContextRefresh: resources.intelligentContextRefresh,
     memoryLimitMb: resources.memoryLimitMb,
     projectLimits,
   };
@@ -200,6 +204,11 @@ export class WorkspaceSemaphore {
    *  written before the key existed) reads as ON — the shipped default. */
   autoResumeOnUsageLimit(): boolean {
     return this.limits.autoResumeOnUsageLimit ?? true;
+  }
+
+  /** Whether a completed in-session plan item should start the next item in a fresh context. */
+  intelligentContextRefresh(): boolean {
+    return this.limits.intelligentContextRefresh ?? false;
   }
 
   /** Cached per-task memory ceiling (MiB), or null for no limit. */

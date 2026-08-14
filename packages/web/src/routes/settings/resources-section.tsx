@@ -201,6 +201,17 @@ function ResourcesForm({ config }: { config: WorkspaceConfigResponse }) {
       ),
     },
   )
+  const intelligentContextRefresh = config.resources.intelligentContextRefresh ?? false
+  const saveIntelligentContextRefresh = (on: boolean) => save.mutate(
+    { resources: { intelligentContextRefresh: on } },
+    {
+      onSuccess: () => toast(
+        on
+          ? 'A fresh context will start after each completed plan item'
+          : 'Intelligent context refresh is off',
+      ),
+    },
+  )
   const memoryNum = memory.trim() === '' ? 0 : Number(memory)
   const memoryInvalid =
     memory.trim() !== '' && (!Number.isInteger(memoryNum) || memoryNum < MEMORY_MIN_MB)
@@ -297,6 +308,26 @@ function ResourcesForm({ config }: { config: WorkspaceConfigResponse }) {
             Configure per-project limits
           </Link>
           .
+        </p>
+      </SettingsField>
+
+      <SettingsField
+        title="Intelligently refresh context windows"
+        hint="After the agent completes an in-session plan item, finish that turn and start the next item in a fresh provider context. The same task, worktree and handoff continue; each refresh adds a new model-start call."
+      >
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            aria-label="Intelligently refresh context windows"
+            data-slot="resources-intelligent-context-refresh"
+            checked={intelligentContextRefresh}
+            disabled={save.isPending}
+            onChange={(event) => saveIntelligentContextRefresh(event.target.checked)}
+          />
+          Refresh after completed plan items
+        </label>
+        <p className="text-[11px] text-soft-foreground">
+          Off by default. It applies to new and already-running sessions when the next plan update arrives.
         </p>
       </SettingsField>
 

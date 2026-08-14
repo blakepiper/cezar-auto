@@ -162,6 +162,9 @@ const resourcesSchema = z
      * it off leaves the run `failed` with its Continue button, exactly as before the feature.
      */
     autoResumeOnUsageLimit: z.boolean().default(true).catch(true),
+    /** Start a fresh provider context after each completed in-session plan item. Off by default
+     * because it trades model-start overhead for a smaller context window. */
+    intelligentContextRefresh: z.boolean().default(false).catch(false),
     /** Per-task memory ceiling in MiB; null = no limit (matches the file's
      *  literal `"memoryLimitMb": null` in the spec's Data Model). */
     memoryLimitMb: z.number().int().min(0).max(1_048_576).nullable().default(null).catch(null),

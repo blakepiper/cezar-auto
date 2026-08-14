@@ -44,6 +44,7 @@ function serve(
       maxMonitoringSessions: 2,
       monitoringWakeIntervalMinutes: null,
       autoResumeOnUsageLimit: true,
+      intelligentContextRefresh: false,
       memoryLimitMb: null,
       worktreeRetentionDefault: 10,
       ...resources,
@@ -204,6 +205,17 @@ describe('Global settings → Resources', () => {
     fireEvent.change(select, { target: { value: 'off' } })
     await waitFor(() => expect(puts()).toHaveLength(1))
     expect(puts()[0]?.body).toEqual({ resources: { autoResumeOnUsageLimit: false } })
+  })
+
+  it('shows intelligent context refresh off by default and saves the opt-in', async () => {
+    serve()
+    renderResources()
+    const toggle = (await screen.findByLabelText('Intelligently refresh context windows')) as HTMLInputElement
+    expect(toggle.checked).toBe(false)
+
+    fireEvent.click(toggle)
+    await waitFor(() => expect(puts()).toHaveLength(1))
+    expect(puts()[0]?.body).toEqual({ resources: { intelligentContextRefresh: true } })
   })
 
   it('saves a memory limit, and an empty field clears it back to "no limit"', async () => {

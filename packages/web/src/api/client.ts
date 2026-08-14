@@ -1617,7 +1617,17 @@ export async function getWorkspaceConfig(opts?: ReadOptions): Promise<WorkspaceC
     await cez.api.v1.workspace.config.$get({}, init(opts)),
     '/workspace/config',
   )
-  return { ...answer, agentDefaults: answer.agentDefaults ?? {} }
+  return {
+    ...answer,
+    resources: {
+      ...answer.resources,
+      // Older servers omit newly added workspace resource keys; missing means the shipped OFF
+      // default, while a current server's explicit value must survive unchanged.
+      intelligentContextRefresh:
+        (answer.resources as { intelligentContextRefresh?: boolean }).intelligentContextRefresh ?? false,
+    },
+    agentDefaults: answer.agentDefaults ?? {},
+  }
 }
 
 /** Sanitized quota telemetry for the workspace's default Claude and Codex profiles. */
@@ -1782,7 +1792,15 @@ export async function applySkillsUpdate(projectId: string): Promise<SkillsUpdate
 export async function putWorkspaceConfig(
   patch: SetWorkspaceConfigInput,
 ): Promise<WorkspaceConfigResponse> {
-  return unwrap(await cez.api.v1.workspace.config.$put({ json: patch }), '/workspace/config')
+  const answer = await unwrap(await cez.api.v1.workspace.config.$put({ json: patch }), '/workspace/config')
+  return {
+    ...answer,
+    resources: {
+      ...answer.resources,
+      intelligentContextRefresh:
+        (answer.resources as { intelligentContextRefresh?: boolean }).intelligentContextRefresh ?? false,
+    },
+  }
 }
 
 /** Set/clear the agents' config knobs — base branch, default runner, system prompt, per-runner

@@ -29,6 +29,7 @@ describe('WorkspaceSemaphore', () => {
     expect(sem.maxParallel()).toBe(2);
     expect(sem.memoryLimitMb()).toBeNull();
     expect(sem.monitoringWakeIntervalMinutes()).toBe(5); // #810 — monitoring must self-resume
+    expect(sem.intelligentContextRefresh()).toBe(false);
     expect(sem.busy()).toBe(0);
   });
 

@@ -58,7 +58,7 @@ import type { QuotaCoordinator } from '../core/quota/coordinator.ts';
 import { classifyRunnerFailure } from '../core/quota/failure-classifier.ts';
 import { isAutoProvider, type AutoProvider } from '../core/runner-selection.ts';
 import { UiEventSink } from '../runs/ui-event-sink.ts';
-import type { UiEvent } from '../core/ui-events.ts';
+import type { PlanEntry, UiEvent } from '../core/ui-events.ts';
 import { chainStepNote, DEFAULT_ALLOWED_TOOLS, stepKind, type WorkflowDef, type WorkflowStepDef } from './types.ts';
 
 const CHECK_OUTPUT_CAP = 20_000;
@@ -179,6 +179,12 @@ interface ActiveRun {
    *  going until it signals done or the safety cap is hit. */
   autonomous?: boolean;
   autoContinues?: number;
+  /** Latest provider-reported plan and the completion checkpoint used by intelligent refresh. */
+  planEntries?: PlanEntry[];
+  planCompletedCount?: number;
+  lastContextRefreshKey?: string;
+  pendingContextRefresh?: { key: string; prompt: string };
+  contextRefreshes?: number;
   /** Registry snapshot used to expand `/skill` follow-ups before a backend can
    *  mistake them for its own slash commands (#676). */
   skills?: Skill[];
@@ -202,16 +208,56 @@ interface QuotaBlocked {
   retryAt?: string;
 }
 
+interface ContextRefreshCarry {
+  planEntries?: PlanEntry[];
+  planCompletedCount?: number;
+  lastContextRefreshKey?: string;
+  contextRefreshes?: number;
+}
+
 function isQuotaBlocked(value: unknown): value is QuotaBlocked {
   return typeof value === 'object' && value !== null && (value as { kind?: unknown }).kind === 'quota-blocked';
 }
 
 /** Safety cap on autonomous auto-continues per run — stops a stuck agent from nudging forever. */
 const MAX_AUTO_CONTINUES = 40;
+/** A malformed or endlessly self-rewriting plan must not create an unbounded session loop. */
+const MAX_CONTEXT_REFRESHES = 32;
 const AUTONOMOUS_NUDGE =
   'Continue working autonomously until the task is fully complete. Do not ask me for confirmation or clarification — make reasonable assumptions and proceed. When everything is done, end the session with your done signal.';
 const MONITORING_WAKE_NUDGE =
   'Re-check the downstream work you were monitoring. Continue toward the task goal; emit CEZ:MONITORING again only if it is still pending.';
+
+function planCompletedCount(entries: readonly PlanEntry[]): number {
+  return entries.filter((entry) => entry.status === 'completed').length;
+}
+
+function nextPlanEntry(entries: readonly PlanEntry[]): PlanEntry | undefined {
+  return entries.find((entry) => entry.status === 'in_progress')
+    ?? entries.find((entry) => entry.status === 'pending');
+}
+
+function planSnapshotKey(entries: readonly PlanEntry[]): string {
+  return JSON.stringify(entries);
+}
+
+function contextRefreshPrompt(entries: readonly PlanEntry[]): string {
+  const next = nextPlanEntry(entries);
+  const snapshot = entries
+    .slice(0, 24)
+    .map((entry) => {
+      const marker = entry.status === 'completed' ? '[x]' : entry.status === 'in_progress' ? '[>]' : entry.status === 'cancelled' ? '[-]' : '[ ]';
+      return `${marker} ${entry.content.slice(0, 500)}`;
+    })
+    .join('\n');
+  return [
+    'Intelligent context refresh: the previous session completed a plan item and this task is continuing in a fresh context window.',
+    'Read the handoff file and inspect the current worktree before acting. Do not restart, undo, or repeat completed work.',
+    next ? `Focus next on: ${next.content}` : 'Continue with the next unfinished plan item.',
+    'Current plan snapshot:',
+    snapshot || '(the plan snapshot was empty; continue from the handoff and working tree)',
+  ].join('\n\n');
+}
 const QUOTA_FAILOVER_PREAMBLE = `A previous coding-agent attempt was interrupted because its provider became unavailable.
 
 Continue the current workflow step in this existing worktree. Before editing, inspect git status and git diff, preserve correct work already present, then complete the original task and verification. Do not restart blindly.`;
@@ -476,6 +522,7 @@ interface PendingContinuation {
   backend: RunnerSelection;
   prompt: string;
   images: ContentBlock[];
+  context?: ContextRefreshCarry;
 }
 
 interface PersistedImages {
@@ -962,6 +1009,7 @@ export class RunManager {
               hydrated.images,
               hydrated.persistedImages,
               hydrated.persistedAttachments,
+              hydrated.context,
             ).catch((err: unknown) => {
               const message = err instanceof Error ? err.message : String(err);
               this.store.updateRun(runId, {
@@ -2144,6 +2192,7 @@ export class RunManager {
      *  opening a recovered continuation does not persist duplicate files. */
     persistedImages: ContentBlock[] = [],
     persistedAttachments: PersistedAttachment[] = [],
+    context?: ContextRefreshCarry,
   ): Promise<void> {
     // Continuation runs in the task's worktree when it still exists (spec
     // 006) — the resumed session sees exactly what the original run left.
@@ -2161,7 +2210,12 @@ export class RunManager {
       record?.worktreePath && existsSync(record.worktreePath)
         ? record.worktreePath
         : this.repoRoot;
-    const state: ActiveRun = { cancelled: false, interrupt: () => undefined, cwd };
+    const state: ActiveRun = {
+      cancelled: false,
+      interrupt: () => undefined,
+      cwd,
+      ...context,
+    };
     this.active.set(runId, state);
     this.starting.delete(runId);
     if (state.cwd === this.repoRoot) {
@@ -2196,7 +2250,7 @@ export class RunManager {
     state.skills = await discoverSkills(this.repoRoot).catch(() => [] as Skill[]);
     const resolvedRunner = await this.resolveRunnerSelection(backend);
     if (isQuotaBlocked(resolvedRunner)) {
-      this.pendingContinuations.set(runId, { stepId, sessionId, backend, prompt, images });
+      this.pendingContinuations.set(runId, { stepId, sessionId, backend, prompt, images, context });
       if (!this.queue.includes(runId)) this.queue.push(runId);
       this.store.updateStep(runId, stepId, { status: 'pending', error: undefined });
       this.store.updateRun(runId, {
@@ -2261,6 +2315,7 @@ export class RunManager {
     let stepCost = 0;
     let turnText = '';
     let sessionError: string | undefined;
+    let refreshPrompt: string | undefined;
     const sink = this.makeUiSink(runId, stepId);
     const onEvent = (event: AgentEvent) => {
       if (event.type === 'image') {
@@ -2298,6 +2353,19 @@ export class RunManager {
         sink.flushAll();
         void this.recordTurnEnd(runId, turnText); // titleSummary + diffStat (#389)
         const sessionOpen = !state.cancelled && state.session?.open;
+        const contextRefresh = sessionOpen ? this.takeContextRefreshPrompt(state) : undefined;
+        if (contextRefresh) {
+          refreshPrompt = contextRefresh;
+          this.store.appendEvent(runId, {
+            type: 'note',
+            stepId,
+            message: `intelligent context refresh — starting a fresh session (${state.contextRefreshes}/${MAX_CONTEXT_REFRESHES})`,
+          });
+          appendHandoffHeartbeat(this.dataDir, runId, 'turn complete — refreshing context window');
+          turnText = '';
+          state.session?.end();
+          return;
+        }
         const done = sessionOpen && DONE_MARKER_RE.test(turnText.trimEnd());
         // `CEZ:ASK` → the user is genuinely blocked; wins over `CEZ:MONITORING`
         // (a pending question is always attention), loses to `CEZ:DONE` (#473).
@@ -2494,6 +2562,7 @@ export class RunManager {
     if (session.pid !== undefined) registerRunProcess(runId, session.pid);
 
     const finishedAt = () => new Date().toISOString();
+    let refreshAfterTurn = false;
     try {
       await session.result;
       if (sessionError) throw new Error(sessionError);
@@ -2503,6 +2572,8 @@ export class RunManager {
         this.store.updateRun(runId, { status: 'cancelled', finishedAt: finishedAt(), currentStepId: undefined });
         this.store.appendEvent(runId, { type: 'lifecycle', message: 'run cancelled' });
         appendHandoffHeartbeat(this.dataDir, runId, `step "${stepId}" complete — status=cancelled`);
+      } else if (refreshPrompt) {
+        refreshAfterTurn = true;
       } else {
         this.store.updateStep(runId, stepId, { status: 'done', finishedAt: finishedAt() });
         this.store.appendEvent(runId, { type: 'step-end', stepId, status: 'done' });
@@ -2528,6 +2599,39 @@ export class RunManager {
       if (state.cwd !== this.repoRoot) await autosaveCommit(state.cwd, 'turn end');
       release?.();
       this.dropActive(runId);
+    }
+    if (refreshAfterTurn && refreshPrompt) {
+      const currentStep = this.store.getRun(runId)?.steps.find((candidate) => candidate.id === stepId);
+      const nextIteration = (currentStep?.iterations ?? 1) + 1;
+      this.store.updateStep(runId, stepId, {
+        status: 'running',
+        iterations: nextIteration,
+        startedAt: new Date().toISOString(),
+        error: undefined,
+      });
+      this.store.appendEvent(runId, {
+        type: 'step-start',
+        stepId,
+        name: 'Continue',
+        kind: 'agent',
+        iteration: nextIteration,
+      });
+      await this.runContinuation(
+        runId,
+        stepId,
+        undefined,
+        continueBackend,
+        refreshPrompt,
+        [],
+        [],
+        [],
+        {
+          planEntries: state.planEntries,
+          planCompletedCount: state.planCompletedCount,
+          lastContextRefreshKey: state.lastContextRefreshKey,
+          contextRefreshes: state.contextRefreshes,
+        },
+      );
     }
   }
 
@@ -3014,6 +3118,7 @@ export class RunManager {
     attachments: PersistedAttachment[] = [],
     attemptedProviders?: ReadonlySet<AutoProvider>,
     failoverPreamble?: string,
+    contextRefreshPromptOverride?: string,
   ): Promise<string | QuotaBlocked | null> {
     let systemPrompt: string | undefined;
     if (step.skill) {
@@ -3064,6 +3169,9 @@ export class RunManager {
       // *use* them as files (save, attach to an issue/PR, copy into the repo).
       if (attachments.length) userPrompt += `\n\n${pastedAttachmentsText(attachments)}`;
     }
+    if (contextRefreshPromptOverride) {
+      userPrompt = `${contextRefreshPromptOverride}\n\n---\n\n${userPrompt}`;
+    }
 
     const requestedRunner = step.runner ?? taskBackend;
     const resolvedRunner = await this.resolveRunnerSelection(requestedRunner, attemptedProviders);
@@ -3078,6 +3186,7 @@ export class RunManager {
     let stepCost = stepRecord?.costUsd ?? 0;
     let turnText = '';
     let sessionError: string | undefined;
+    let refreshPrompt: string | undefined;
     const sink = this.makeUiSink(runId, step.id);
     const onEvent = (event: AgentEvent) => {
       if (event.type === 'image') {
@@ -3115,6 +3224,19 @@ export class RunManager {
         sink.flushAll();
         void this.recordTurnEnd(runId, turnText); // titleSummary + diffStat (#389)
         const sessionOpen = !state.cancelled && state.session?.open;
+        const contextRefresh = sessionOpen ? this.takeContextRefreshPrompt(state) : undefined;
+        if (contextRefresh) {
+          refreshPrompt = contextRefresh;
+          emit({
+            type: 'note',
+            stepId: step.id,
+            message: `intelligent context refresh — starting a fresh session (${state.contextRefreshes}/${MAX_CONTEXT_REFRESHES})`,
+          });
+          appendHandoffHeartbeat(this.dataDir, runId, 'turn complete — refreshing context window');
+          turnText = '';
+          state.session?.end();
+          return;
+        }
         const done = interactive && sessionOpen && DONE_MARKER_RE.test(turnText.trimEnd());
         // `CEZ:ASK` → the user is blocked; wins over `CEZ:MONITORING`, loses to
         // `CEZ:DONE` (#473).
@@ -3274,23 +3396,26 @@ export class RunManager {
     if (session.pid !== undefined) registerRunProcess(runId, session.pid);
 
     let failureMessage: string | undefined;
+    let result: string | null = null;
+    let refreshAfterTurn = false;
     try {
-      const result = await session.result;
+      const sessionResult = await session.result;
       if (sessionError) {
         sink.sessionEnded('error', sessionError);
         failureMessage = sessionError;
-        return failureMessage;
+        result = failureMessage;
+      } else {
+        // v2 counterpart of v1's `done` (spec: the mappers leave session-close
+        // events to the RunManager — only it knows how the session settled).
+        sink.sessionEnded(state.cancelled ? 'cancelled' : 'end_turn');
+        this.store.updateStep(runId, step.id, { tokensUsed: startTokens + sessionResult.tokensUsed });
+        refreshAfterTurn = refreshPrompt !== undefined && !state.cancelled;
       }
-      // v2 counterpart of v1's `done` (spec: the mappers leave session-close
-      // events to the RunManager — only it knows how the session settled).
-      sink.sessionEnded(state.cancelled ? 'cancelled' : 'end_turn');
-      this.store.updateStep(runId, step.id, { tokensUsed: startTokens + result.tokensUsed });
-      return null;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       sink.sessionEnded('error', message); // alongside v1's fatal `error`
       failureMessage = message;
-      return failureMessage;
+      result = failureMessage;
     } finally {
       this.recordUsagePeaks(runId);
       this.clearIdleTimer(state);
@@ -3310,6 +3435,36 @@ export class RunManager {
       }
       release?.();
     }
+    if (refreshAfterTurn && refreshPrompt) {
+      const currentStep = this.store.getRun(runId)?.steps.find((candidate) => candidate.id === step.id);
+      const nextIteration = (currentStep?.iterations ?? 1) + 1;
+      this.store.updateStep(runId, step.id, {
+        status: 'running',
+        iterations: nextIteration,
+        startedAt: new Date().toISOString(),
+        error: undefined,
+      });
+      emit({ type: 'step-start', stepId: step.id, name: step.name ?? step.id, kind: 'agent', iteration: nextIteration });
+      return this.runAgentStep(
+        runId,
+        state,
+        step,
+        input,
+        skills,
+        checkFailure,
+        interactive,
+        emit,
+        undefined,
+        taskBackend,
+        extraSystemPrompt,
+        chainNote,
+        [],
+        attemptedProviders,
+        failoverPreamble,
+        refreshPrompt,
+      );
+    }
+    return result;
   }
 
   /**
@@ -3333,6 +3488,26 @@ export class RunManager {
   private handleRunnerUiEvent(runId: string, state: ActiveRun, sink: UiEventSink, event: UiEvent): void {
     this.recordUsageUiEvent(runId, state, event);
     sink.handle(event);
+    if (event.type === 'plan.updated') {
+      state.planEntries = event.entries;
+      const completed = planCompletedCount(event.entries);
+      const previousCompleted = state.planCompletedCount;
+      state.planCompletedCount = completed;
+      // The first snapshot establishes the baseline. A resumed session may quite reasonably
+      // report old completed entries before it starts new work; only a new completion triggers a
+      // refresh.
+      if (
+        previousCompleted !== undefined
+        && completed > previousCompleted
+        && this.semaphore.intelligentContextRefresh()
+        && nextPlanEntry(event.entries)
+      ) {
+        const key = planSnapshotKey(event.entries);
+        if (key !== state.lastContextRefreshKey && key !== state.pendingContextRefresh?.key) {
+          state.pendingContextRefresh = { key, prompt: contextRefreshPrompt(event.entries) };
+        }
+      }
+    }
     if (event.type !== 'ask.requested' || state.cancelled) return;
     this.clearIdleTimer(state);
     this.monitoring.delete(runId);
@@ -3341,6 +3516,22 @@ export class RunManager {
     this.store.updateRun(runId, { status: 'waiting', activity: undefined });
     if (state.currentStepId) this.store.updateStep(runId, state.currentStepId, { status: 'waiting' });
     this.releaseSlot();
+  }
+
+  /** Claim a scheduled plan refresh at a turn boundary. Claiming before closing the session makes
+   * duplicate plan snapshots harmless, while the setting is read live so a Resources change
+   * applies to sessions already in flight. */
+  private takeContextRefreshPrompt(state: ActiveRun): string | undefined {
+    const pending = state.pendingContextRefresh;
+    if (!pending || !this.semaphore.intelligentContextRefresh() || state.cancelled) return undefined;
+    if ((state.contextRefreshes ?? 0) >= MAX_CONTEXT_REFRESHES) {
+      state.pendingContextRefresh = undefined;
+      return undefined;
+    }
+    state.pendingContextRefresh = undefined;
+    state.lastContextRefreshKey = pending.key;
+    state.contextRefreshes = (state.contextRefreshes ?? 0) + 1;
+    return pending.prompt;
   }
 
   /** Persist the invocation checkpoint before launching a runner. A throw or

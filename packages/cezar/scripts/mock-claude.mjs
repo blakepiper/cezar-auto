@@ -136,6 +136,42 @@ async function respond(userText, imageCount) {
   // `mock:slow` → hold the turn for ~25 s so queue states are observable.
   if (userText.includes('mock:slow')) await sleep(25_000);
 
+  // `mock:plan-refresh` → emit a plan that advances during the first session. The
+  // second snapshot schedules the manager's fresh-context path; a restarted mock
+  // session reports the completed item again without advancing it, so the test
+  // can prove exactly one context refresh rather than an unbounded loop.
+  if (userText.includes('mock:plan-refresh')) {
+    const initialPlan = [
+      { content: 'Implement the change', status: 'in_progress', activeForm: 'Implementing the change' },
+      { content: 'Verify the result', status: 'pending', activeForm: 'Verifying the result' },
+    ];
+    const progressedPlan = [
+      { content: 'Implement the change', status: 'completed', activeForm: 'Implementing the change' },
+      { content: 'Verify the result', status: 'in_progress', activeForm: 'Verifying the result' },
+    ];
+    const plan = userText.includes('Intelligent context refresh:') ? progressedPlan : initialPlan;
+    emit({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: `toolu_plan_${turn}_1`, name: 'TodoWrite', input: { todos: plan } }],
+      },
+    });
+    if (plan === initialPlan) {
+      emit({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: `toolu_plan_${turn}_2`, name: 'TodoWrite', input: { todos: progressedPlan } }],
+        },
+      });
+    }
+    const text = `mock:plan-refresh completed the current item${userText.includes('mock:done') ? '\n\nCEZ:DONE' : ''}`;
+    emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } });
+    emit({ type: 'result', subtype: 'success', result: text, usage: { input_tokens: 10, output_tokens: 20 }, total_cost_usd: 0.001 });
+    return;
+  }
+
   // Mirrors the real Claude Code 2.1.148 revoked-token envelope: the CLI puts
   // the credential failure in an `is_error` result even though its subtype is
   // `success`, rather than emitting a dedicated error frame.

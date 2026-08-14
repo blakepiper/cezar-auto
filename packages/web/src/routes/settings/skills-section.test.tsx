@@ -31,6 +31,7 @@ function serve(
       maxMonitoringSessions: 2,
       monitoringWakeIntervalMinutes: null,
       autoResumeOnUsageLimit: true,
+      intelligentContextRefresh: false,
       memoryLimitMb: null,
       worktreeRetentionDefault: 10,
     },

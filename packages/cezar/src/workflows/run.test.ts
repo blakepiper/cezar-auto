@@ -824,6 +824,72 @@ describe('a single agent step plus a check step gets NO chain note (#410)', () =
   }, 30_000);
 });
 
+describe('intelligent context refresh', () => {
+  let repoRoot: string;
+  let store: RunStore;
+  let manager: RunManager;
+  let savedDryRun: string | undefined;
+  const workflow: WorkflowDef = {
+    name: 'quick-task',
+    source: 'built-in',
+    steps: [{ id: 'task', name: 'Task', prompt: '{{task}}' }],
+  };
+
+  beforeEach(async () => {
+    repoRoot = mkdtempSync(join(tmpdir(), 'cez-context-refresh-'));
+    savedDryRun = process.env.CEZ_DRY_RUN;
+    process.env.CEZ_DRY_RUN = '1';
+    await run('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'a.txt'), 'one\n');
+    await run('git', ['add', '-A'], { cwd: repoRoot });
+    await run('git', [...GIT_ID, 'commit', '-q', '-m', 'base'], { cwd: repoRoot });
+    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    manager = new RunManager(store, repoRoot, {
+      semaphore: new WorkspaceSemaphore({ initial: { intelligentContextRefresh: true } }),
+    });
+  });
+
+  afterEach(() => {
+    if (savedDryRun === undefined) delete process.env.CEZ_DRY_RUN;
+    else process.env.CEZ_DRY_RUN = savedDryRun;
+    manager.dispose();
+    store.flush();
+    rmSync(repoRoot, { recursive: true, force: true });
+  });
+
+  it('starts the next plan item in a fresh session after a completion, on the same step', async () => {
+    const record = manager.startRun(workflow, { task: 'mock:plan-refresh mock:done', worktree: false });
+    const terminal = new Set(['done', 'review', 'failed', 'cancelled']);
+    const deadline = Date.now() + 20_000;
+    while (!terminal.has(store.getRun(record.id)?.status ?? '')) {
+      if (Date.now() > deadline) throw new Error('run did not finish in time');
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    const finished = store.getRun(record.id);
+    expect(finished?.status).toMatch(/^(done|review)$/);
+    expect(finished?.steps[0]).toMatchObject({ id: 'task', status: 'done', iterations: 2 });
+    const events = store.readEvents(record.id);
+    expect(events.filter((event) => String(event.message ?? '').includes('intelligent context refresh'))).toHaveLength(1);
+  }, 30_000);
+
+  it('leaves the normal single-session behavior intact when the setting is off', async () => {
+    manager.dispose();
+    manager = new RunManager(store, repoRoot, {
+      semaphore: new WorkspaceSemaphore({ initial: { intelligentContextRefresh: false } }),
+    });
+    const record = manager.startRun(workflow, { task: 'mock:plan-refresh mock:done', worktree: false });
+    const deadline = Date.now() + 20_000;
+    while (!['done', 'review', 'failed', 'cancelled'].includes(store.getRun(record.id)?.status ?? '')) {
+      if (Date.now() > deadline) throw new Error('run did not finish in time');
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    expect(store.getRun(record.id)?.steps[0]).toMatchObject({ status: 'done', iterations: 1 });
+    expect(store.readEvents(record.id).some((event) => String(event.message ?? '').includes('intelligent context refresh'))).toBe(false);
+  }, 30_000);
+});
+
 /**
  * #490 — the `CEZ:MONITORING` marker parks a still-working turn-end as
  * `running`/`activity:'monitoring'` (a non-attention state) instead of

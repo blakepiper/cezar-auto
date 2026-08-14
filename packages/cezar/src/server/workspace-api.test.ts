@@ -104,6 +104,7 @@ describe('the workspace settings API (step 2.7)', () => {
         maxMonitoringSessions: 2,
         monitoringWakeIntervalMinutes: 5,
         autoResumeOnUsageLimit: true,
+        intelligentContextRefresh: false,
         memoryLimitMb: null,
         worktreeRetentionDefault: 10,
       },
@@ -133,6 +134,7 @@ describe('the workspace settings API (step 2.7)', () => {
         maxMonitoringSessions: 3,
         monitoringWakeIntervalMinutes: 5,
         autoResumeOnUsageLimit: false,
+        intelligentContextRefresh: true,
         memoryLimitMb: 2048,
       },
     });
@@ -153,6 +155,7 @@ describe('the workspace settings API (step 2.7)', () => {
         maxMonitoringSessions: 3,
         monitoringWakeIntervalMinutes: 5,
         autoResumeOnUsageLimit: false,
+        intelligentContextRefresh: true,
         memoryLimitMb: 2048,
         worktreeRetentionDefault: 10,
       },
@@ -171,6 +174,7 @@ describe('the workspace settings API (step 2.7)', () => {
     // 2026-08-03-auto-resume-after-usage-limit) — and it reaches the shared cache the engine
     // asks, not just the file.
     expect(semaphore.autoResumeOnUsageLimit()).toBe(false);
+    expect(semaphore.intelligentContextRefresh()).toBe(true);
     expect(semaphore.memoryLimitMb()).toBe(2048);
   });
 
@@ -197,6 +201,7 @@ describe('the workspace settings API (step 2.7)', () => {
       maxMonitoringSessions: 2,
       monitoringWakeIntervalMinutes: 5,
       autoResumeOnUsageLimit: true,
+      intelligentContextRefresh: false,
       memoryLimitMb: null,
       worktreeRetentionDefault: 3,
     });
