@@ -2044,7 +2044,12 @@ export class RunManager {
 
     const continuations = run.steps.filter((s) => s.id.startsWith('continue-')).length;
     const stepId = `continue-${continuations + 1}`;
-    this.store.addStep(runId, { id: stepId, name: 'Continue', kind: 'agent' });
+    this.store.addStep(runId, {
+      id: stepId,
+      name: 'Continue',
+      kind: 'agent',
+      requestedRunner: opts.runner ?? run.requestedRunner ?? targetRunner,
+    });
     const prompt = opts.text?.trim() || 'Continue.';
     const images = opts.images ?? [];
     if (deferForCapacity) {
@@ -2061,6 +2066,7 @@ export class RunManager {
         error: undefined,
         finishedAt: undefined,
         currentStepId: undefined,
+        requestedRunner: opts.runner ?? run.requestedRunner ?? targetRunner,
       });
       return { ok: true };
     }
