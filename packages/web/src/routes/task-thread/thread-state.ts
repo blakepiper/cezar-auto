@@ -34,12 +34,12 @@ import {
  * `completed` on `tool-result` — v1 has no failure/declined signal, so none is invented.
  */
 
-/** A dim/danger transcript line (v1 note/lifecycle/error, v2 non-fatal session.error). */
+/** A dim/warning/danger transcript line (v1 note/lifecycle/error, v2 non-fatal session.error). */
 export interface ThreadNote {
   kind: 'note'
   id: string
   text: string
-  tone: 'dim' | 'danger'
+  tone: 'dim' | 'warning' | 'danger'
 }
 
 /** An image the run persisted (v1 `image` line: served from `/api/runs/:id/images/…`). */
@@ -518,9 +518,13 @@ export function reduceThread(events: RunEvent[], options: ThreadReduceOptions = 
       case 'lifecycle': {
         const text = str(event.message) ?? ''
         if (text === '') break
+        // `noteKind: 'provider-switch'` (workflows/run.ts) flags a mid-run auto-provider failover
+        // — surfaced as 'warning' instead of the default 'dim' so it doesn't blend into routine
+        // lifecycle chatter like "worktree ready".
+        const tone = str(event.noteKind) === 'provider-switch' ? 'warning' : 'dim'
         currentTurn().entries.push({
           origin: 'meta',
-          entry: { kind: 'note', id: `v1:${event.seq}`, text, tone: 'dim' },
+          entry: { kind: 'note', id: `v1:${event.seq}`, text, tone },
         })
         break
       }

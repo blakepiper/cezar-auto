@@ -678,8 +678,21 @@ function AgentBadge({ run }: { run: ApiRun }) {
   // `/api/health` describes the boot project and can name the wrong runner on scoped routes.
   const config = useConfig()
   const profiles = useAgentProfiles()
-  const runner = run.runner ?? config.data?.defaultRunner ?? 'claude'
+  // Both `runner` and `reasoningEffort` can be requested as `auto` and resolved differently per
+  // step (mid-run provider failover in `workflows/run.ts`, per-chunk reasoning resolution in
+  // `core/reasoning.ts`) — `run.runner`/`run.reasoningEffort` only reflect the FIRST resolution,
+  // so the badge reads the latest step that recorded one to answer "what is actually running
+  // right now?" rather than "what did the run start with?".
+  const lastBackendStep = [...run.steps].reverse().find((step) => step.backend)
+  const lastReasoningStep = [...run.steps].reverse().find((step) => step.reasoningEffort)
+  const runner = lastBackendStep?.backend ?? run.runner ?? config.data?.defaultRunner ?? 'claude'
+  const requestedRunner = run.requestedRunner ?? run.runner
+  const runnerSwitched = Boolean(
+    requestedRunner && requestedRunner !== 'auto' && lastBackendStep?.backend && lastBackendStep.backend !== requestedRunner,
+  )
   const model = run.model ?? 'auto'
+  const reasoningEffort = lastReasoningStep?.reasoningEffort ?? (run.reasoningEffort !== 'auto' ? run.reasoningEffort : undefined)
+  const reasoningRequested = run.reasoningEffort ?? 'auto'
   // The account is read from the STEP that actually spawned, never from the run's composer
   // override or the project's current selection (spec 2026-07-29-agent-profiles): the override is
   // absent whenever the run just followed the project, and the project's selection can have been
@@ -701,16 +714,17 @@ function AgentBadge({ run }: { run: ApiRun }) {
   // omitted-not-guessed rule as the account line below: an identity nothing wrote down is not
   // one this header may invent.
   const identity = run.modelIdentity && run.modelIdentity !== model ? run.modelIdentity : undefined
-  const summary = [runner, account, model].filter(Boolean).join(' · ')
+  const summary = [runner, account, model, reasoningEffort].filter(Boolean).join(' · ')
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
           data-slot="agent-badge"
+          data-switched={runnerSwitched ? 'true' : undefined}
           title={summary}
-          aria-label={`Agent: ${runner}, ${account ? `account ${account}, ` : ''}model ${model}`}
-          className="flex min-w-0 shrink items-center gap-1.5 rounded-sm px-1 py-1 text-soft-foreground hover:bg-muted hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+          aria-label={`Agent: ${runner}${runnerSwitched ? ' (switched)' : ''}, ${account ? `account ${account}, ` : ''}model ${model}${reasoningEffort ? `, reasoning ${reasoningEffort}` : ''}`}
+          className="flex min-w-0 shrink items-center gap-1.5 rounded-sm px-1 py-1 text-soft-foreground hover:bg-muted hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none data-[switched=true]:text-amber-600 dark:data-[switched=true]:text-amber-400"
         >
           <BotIcon className="size-3.5 shrink-0" aria-hidden="true" />
           {/* READ, not just reachable. This was an icon alone, and "which agent, account and model
@@ -721,11 +735,23 @@ function AgentBadge({ run }: { run: ApiRun }) {
           <span data-slot="agent-badge-summary" className="truncate font-mono text-[11px]">
             {summary}
           </span>
+          {/* A dot, not a chip: the badge already reads the LATEST step's resolved runner, so the
+              summary text is correct the instant a mid-run provider failover happens. This just
+              flags that "auto" landed somewhere other than the run's first pick, without requiring
+              a click to notice — the failover note in the thread carries the why. */}
+          {runnerSwitched ? (
+            <span
+              data-slot="agent-badge-switched-dot"
+              className="size-1.5 shrink-0 rounded-full bg-amber-500"
+              aria-hidden="true"
+            />
+          ) : null}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-[9rem]">
         <DropdownMenuLabel className="font-mono text-[11px] font-normal text-muted-foreground">
           runner: {runner}
+          {runnerSwitched ? ` (auto switched from ${requestedRunner})` : ''}
         </DropdownMenuLabel>
         {/* Omitted, not guessed, when no step recorded one: a run from before accounts existed
             cannot be said to have used the discovered account — nothing wrote that down. */}
@@ -740,6 +766,15 @@ function AgentBadge({ run }: { run: ApiRun }) {
         <DropdownMenuLabel className="font-mono text-[11px] font-normal text-muted-foreground">
           model: {model}
         </DropdownMenuLabel>
+        {reasoningEffort ? (
+          <DropdownMenuLabel
+            data-slot="agent-badge-reasoning"
+            className="font-mono text-[11px] font-normal text-muted-foreground"
+          >
+            reasoning: {reasoningEffort}
+            {reasoningRequested === 'auto' ? ' (auto)' : ''}
+          </DropdownMenuLabel>
+        ) : null}
         {identity ? (
           <DropdownMenuLabel
             data-slot="agent-badge-identity"

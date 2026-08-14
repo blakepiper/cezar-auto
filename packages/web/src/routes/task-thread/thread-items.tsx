@@ -224,15 +224,22 @@ export function AssistantMessage({ text }: { text: string }) {
   )
 }
 
-/** A dim (lifecycle/note) or danger (error) transcript line. */
+/** A dim (lifecycle/note), warning (mid-run provider switch) or danger (error) transcript line. */
 export function NoteLine({ note }: { note: ThreadNote }) {
   return (
     <div
       data-slot="note-line"
       data-tone={note.tone}
-      className={cn('px-0.5 text-xs', note.tone === 'danger' ? 'text-danger' : 'text-soft-foreground')}
+      className={cn(
+        'px-0.5 text-xs',
+        note.tone === 'danger'
+          ? 'text-danger'
+          : note.tone === 'warning'
+            ? 'text-amber-600 dark:text-amber-400'
+            : 'text-soft-foreground',
+      )}
     >
-      {note.tone === 'danger' ? '✗ ' : '· '}
+      {note.tone === 'danger' ? '✗ ' : note.tone === 'warning' ? '⇄ ' : '· '}
       {note.text}
     </div>
   )

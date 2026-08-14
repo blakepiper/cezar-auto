@@ -2894,7 +2894,16 @@ export class RunManager {
             !attemptedProviders.has(actualProvider)
           ) {
             attemptedProviders.add(actualProvider);
-            emit({ type: 'note', stepId: step.id, message: `${actualProvider} quota exhausted — trying another eligible provider` });
+            emit({
+              type: 'note',
+              stepId: step.id,
+              message: `${actualProvider} quota exhausted — trying another eligible provider`,
+              // Distinguishes this from routine lifecycle notes so the thread can flag it (amber,
+              // not the default dim) rather than burying a mid-run auto-provider-switch in the same
+              // style as "worktree ready". `runEventSchema` is a loose object, so an extra key here
+              // is forward-compatible with every older reader.
+              noteKind: 'provider-switch',
+            });
             continue;
           }
           break;
