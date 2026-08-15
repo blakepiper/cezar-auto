@@ -107,7 +107,7 @@ export function IdeRoute() {
           <span className="truncate text-[12px] text-muted-foreground">
             {selectedPath ?? 'Browse and edit project files'}
           </span>
-          {dirty ? <span className="shrink-0 text-[11px] text-pending">Unsaved changes</span> : null}
+          {dirty ? <span className="shrink-0 text-[11px] text-pending-strong">Unsaved changes</span> : null}
           <Button
             type="button"
             size="sm"
@@ -228,7 +228,7 @@ function ExplorerList({
           {entry.type === 'file' && entry.size !== undefined ? <span className="text-[10px] text-soft-foreground">{formatBytes(entry.size)}</span> : null}
         </button>
       ))}
-      {data.truncated ? <p className="px-2 py-2 text-[10px] text-pending">Folder is too large to show every entry.</p> : null}
+      {data.truncated ? <p className="px-2 py-2 text-[10px] text-pending-strong">Folder is too large to show every entry.</p> : null}
     </div>
   )
 }
@@ -253,7 +253,7 @@ function Editor({
       <div className="flex items-center gap-2 border-b border-border px-4 py-2 text-xs md:px-5">
         <FileIcon className="size-3.5 text-muted-foreground" aria-hidden="true" />
         <span className="truncate font-mono">{path}</span>
-        {dirty ? <span className="text-pending">•</span> : <CheckIcon className="size-3 text-primary" aria-label="Saved" />}
+        {dirty ? <span className="text-pending-strong">•</span> : <CheckIcon className="size-3 text-primary" aria-label="Saved" />}
         <span className="ml-auto shrink-0 text-[10px] text-soft-foreground">{formatBytes(size)}</span>
       </div>
       {saveError ? <p className="border-b border-danger/20 bg-danger/10 px-4 py-2 text-xs text-danger">{saveError}</p> : null}
