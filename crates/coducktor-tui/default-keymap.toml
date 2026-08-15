@@ -1,0 +1,11 @@
+[normal]
+q = "quit"
+t = "tasks"
+g = "global-tasks"
+":" = "command"
+"ctrl-o" = "back"
+"ctrl-i" = "forward"
+
+[command]
+escape = "normal"
+enter = "execute-command"

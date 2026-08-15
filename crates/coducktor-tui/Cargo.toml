@@ -11,5 +11,13 @@ name = "coducktor"
 path = "src/main.rs"
 
 [dependencies]
+coducktor-client = { path = "../coducktor-client" }
 crossterm.workspace = true
 ratatui.workspace = true
+serde.workspace = true
+tokio.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+insta = "1.46"
+tempfile = "3.23"
