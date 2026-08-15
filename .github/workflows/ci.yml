@@ -28,6 +28,15 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Rust tests
+        run: cargo test --workspace --all-targets
+
+      - name: Run Rust clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
       # `lts/*` — the current Node LTS, whatever it is on the day the job runs, so
       # the gate follows the release line users actually install on instead of
       # freezing on a version that quietly ages out of support. The floor stays the

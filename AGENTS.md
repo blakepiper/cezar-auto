@@ -10,6 +10,11 @@ branches, no draft PRs, no review gate for changes made while developing cezar/C
 runs against other repos, not a process this repo's own development follows. Still avoid
 force-pushing over `main` and still run the relevant checks/tests before pushing.
 
+When executing a numbered step from a plan under `.ai/specs/`, finish that step's checks,
+commit it as one plan-step commit, and push it to `origin main` immediately. Do not batch
+completed plan steps; only an explicit user instruction to pause or avoid pushing overrides
+this rule.
+
 ## Zero config
 
 cezar ships no config file the user must create and no setting they must set before it works. Every capability is discovered from what is already there — the repo, the environment, `gh`, the running processes — or it degrades quietly to a smaller cezar. `.ai/cezar/config.json` is optional and every key has a working default; `.env` is never auto-loaded.
