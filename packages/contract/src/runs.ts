@@ -589,7 +589,7 @@ export const runCommitSchema = z.object({
 export type RunCommit = z.infer<typeof runCommitSchema>;
 
 /** `GET /runs/:id/commits` — `<base>..HEAD` on the worktree branch, newest first. The git state
- *  fields let the finished-task footer say whether the task's latest commit is on its upstream. */
+ *  fields let the finished-task footer say whether the task's latest commit is on a remote branch. */
 export const runCommitsResponseSchema = z.object({
   commits: z.array(runCommitSchema),
   branch: z.string().optional(),

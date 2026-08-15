@@ -378,16 +378,27 @@ export type RunCommitsResult = { ok: true; commits: RunCommit[] } | { ok: false;
 
 export interface RunGitStatus {
   branch?: string;
-  /** True when the current branch has an upstream and no local commits ahead of it. */
+  /** True when HEAD is reachable from a remote-tracking branch. */
   pushed: boolean;
 }
 
-/** Read the current branch's publication state without changing the worktree. A missing
- * upstream, detached HEAD, or any git failure is conservatively reported as not pushed. */
+/** Read the current branch's publication state without changing the worktree. A commit can be
+ * published to a different remote branch (`git push origin HEAD:main`), so the current branch's
+ * upstream is not sufficient: check every locally known remote-tracking branch first. A detached
+ * HEAD or any git failure is conservatively reported as not pushed. */
 export async function collectRunGitStatus(dir: string): Promise<RunGitStatus> {
   const branch = await git(dir, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
   const name = branch.ok ? branch.stdout.trim() : '';
   if (!name) return { pushed: false };
+
+  const remoteBranches = await git(dir, [
+    'for-each-ref',
+    '--contains',
+    'HEAD',
+    '--format=%(refname)',
+    'refs/remotes/',
+  ]);
+  if (remoteBranches.ok && remoteBranches.stdout.trim()) return { branch: name, pushed: true };
 
   const upstream = await git(dir, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
   if (!upstream.ok) return { branch: name, pushed: false };

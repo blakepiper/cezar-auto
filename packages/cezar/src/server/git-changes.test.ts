@@ -422,6 +422,22 @@ describe('collectRunGitStatus — branch publication state', () => {
       rmSync(remote, { recursive: true, force: true });
     }
   });
+
+  it('reports pushed when HEAD is on any remote branch, even without a task upstream', async () => {
+    const remote = mkdtempSync(join(tmpdir(), 'cez-gitstatus-remote-'));
+    try {
+      execFileSync('git', ['init', '--bare', remote], { encoding: 'utf8' });
+      g(dir, 'remote', 'add', 'origin', remote);
+      writeFileSync(join(dir, 'published.txt'), 'published\n');
+      g(dir, 'add', '-A');
+      g(dir, 'commit', '-m', 'published on main');
+      g(dir, 'push', 'origin', 'HEAD:main');
+
+      await expect(collectRunGitStatus(dir)).resolves.toEqual({ branch: 'task', pushed: true });
+    } finally {
+      rmSync(remote, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('readWorktreePath — Files tab browsing', () => {
