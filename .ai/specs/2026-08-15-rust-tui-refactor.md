@@ -456,7 +456,10 @@ Cargo.toml                     # [workspace] members = ["crates/*"]
 rust-toolchain.toml            # pinned stable, edition 2024
 crates/
   cezar-contract/              # A: serde mirror of packages/contract
-    src/{runs,workflows,skills,github,workspace,ide,automations,events,health}.rs
+    src/{runs,workflows,skills,github,workspace,ide,events,health}.rs
+    # No automations.rs — decision 7 deletes the automations subsystem outright
+    # (§16a Tier 2); only the `RunRecord.automation` provenance stamp survives,
+    # as a passthrough-compatible field on `runs.rs`'s `RunRecord`, per §8.10.
   cezar-protocol/              # A: v1 AgentEvent + v2 UiEvent + tool-display
   cezar-client/                # A: HTTP + SSE + WS client over /api/v1
   cezar-tui/                   # A: the binary
@@ -1023,11 +1026,16 @@ that restores the terminal, this is the #1 source of "my terminal is broken").
 *Accept:* `cargo run -p cezar-tui` opens and `q` exits with the terminal intact.
 
 **A1 — `cezar-contract`.**
-Port `packages/contract/src/*.ts` to serde types. One Rust module per TS file, each
-type doc-commented with its source path. Establish the **zod-compat conventions**
-now (§11.2) even though Phase A only *reads*: `#[serde(default)]` for `.default()`,
-`Option<T>` + `deserialize_with` salvage for `.catch()`, and a
-`#[serde(flatten)] extra: serde_json::Map` for every `.passthrough()` object.
+Port `packages/contract/src/*.ts` to serde types, **except `automations.ts`** —
+decision 7 deletes that subsystem outright (§16a Tier 2, §8.10); porting its types
+here would just be more code for A15 to delete. Keep only the `RunRecord.automation`
+provenance stamp, folded into `runs.rs` as a passthrough-compatible field (old
+records must still deserialize; nothing new writes it). One Rust module per
+surviving TS file, each type doc-commented with its source path. Establish the
+**zod-compat conventions** now (§11.2) even though Phase A only *reads*:
+`#[serde(default)]` for `.default()`, `Option<T>` + `deserialize_with` salvage for
+`.catch()`, and a `#[serde(flatten)] extra: serde_json::Map` for every
+`.passthrough()` object.
 *Accept:* a test deserializes captured real responses from a live `cezar serve`
 (fixtures committed under `crates/cezar-contract/tests/fixtures/`) for every route,
 and re-serializes them to a byte-equal (key-order-insensitive) value.
@@ -1230,7 +1238,11 @@ carefully and it de-risks everything downstream.
 `lifecycle`, `session`, `recovery`, `review_gate`, `auto_resume`, `context_refresh`,
 `variants`, `quota`, `semaphore` modules. Port `run.test.ts` (2k lines) alongside.
 **B7** `cezar-forge` — the `gh` driver, ported against `github.test.ts` (2.3k lines).
-**B8** `cezar-core::automations` — store, scheduler, poller, task templates.
+**B8** *(deleted from the plan — decision 7.)* `cezar-core::automations` is not
+ported. The automations engine (store, scheduler, poller, task templates) was
+deleted outright from the TypeScript tree at step A15 (§16a Tier 2), the same
+decision that deleted its screen (§8.10). There is nothing left to port; porting it
+here and deleting it again at B12 would be pure waste.
 **B9** `cezar-server` — `axum`, route by route, family by family. Run the existing
 `route-parity`, `contract-parity.*`, `versioned-surface`, `bc-route-inventory`,
 `origin-guard`, `host-guard` and `sse-headers` suites **against the Rust server** via

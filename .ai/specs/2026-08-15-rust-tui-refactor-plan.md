@@ -92,9 +92,13 @@ with a panic hook that restores the terminal.
 
 ### A1 — `cezar-contract`
 **Ships:** `packages/contract/src/*.ts` ported to serde types, one Rust module per TS
-file, zod-compat conventions (§11.2) established even though Phase A only reads.
+file, **except `automations.ts`** — decision 7 deletes that subsystem outright
+(§16a Tier 2), so it's never ported, not even to be deleted again later. Keep only
+the `RunRecord.automation` provenance stamp, folded into `runs.rs` as a
+passthrough-compatible field. Zod-compat conventions (§11.2) established even though
+Phase A only reads.
 **Accept:** a test deserializes captured real responses from a live `cezar serve`.
-**Commit:** `feat(contract): A1 port TS contract types to serde`
+**Commit:** `feat(contract): A1 port TS contract types to serde (minus automations)`
 
 ### A2 — `cezar-protocol` + `cezar-client`, behind the `Engine` trait
 **Ships:** the `Engine` trait (§10, quoted in full in the spec) defined now, not
@@ -315,15 +319,12 @@ auto_resume/context_refresh/variants/quota/semaphore)`
 **Accept:** ported suite green.
 **Commit:** `feat(forge): B7 gh driver`
 
-### B8 — Automations engine
-**Ships:** `cezar-core::automations` — store, scheduler, poller, task templates.
-(Note: the *screen* stays deleted per decision 7/§8.10 — this is the engine-side
-port needed only if anything else still references the module; confirm against
-§16a.1 before assuming this step is required at all. If automations were fully
-removed at A15/§16a Tier 2, skip this step and delete it from the plan rather than
-porting dead code — see Goal 8.)
-**Accept:** N/A if skipped; otherwise, ported suite green.
-**Commit:** `feat(core): B8 automations engine` (or omit if superseded by A15)
+### B8 — removed from the plan (decision 7)
+The spec now says explicitly (§11.1): `cezar-core::automations` is **not** ported.
+The automations engine — store, scheduler, poller, task templates — was deleted
+outright from the TypeScript tree at A15 (§16a Tier 2), the same decision that
+deleted its screen (§8.10). There is nothing left to port at B8, so there is no
+chunk here and no commit — B9 follows directly after B7.
 
 ### B9 — `cezar-server` ⚠ set up HTTP-suite reuse in the first commit
 **Ships:** `axum` server, route by route, family by family. Handlers stay thin —
