@@ -207,6 +207,19 @@ describe('SkillsUpdateService', () => {
 });
 
 describe('SkillsUpdateCoordinator', () => {
+  it('does not auto-apply unless the caller explicitly enables it', async () => {
+    const service = {
+      check: vi.fn(async () => ({ available: true })),
+      update: vi.fn(async () => ({ available: false })),
+      evict: vi.fn(),
+    } as unknown as SkillsUpdateService;
+    const coordinator = new SkillsUpdateCoordinator(service, async () => false);
+    coordinator.add('repo', '/repo');
+    await coordinator.settled();
+    expect(service.check).toHaveBeenCalledWith('/repo');
+    expect(service.update).not.toHaveBeenCalled();
+  });
+
   it('queues lifecycle work, excludes missing/removed projects, owns auto apply, and swallows failures', async () => {
     const service = {
       check: vi.fn(async (root: string) => {

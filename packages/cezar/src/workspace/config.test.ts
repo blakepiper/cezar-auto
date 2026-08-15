@@ -125,11 +125,11 @@ describe('workspace config', () => {
     });
   });
 
-  it('resolves skills auto-update as explicit setting, then 0/1 env, then true', () => {
-    expect(effectiveSkillsAutoUpdate({}, {})).toBe(true);
+  it('resolves skills auto-update as explicit setting, then 0/1 env, then false', () => {
+    expect(effectiveSkillsAutoUpdate({}, {})).toBe(false);
     expect(effectiveSkillsAutoUpdate({}, { CEZ_SKILLS_AUTO_UPDATE: '0' })).toBe(false);
     expect(effectiveSkillsAutoUpdate({}, { CEZ_SKILLS_AUTO_UPDATE: '1' })).toBe(true);
-    expect(effectiveSkillsAutoUpdate({}, { CEZ_SKILLS_AUTO_UPDATE: 'invalid' })).toBe(true);
+    expect(effectiveSkillsAutoUpdate({}, { CEZ_SKILLS_AUTO_UPDATE: 'invalid' })).toBe(false);
     expect(effectiveSkillsAutoUpdate({ skillsAutoUpdate: false }, { CEZ_SKILLS_AUTO_UPDATE: '1' })).toBe(false);
     expect(effectiveSkillsAutoUpdate({ skillsAutoUpdate: true }, { CEZ_SKILLS_AUTO_UPDATE: '0' })).toBe(true);
   });

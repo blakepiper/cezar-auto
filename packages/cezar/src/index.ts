@@ -27,8 +27,6 @@ import {
   providersRequiredByWorkflow,
   unavailableProviderMessage,
 } from './server/provider-action-gate.ts';
-import { checkForUpdate } from './update-check.ts';
-import { printSkillsBanner } from './skills-banner.ts';
 import { loadWorkspaceConfig } from './workspace/config.ts';
 import { runMigrations } from './workspace/migrations.ts';
 import { registerProject, shouldRegisterProject } from './workspace/projects.ts';
@@ -78,8 +76,8 @@ Options:
   -h, --help                  show this help
 
 Zero config: uses your logged-in \`claude\` CLI (and \`gh\` for GitHub bits).
-Skills live in .ai/skills/, .ai/cezar/skills/ and your team skills repo
-(default open-mercato/skills; override via .ai/cezar/config.json);
+Skills live in .ai/skills/, .ai/cezar/skills/ and any explicitly configured
+team skills repo (see .ai/cezar/config.json);
 workflows in .ai/cezar/workflows/.`;
 
 async function main(): Promise<void> {
@@ -263,16 +261,6 @@ async function serveCommand(
   );
   if (recovered > 0) console.log(`  recovered ${recovered} run(s) from the previous session`);
 
-  // Update discovery (#368) — fire-and-forget; the banner prints whenever the
-  // registry answers and /api/v1/health picks it up for the GUI chip.
-  const pkgName = readOwnName();
-  const update: { latest?: string } = {};
-  void checkForUpdate(pkgName, version).then((latest) => {
-    if (!latest) return;
-    update.latest = latest;
-    console.log(`\n  ⬆ cezar ${latest} is available (running ${version}) — restart with: npx ${pkgName}@latest\n`);
-  });
-
   const port = await pickPort(preferredPort);
   // SECURITY: cezar executes agents. A non-loopback bind exposes that box to
   // whatever can reach the interface, and cezar itself has NO auth — it is only
@@ -290,7 +278,6 @@ async function serveCommand(
     store,
     manager,
     version,
-    update,
     bootProjectId,
     semaphore,
     bindHost,
@@ -312,9 +299,6 @@ async function serveCommand(
   }
   if (port !== preferredPort) console.log(`  (port ${preferredPort} was busy — using ${port})`);
   console.log(`\n  cockpit → ${url}\n`);
-  // Silenced by CEZ_NO_BANNER=1 or by dismissing the cockpit's banner (#391).
-  await printSkillsBanner(repoRoot);
-
   const shutdown = () => {
     quotaRuntime.dispose();
     store.flush();
@@ -729,17 +713,6 @@ function ensureDataGitignore(repoRoot: string): void {
     }
   } catch {
     // non-fatal
-  }
-}
-
-/** Own package name — for the npm-registry update check (#368). */
-function readOwnName(): string {
-  try {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const pkg = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8')) as { name?: string };
-    return pkg.name ?? '@open-mercato/cezar';
-  } catch {
-    return '@open-mercato/cezar';
   }
 }
 

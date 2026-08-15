@@ -282,7 +282,7 @@ export function effectiveSkillsAutoUpdate(
   if (config.skillsAutoUpdate !== undefined) return config.skillsAutoUpdate;
   if (env.CEZ_SKILLS_AUTO_UPDATE === '0') return false;
   if (env.CEZ_SKILLS_AUTO_UPDATE === '1') return true;
-  return true;
+  return false;
 }
 
 export function effectiveComposerDefault(

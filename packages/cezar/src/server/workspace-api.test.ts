@@ -92,7 +92,7 @@ describe('the workspace settings API (step 2.7)', () => {
       browseRoot: '~/',
       projectsDir: '~/cezar/projects',
       skillsAutoUpdate: null,
-      effectiveSkillsAutoUpdate: true,
+      effectiveSkillsAutoUpdate: false,
       composerDefaults: {
         autonomous: null,
         worktree: null,
@@ -143,7 +143,7 @@ describe('the workspace settings API (step 2.7)', () => {
       browseRoot: '~/',
       projectsDir: '~/cezar/projects',
       skillsAutoUpdate: null,
-      effectiveSkillsAutoUpdate: true,
+      effectiveSkillsAutoUpdate: false,
       composerDefaults: {
         autonomous: null,
         worktree: null,

@@ -181,7 +181,7 @@ export class SkillsUpdateService {
   }
 
   private makeState(scopes = [blankScope('project'), blankScope('global')]): SkillsUpdateState {
-    return { status: 'idle', available: false, autoUpdateEnabled: true, inherited: true,
+    return { status: 'idle', available: false, autoUpdateEnabled: false, inherited: true,
       checkedAt: null, updatedAt: null, scopes, needsUpgradeNotes: false };
   }
 

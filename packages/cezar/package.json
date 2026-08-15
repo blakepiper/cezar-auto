@@ -62,7 +62,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/open-mercato/cezar",
+    "url": "https://github.com/blakepiper/coducktor",
     "directory": "packages/cezar"
   },
   "publishConfig": {

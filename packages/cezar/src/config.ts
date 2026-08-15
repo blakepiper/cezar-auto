@@ -8,8 +8,8 @@ import type { RunnerSelection } from './core/runner-selection.ts';
 /**
  * Optional advanced config at `.ai/cezar/config.json`. Zero-config rule:
  * a missing file behaves exactly like the default below, an unreadable or
- * invalid file degrades to the default too (never blocks startup). The key
- * can be overridden or emptied (`"skillsRepos": []` disables team skills).
+ * invalid file degrades to the default too (never blocks startup). Team skill
+ * repositories are opt-in; an explicit `skillsRepos` can add one.
  */
 const skillsRepoSchema = z.object({
   /** `owner/name` (GitHub shorthand), a full git URL, or a local/file:// path. */
@@ -19,9 +19,8 @@ const skillsRepoSchema = z.object({
 
 export type SkillsRepoSource = z.infer<typeof skillsRepoSchema>;
 
-export const DEFAULT_SKILLS_REPOS: SkillsRepoSource[] = [
-  { repo: 'open-mercato/skills', ref: 'main' },
-];
+/** No remote skill source is contacted unless the repo explicitly configures one. */
+export const DEFAULT_SKILLS_REPOS: SkillsRepoSource[] = [];
 
 /** Last-resort retention when neither the repo nor the workspace says anything. */
 export const DEFAULT_WORKTREE_RETENTION = 10;
@@ -197,12 +196,12 @@ async function ownWorktreeRetention(repoRoot: string): Promise<number | undefine
 }
 
 /**
- * The default skills repos that are *opt-in per skill* (the "import OM skills"
+ * The default skills repos that are *opt-in per skill* (the "import skills"
  * flow): the set of repo identifiers a user must explicitly import from before
  * their skills join the catalog. This is exactly `DEFAULT_SKILLS_REPOS` when the
- * repo has NOT configured its own `skillsRepos` — the zero-config majority — and
- * empty once a repo takes control by setting `skillsRepos` (then everything it
- * lists auto-loads, unchanged).
+ * repo has NOT configured its own `skillsRepos` — empty by default so startup
+ * never contacts a remote source — and empty once a repo takes control by
+ * setting `skillsRepos` (then everything it lists auto-loads, unchanged).
  *
  * `loadConfig` cannot answer this: the schema's `.default(DEFAULT_SKILLS_REPOS)`
  * materializes the key, so a parsed config can't tell "the user chose these" from

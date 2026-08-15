@@ -47,7 +47,7 @@ npx cezar-cli server-install --platform ubuntu-vps
 Or from a git checkout on the box:
 
 ```bash
-git clone https://github.com/open-mercato/cezar && cd cezar
+git clone https://github.com/blakepiper/coducktor && cd coducktor
 npm install && npm run build
 node packages/cezar/dist/index.js server-install --platform ubuntu-vps
 ```

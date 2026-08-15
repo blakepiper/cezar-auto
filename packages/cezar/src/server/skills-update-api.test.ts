@@ -91,7 +91,7 @@ describe('workspace skills update API', () => {
     const update = vi.spyOn(service, 'update').mockResolvedValue(final);
     const response = await apiRequest(app, '/api/v1/workspace/skills-update/apply', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ projectId: 'repo' }) });
     expect(response.status).toBe(200); expect(update).toHaveBeenCalledWith(repoRoot, true);
-    expect(await response.json()).toMatchObject({ status: 'current', autoUpdateEnabled: true, inherited: true });
+    expect(await response.json()).toMatchObject({ status: 'current', autoUpdateEnabled: false, inherited: true });
   });
 
   it('rejects executable apply input and preserves unknown/gone behavior', async () => {
@@ -109,7 +109,7 @@ describe('workspace skills update API', () => {
     vi.spyOn(service, 'update').mockRejectedValue(new SkillsUpdateConflictError());
     const response = await apiRequest(app, '/api/v1/workspace/skills-update/apply', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ projectId: 'repo' }) });
     expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ error: 'another skills update operation is running', state: { status: 'idle', autoUpdateEnabled: true, inherited: true } });
+    expect(await response.json()).toMatchObject({ error: 'another skills update operation is running', state: { status: 'idle', autoUpdateEnabled: false, inherited: true } });
   });
 
   it('reports inherited and explicit off without disabling manual apply', async () => {

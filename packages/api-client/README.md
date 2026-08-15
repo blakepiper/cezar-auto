@@ -1,6 +1,6 @@
 # @open-mercato/cezar-api-client
 
-The typed client for a [cezar](https://github.com/open-mercato/cezar) service, and the shared
+The typed client for a [cezar](https://github.com/blakepiper/coducktor) service, and the shared
 contract types behind it.
 
 cezar is a local cockpit for running AI agent tasks in your repo. It runs as an HTTP service,

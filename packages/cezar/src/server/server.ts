@@ -195,8 +195,7 @@ export interface ServerDeps {
   store: RunStore;
   manager: RunManager;
   version: string;
-  /** Mutable holder for the async npm-registry update check (#368) —
-   *  `latest` appears once the registry answers with a newer version. */
+  /** Optional externally supplied update metadata. The CLI does not contact a package registry. */
   update?: { latest?: string };
   /** Host the HTTP server binds (default 127.0.0.1). A non-loopback host
    *  implies hosted mode — `capabilities.localHandoff:false`. */
@@ -261,7 +260,7 @@ export interface ServerDeps {
    *  reaches `openInTerminal`. Injected for the same reason as the two above: a test that reaches
    *  this for real opens a window on the developer's machine (#820). */
   openApp?: typeof openInApp;
-  /** Process-wide Open Mercato skills update detector. Injected in tests and
+  /** Process-wide configured skills update detector. Injected in tests and
    * shared by every workspace route/project; createApp owns the default. */
   skillsUpdate?: SkillsUpdateService;
   /** WebSocket subscription hub (`/api/v1/ws`, src/server/ws.ts). `createApp`
@@ -3009,10 +3008,10 @@ export function createApp(deps: ServerDeps) {
       return c.json(await discoverSkills(repoRoot));
     })
 
-    // The opt-in catalog for the "Import skills" panel: every skill a default
-    // (vendor) repo offers — `open-mercato/skills` — regardless of import state,
-    // so the panel can present them all with a per-skill toggle. Empty once a repo
-    // configures its own `skillsRepos` (nothing is gated then). `wait=1` lets the
+    // The opt-in catalog for the "Import skills" panel: every skill a configured
+    // default/vendor repo offers, regardless of import state, so the panel can
+    // present them all with a per-skill toggle. Empty once a repo configures its
+    // own `skillsRepos` (nothing is gated then). `wait=1` lets the
     // panel wait out a cold team-skill cache, same as `GET /skills` (spec 005).
     .get('/skills/importable', queryZodValidator(waitQuery), async (c) => {
       const repoRoot = c.get('project').root;

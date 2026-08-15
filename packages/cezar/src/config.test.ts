@@ -251,9 +251,9 @@ describe('resolveWorktreeRetention', () => {
 
 /**
  * `gatedSkillsRepos` decides which repos are opt-in per skill (the "Import skills" flow). The
- * invariant: the vendor default (`open-mercato/skills`) is gated for the zero-config majority,
- * and a repo that sets its OWN `skillsRepos` gates nothing (it took control — everything it lists
- * auto-loads). Detection must probe the raw file because the schema's `.default()` erases the
+ * invariant: no remote source is gated in the zero-config default, and a repo that sets its OWN
+ * `skillsRepos` gates nothing (it took control — everything it lists auto-loads). Detection must
+ * probe the raw file because the schema's `.default()` erases the
  * "did the user set this?" distinction — the same reason `resolveWorktreeRetention` probes it.
  */
 describe('gatedSkillsRepos', () => {
@@ -273,11 +273,11 @@ describe('gatedSkillsRepos', () => {
 
   const defaults = DEFAULT_SKILLS_REPOS.map((r) => r.repo);
 
-  it('gates the vendor defaults when there is no config file (zero-config)', async () => {
+  it('has no gated remote defaults when there is no config file (zero-config)', async () => {
     expect([...(await gatedSkillsRepos(repoRoot))]).toEqual(defaults);
   });
 
-  it('gates the vendor defaults when the config omits skillsRepos (additive)', async () => {
+  it('has no gated remote defaults when the config omits skillsRepos (additive)', async () => {
     write({ maxParallel: 4 });
     expect([...(await gatedSkillsRepos(repoRoot))]).toEqual(defaults);
   });
@@ -292,7 +292,7 @@ describe('gatedSkillsRepos', () => {
     expect((await gatedSkillsRepos(repoRoot)).size).toBe(0);
   });
 
-  it('degrades a malformed config to the vendor defaults (like loadConfig)', async () => {
+  it('degrades a malformed config to the empty defaults (like loadConfig)', async () => {
     writeFileSync(join(repoRoot, '.ai/cezar', 'config.json'), '{ nope', 'utf8');
     expect([...(await gatedSkillsRepos(repoRoot))]).toEqual(defaults);
   });
