@@ -1,5 +1,7 @@
 use ratatui::layout::Rect;
 
+use crate::widgets::table::ColumnId;
+
 /// Clickable actions registered while a frame renders.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HitAction {
@@ -22,6 +24,14 @@ pub enum HitAction {
     Back,
     Forward,
     Quit,
+    /// A column header on the active run table — click to sort.
+    TableHeader(ColumnId),
+    /// A row of the active run table — click to open, right-click to menu.
+    TableRow(usize),
+    /// The Tasks title row's "Mark all read" action.
+    MarkAllRead,
+    /// The Tasks title row's "Archive finished" action.
+    ArchiveFinished,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

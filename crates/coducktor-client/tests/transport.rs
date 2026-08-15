@@ -119,3 +119,80 @@ async fn http_statuses_become_domain_errors() {
         })
     );
 }
+
+#[tokio::test]
+async fn run_mutations_hit_the_versioned_routes() {
+    let server = MockServer::start().await;
+    let run = json!({"id":"run-1","title":"Ship","workflow":"quick-task","task":"ship","status":"done","createdAt":"now","tokensUsed":0,"archived":false,"steps":[]});
+    Mock::given(method("POST"))
+        .and(path("/api/v1/p/shop/runs/run-1/archive"))
+        .and(|request: &wiremock::Request| request.body.as_slice() == br#"{"archived":true}"#)
+        .respond_with(ResponseTemplate::new(200).set_body_json(run.clone()))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/p/shop/runs/run-1/read"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(run.clone()))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/p/shop/runs/run-1/unread"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(run.clone()))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/v1/p/shop/runs/run-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"deleted":true})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/p/shop/runs/archive-finished"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"archived":3})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/p/shop/runs/read-all"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"read":2})))
+        .mount(&server)
+        .await;
+
+    let engine = HttpEngine::new(server.uri()).unwrap();
+    let scope = Scope::Project("shop".into());
+    let archived = engine.archive_run(&scope, "run-1", true).await.unwrap();
+    assert_eq!(archived.record.id, "run-1");
+    assert!(engine.read_run(&scope, "run-1").await.is_ok());
+    assert!(engine.unread_run(&scope, "run-1").await.is_ok());
+    assert!(engine.delete_run(&scope, "run-1").await.unwrap().deleted);
+    assert_eq!(engine.archive_finished(&scope).await.unwrap().archived, 3.0);
+    assert_eq!(engine.mark_all_read(&scope).await.unwrap().read, 2.0);
+}
+
+#[tokio::test]
+async fn runs_index_is_workspace_level() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/workspace/runs-index"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "runs": [{
+                "projectId":"coducktor",
+                "id":"run-1",
+                "title":"Ship",
+                "status":"running",
+                "createdAt":"now",
+                "archived":false,
+                "workflow":"quick-task"
+            }],
+            "perProjectLimit":200,
+            "truncated":["coducktor"],
+            "referenceStatuses":{}
+        })))
+        .mount(&server)
+        .await;
+
+    let engine = HttpEngine::new(server.uri()).unwrap();
+    let index = engine.runs_index().await.unwrap();
+    assert_eq!(index.runs.len(), 1);
+    assert_eq!(index.runs[0].project_id, "coducktor");
+    assert_eq!(index.per_project_limit, 200);
+    assert_eq!(index.truncated, vec!["coducktor".to_owned()]);
+}

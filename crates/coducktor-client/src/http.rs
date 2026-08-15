@@ -1,8 +1,9 @@
 use std::pin::Pin;
 
 use coducktor_contract::{
-    ApiRun, ConfigResponse, CreateRunInput, CreateRunResponse, GithubData, HealthResponse,
-    ProjectsResponse, ProviderStatusResponse, RunEvent, Runner, RunnerModelCatalogResponse, Skill,
+    ApiRun, ArchiveFinishedResponse, ConfigResponse, CreateRunInput, CreateRunResponse,
+    DeleteRunResponse, GithubData, HealthResponse, MarkAllReadResponse, ProjectsResponse,
+    ProviderStatusResponse, RunEvent, Runner, RunnerModelCatalogResponse, RunsIndexResponse, Skill,
     WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUsageResponse,
 };
 use futures_core::Stream;
@@ -71,6 +72,83 @@ impl HttpEngine {
 
     pub async fn get_run(&self, scope: &Scope, run_id: &str) -> Result<ApiRun, EngineError> {
         self.get_json(scope, &format!("/runs/{}", encode_path_segment(run_id)))
+            .await
+    }
+
+    pub async fn archive_run(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        archived: bool,
+    ) -> Result<ApiRun, EngineError> {
+        self.send_json(
+            Method::POST,
+            scope,
+            &format!("/runs/{}/archive", encode_path_segment(run_id)),
+            Some(&serde_json::json!({ "archived": archived })),
+        )
+        .await
+    }
+
+    pub async fn delete_run(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<DeleteRunResponse, EngineError> {
+        self.send_json(
+            Method::DELETE,
+            scope,
+            &format!("/runs/{}", encode_path_segment(run_id)),
+            Option::<&serde_json::Value>::None,
+        )
+        .await
+    }
+
+    pub async fn read_run(&self, scope: &Scope, run_id: &str) -> Result<ApiRun, EngineError> {
+        self.send_json(
+            Method::POST,
+            scope,
+            &format!("/runs/{}/read", encode_path_segment(run_id)),
+            Option::<&serde_json::Value>::None,
+        )
+        .await
+    }
+
+    pub async fn unread_run(&self, scope: &Scope, run_id: &str) -> Result<ApiRun, EngineError> {
+        self.send_json(
+            Method::POST,
+            scope,
+            &format!("/runs/{}/unread", encode_path_segment(run_id)),
+            Option::<&serde_json::Value>::None,
+        )
+        .await
+    }
+
+    pub async fn archive_finished(
+        &self,
+        scope: &Scope,
+    ) -> Result<ArchiveFinishedResponse, EngineError> {
+        self.send_json(
+            Method::POST,
+            scope,
+            "/runs/archive-finished",
+            Option::<&serde_json::Value>::None,
+        )
+        .await
+    }
+
+    pub async fn mark_all_read(&self, scope: &Scope) -> Result<MarkAllReadResponse, EngineError> {
+        self.send_json(
+            Method::POST,
+            scope,
+            "/runs/read-all",
+            Option::<&serde_json::Value>::None,
+        )
+        .await
+    }
+
+    pub async fn runs_index(&self) -> Result<RunsIndexResponse, EngineError> {
+        self.get_json(&Scope::Workspace, "/workspace/runs-index")
             .await
     }
 

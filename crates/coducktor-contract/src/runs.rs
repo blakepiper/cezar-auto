@@ -7,9 +7,10 @@ use crate::workflows::{WorkflowDef, WorkflowStepDef};
 use crate::workspace::QuotaProvider;
 
 /// Mirrors `packages/contract/src/runs.ts::RunStatus`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RunStatus {
+    #[default]
     Queued,
     Running,
     Waiting,
@@ -155,7 +156,7 @@ pub struct AutomationProvenance {
 }
 
 /// Mirrors `packages/contract/src/runs.ts::RunRecord`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunRecord {
     pub id: String,
@@ -312,7 +313,7 @@ pub struct ReferenceStatuses {
 }
 
 /// Mirrors `packages/contract/src/runs.ts::RunIndexEntry`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunIndexEntry {
     pub project_id: String,

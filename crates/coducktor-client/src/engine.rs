@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use coducktor_contract::{
-    ApiRun, ConfigResponse, CreateRunInput, CreateRunResponse, GithubData, HealthResponse,
-    ProjectsResponse, ProviderStatusResponse, Runner, RunnerModelCatalogResponse, Skill,
+    ApiRun, ArchiveFinishedResponse, ConfigResponse, CreateRunInput, CreateRunResponse,
+    DeleteRunResponse, GithubData, HealthResponse, MarkAllReadResponse, ProjectsResponse,
+    ProviderStatusResponse, Runner, RunnerModelCatalogResponse, RunsIndexResponse, Skill,
     WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUsageResponse,
 };
 use futures_core::stream::BoxStream;
@@ -34,6 +35,23 @@ pub trait Engine: Send + Sync {
         input: StartRunInput,
     ) -> Result<CreateRunResponse, EngineError>;
     async fn get_run(&self, scope: &Scope, run_id: &str) -> Result<ApiRun, EngineError>;
+    async fn archive_run(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        archived: bool,
+    ) -> Result<ApiRun, EngineError>;
+    async fn delete_run(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<DeleteRunResponse, EngineError>;
+    async fn read_run(&self, scope: &Scope, run_id: &str) -> Result<ApiRun, EngineError>;
+    async fn unread_run(&self, scope: &Scope, run_id: &str) -> Result<ApiRun, EngineError>;
+    async fn archive_finished(&self, scope: &Scope)
+    -> Result<ArchiveFinishedResponse, EngineError>;
+    async fn mark_all_read(&self, scope: &Scope) -> Result<MarkAllReadResponse, EngineError>;
+    async fn runs_index(&self) -> Result<RunsIndexResponse, EngineError>;
     async fn workflows(&self, scope: &Scope) -> Result<WorkflowsResponse, EngineError>;
     async fn skills(&self, scope: &Scope) -> Result<Vec<Skill>, EngineError>;
     async fn projects(&self) -> Result<ProjectsResponse, EngineError>;
@@ -66,6 +84,46 @@ impl Engine for HttpEngine {
 
     async fn get_run(&self, scope: &Scope, run_id: &str) -> Result<ApiRun, EngineError> {
         HttpEngine::get_run(self, scope, run_id).await
+    }
+
+    async fn archive_run(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        archived: bool,
+    ) -> Result<ApiRun, EngineError> {
+        HttpEngine::archive_run(self, scope, run_id, archived).await
+    }
+
+    async fn delete_run(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<DeleteRunResponse, EngineError> {
+        HttpEngine::delete_run(self, scope, run_id).await
+    }
+
+    async fn read_run(&self, scope: &Scope, run_id: &str) -> Result<ApiRun, EngineError> {
+        HttpEngine::read_run(self, scope, run_id).await
+    }
+
+    async fn unread_run(&self, scope: &Scope, run_id: &str) -> Result<ApiRun, EngineError> {
+        HttpEngine::unread_run(self, scope, run_id).await
+    }
+
+    async fn archive_finished(
+        &self,
+        scope: &Scope,
+    ) -> Result<ArchiveFinishedResponse, EngineError> {
+        HttpEngine::archive_finished(self, scope).await
+    }
+
+    async fn mark_all_read(&self, scope: &Scope) -> Result<MarkAllReadResponse, EngineError> {
+        HttpEngine::mark_all_read(self, scope).await
+    }
+
+    async fn runs_index(&self) -> Result<RunsIndexResponse, EngineError> {
+        HttpEngine::runs_index(self).await
     }
 
     async fn workflows(&self, scope: &Scope) -> Result<WorkflowsResponse, EngineError> {

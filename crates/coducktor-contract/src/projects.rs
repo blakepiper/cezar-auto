@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::health::ForgeKind;
 
 /// Mirrors `packages/contract/src/projects.ts::ProjectListEntry`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectListEntry {
     pub id: String,
@@ -26,17 +26,19 @@ pub struct ProjectListEntry {
 }
 
 /// The project source discriminator from `packages/contract/src/projects.ts`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProjectSource {
+    #[default]
     Local,
     Checkout,
 }
 
 /// The project health discriminator from `packages/contract/src/projects.ts`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProjectStatus {
+    #[default]
     Ok,
     Missing,
     NotGit,

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use coducktor_contract::{ApiRun, RunStatus};
+use coducktor_contract::{ApiRun, ProcessUsage, ProjectListEntry, RunStatus, RunsIndexResponse};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -10,8 +10,10 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use crate::input::hitmap::{HitAction, HitMap};
 use crate::input::keymap::{ActionId, KeyMode, Keymap};
+use crate::screens::runs_util::TaskView;
 use crate::service::ServiceState;
 use crate::theme::{Theme, ThemeName};
+use crate::widgets::table::ColumnId;
 
 const SIDEBAR_BREAKPOINT: u16 = 100;
 const SIDEBAR_DEFAULT_WIDTH: u16 = 28;
@@ -94,6 +96,7 @@ impl NavItem {
 pub enum Route {
     Tasks { project: String },
     GlobalTasks,
+    Thread { project: String, id: String },
     Placeholder { project: String, nav: NavItem },
 }
 
@@ -112,11 +115,22 @@ impl Route {
         if parts.first() == Some(&"p") {
             let project = (*parts.get(1)?).to_owned();
             return match parts.get(2).copied() {
-                None | Some("tasks") => Some(Self::Tasks { project }),
+                None => Some(Self::Tasks { project }),
+                Some("tasks") if parts.len() >= 4 => Some(Self::Thread {
+                    project,
+                    id: (*parts.get(3)?).to_owned(),
+                }),
+                Some("tasks") => Some(Self::Tasks { project }),
                 Some(segment) => {
                     NavItem::parse(segment).map(|nav| Self::Placeholder { project, nav })
                 }
             };
+        }
+        if parts.first() == Some(&"tasks") {
+            return parts.get(1).map(|id| Self::Thread {
+                project: default_project.to_owned(),
+                id: (*id).to_owned(),
+            });
         }
         None
     }
@@ -125,6 +139,7 @@ impl Route {
         match self {
             Self::Tasks { project } => format!("/p/{project}"),
             Self::GlobalTasks => "/tasks".to_owned(),
+            Self::Thread { project, id } => format!("/p/{project}/tasks/{id}"),
             Self::Placeholder { project, nav } => {
                 format!("/p/{project}/{}", nav.path_segment())
             }
@@ -135,13 +150,16 @@ impl Route {
         match self {
             Self::Tasks { .. } => "TASKS",
             Self::GlobalTasks => "GLOBAL TASKS",
+            Self::Thread { .. } => "TASK THREAD",
             Self::Placeholder { nav, .. } => nav.uppercase_title(),
         }
     }
 
     fn project(&self) -> Option<&str> {
         match self {
-            Self::Tasks { project } | Self::Placeholder { project, .. } => Some(project),
+            Self::Tasks { project }
+            | Self::Thread { project, .. }
+            | Self::Placeholder { project, .. } => Some(project),
             Self::GlobalTasks => None,
         }
     }
@@ -202,8 +220,9 @@ enum InputMode {
     Command,
 }
 
+/// The Active/Archived filter shared by the shell and the Tasks screens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TaskFilter {
+pub enum TaskFilter {
     Active,
     Archived,
 }
@@ -262,12 +281,101 @@ impl QuickTask {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A single frame of workspace news from the `/workspace/events` stream. The
+/// `Run` arm is intentionally wide — it carries a whole `ApiRun` so the table
+/// can update a row in place without a refetch.
+#[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum WorkspaceEvent {
-    Run(QuickTask),
-    RunDeleted { project: String, id: String },
-    Todos { project: String, count: usize },
-    ProviderStatus { provider: String, available: bool },
+    Run {
+        project: String,
+        run: ApiRun,
+    },
+    RunDeleted {
+        project: String,
+        id: String,
+    },
+    Todos {
+        project: String,
+        count: usize,
+    },
+    Usage {
+        project: String,
+        usage: BTreeMap<String, ProcessUsage>,
+    },
+    ProviderStatus {
+        provider: String,
+        available: bool,
+    },
+}
+
+/// A mutation the shell or a screen wants the engine loop to run next frame.
+/// Main owns the engine; the app only queues these.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingAction {
+    Archive {
+        project: String,
+        id: String,
+        archived: bool,
+    },
+    Delete {
+        project: String,
+        id: String,
+    },
+    Read {
+        project: String,
+        id: String,
+    },
+    Unread {
+        project: String,
+        id: String,
+    },
+    ArchiveFinished {
+        project: String,
+    },
+    MarkAllRead {
+        project: String,
+    },
+    RefreshTasks {
+        project: String,
+    },
+    RefreshIndex,
+    Quit,
+}
+
+/// A blocking question rendered over the shell; confirmed with `y`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfirmRequest {
+    pub text: String,
+    pub action: PendingAction,
+}
+
+/// The row menu overlay opened from a table row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowMenu {
+    pub project: String,
+    pub run_id: String,
+    pub title: String,
+    pub items: Vec<RowMenuItem>,
+    pub selected: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowMenuItem {
+    pub label: String,
+    pub action: MenuAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuAction {
+    Open,
+    Archive,
+    Restore,
+    MarkRead,
+    MarkUnread,
+    Delete,
+    OpenPr,
+    CopyBranch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -284,24 +392,35 @@ pub struct App {
     keymap: Keymap,
     mode: InputMode,
     command: String,
-    notice: Option<String>,
+    pub notice: Option<String>,
     toast: Option<String>,
-    hover: Option<(u16, u16)>,
+    pub hover: Option<(u16, u16)>,
     quit: bool,
-    confirm_quit: bool,
     help_open: bool,
-    default_project: String,
-    projects: Vec<ProjectEntry>,
+    pub confirm: Option<ConfirmRequest>,
+    pub row_menu: Option<RowMenu>,
+    pub default_project: String,
+    pub projects: Vec<ProjectEntry>,
     quick_tasks: Vec<QuickTask>,
     todo_counts: BTreeMap<String, usize>,
-    task_filter: TaskFilter,
+    pub task_filter: TaskFilter,
     sidebar_width: u16,
     sidebar_collapsed: bool,
     sidebar_overlay_open: bool,
     sidebar_dragging: bool,
-    last_width: u16,
+    pub last_width: u16,
     service_state: ServiceState,
     providers: Vec<ProviderBadge>,
+    pub tasks: Vec<ApiRun>,
+    pub global_index: Option<RunsIndexResponse>,
+    pub project_registry: Vec<ProjectListEntry>,
+    pub live_usage: BTreeMap<String, ProcessUsage>,
+    pub now_epoch: i64,
+    pub tasks_ui: crate::screens::tasks::TasksUi,
+    pub global_ui: crate::screens::global_tasks::GlobalUi,
+    pub pending: Vec<PendingAction>,
+    pub filter_mode: bool,
+    pub sort_picker_index: usize,
 }
 
 impl App {
@@ -320,8 +439,9 @@ impl App {
             toast: None,
             hover: None,
             quit: false,
-            confirm_quit: false,
             help_open: false,
+            confirm: None,
+            row_menu: None,
             default_project: project.clone(),
             projects: vec![ProjectEntry {
                 id: project.clone(),
@@ -338,6 +458,16 @@ impl App {
             last_width: 0,
             service_state: ServiceState::Disabled,
             providers: Vec::new(),
+            tasks: Vec::new(),
+            global_index: None,
+            project_registry: Vec::new(),
+            live_usage: BTreeMap::new(),
+            now_epoch: 0,
+            tasks_ui: crate::screens::tasks::TasksUi::default(),
+            global_ui: crate::screens::global_tasks::GlobalUi::default(),
+            pending: Vec::new(),
+            filter_mode: false,
+            sort_picker_index: 0,
         }
     }
 
@@ -388,9 +518,108 @@ impl App {
             .collect();
     }
 
+    /// Replace the current project's run list (from `GET /runs`).
+    pub fn set_tasks(&mut self, runs: Vec<ApiRun>) {
+        self.tasks = runs;
+        self.tasks_ui.table.select(self.tasks_ui.table.selected);
+    }
+
+    pub fn set_global_index(&mut self, index: RunsIndexResponse) {
+        self.global_index = Some(index);
+    }
+
+    pub fn set_project_registry(&mut self, projects: Vec<ProjectListEntry>) {
+        self.project_registry = projects;
+    }
+
+    pub fn take_pending(&mut self) -> Vec<PendingAction> {
+        std::mem::take(&mut self.pending)
+    }
+
+    pub fn task_view(&self) -> TaskView {
+        match self.task_filter {
+            TaskFilter::Active => TaskView::Active,
+            TaskFilter::Archived => TaskView::Archived,
+        }
+    }
+
+    pub fn toggle_view(&mut self) {
+        self.task_filter = match self.task_filter {
+            TaskFilter::Active => TaskFilter::Archived,
+            TaskFilter::Archived => TaskFilter::Active,
+        };
+    }
+
+    /// The honest "capped" note the global screen renders when the index was
+    /// truncated (§8.2) — a capped list must say it is capped.
+    pub fn truncated_note(&self) -> String {
+        let Some(index) = &self.global_index else {
+            return String::new();
+        };
+        if index.truncated.is_empty() {
+            return String::new();
+        }
+        format!(
+            "Showing the newest {} tasks per project — older ones in {} are only in that project's Tasks page.",
+            index.per_project_limit,
+            index.truncated.join(", ")
+        )
+    }
+
+    /// Open a URL in the platform browser, best-effort.
+    pub fn open_url(&mut self, url: &str) {
+        let opener = if cfg!(target_os = "macos") {
+            "open"
+        } else if cfg!(target_os = "windows") {
+            "cmd"
+        } else {
+            "xdg-open"
+        };
+        let mut command = std::process::Command::new(opener);
+        if cfg!(target_os = "windows") {
+            command.arg("/c").arg("start").arg("").arg(url);
+        } else {
+            command.arg(url);
+        }
+        let spawned = command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .is_ok();
+        self.notice = if spawned {
+            None
+        } else {
+            Some(format!("no way to open {url}"))
+        };
+    }
+
+    /// Copy text to the clipboard, best-effort (the `open-in-*` handoff is A12;
+    /// the clipboard here is what makes the Branch chip's "click to copy" real).
+    pub fn copy_text(&mut self, text: &str) {
+        let copied = copy_to_clipboard(text);
+        self.notice = if copied {
+            Some(format!("copied {text}"))
+        } else {
+            Some("no clipboard tool found (wl-copy/xclip/xsel/pbcopy)".to_owned())
+        };
+    }
+
     pub fn apply_workspace_event(&mut self, event: WorkspaceEvent) {
         match event {
-            WorkspaceEvent::Run(task) => {
+            WorkspaceEvent::Run { project, run } => {
+                if project == self.current_project() {
+                    if let Some(existing) = self
+                        .tasks
+                        .iter_mut()
+                        .find(|existing| existing.record.id == run.record.id)
+                    {
+                        *existing = run.clone();
+                    } else {
+                        self.tasks.push(run.clone());
+                    }
+                }
+                let task = QuickTask::from_api(project, run);
                 if let Some(existing) = self
                     .quick_tasks
                     .iter_mut()
@@ -404,9 +633,17 @@ impl App {
             WorkspaceEvent::RunDeleted { project, id } => {
                 self.quick_tasks
                     .retain(|task| task.project != project || task.id != id);
+                self.tasks.retain(|run| run.record.id != id);
             }
             WorkspaceEvent::Todos { project, count } => {
                 self.todo_counts.insert(project, count);
+            }
+            WorkspaceEvent::Usage { project, usage } => {
+                if project == self.current_project() {
+                    for (id, sample) in usage {
+                        self.live_usage.insert(id, sample);
+                    }
+                }
             }
             WorkspaceEvent::ProviderStatus {
                 provider,
@@ -692,11 +929,16 @@ impl App {
         let route = self.route().clone();
         let title = route.title();
         let body = match route {
-            Route::Tasks { project } => format!(
-                "{title}\n\nProject: {project}\n\nThis placeholder proves keyboard, mouse, command, and history routing.\nPress g for global tasks, :open /tasks, or Esc to go back."
-            ),
-            Route::GlobalTasks => format!(
-                "{title}\n\nAll registered projects\n\nThis placeholder is ready for the global task table in A5.\nPress t for tasks, :open /p/main, or Esc to go back."
+            Route::Tasks { .. } => {
+                crate::screens::tasks::render(frame, area, self);
+                return;
+            }
+            Route::GlobalTasks => {
+                crate::screens::global_tasks::render(frame, area, self);
+                return;
+            }
+            Route::Thread { project, id } => format!(
+                "{title}\n\nProject: {project}  Run: {id}\n\nThe task thread screen lands in A8."
             ),
             Route::Placeholder { nav, project } => format!(
                 "{title}\n\nProject: {project}\n\nThe shell route for {} is ready for its content screen in a later step.",
@@ -728,7 +970,14 @@ impl App {
             InputMode::Normal => "NORMAL",
             InputMode::Command => "COMMAND",
         };
-        let line = if self.mode == InputMode::Command {
+        let line = if self.filter_mode {
+            let query = match self.route() {
+                Route::Tasks { .. } => self.tasks_ui.query.clone(),
+                Route::GlobalTasks => self.global_ui.query.clone(),
+                _ => String::new(),
+            };
+            format!(" FILTER /{query}▌")
+        } else if self.mode == InputMode::Command {
             format!(" {mode} :{}", self.command)
         } else if let Some(toast) = &self.toast {
             format!(" {mode}  {toast}")
@@ -775,7 +1024,7 @@ impl App {
         }
     }
 
-    fn render_overlays(&self, frame: &mut Frame<'_>, area: Rect) {
+    fn render_overlays(&mut self, frame: &mut Frame<'_>, area: Rect) {
         if let Some(toast) = &self.toast {
             let width = (toast.len() as u16 + 4).min(area.width.saturating_sub(2));
             let rect = Rect::new(
@@ -794,8 +1043,12 @@ impl App {
         }
         if self.help_open {
             self.render_help(frame, area);
-        } else if self.confirm_quit {
-            self.render_confirm(frame, area);
+        } else if let Some(confirm) = &self.confirm {
+            self.render_confirm(frame, area, confirm);
+        } else if let Some(menu) = &self.row_menu {
+            self.render_row_menu(frame, area, menu);
+        } else if self.tasks_ui.sort_picker {
+            self.render_sort_picker(frame, area);
         }
     }
 
@@ -825,14 +1078,89 @@ impl App {
         );
     }
 
-    fn render_confirm(&self, frame: &mut Frame<'_>, area: Rect) {
+    fn render_confirm(&self, frame: &mut Frame<'_>, area: Rect, confirm: &ConfirmRequest) {
         let rect = centered_rect(area, 48.min(area.width), 7.min(area.height));
         frame.render_widget(Clear, rect);
         frame.render_widget(
-            Paragraph::new("Live tasks are still running. Quit anyway?\n\n  [y] yes    [n] no")
+            Paragraph::new(format!("{}\n\n  [y] yes    [n] no", confirm.text))
                 .block(Block::default().borders(Borders::ALL).title("CONFIRM"))
                 .style(Style::default().fg(self.theme.palette.fg))
                 .wrap(Wrap { trim: false }),
+            rect,
+        );
+    }
+
+    fn render_row_menu(&self, frame: &mut Frame<'_>, area: Rect, menu: &RowMenu) {
+        let height = (menu.items.len() as u16 + 3).min(area.height.saturating_sub(2));
+        let width = 30.min(area.width);
+        let rect = centered_rect(area, width, height);
+        frame.render_widget(Clear, rect);
+        let mut lines = vec![Line::from(Span::styled(
+            format!(" {}", menu.title),
+            Style::default().fg(self.theme.palette.soft_fg),
+        ))];
+        for (index, item) in menu.items.iter().enumerate() {
+            let selected = index == menu.selected;
+            let style = if selected {
+                Style::default()
+                    .fg(self.theme.palette.accent)
+                    .add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default().fg(self.theme.palette.fg)
+            };
+            lines.push(Line::from(Span::styled(
+                format!(
+                    " {}  {}{}",
+                    if selected { ">" } else { " " },
+                    item.label,
+                    if selected { " <" } else { "" }
+                ),
+                style,
+            )));
+        }
+        frame.render_widget(
+            Paragraph::new(Text::from(lines))
+                .block(Block::default().borders(Borders::ALL).title("ACTIONS"))
+                .style(Style::default().bg(self.theme.palette.surface))
+                .wrap(Wrap { trim: false }),
+            rect,
+        );
+    }
+
+    fn render_sort_picker(&self, frame: &mut Frame<'_>, area: Rect) {
+        let items: [(&str, ColumnId); 5] = [
+            ("Status", ColumnId::Status),
+            ("Started", ColumnId::Started),
+            ("Tokens", ColumnId::Tokens),
+            ("Cost", ColumnId::Cost),
+            ("Workflow", ColumnId::Workflow),
+        ];
+        let height = (items.len() as u16 + 2).min(area.height.saturating_sub(2));
+        let width = 22.min(area.width);
+        let rect = centered_rect(area, width, height);
+        frame.render_widget(Clear, rect);
+        let lines: Vec<Line<'static>> = items
+            .iter()
+            .enumerate()
+            .map(|(index, (label, _))| {
+                let selected = index == self.sort_picker_index;
+                let style = if selected {
+                    Style::default()
+                        .fg(self.theme.palette.accent)
+                        .add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default().fg(self.theme.palette.fg)
+                };
+                Line::from(Span::styled(
+                    format!(" {}  {label}", if selected { ">" } else { " " }),
+                    style,
+                ))
+            })
+            .collect();
+        frame.render_widget(
+            Paragraph::new(Text::from(lines))
+                .block(Block::default().borders(Borders::ALL).title("SORT BY"))
+                .style(Style::default().bg(self.theme.palette.surface)),
             rect,
         );
     }
@@ -846,6 +1174,21 @@ impl App {
                         self.sidebar_dragging = true;
                     } else {
                         self.apply_hit_action(action);
+                    }
+                }
+            }
+            MouseEventKind::Down(MouseButton::Right) => {
+                if let Some(HitAction::TableRow(index)) = self.hitmap.hit(mouse.column, mouse.row) {
+                    match self.route() {
+                        Route::Tasks { .. } => {
+                            self.tasks_ui.table.select(Some(index));
+                            crate::screens::tasks::open_row_menu(self);
+                        }
+                        Route::GlobalTasks => {
+                            self.global_ui.table.select(Some(index));
+                            crate::screens::global_tasks::open_row_menu(self);
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -867,20 +1210,27 @@ impl App {
             }
             return;
         }
-        if self.confirm_quit {
-            match key.code {
-                KeyCode::Char('y') | KeyCode::Enter => {
-                    self.confirm_quit = false;
-                    self.quit = true;
-                }
-                KeyCode::Char('n') | KeyCode::Esc => self.confirm_quit = false,
-                _ => {}
-            }
+        if let Some(confirm) = self.confirm.clone() {
+            self.handle_confirm_key(&confirm, key);
+            return;
+        }
+        if let Some(menu) = self.row_menu.clone()
+            && handle_row_menu_key(self, &menu, key)
+        {
+            return;
+        }
+        if self.filter_mode {
+            self.handle_filter_key(key);
             return;
         }
         if self.mode == InputMode::Command {
             self.handle_command_key(key);
             return;
+        }
+        match self.route().clone() {
+            Route::Tasks { .. } if crate::screens::tasks::handle_key(self, key) => return,
+            Route::GlobalTasks if crate::screens::global_tasks::handle_key(self, key) => return,
+            _ => {}
         }
         if let Some(action) = self.keymap.action_for(KeyMode::Normal, &key) {
             self.apply_action(action);
@@ -897,6 +1247,46 @@ impl App {
             KeyCode::Esc => {
                 self.history.back();
             }
+            _ => {}
+        }
+    }
+
+    fn handle_confirm_key(&mut self, confirm: &ConfirmRequest, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Enter => {
+                let action = confirm.action.clone();
+                self.confirm = None;
+                if action == PendingAction::Quit {
+                    self.quit = true;
+                } else {
+                    self.pending.push(action);
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Esc => self.confirm = None,
+            _ => {}
+        }
+    }
+
+    fn handle_filter_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => self.filter_mode = false,
+            KeyCode::Enter => {
+                self.filter_mode = false;
+            }
+            KeyCode::Backspace => match self.route() {
+                Route::Tasks { .. } => {
+                    self.tasks_ui.query.pop();
+                }
+                Route::GlobalTasks => {
+                    self.global_ui.query.pop();
+                }
+                _ => {}
+            },
+            KeyCode::Char(character) => match self.route() {
+                Route::Tasks { .. } => self.tasks_ui.query.push(character),
+                Route::GlobalTasks => self.global_ui.query.push(character),
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -959,7 +1349,10 @@ impl App {
         match action {
             ActionId::Quit => self.request_quit(),
             ActionId::Tasks => self.navigate(NavItem::Tasks),
-            ActionId::GlobalTasks => self.history.navigate(Route::GlobalTasks),
+            ActionId::GlobalTasks => {
+                self.history.navigate(Route::GlobalTasks);
+                self.pending.push(PendingAction::RefreshIndex);
+            }
             ActionId::NewTask => self.navigate(NavItem::NewTask),
             ActionId::Inbox => self.navigate(NavItem::Inbox),
             ActionId::Ide => self.navigate(NavItem::Ide),
@@ -987,7 +1380,10 @@ impl App {
     fn apply_hit_action(&mut self, action: HitAction) {
         match action {
             HitAction::Tasks => self.navigate(NavItem::Tasks),
-            HitAction::GlobalTasks => self.history.navigate(Route::GlobalTasks),
+            HitAction::GlobalTasks => {
+                self.history.navigate(Route::GlobalTasks);
+                self.pending.push(PendingAction::RefreshIndex);
+            }
             HitAction::NewTask => self.navigate(NavItem::NewTask),
             HitAction::Inbox => self.navigate(NavItem::Inbox),
             HitAction::Ide => self.navigate(NavItem::Ide),
@@ -1013,13 +1409,46 @@ impl App {
                 self.history.forward();
             }
             HitAction::Quit => self.request_quit(),
+            HitAction::MarkAllRead => {
+                self.pending.push(PendingAction::MarkAllRead {
+                    project: self.current_project().to_owned(),
+                });
+            }
+            HitAction::ArchiveFinished => {
+                self.pending.push(PendingAction::ArchiveFinished {
+                    project: self.current_project().to_owned(),
+                });
+            }
+            HitAction::TableHeader(column) => {
+                if let Route::Tasks { .. } = self.route() {
+                    crate::screens::tasks::handle_table_hit(self, HitAction::TableHeader(column));
+                }
+            }
+            HitAction::TableRow(index) => match self.route() {
+                Route::Tasks { .. } => {
+                    self.tasks_ui.table.select(Some(index));
+                    crate::screens::tasks::handle_table_hit(self, HitAction::TableRow(index));
+                }
+                Route::GlobalTasks => {
+                    self.global_ui.table.select(Some(index));
+                    let Some((_, row)) = self.global_ui.table.selected_row() else {
+                        return;
+                    };
+                    let key = row.key.clone();
+                    crate::screens::global_tasks::open_thread(self, &key);
+                }
+                _ => {}
+            },
         }
     }
 
     fn navigate(&mut self, nav: NavItem) {
         let project = self.current_project().to_owned();
         if nav == NavItem::Tasks {
-            self.history.navigate(Route::Tasks { project });
+            self.history.navigate(Route::Tasks {
+                project: project.clone(),
+            });
+            self.pending.push(PendingAction::RefreshTasks { project });
         } else {
             self.history.navigate(Route::Placeholder { project, nav });
         }
@@ -1028,7 +1457,8 @@ impl App {
 
     fn route_is(&self, nav: NavItem) -> bool {
         matches!(self.route(), Route::Placeholder { nav: current, .. } if *current == nav)
-            || (nav == NavItem::Tasks && matches!(self.route(), Route::Tasks { .. }))
+            || (nav == NavItem::Tasks
+                && matches!(self.route(), Route::Tasks { .. } | Route::Thread { .. }))
     }
 
     fn toggle_sidebar(&mut self) {
@@ -1041,7 +1471,10 @@ impl App {
 
     fn request_quit(&mut self) {
         if self.running_count() > 0 {
-            self.confirm_quit = true;
+            self.confirm = Some(ConfirmRequest {
+                text: "Live tasks are still running. Quit anyway?".to_owned(),
+                action: PendingAction::Quit,
+            });
         } else {
             self.quit = true;
         }
@@ -1099,6 +1532,158 @@ fn nav_hit_action(nav: NavItem) -> HitAction {
         NavItem::Workflows => HitAction::Workflows,
         NavItem::Settings => HitAction::Settings,
     }
+}
+
+/// Keyboard handling for the open row menu. Returns true when consumed.
+pub fn handle_row_menu_key(app: &mut App, menu: &RowMenu, key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => {
+            if let Some(open) = app.row_menu.as_mut() {
+                open.selected = (menu.selected + 1).min(menu.items.len().saturating_sub(1));
+            }
+            true
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if let Some(open) = app.row_menu.as_mut() {
+                open.selected = menu.selected.saturating_sub(1);
+            }
+            true
+        }
+        KeyCode::Enter => {
+            let selected = menu.selected;
+            let Some(action) = menu.items.get(selected).map(|item| item.action) else {
+                return true;
+            };
+            app.row_menu = None;
+            apply_menu_action(app, action);
+            true
+        }
+        KeyCode::Esc => {
+            app.row_menu = None;
+            true
+        }
+        _ => false,
+    }
+}
+
+fn apply_menu_action(app: &mut App, action: MenuAction) {
+    let Some(menu) = app.row_menu.take() else {
+        return;
+    };
+    let project = menu.project;
+    let id = menu.run_id;
+    match action {
+        MenuAction::Open => {
+            app.history.navigate(Route::Thread {
+                project: project.clone(),
+                id: id.clone(),
+            });
+        }
+        MenuAction::Archive => app.pending.push(PendingAction::Archive {
+            project,
+            id,
+            archived: true,
+        }),
+        MenuAction::Restore => app.pending.push(PendingAction::Archive {
+            project,
+            id,
+            archived: false,
+        }),
+        MenuAction::MarkRead => app.pending.push(PendingAction::Read { project, id }),
+        MenuAction::MarkUnread => app.pending.push(PendingAction::Unread { project, id }),
+        MenuAction::Delete => {
+            let title = menu.title;
+            app.confirm = Some(ConfirmRequest {
+                text: format!("Delete \"{title}\" and its branch?"),
+                action: PendingAction::Delete { project, id },
+            });
+        }
+        MenuAction::OpenPr => {
+            let url = run_reference_url(app, &project, &id);
+            if let Some(url) = url {
+                app.open_url(&url);
+            } else {
+                app.notice = Some("no PR or issue URL on this task".to_owned());
+            }
+        }
+        MenuAction::CopyBranch => {
+            let branch = run_branch(app, &project, &id);
+            if let Some(branch) = branch {
+                app.copy_text(&branch);
+            } else {
+                app.notice = Some("this task has no branch".to_owned());
+            }
+        }
+    }
+}
+
+fn run_reference_url(app: &App, project: &str, id: &str) -> Option<String> {
+    if project == app.current_project()
+        && let Some(run) = app.tasks.iter().find(|run| run.record.id == id)
+    {
+        return run
+            .record
+            .pull_request_url
+            .clone()
+            .or_else(|| run.record.referenced_pull_request_url.clone())
+            .or_else(|| run.record.referenced_issue_url.clone());
+    }
+    if let Some(entry) = app.global_index.as_ref().and_then(|index| {
+        index
+            .runs
+            .iter()
+            .find(|entry| entry.project_id == project && entry.id == id)
+    }) {
+        return entry
+            .pull_request_url
+            .clone()
+            .or_else(|| entry.referenced_pull_request_url.clone())
+            .or_else(|| entry.referenced_issue_url.clone());
+    }
+    None
+}
+
+fn run_branch(app: &App, project: &str, id: &str) -> Option<String> {
+    if project == app.current_project()
+        && let Some(run) = app.tasks.iter().find(|run| run.record.id == id)
+    {
+        return run.record.branch.clone();
+    }
+    if let Some(entry) = app.global_index.as_ref().and_then(|index| {
+        index
+            .runs
+            .iter()
+            .find(|entry| entry.project_id == project && entry.id == id)
+    }) {
+        return entry.branch.clone();
+    }
+    None
+}
+
+fn copy_to_clipboard(text: &str) -> bool {
+    for candidate in [
+        &["wl-copy", text][..],
+        &["xclip", "-selection", "clipboard", text][..],
+        &["xsel", "--clipboard", "--input", text][..],
+        &["pbcopy", text][..],
+    ] {
+        let (command, args) = candidate.split_first().unwrap_or((&candidate[0], &[]));
+        let process = std::process::Command::new(command)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        if let Ok(mut process) = process {
+            use std::io::Write;
+            if let Some(stdin) = process.stdin.as_mut() {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+            let _ = process.wait();
+            return true;
+        }
+    }
+    false
 }
 
 fn sidebar_line(value: impl Into<String>, style: Style) -> Line<'static> {
@@ -1214,6 +1799,7 @@ impl TaskGroupLabel for TaskGroup {
 
 #[cfg(test)]
 mod tests {
+    use coducktor_contract::RunRecord;
     use crossterm::event::{Event, KeyEvent, KeyModifiers, MouseEvent};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -1284,15 +1870,13 @@ mod tests {
     #[test]
     fn workspace_events_update_live_shell_badges() {
         let mut app = App::new("main", Theme::detect(), Keymap::default());
-        app.apply_workspace_event(WorkspaceEvent::Run(QuickTask {
-            project: "main".to_owned(),
-            id: "run-1".to_owned(),
-            title: "Ship shell".to_owned(),
-            status: RunStatus::Running,
-            archived: false,
-            unread: false,
-            created_at: "2026-08-15T00:00:00Z".to_owned(),
-        }));
+        app.apply_workspace_event(run_event(
+            "main",
+            "run-1",
+            "Ship shell",
+            RunStatus::Running,
+            None,
+        ));
         app.apply_workspace_event(WorkspaceEvent::Todos {
             project: "main".to_owned(),
             count: 3,
@@ -1300,15 +1884,13 @@ mod tests {
         assert_eq!(app.running_count(), 1);
         assert_eq!(app.inbox_count(), 3);
 
-        app.apply_workspace_event(WorkspaceEvent::Run(QuickTask {
-            project: "main".to_owned(),
-            id: "run-1".to_owned(),
-            title: "Ship shell".to_owned(),
-            status: RunStatus::Review,
-            archived: false,
-            unread: true,
-            created_at: "2026-08-15T00:00:00Z".to_owned(),
-        }));
+        app.apply_workspace_event(run_event(
+            "main",
+            "run-1",
+            "Ship shell",
+            RunStatus::Review,
+            None,
+        ));
         assert_eq!(app.running_count(), 0);
         assert_eq!(app.needs_you_count(), 1);
 
@@ -1317,6 +1899,34 @@ mod tests {
             id: "run-1".to_owned(),
         });
         assert_eq!(app.needs_you_count(), 0);
+    }
+
+    fn run_event(
+        project: &str,
+        id: &str,
+        title: &str,
+        status: RunStatus,
+        seen_at: Option<&str>,
+    ) -> WorkspaceEvent {
+        WorkspaceEvent::Run {
+            project: project.to_owned(),
+            run: ApiRun {
+                record: RunRecord {
+                    id: id.to_owned(),
+                    title: title.to_owned(),
+                    workflow: "quick-task".to_owned(),
+                    task: String::new(),
+                    status,
+                    created_at: "2026-08-15T00:00:00Z".to_owned(),
+                    tokens_used: 0.0,
+                    archived: false,
+                    seen_at: seen_at.map(ToOwned::to_owned),
+                    steps: Vec::new(),
+                    ..RunRecord::default()
+                },
+                usage: None,
+            },
+        }
     }
 
     #[test]
@@ -1372,6 +1982,112 @@ mod tests {
                 format!("tasks_{width}x{height}"),
                 terminal.backend().buffer()
             );
+        }
+    }
+
+    #[test]
+    fn a_started_run_appears_in_the_table_and_progresses_through_statuses() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.now_epoch = 1_800_000_000;
+        let render = |app: &mut App| {
+            let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+            terminal.draw(|frame| app.render(frame)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let content: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+            content
+        };
+
+        // Queued first: a run event (exactly what `POST /runs` rides the SSE
+        // stream with) makes a row appear.
+        app.apply_workspace_event(run_event(
+            "main",
+            "run-1",
+            "Ship the shell",
+            RunStatus::Queued,
+            None,
+        ));
+        let content = render(&mut app);
+        assert!(content.contains("Ship the shell"), "row must appear");
+        assert!(content.contains("queued"), "status must read queued");
+
+        // A later event progresses the row in place.
+        app.apply_workspace_event(run_event(
+            "main",
+            "run-1",
+            "Ship the shell",
+            RunStatus::Running,
+            None,
+        ));
+        let content = render(&mut app);
+        assert!(
+            content.contains("running"),
+            "status must progress to running"
+        );
+
+        app.apply_workspace_event(run_event(
+            "main",
+            "run-1",
+            "Ship the shell",
+            RunStatus::Review,
+            None,
+        ));
+        let content = render(&mut app);
+        assert!(
+            content.contains("needs rev"),
+            "status must progress to review, got: {content}"
+        );
+
+        // Deletion removes the row.
+        app.apply_workspace_event(WorkspaceEvent::RunDeleted {
+            project: "main".to_owned(),
+            id: "run-1".to_owned(),
+        });
+        let content = render(&mut app);
+        assert!(!content.contains("Ship the shell"), "row must disappear");
+    }
+
+    #[test]
+    fn keyboard_moves_the_selection_and_queues_actions() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.set_tasks(vec![
+            run_record(1, RunStatus::Done, None),
+            run_record(2, RunStatus::Waiting, None),
+        ]);
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('j'),
+            KeyModifiers::NONE,
+        )));
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('a'),
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(
+            app.pending,
+            vec![PendingAction::Archive {
+                project: "main".to_owned(),
+                id: "run-2".to_owned(),
+                archived: true,
+            }]
+        );
+    }
+
+    fn run_record(index: u8, status: RunStatus, seen_at: Option<&str>) -> ApiRun {
+        let mut event = run_event(
+            "main",
+            &format!("run-{index}"),
+            &format!("Task {index}"),
+            status,
+            seen_at,
+        );
+        if let WorkspaceEvent::Run { run, .. } = &mut event {
+            run.record.title_summary = None;
+        }
+        match event {
+            WorkspaceEvent::Run { run, .. } => run,
+            _ => unreachable!(),
         }
     }
 }

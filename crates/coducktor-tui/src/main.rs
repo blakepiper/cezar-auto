@@ -1,8 +1,10 @@
 mod app;
 mod input;
+mod screens;
 mod service;
 mod terminal;
 mod theme;
+mod widgets;
 
 use std::env;
 use std::io;
@@ -18,7 +20,7 @@ use serde::Deserialize;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::task::JoinHandle;
 
-use crate::app::{App, QuickTask, WorkspaceEvent};
+use crate::app::{App, PendingAction, QuickTask, WorkspaceEvent};
 use crate::input::keymap::Keymap;
 use crate::service::{ServiceConfig, ServiceState, ServiceSupervisor};
 use crate::terminal::AppTerminal;
@@ -45,7 +47,7 @@ async fn main() -> io::Result<()> {
         .as_ref()
         .map(|supervisor| supervisor.engine().clone())
     {
-        prime_shell(&mut app, &engine).await;
+        prime_app(&mut app, &engine).await;
         workspace_listener = open_workspace_listener(engine).await;
     }
     let run_result = run(
@@ -134,6 +136,13 @@ struct WorkspaceTodosPayload {
 }
 
 #[derive(Debug, Deserialize)]
+struct WorkspaceUsagePayload {
+    project: String,
+    #[serde(default)]
+    usage: std::collections::BTreeMap<String, coducktor_contract::ProcessUsage>,
+}
+
+#[derive(Debug, Deserialize)]
 struct WorkspaceProviderStatusPayload {
     provider: String,
     status: String,
@@ -145,10 +154,10 @@ fn parse_workspace_frame(frame: SseFrame) -> Option<WorkspaceEvent> {
     match frame.event.as_deref()? {
         "run" => {
             let payload = serde_json::from_str::<WorkspaceRunPayload>(&frame.data).ok()?;
-            Some(WorkspaceEvent::Run(QuickTask::from_api(
-                payload.project,
-                payload.run,
-            )))
+            Some(WorkspaceEvent::Run {
+                project: payload.project,
+                run: payload.run,
+            })
         }
         "run-deleted" => {
             let payload = serde_json::from_str::<WorkspaceDeletedPayload>(&frame.data).ok()?;
@@ -164,6 +173,13 @@ fn parse_workspace_frame(frame: SseFrame) -> Option<WorkspaceEvent> {
                 count: payload.items.len(),
             })
         }
+        "usage" => {
+            let payload = serde_json::from_str::<WorkspaceUsagePayload>(&frame.data).ok()?;
+            Some(WorkspaceEvent::Usage {
+                project: payload.project,
+                usage: payload.usage,
+            })
+        }
         "provider-status" => {
             let payload =
                 serde_json::from_str::<WorkspaceProviderStatusPayload>(&frame.data).ok()?;
@@ -176,8 +192,18 @@ fn parse_workspace_frame(frame: SseFrame) -> Option<WorkspaceEvent> {
     }
 }
 
-async fn prime_shell(app: &mut App, engine: &HttpEngine) {
+async fn prime_app(app: &mut App, engine: &HttpEngine) {
     if let Ok(health) = engine.health().await {
+        // Adopt the boot project the service actually knows about — the TUI's
+        // "main" default is only a placeholder until the health answer arrives.
+        if !health.boot_project.is_empty()
+            && app.projects.iter().all(|p| p.id != health.boot_project)
+        {
+            app.history.navigate(crate::app::Route::Tasks {
+                project: health.boot_project.clone(),
+            });
+            app.default_project = health.boot_project.clone();
+        }
         app.set_projects(
             health
                 .projects
@@ -193,9 +219,123 @@ async fn prime_shell(app: &mut App, engine: &HttpEngine) {
     }
     let project = app.current_project().to_owned();
     if let Ok(runs) = engine.list_runs(&Scope::Project(project.clone())).await {
+        app.set_tasks(runs);
         app.set_quick_tasks(
-            runs.into_iter()
-                .map(|run| QuickTask::from_api(project.clone(), run)),
+            app.tasks
+                .iter()
+                .map(|run| QuickTask::from_api(project.clone(), run.clone()))
+                .collect::<Vec<_>>(),
+        );
+    }
+    if let Ok(projects) = engine.projects().await {
+        app.set_project_registry(projects.projects);
+    }
+    if let Ok(index) = engine.runs_index().await {
+        app.set_global_index(index);
+    }
+}
+
+/// Run one pending action against the engine and reconcile the app with the
+/// server's answer. Failures surface as a toast rather than a crash.
+async fn execute_pending(engine: &HttpEngine, app: &mut App) {
+    for action in app.take_pending() {
+        match action {
+            PendingAction::Archive {
+                project,
+                id,
+                archived,
+            } => {
+                let scope = Scope::Project(project.clone());
+                match engine.archive_run(&scope, &id, archived).await {
+                    Ok(run) => {
+                        app.apply_workspace_event(WorkspaceEvent::Run { project, run });
+                        refresh_index_if_global(engine, app).await;
+                    }
+                    Err(error) => app.notice = Some(format!("archive failed: {error}")),
+                }
+            }
+            PendingAction::Delete { project, id } => {
+                let scope = Scope::Project(project.clone());
+                match engine.delete_run(&scope, &id).await {
+                    Ok(_) => {
+                        app.apply_workspace_event(WorkspaceEvent::RunDeleted { project, id });
+                        refresh_index_if_global(engine, app).await;
+                    }
+                    Err(error) => app.notice = Some(format!("delete failed: {error}")),
+                }
+            }
+            PendingAction::Read { project, id } => {
+                let scope = Scope::Project(project.clone());
+                match engine.read_run(&scope, &id).await {
+                    Ok(run) => {
+                        app.apply_workspace_event(WorkspaceEvent::Run { project, run });
+                        refresh_index_if_global(engine, app).await;
+                    }
+                    Err(error) => app.notice = Some(format!("mark read failed: {error}")),
+                }
+            }
+            PendingAction::Unread { project, id } => {
+                let scope = Scope::Project(project.clone());
+                match engine.unread_run(&scope, &id).await {
+                    Ok(run) => {
+                        app.apply_workspace_event(WorkspaceEvent::Run { project, run });
+                        refresh_index_if_global(engine, app).await;
+                    }
+                    Err(error) => app.notice = Some(format!("mark unread failed: {error}")),
+                }
+            }
+            PendingAction::ArchiveFinished { project } => {
+                let scope = Scope::Project(project.clone());
+                match engine.archive_finished(&scope).await {
+                    Ok(response) => {
+                        app.notice = Some(format!("archived {} finished", response.archived));
+                        refresh_tasks(engine, app, &project).await;
+                        refresh_index_if_global(engine, app).await;
+                    }
+                    Err(error) => app.notice = Some(format!("archive finished failed: {error}")),
+                }
+            }
+            PendingAction::MarkAllRead { project } => {
+                let scope = Scope::Project(project.clone());
+                match engine.mark_all_read(&scope).await {
+                    Ok(response) => {
+                        app.notice = Some(format!("marked {} read", response.read));
+                        refresh_tasks(engine, app, &project).await;
+                        refresh_index_if_global(engine, app).await;
+                    }
+                    Err(error) => app.notice = Some(format!("mark all read failed: {error}")),
+                }
+            }
+            PendingAction::RefreshTasks { project } => {
+                refresh_tasks(engine, app, &project).await;
+            }
+            PendingAction::RefreshIndex => {
+                if let Ok(index) = engine.runs_index().await {
+                    app.set_global_index(index);
+                }
+            }
+            PendingAction::Quit => {}
+        }
+    }
+}
+
+async fn refresh_index_if_global(engine: &HttpEngine, app: &mut App) {
+    if matches!(app.route(), crate::app::Route::GlobalTasks)
+        && let Ok(index) = engine.runs_index().await
+    {
+        app.set_global_index(index);
+    }
+}
+
+async fn refresh_tasks(engine: &HttpEngine, app: &mut App, project: &str) {
+    let scope = Scope::Project(project.to_owned());
+    if let Ok(runs) = engine.list_runs(&scope).await {
+        app.set_tasks(runs);
+        app.set_quick_tasks(
+            app.tasks
+                .iter()
+                .map(|run| QuickTask::from_api(project.to_owned(), run.clone()))
+                .collect::<Vec<_>>(),
         );
     }
 }
@@ -247,6 +387,7 @@ async fn run(
     let mut workspace_events = workspace_events;
     while !app.should_quit() {
         let frame_started = Instant::now();
+        app.now_epoch = current_epoch_seconds();
         let mut pending_mouse = None;
         while event::poll(Duration::ZERO)? {
             match event::read()? {
@@ -267,6 +408,10 @@ async fn run(
         if let Some(supervisor) = service.as_mut() {
             let _ = supervisor.monitor_once().await;
             app.set_service_state(supervisor.state());
+            let engine = supervisor.engine().clone();
+            if !app.pending.is_empty() {
+                execute_pending(&engine, app).await;
+            }
         }
         terminal.draw(|frame| app.render(frame))?;
 
@@ -277,6 +422,13 @@ async fn run(
     }
 
     Ok(())
+}
+
+fn current_epoch_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -292,15 +444,47 @@ mod tests {
         });
         assert_eq!(
             run,
-            Some(WorkspaceEvent::Run(QuickTask {
+            Some(WorkspaceEvent::Run {
                 project: "main".to_owned(),
-                id: "run-1".to_owned(),
-                title: "Ship shell".to_owned(),
-                status: coducktor_contract::RunStatus::Running,
-                archived: false,
-                unread: true,
-                created_at: "2026-08-15T00:00:00Z".to_owned(),
-            }))
+                run: ApiRun {
+                    record: coducktor_contract::RunRecord {
+                        id: "run-1".to_owned(),
+                        title: "Ship shell".to_owned(),
+                        workflow: "quick-task".to_owned(),
+                        task: "ship".to_owned(),
+                        status: coducktor_contract::RunStatus::Running,
+                        created_at: "2026-08-15T00:00:00Z".to_owned(),
+                        tokens_used: 0.0,
+                        archived: false,
+                        steps: Vec::new(),
+                        ..coducktor_contract::RunRecord::default()
+                    },
+                    usage: None,
+                }
+            })
+        );
+
+        let usage = parse_workspace_frame(SseFrame {
+            id: None,
+            event: Some("usage".to_owned()),
+            data: r#"{"project":"main","usage":{"run-1":{"cpuPct":37.5,"rssBytes":1048576,"procCount":3}}}"#
+                .to_owned(),
+        });
+        assert_eq!(
+            usage,
+            Some(WorkspaceEvent::Usage {
+                project: "main".to_owned(),
+                usage: [(
+                    "run-1".to_owned(),
+                    coducktor_contract::ProcessUsage {
+                        cpu_pct: 37.5,
+                        rss_bytes: 1048576.0,
+                        proc_count: 3.0,
+                    }
+                )]
+                .into_iter()
+                .collect(),
+            })
         );
 
         let todo = parse_workspace_frame(SseFrame {
