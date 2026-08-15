@@ -30,6 +30,8 @@ import {
   getProjects,
   getRunnerModels,
   getRepo,
+  getIdeDirectory,
+  getIdeFile,
   getRunCommit,
   getRunCommits,
   getRepoChanges,
@@ -69,6 +71,7 @@ import {
   updateProject,
   sendMessage,
   putAgentConfigFile,
+  putIdeFile,
   retryProviderAuth,
 } from './client'
 import { queryScope, REFERENCE_STATUS_MAX, runnerDiscoversModels } from '@open-mercato/cezar-api-client'
@@ -160,6 +163,13 @@ export const queryKeys = {
   },
   get repo() {
     return [queryScope(), 'repo'] as const
+  },
+  ide: {
+    get all() {
+      return [queryScope(), 'ide'] as const
+    },
+    tree: (path: string | null) => [queryScope(), 'ide', 'tree', path ?? ''] as const,
+    file: (path: string) => [queryScope(), 'ide', 'file', path] as const,
   },
   /** Children of `repo` on purpose: invalidating `queryKeys.repo` (a branch switch, a new
    *  commit) prefix-matches the working-tree diff and every cached commit diff too. */
@@ -365,6 +375,34 @@ export function useFsBrowse(path: string | null, showHidden = false) {
     queryKey: workspaceQueryKeys.fsBrowse(path, showHidden),
     queryFn: ({ signal }) => browseFs(path ?? undefined, { signal, showHidden }),
     retry: false,
+  })
+}
+
+export function useIdeDirectory(path: string | null) {
+  return useQuery({
+    queryKey: queryKeys.ide.tree(path),
+    queryFn: ({ signal }) => getIdeDirectory(path ?? undefined, { signal }),
+    retry: false,
+  })
+}
+
+export function useIdeFile(path: string | null) {
+  return useQuery({
+    queryKey: queryKeys.ide.file(path ?? ''),
+    queryFn: ({ signal }) => getIdeFile(path!, { signal }),
+    enabled: path !== null,
+    retry: false,
+  })
+}
+
+export function useSaveIdeFile() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ path, content }: { path: string; content: string }) => putIdeFile(path, content),
+    onSuccess: (file) => {
+      queryClient.setQueryData(queryKeys.ide.file(file.path), file)
+      void queryClient.invalidateQueries({ queryKey: queryKeys.ide.all })
+    },
   })
 }
 

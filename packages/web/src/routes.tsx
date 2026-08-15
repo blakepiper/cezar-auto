@@ -33,6 +33,7 @@ import {
 import { TasksOverviewRoute } from './routes/tasks-overview'
 import { GlobalTasksRoute } from './routes/global-tasks'
 import { AutomationsRoute } from './routes/automations/automations'
+import { IdeLoading } from './routes/ide/ide-loading'
 
 /** Lazy ON PURPOSE: the thread view carries the markdown stack (Streamdown + remark/rehype,
  *  ~140 KB gz) — as a static import it would sit in the main bundle every visitor pays for
@@ -64,6 +65,12 @@ const TaskCommitsRoute = lazy(() =>
  *  the same heavy chunk the task git tabs ride; the home screen must not pay for it. */
 const RepoGitRoute = lazy(() =>
   import('./routes/repo-git/repo-git').then((m) => ({ default: m.RepoGitRoute })),
+)
+
+/** Lazy because the IDE editor is a complete project surface and should not add its explorer
+ *  and editor controls to the task shell's initial bundle. */
+const IdeRoute = lazy(() =>
+  import('./routes/ide/ide').then((m) => ({ default: m.IdeRoute })),
 )
 
 /** Lazy because the GitHub detail pane renders issue/PR bodies through the same markdown
@@ -277,6 +284,7 @@ const PAGE_TITLE_ROUTES = [
   { pattern: '/new', pageLabel: 'New task' },
   { pattern: '/compare/:groupId', pageLabel: 'Compare' },
   { pattern: '/git/*', pageLabel: 'Git' },
+  { pattern: '/ide', pageLabel: 'IDE' },
   { pattern: '/github/*', pageLabel: 'GitHub' },
   { pattern: '/automations/*', pageLabel: 'Automations' },
   { pattern: '/skills', pageLabel: 'Skills' },
@@ -395,6 +403,14 @@ export function AppRoutes() {
           element={
             <Suspense fallback={<RepoGitLoading />}>
               <RepoGitRoute tab="branches" />
+            </Suspense>
+          }
+        />
+        <Route
+          path="ide"
+          element={
+            <Suspense fallback={<IdeLoading />}>
+              <IdeRoute />
             </Suspense>
           }
         />

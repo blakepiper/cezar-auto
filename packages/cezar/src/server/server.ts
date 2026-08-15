@@ -42,6 +42,9 @@ import {
   openProjectInSchema,
   reasoningEffortSchema,
   updateProjectInputSchema,
+  ideDirectoryQuerySchema,
+  ideFileInputSchema,
+  ideFileQuerySchema,
 } from '@open-mercato/cezar-contract';
 import { detectEnvironment } from '../core/backend-detect.ts';
 import { RUNNER_IDS } from '../core/agent-runner.ts';
@@ -169,6 +172,7 @@ import { agentHomePaths, expandTilde } from '../paths.ts';
 import { isLoopbackHostHeader, normalizeHostname, resolveCapabilities } from './capabilities.ts';
 import { createSocketHub, type SocketHub, type WsUpgradeVerdict } from './ws.ts';
 import { browseDirectory, isInsideBrowseRoot, isLexicallyInsideBrowseRoot, resolveBrowseRoot } from './fs-browse.ts';
+import { listIdeDirectory, readIdeFile, writeIdeFile } from './ide-files.ts';
 import { parseRemote, resolveForge, type ForgeAvailability } from './forge/index.ts';
 import { fetchGithub, fetchGithubChecks, fetchGithubComments, fetchGithubPrDiff, fetchGithubRefStatus, forgetRefStatus, readCachedRefStatuses, refNumberFromUrl, GithubPrNotFoundError, GH_CHECKS_MAX, GH_REF_STATUS_MAX } from './github.ts';
 import { ensureLaunchKey } from './launch-key.ts';
@@ -5243,6 +5247,27 @@ export function createApp(deps: ServerDeps) {
     name: z.string().trim().min(1).max(200),
     from: z.string().trim().min(1).max(200).optional(),
   });
+
+  // ---- chained family: IDE filesystem (project-scoped) --------------------
+  const ideRoutes = new Hono<ProjectApiEnv>()
+    .get('/ide/tree', queryZodValidator(ideDirectoryQuerySchema), async (c) => {
+      const result = await listIdeDirectory(c.get('project').root, c.req.valid('query').path);
+      if (!result.ok) return c.json({ error: result.error }, result.status);
+      return c.json(result.body);
+    })
+    .get('/ide/file', queryZodValidator(ideFileQuerySchema), async (c) => {
+      const result = await readIdeFile(c.get('project').root, c.req.valid('query').path);
+      if (!result.ok) return c.json({ error: result.error }, result.status);
+      return c.json(result.body);
+    })
+    .use('/ide/file', bodyLimit({ maxSize: 1_100_000 }))
+    .put('/ide/file', jsonZodValidator(ideFileInputSchema), async (c) => {
+      const input = c.req.valid('json');
+      const result = await writeIdeFile(c.get('project').root, input.path, input.content);
+      if (!result.ok) return c.json({ error: result.error }, result.status);
+      return c.json(result.body);
+    });
+
   // ---- assemble the chained families --------------------------------------
   // Every chained family is registered ONCE and mounted into the versioned table. There is no
   // second, unversioned spelling: `/api/*` was removed once the whole API was reachable under
@@ -5270,6 +5295,7 @@ export function createApp(deps: ServerDeps) {
     .route('/', sseRoutes)
     .route('/', githubRoutes)
     .route('/', repoRoutes)
+    .route('/', ideRoutes)
     .route('/', configRoutes)
     .route('/', agentConfigRoutes);
 

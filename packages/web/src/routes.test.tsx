@@ -166,6 +166,7 @@ describe('pageTitleContext', () => {
     ['/new', 'New task'],
     ['/p/cezar/compare/group-1', 'Compare'],
     ['/p/cezar/git', 'Git'],
+    ['/p/cezar/ide', 'IDE'],
     ['/p/cezar/git/commits/abc123', 'Git'],
     ['/p/cezar/github/issues/543', 'GitHub'],
     ['/p/cezar/skills', 'Skills'],
@@ -211,6 +212,7 @@ const ROUTE_CASES: Array<[url: string, route: string, title: string]> = [
   ['/git/commits', 'repo-git', 'Loading repository…'],
   ['/git/commits/abc1234', 'repo-git', 'Loading repository…'],
   ['/git/branches', 'repo-git', 'Loading repository…'],
+  ['/ide', 'ide', 'IDE'],
   // The real GitHub tab (R6 Step 1.1): with fetch never answering every github URL is
   // honestly loading — lists and item deep links included.
   ['/github', 'github', 'Loading GitHub…'],

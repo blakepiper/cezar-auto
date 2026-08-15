@@ -67,6 +67,7 @@ describe('NAV_ITEMS', () => {
     expect(NAV_ITEMS.map((item) => item.label)).toEqual([
       'Tasks',
       'Inbox',
+      'IDE',
       'Git',
       'GitHub',
       'Automations',
@@ -101,6 +102,7 @@ describe('visibleNavItems', () => {
     expect(labelsOf({ forge: false, inbox: true, automations: true })).toEqual([
       'Tasks',
       'Inbox',
+      'IDE',
       'Git',
       'Skills',
       'Workflows',
@@ -111,6 +113,7 @@ describe('visibleNavItems', () => {
   it('without the inbox, exactly the Inbox item drops out (#471)', () => {
     expect(labelsOf({ forge: true, inbox: false, automations: true })).toEqual([
       'Tasks',
+      'IDE',
       'Git',
       'GitHub',
       'Automations',
@@ -124,6 +127,7 @@ describe('visibleNavItems', () => {
     expect(labelsOf({ forge: true, inbox: true, automations: false })).toEqual([
       'Tasks',
       'Inbox',
+      'IDE',
       'Git',
       'GitHub',
       'Skills',
@@ -141,6 +145,7 @@ describe('visibleNavItems', () => {
   it('drops all three when nothing is available', () => {
     expect(labelsOf({ forge: false, inbox: false, automations: false })).toEqual([
       'Tasks',
+      'IDE',
       'Git',
       'Skills',
       'Workflows',

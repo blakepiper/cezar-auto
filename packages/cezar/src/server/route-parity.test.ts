@@ -177,6 +177,9 @@ describe('project-route alias parity (unprefixed vs /api/v1/p/<boot> vs /api/v1/
       'PATCH /runs/:id',
       'POST /todos/:id/start',
       'GET /repo/commit/:sha',
+      'GET /ide/tree',
+      'GET /ide/file',
+      'PUT /ide/file',
     ]) {
       expect(keys, expected).toContain(expected);
     }

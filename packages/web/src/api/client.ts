@@ -50,6 +50,8 @@ import type {
   GithubPrChangesData,
   GroupResponse,
   HealthResponse,
+  IdeDirectoryResponse,
+  IdeFileResponse,
   ImageInput,
   LaunchKeyResponse,
   MessageInput,
@@ -580,6 +582,39 @@ export async function getRepo(opts?: ReadOptions): Promise<RepoResponse> {
   return unwrap(
     await cez.api.v1.p[':projectId'].repo.$get({ param: { projectId: queryScope() } }, init(opts)),
     '/repo',
+  )
+}
+
+/** One directory in the project explorer. An omitted path asks for the project root. */
+export async function getIdeDirectory(path?: string, opts?: ReadOptions): Promise<IdeDirectoryResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].ide.tree.$get(
+      { param: { projectId: queryScope() }, query: { path: path || undefined } },
+      init(opts),
+    ),
+    '/ide/tree',
+  )
+}
+
+/** One UTF-8 project file, limited by the server's editable-file cap. */
+export async function getIdeFile(path: string, opts?: ReadOptions): Promise<IdeFileResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].ide.file.$get(
+      { param: { projectId: queryScope() }, query: { path } },
+      init(opts),
+    ),
+    '/ide/file',
+  )
+}
+
+/** Save an existing UTF-8 project file. */
+export async function putIdeFile(path: string, content: string): Promise<IdeFileResponse> {
+  return unwrap(
+    await cez.api.v1.p[':projectId'].ide.file.$put({
+      param: { projectId: queryScope() },
+      json: { path, content },
+    }),
+    '/ide/file',
   )
 }
 
