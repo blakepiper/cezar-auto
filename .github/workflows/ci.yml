@@ -37,6 +37,13 @@ jobs:
       - name: Run Rust clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Check TUI screen transport boundary
+        run: |
+          if [ -d crates/coducktor-tui/src/screens ] && rg -n 'reqwest|tokio_tungstenite|url::|StatusCode|HTTP status' crates/coducktor-tui/src/screens; then
+            echo "TUI screens must depend on Engine, not transport details"
+            exit 1
+          fi
+
       # `lts/*` — the current Node LTS, whatever it is on the day the job runs, so
       # the gate follows the release line users actually install on instead of
       # freezing on a version that quietly ages out of support. The floor stays the

@@ -1,0 +1,27 @@
+[package]
+name = "coducktor-client"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+async-stream.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+coducktor-contract = { path = "../coducktor-contract" }
+coducktor-protocol = { path = "../coducktor-protocol" }
+futures-core.workspace = true
+futures-util.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-tungstenite.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tokio-tungstenite.workspace = true
+wiremock = "0.6"
