@@ -189,10 +189,13 @@ name = "coducktor-tui"
 version = "0.1.0"
 dependencies = [
  "coducktor-client",
+ "coducktor-contract",
  "crossterm",
+ "futures-util",
  "insta",
  "ratatui",
  "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "toml",

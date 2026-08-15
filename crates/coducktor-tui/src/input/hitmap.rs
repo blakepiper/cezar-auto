@@ -3,8 +3,22 @@ use ratatui::layout::Rect;
 /// Clickable actions registered while a frame renders.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HitAction {
+    ProjectToggle(String),
     Tasks,
     GlobalTasks,
+    NewTask,
+    Inbox,
+    Ide,
+    RepoGit,
+    Github,
+    Skills,
+    Workflows,
+    Settings,
+    ActiveTasks,
+    ArchivedTasks,
+    ToggleSidebar,
+    Help,
+    SidebarEdge,
     Back,
     Forward,
     Quit,

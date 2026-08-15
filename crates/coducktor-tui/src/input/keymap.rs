@@ -15,12 +15,22 @@ pub enum KeyMode {
     Command,
 }
 
-/// Actions understood by the A3 shell.
+/// Actions understood by the shell chrome and routed screens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionId {
     Quit,
     Tasks,
     GlobalTasks,
+    NewTask,
+    Inbox,
+    Ide,
+    RepoGit,
+    Github,
+    Skills,
+    Workflows,
+    Settings,
+    ToggleSidebar,
+    Help,
     Command,
     ExecuteCommand,
     Normal,
@@ -35,6 +45,16 @@ impl ActionId {
             "quit" => Some(Self::Quit),
             "tasks" => Some(Self::Tasks),
             "global-tasks" => Some(Self::GlobalTasks),
+            "new-task" => Some(Self::NewTask),
+            "inbox" => Some(Self::Inbox),
+            "ide" => Some(Self::Ide),
+            "repo-git" => Some(Self::RepoGit),
+            "github" => Some(Self::Github),
+            "skills" => Some(Self::Skills),
+            "workflows" => Some(Self::Workflows),
+            "settings" => Some(Self::Settings),
+            "toggle-sidebar" => Some(Self::ToggleSidebar),
+            "help" => Some(Self::Help),
             "command" => Some(Self::Command),
             "execute-command" => Some(Self::ExecuteCommand),
             "normal" => Some(Self::Normal),
@@ -104,6 +124,18 @@ impl Keymap {
     pub fn action_for(&self, mode: KeyMode, event: &KeyEvent) -> Option<ActionId> {
         let key = key_id(event);
         self.bindings.get(&mode)?.get(&key).copied()
+    }
+
+    pub fn help_bindings(&self, mode: KeyMode) -> Vec<(String, ActionId)> {
+        self.bindings
+            .get(&mode)
+            .map(|bindings| {
+                bindings
+                    .iter()
+                    .map(|(key, action)| (key.clone(), *action))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn merge(&mut self, overlay: Self) {

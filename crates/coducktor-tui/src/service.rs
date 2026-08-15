@@ -110,6 +110,10 @@ impl ServiceSupervisor {
         self.state
     }
 
+    pub fn engine(&self) -> &HttpEngine {
+        &self.engine
+    }
+
     pub fn logs(&self) -> Vec<String> {
         self.logs
             .lock()
