@@ -140,12 +140,12 @@ overlay, confirm dialog, sidebar resize + collapse.
 snapshots at three widths including the auto-collapse breakpoint.
 **Commit:** `feat(tui): A4 shell chrome` — pushed as `deb37397`.
 
-### [ ] A5 — Tasks overview + global tasks
+### [x] A5 — Tasks overview + global tasks
 **Ships:** table widget (foldable columns, sort, filter, hover, row menu), both
 screens, SSE-driven live updates, archive/read/delete.
 **Accept:** against `CEZ_DRY_RUN=1 cezar serve`, starting a run makes a row appear
 and progress through statuses; E2E pty test asserts it.
-**Commit:** `feat(tui): A5 tasks overview + global tasks`
+**Commit:** `feat(tui): A5 tasks overview + global tasks` — pushed as `d7708105`.
 
 ### [ ] A6 — Composer widget + New task
 **Ships:** shared composer (auto-grow, attachments, `/` skills, `@` files, quick
