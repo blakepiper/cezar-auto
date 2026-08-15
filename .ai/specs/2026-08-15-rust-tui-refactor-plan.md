@@ -52,11 +52,15 @@ revertable) at single-commit granularity, per the spec's risk table (§15, "A15'
 deletions remove something still in use", "Rust toolchain is now a user
 prerequisite").
 
-**Branching:** unless told otherwise, work directly on the branch you were given
-(commit + push there), the same way the spec-writing session itself committed
-straight to `main`. If the repo's actual convention when you start is PR-per-chunk
-or PR-per-phase, follow that instead — it doesn't change chunk boundaries, only
-whether "push" means "push to main" or "push a branch and open a PR."
+**Branching: none. All work happens directly on `main`.** Every chunk is committed
+and pushed straight to `main` — no feature branches, no per-phase branches, no PRs.
+"Push" always means `git push origin main`. This is a deliberate choice, not a
+default to override: single-commit granularity on `main` is what makes each chunk
+independently revertable (spec §15's mitigation for A15 and for the Rust-toolchain
+risk both assume this), and a long-lived branch is exactly the kind of stall spec
+§15 warns about ("Phase B stalls after A ships"). Where a chunk's notes below say
+"own PR," read that as "own commit on `main`" — the isolation it buys comes from the
+commit boundary, not from a branch.
 
 **Cross-cutting rules that apply inside *every* chunk, not just one step:**
 - **Rename (§2.2).** New Rust code is born `coducktor-*` / `DUCK_*` from A0 onward.
@@ -207,10 +211,10 @@ written so removing that line at B12 is a one-line diff.
 on PATH; the README's prerequisite list has no surprises.
 **Commit:** `docs(install): A14 source-first install path and TUI docs`
 
-### A15 — Retire npm and remote-access surfaces from the Node tree ⚠ own PR
-**⚠ Ship this as its own commit/PR, not folded into A14 or B1** — spec §15 risk
-table calls this out explicitly: it's a pure-deletion step with a green suite as
-its own check, and anything it breaks needs to be a one-line `git revert`, not
+### A15 — Retire npm and remote-access surfaces from the Node tree ⚠ own commit
+**⚠ Ship this as its own commit on `main`, not folded into A14 or B1** — spec §15
+risk table calls this out explicitly: it's a pure-deletion step with a green suite
+as its own check, and anything it breaks needs to be a one-line `git revert`, not
 entangled with unrelated work.
 **Ships (all three sub-deletions, per spec §10 A15 verbatim):**
 - *npm (decision 4):* `install-as-command`/`check:pack` scripts and manifests entries,
