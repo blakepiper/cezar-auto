@@ -11,12 +11,13 @@ import {
   usePatchRun,
   useRemoveQueuedMessage,
   useRun,
+  useRunCommits,
   useProjectRepoBase,
   useRuns,
   useSendMessage,
 } from '@/api/queries'
 import { useRunHistory, type RunHistoryState } from '@/api/run-history'
-import type { ApiRun } from '@open-mercato/cezar-api-client'
+import type { ApiRun, RunCommitsResponse } from '@open-mercato/cezar-api-client'
 import { CenteredState } from '@/components/centered-state'
 import { Composer } from '@/components/composer/composer'
 import { StatusDot } from '@/components/status-dot'
@@ -208,6 +209,7 @@ export function ThreadView({
   // added: anything that is neither live nor still queued is closed. `review` matters most —
   // it is where this pipeline's runs normally END, and `threadFooter` already calls it closed.
   const runIsTerminal = !sessionOpen && run.status !== 'queued'
+  const gitStatus = useRunCommits(runIsTerminal ? run.id : undefined)
   const agents = useMemo(
     () => collectSubagents(currentThread.turns, runIsTerminal),
     [currentThread.turns, runIsTerminal],
@@ -353,6 +355,7 @@ export function ThreadView({
             )}
           >
             {footer.label}
+            {gitStatus.data ? <GitCompletionStatus run={run} status={gitStatus.data} /> : null}
             {/* href protocol guard (#431): link only for http(s) URLs. */}
             {isHttpUrl(taskPrUrl(run)) ? (
               // The run shipped as a PR (review-gate Draft PR, or agent-opened), or worked on
@@ -487,6 +490,46 @@ export function ThreadView({
         </div>
       </div>
     </div>
+  )
+}
+
+function GitCompletionStatus({ run, status }: { run: ApiRun; status: RunCommitsResponse }) {
+  // The API client deliberately does not parse response bodies at runtime. Keep an older server
+  // response (or a malformed cache entry) from taking down the whole finished-task thread.
+  if (!status || !Array.isArray(status.commits)) return null
+  const commit = status.commits[0]
+  if (!commit) {
+    return (
+      <span data-slot="git-completion" data-state="uncommitted" className="text-soft-foreground">
+        · not committed
+      </span>
+    )
+  }
+
+  const branch = status.branch ?? run.branch
+  return (
+    <span
+      data-slot="git-completion"
+      data-state={status.pushed ? 'pushed' : 'committed'}
+      className="text-soft-foreground"
+    >
+      · committed{status.pushed ? ' and pushed' : ' but not pushed'}{' '}
+      <Link
+        to={`/tasks/${run.id}/commits/${commit.sha}`}
+        data-slot="git-commit-link"
+        data-sha={commit.sha}
+        title={`Commit ${commit.sha}`}
+        className="font-mono text-foreground underline-offset-2 hover:underline"
+      >
+        {commit.sha.slice(0, 8)}
+      </Link>
+      {branch ? (
+        <>
+          {' on '}
+          <code data-slot="git-branch">{branch}</code>
+        </>
+      ) : null}
+    </span>
   )
 }
 

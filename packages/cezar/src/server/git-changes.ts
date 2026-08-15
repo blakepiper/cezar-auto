@@ -376,6 +376,27 @@ export interface RunCommit {
 
 export type RunCommitsResult = { ok: true; commits: RunCommit[] } | { ok: false; error: string };
 
+export interface RunGitStatus {
+  branch?: string;
+  /** True when the current branch has an upstream and no local commits ahead of it. */
+  pushed: boolean;
+}
+
+/** Read the current branch's publication state without changing the worktree. A missing
+ * upstream, detached HEAD, or any git failure is conservatively reported as not pushed. */
+export async function collectRunGitStatus(dir: string): Promise<RunGitStatus> {
+  const branch = await git(dir, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+  const name = branch.ok ? branch.stdout.trim() : '';
+  if (!name) return { pushed: false };
+
+  const upstream = await git(dir, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+  if (!upstream.ok) return { branch: name, pushed: false };
+
+  const ahead = await git(dir, ['rev-list', '--count', '@{u}..HEAD']);
+  const count = Number.parseInt(ahead.stdout.trim(), 10);
+  return { branch: name, pushed: ahead.ok && Number.isInteger(count) && count === 0 };
+}
+
 /**
  * The commits reachable from the worktree's current HEAD after its base, newest first. A review
  * task may deliberately repoint HEAD to the reviewed branch, so this list retains that useful

@@ -11,6 +11,7 @@ import type {
   ApiRun,
   HealthResponse,
   ProviderStatusResponse,
+  RunCommitsResponse,
   RunEvent,
   RunStatus,
 } from '@open-mercato/cezar-api-client'
@@ -40,6 +41,7 @@ function renderView(
     ],
   },
   health: Partial<HealthResponse> = {},
+  gitStatus: RunCommitsResponse = { commits: [], pushed: false },
 ) {
   vi.stubGlobal(
     'fetch',
@@ -48,6 +50,7 @@ function renderView(
       const body =
         path === '/api/v1/providers/status' ? providerStatus
         : path === '/api/v1/health' ? health
+        : path.includes('/commits') ? gitStatus
         : []
       return Promise.resolve(
         new Response(JSON.stringify(body), {
@@ -674,6 +677,47 @@ describe('ThreadView', () => {
     const footer = document.querySelector('[data-slot="thread-footer"]')
     expect(footer?.textContent).toBe('Session failed — checks failed')
     expect(footer?.className).toContain('text-danger')
+  })
+
+  it('reports the latest commit, branch, and pushed state in the closed footer', async () => {
+    const sha = 'abcdef1234567890abcdef1234567890abcdef12'
+    renderView(
+      <ThreadView run={run('done', { branch: 'cez/r1' })} thread={reduceThread(EVENTS)} />,
+      undefined,
+      {},
+      {
+        commits: [{ sha, subject: 'finish task', author: 'cezar-test', when: 'just now' }],
+        branch: 'cez/r1',
+        pushed: true,
+      },
+    )
+
+    await waitFor(() => expect(document.querySelector('[data-slot="git-completion"]')).not.toBeNull())
+    const status = document.querySelector('[data-slot="git-completion"]')
+    expect(status?.getAttribute('data-state')).toBe('pushed')
+    expect(status?.textContent).toContain('committed and pushed')
+    expect(status?.textContent).toContain('abcdef12')
+    expect(status?.textContent).toContain('cez/r1')
+    expect(status?.querySelector('[data-slot="git-commit-link"]')?.getAttribute('data-sha')).toBe(sha)
+  })
+
+  it('distinguishes a commit that has not been pushed', async () => {
+    renderView(
+      <ThreadView run={run('done')} thread={reduceThread(EVENTS)} />,
+      undefined,
+      {},
+      {
+        commits: [{ sha: '1234567890abcdef1234567890abcdef12345678', subject: 'local', author: 'cezar-test', when: 'now' }],
+        branch: 'cez/r1',
+        pushed: false,
+      },
+    )
+
+    await waitFor(() => expect(document.querySelector('[data-slot="git-completion"]')).not.toBeNull())
+    const status = document.querySelector('[data-slot="git-completion"]')
+    expect(status?.getAttribute('data-state')).toBe('committed')
+    expect(status?.textContent).toContain('· committed but not pushed 12345678 on cez/r1')
+    expect(status?.textContent).not.toContain('and pushed')
   })
 
   /**
