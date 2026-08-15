@@ -398,8 +398,9 @@ export const runIndexEntrySchema = z.object({
    *  only when neither is known (a queued run with no step yet and no explicit runner). */
   runner: runnerSchema.optional(),
   /** `RunRecord.model`, the free text the caller asked for — `opus`, `auto`, a gateway id.
-   *  Alongside `modelUsage` below, this is what lets the global Tasks page answer "which model,
-   *  from which provider" without shipping every project's full `steps[]`. */
+   *  Alongside the concrete identity and `modelUsage` below, this is what lets the global Tasks
+   *  page answer "which model, from which provider" without shipping every project's full
+   *  `steps[]`. */
   model: z.string().optional(),
   /**
    * Usage weighted by tokens spent, grouped by (model identity, reasoning level) and sorted
@@ -410,6 +411,13 @@ export const runIndexEntrySchema = z.object({
    * or reasoning mid-run collapses to a single entry.
    */
   modelUsage: z.array(modelUsageEntrySchema).optional(),
+  /** The latest concrete provider/model identity recorded for this run. Unlike `modelUsage`,
+   * this remains available while a task has no token sample yet, so the global Tasks page can
+   * still identify a queued or just-started task without shipping `steps[]`. */
+  modelIdentity: z.string().optional(),
+  /** The latest concrete reasoning level recorded for this run. `auto` is resolved before a
+   * step starts and is intentionally omitted here until the runner records the concrete level. */
+  reasoningEffort: reasoningEffortSchema.exclude(['auto']).optional(),
 });
 export type RunIndexEntry = z.infer<typeof runIndexEntrySchema>;
 

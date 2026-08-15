@@ -231,8 +231,41 @@ describe('workspace runs index API', () => {
         { model: 'anthropic/claude-opus-4-8', reasoningEffort: 'low', pct: 75 },
         { model: 'openai/gpt-5.2-codex', reasoningEffort: 'high', pct: 25 },
       ],
+      modelIdentity: 'openai/gpt-5.2-codex',
+      reasoningEffort: 'high',
     });
     expect(row).not.toHaveProperty('steps');
+  });
+
+  it('carries concrete model and reasoning before a run has token usage', async () => {
+    await registerProject(repoRoot);
+    await registerProject(otherRoot);
+    seedColdProject(otherRoot, [
+      storedRun({
+        id: 'just-started',
+        title: 'Just started',
+        model: 'auto',
+        modelIdentity: 'anthropic/claude-opus-4-8',
+        steps: [{
+          id: 's1',
+          name: 'first',
+          kind: 'agent',
+          status: 'running',
+          iterations: 1,
+          tokensUsed: 0,
+          modelIdentity: 'anthropic/claude-opus-4-8',
+          reasoningEffort: 'high',
+        }],
+      }),
+    ]);
+
+    const body = await getIndex();
+    expect(body.runs.find((entry) => entry.id === 'just-started')).toMatchObject({
+      model: 'auto',
+      modelIdentity: 'anthropic/claude-opus-4-8',
+      reasoningEffort: 'high',
+    });
+    expect(body.runs.find((entry) => entry.id === 'just-started')).not.toHaveProperty('modelUsage');
   });
 
   it('carries cost and the persisted usage peaks the cross-project table paints', async () => {

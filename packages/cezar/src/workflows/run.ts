@@ -3518,6 +3518,23 @@ export class RunManager {
   private handleRunnerUiEvent(runId: string, state: ActiveRun, sink: UiEventSink, event: UiEvent): void {
     this.recordUsageUiEvent(runId, state, event);
     sink.handle(event);
+    // An `auto` model has no canonical identity at spawn time, but backends that expose their
+    // resolved model in `session.started` do know it. Persist that observation on the same run
+    // and step fields used by the workspace index; otherwise the all-tasks view can only say
+    // "auto" forever for a task that already has an actual model.
+    if (event.type === 'session.started' && event.model && state.currentStepId) {
+      try {
+        const normalized = normalizeModelForBackend(event.backend, event.model);
+        if (normalized) {
+          const modelIdentity = formatModelIdentity(normalized.identity);
+          this.store.updateRun(runId, { modelIdentity });
+          this.store.updateStep(runId, state.currentStepId, { modelIdentity });
+        }
+      } catch {
+        // A backend may report a wire-only model id whose provider cannot be inferred safely.
+        // The requested model and runner remain the honest fallback in that case.
+      }
+    }
     if (event.type === 'plan.updated') {
       state.planEntries = event.entries;
       const completed = planCompletedCount(event.entries);

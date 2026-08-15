@@ -1170,19 +1170,27 @@ function Dash() {
  * the cross-project answer to the same question the task-detail agent badge answers per task
  * (`AgentBadge` in `routes/task-thread/run-header.tsx`).
  *
- * The index ships the summary pre-resolved (`RunIndexEntry.runner`/`.model`) and the
- * tokens-weighted breakdown pre-grouped (`.modelUsage`, server-computed by
- * `computeModelUsageBreakdown`) rather than the run's full `steps[]` — this table paints
- * hundreds of rows across a whole workspace, and per-row `steps[]` is exactly the cost the slim
- * index exists to avoid. A run that never switched model or reasoning mid-run collapses to at
- * most one breakdown entry, but even that one is worth disclosing: it carries the canonical
- * provider/model, measured percentage, and concrete reasoning level.
+ * The index ships the latest concrete identity/reasoning (`.modelIdentity`/`.reasoningEffort`) and
+ * the tokens-weighted breakdown pre-grouped (`.modelUsage`, server-computed by
+ * `computeModelUsageBreakdown`) rather than the run's full `steps[]` — this table paints hundreds
+ * of rows across a whole workspace, and per-row `steps[]` is exactly the cost the slim index
+ * exists to avoid. A run that never switched model or reasoning mid-run collapses to at most one
+ * breakdown entry, but even that one is worth disclosing: it carries the canonical provider/model,
+ * measured percentage, and concrete reasoning level.
  */
 function AgentCell({ run }: { run: RunIndexEntry }) {
-  const summary = [run.runner, run.model].filter(Boolean).join(' · ')
   const breakdown = run.modelUsage ?? []
-  if (!summary && breakdown.length === 0) return <Dash />
-  if (breakdown.length === 0) {
+  // Prefer the concrete values recorded by the runner. The requested model can be `auto`, and
+  // `modelUsage` is legitimately absent until the first token sample, so using only those two
+  // fields made the Agent column lose the answer for queued and freshly-started tasks.
+  const observedModel = breakdown.length === 1 ? breakdown[0]?.model : run.modelIdentity
+  const observedReasoning = breakdown.length === 1
+    ? breakdown[0]?.reasoningEffort ?? run.reasoningEffort
+    : run.reasoningEffort
+  const summary = [run.runner, observedModel ?? run.model, observedReasoning].filter(Boolean).join(' · ')
+  const hasAgentDetails = Boolean(summary || run.modelIdentity || run.reasoningEffort || breakdown.length > 0)
+  if (!hasAgentDetails) return <Dash />
+  if (breakdown.length === 0 && !run.modelIdentity && !run.reasoningEffort) {
     return (
       <span className="block truncate text-[12.5px] text-muted-foreground" title={summary}>
         {summary}
@@ -1208,21 +1216,31 @@ function AgentCell({ run }: { run: RunIndexEntry }) {
         {run.model ? (
           <p className="px-1 pb-1.5 text-[10.5px] text-soft-foreground">requested model: {run.model}</p>
         ) : null}
-        <p className="px-1 pb-1.5 text-[10.5px] text-soft-foreground">Usage by model</p>
-        <span className="flex flex-col items-start gap-1">
-          {breakdown.map((entry) => (
-            <span
-              key={`${entry.model}::${entry.reasoningEffort ?? ''}`}
-              data-slot="agent-usage-breakdown-entry"
-              className="px-1 font-mono text-[11px] text-muted-foreground"
-            >
-              {entry.model}
-              {entry.reasoningEffort ? ` · ${entry.reasoningEffort}` : ''}
-              {' — '}
-              {entry.pct >= 10 ? Math.round(entry.pct) : entry.pct.toFixed(1)}%
+        {run.modelIdentity ? (
+          <p className="px-1 pb-1.5 text-[10.5px] text-soft-foreground">actual model: {run.modelIdentity}</p>
+        ) : null}
+        {run.reasoningEffort ? (
+          <p className="px-1 pb-1.5 text-[10.5px] text-soft-foreground">reasoning: {run.reasoningEffort}</p>
+        ) : null}
+        {breakdown.length > 0 ? (
+          <>
+            <p className="px-1 pb-1.5 text-[10.5px] text-soft-foreground">Usage by model</p>
+            <span className="flex flex-col items-start gap-1">
+              {breakdown.map((entry) => (
+                <span
+                  key={`${entry.model}::${entry.reasoningEffort ?? ''}`}
+                  data-slot="agent-usage-breakdown-entry"
+                  className="px-1 font-mono text-[11px] text-muted-foreground"
+                >
+                  {entry.model}
+                  {entry.reasoningEffort ? ` · ${entry.reasoningEffort}` : ''}
+                  {' — '}
+                  {entry.pct >= 10 ? Math.round(entry.pct) : entry.pct.toFixed(1)}%
+                </span>
+              ))}
             </span>
-          ))}
-        </span>
+          </>
+        ) : null}
       </PopoverContent>
     </Popover>
   )

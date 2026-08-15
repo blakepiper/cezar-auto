@@ -911,7 +911,12 @@ describe('global tasks page', () => {
       renderPage()
       await screen.findByText('Add checkout endpoint')
 
-      fireEvent.click(screen.getByRole('button', { name: 'claude · opus' }))
+      // The row now shows the concrete provider/model/level before disclosure; the popover adds
+      // the requested-vs-observed context and the measured percentage.
+      expect(document.querySelector('[data-slot="global-task-row"]')?.textContent).toContain(
+        'claude · anthropic/claude-opus-4-8 · high',
+      )
+      fireEvent.click(screen.getByRole('button', { name: 'claude · anthropic/claude-opus-4-8 · high' }))
 
       await waitFor(() => {
         const breakdown = document.querySelector('[data-slot="agent-usage-breakdown"]')!
@@ -920,6 +925,30 @@ describe('global tasks page', () => {
         expect(breakdown.querySelector('[data-slot="agent-usage-breakdown-entry"]')?.textContent).toBe(
           'anthropic/claude-opus-4-8 · high — 100%',
         )
+      })
+    })
+
+    it('keeps concrete model and reasoning visible before token usage exists', async () => {
+      stubFetch({
+        runs: [{
+          ...RUNS[0]!,
+          runner: 'claude',
+          model: 'auto',
+          modelIdentity: 'anthropic/claude-opus-4-8',
+          reasoningEffort: 'high',
+        }],
+      })
+      renderPage()
+      await screen.findByText('Add checkout endpoint')
+
+      const row = document.querySelector('[data-slot="global-task-row"]')!
+      expect(row.textContent).toContain('claude · anthropic/claude-opus-4-8 · high')
+      fireEvent.click(screen.getByRole('button', { name: 'claude · anthropic/claude-opus-4-8 · high' }))
+      await waitFor(() => {
+        const details = document.querySelector('[data-slot="agent-usage-breakdown"]')!
+        expect(details.textContent).toContain('actual model: anthropic/claude-opus-4-8')
+        expect(details.textContent).toContain('reasoning: high')
+        expect(details.querySelector('[data-slot="agent-usage-breakdown-entry"]')).toBeNull()
       })
     })
   })

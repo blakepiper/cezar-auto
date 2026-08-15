@@ -5314,6 +5314,10 @@ export function createApp(deps: ServerDeps) {
     // mid-run provider failover means the record's own field only reflects the FIRST resolution.
     const lastBackendStep = [...run.steps].reverse().find((step) => step.backend);
     const runner = lastBackendStep?.backend ?? run.runner;
+    const modelIdentity = run.modelIdentity
+      ?? [...run.steps].reverse().find((step) => step.modelIdentity)?.modelIdentity;
+    const reasoningEffort = [...run.steps].reverse().find((step) => step.reasoningEffort)?.reasoningEffort
+      ?? (run.reasoningEffort !== undefined && run.reasoningEffort !== 'auto' ? run.reasoningEffort : undefined);
     const modelUsage = computeModelUsageBreakdown(run.steps);
     return {
     projectId,
@@ -5350,6 +5354,8 @@ export function createApp(deps: ServerDeps) {
     ...(runner !== undefined ? { runner } : {}),
     ...(run.model !== undefined ? { model: run.model } : {}),
     ...(modelUsage.length > 0 ? { modelUsage } : {}),
+    ...(modelIdentity !== undefined ? { modelIdentity } : {}),
+    ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     };
   };
 

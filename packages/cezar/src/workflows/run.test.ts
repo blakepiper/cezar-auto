@@ -125,6 +125,21 @@ describe('RunManager directional usage accounting', () => {
     expect(store.getRun(run.id)).toMatchObject({ inputTokens: 15, outputTokens: 3 });
   });
 
+  it('persists a model reported by session.started when the task selected auto', () => {
+    const { run, state, sink } = fixture();
+    state.currentStepId = 'work';
+
+    internal.handleRunnerUiEvent(run.id, state, sink, {
+      type: 'session.started',
+      sessionId: 'session-1',
+      backend: 'claude',
+      model: 'claude-opus-4-8',
+    });
+
+    expect(store.getRun(run.id)).toMatchObject({ modelIdentity: 'anthropic/claude-opus-4-8' });
+    expect(store.getRun(run.id)?.steps[0]).toMatchObject({ modelIdentity: 'anthropic/claude-opus-4-8' });
+  });
+
   it('keeps the run aggregate absent after a pre-turn failure even when a later invocation is metered', () => {
     const { run, state, sink } = fixture();
     internal.beginUsageInvocation(run.id, state, 'work');
