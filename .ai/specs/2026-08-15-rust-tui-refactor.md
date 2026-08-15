@@ -274,6 +274,24 @@ theme toggle; version/update chip; toasts; desktop notifications.
    phase needs it.
 6. The work is executable by less-capable coding agents: numbered steps, each with a
    verifiable acceptance criterion, each leaving the tree green.
+7. **One terminal, and nothing else.** The user runs one command in one terminal and
+   gets the whole product. No second terminal to watch server logs, no "which port
+   did it pick" banner, no output racing the TUI's own rendering. Everything the
+   Node/Rust service prints — startup banner, port-pick fallback, request logs,
+   crash output — is captured, never inherited onto the real stdout while the TUI
+   owns the screen (§7.7, §10 A3). Phase C removes the child process and the port
+   entirely, which is the permanent fix; Phases A and B need the capture-and-hide
+   mitigation because the child still exists.
+8. **General cleanup, not just the enumerated deletions.** §2.2's rename and §16a's
+   strip-out are the specifically *decided* deletions; beyond them, treat every module
+   touched during the port as a chance to remove legacy junk that predates this
+   refactor and isn't one of the protected surfaces (§1.4) or the "explicitly not on
+   this list" set (§16a) — commented-out code, unused exports, dead files nothing
+   imports, stale TODOs for already-finished work, orphaned test fixtures, one-off
+   migration scripts for migrations long since applied. Verify with a reference search
+   (`rg`) before deleting anything not already named in this spec — the same rule as
+   §16a's own tables — and when a piece of "junk" turns out to still be load-bearing,
+   leave it and note it rather than guessing.
 
 ## 2.2 Renaming: `cezar` → `coducktor`
 
@@ -649,7 +667,7 @@ autocomplete, `@` opens file mentions, `Alt+A`/`Alt+C` fire the quick replies.
 **COMMAND** — `:`-prefixed line with completion. Every palette action is also a
 command, so everything is scriptable and greppable:
 `:new`, `:cancel`, `:continue`, `:finish`, `:archive`, `:pr`, `:commit`, `:push`,
-`:open <route>`, `:project <id>`, `:theme dark|light|auto`, `:reload`, `:quit`.
+`:open <route>`, `:project <id>`, `:theme light|dark|lazyvim`, `:reload`, `:quit`.
 
 **Bindings are data.** A default keymap ships as an embedded TOML file; a user
 override at `~/.cezar/keymap.toml` is merged over it. The keymap is
@@ -684,14 +702,17 @@ Mouse must be as complete as the keyboard — this is an explicit product requir
 
 ### 7.5 Theme
 
-Port `docs/mockups/tokens.css` to a Rust palette with dark and light variants:
-`bg`, `surface`, `border`, `fg`, `soft-fg`, `accent` (lime), `add` (green),
-`del` (red), plus the status colors used by `StatusDot` (queued/running/waiting/
-review/done/failed/cancelled). Detect terminal capability
-(`COLORTERM=truecolor` → RGB; else 256-color quantization; else 16-color). Follow
-the OS/terminal light-dark hint where available, honor the persisted
-`appearance` setting from `~/.cezar/ui-state.json` (same store the web app uses, so
-the preference is shared), and expose `:theme`.
+Three named themes, matching the web app's `light`/`dark`/`lazyvim` (no `system`,
+no separate accent picker — the TUI doesn't follow the OS light/dark hint, and the
+accent is fixed per theme rather than user-selectable). Port `docs/mockups/tokens.css`
+to a Rust palette with all three variants: `bg`, `surface`, `border`, `fg`, `soft-fg`,
+`accent` (lime for light/dark, LazyVim's Tokyonight blue for `lazyvim`), `add`
+(green), `del` (red), plus the status colors used by `StatusDot` (queued/running/
+waiting/review/done/failed/cancelled). Detect terminal capability
+(`COLORTERM=truecolor` → RGB; else 256-color quantization; else 16-color). Honor the
+persisted `appearance` setting from `~/.cezar/ui-state.json` (same store the web app
+uses, so the preference is shared — reading a stored `system` falls back to `dark`),
+and expose `:theme`.
 
 ### 7.6 The hard rendering problems
 
@@ -719,6 +740,38 @@ tint. Collapse unchanged regions with an expandable "… N unchanged lines" row
 (clickable, `Enter`-able). Word-level intra-line diff via `similar` for changed
 lines. Must reproduce `web/src/components/diff/diff-view.tsx`'s behaviors:
 per-file collapse, file-level stat, whitespace toggle, and the `?raw=` image path.
+
+### 7.7 One terminal: the supervised child process is silent
+
+Goal 7 (§2) means the `cezar serve` child (Phases A and B — see §4) must never write
+to the terminal the TUI is drawing to. Concretely:
+
+- Spawn it with stdout and stderr **piped**, never inherited. Nothing it prints —
+  the startup banner, the `port 4321 was busy — using 4322` fallback line, request
+  logs, an uncaught-exception stack trace — reaches the real terminal while the
+  alternate screen is active.
+- Both streams are read on background tasks and written to a rotating file,
+  `~/.cezar/logs/service.log` (same directory family as `ui-state.json`, §1.4), and
+  mirrored into an in-memory ring buffer (last ~2,000 lines) that the TUI can render.
+- A `logs.rs` overlay (§8.16), bound to a keymap entry and `:logs`, tails that ring
+  buffer inside the TUI — this is the answer to "I want to see what the server is
+  doing" that doesn't involve a second terminal.
+- **Health, not banners, drives the UI.** The port and readiness the startup banner
+  used to announce are already carried by `service`'s health-poll (§10 A3); the TUI
+  surfaces "server not ready" / "server crashed, restarting" as a toast or status-bar
+  state, not by letting Node's own banner print.
+- If the child dies and cannot be restarted (§10 A3's restart-on-crash gives up), the
+  TUI restores the terminal via the same panic-hook path as §10 A0, then — and only
+  then, after the alternate screen is torn down — dumps the last ~200 captured lines
+  to real stdout before exiting non-zero. The user sees the failure in the one
+  terminal they already have open, after the fact, not racing the UI while it runs.
+- A spawn failure before the alternate screen is entered (binary missing, port
+  unbindable after every retry) prints directly to the real terminal and exits — the
+  TUI never took the screen, so there is nothing to restore.
+
+Phase C deletes the child process, the port and this whole mitigation with it
+(§4, §12) — at that point there is nothing to hide because there is nothing else
+running.
 
 **Tables.** The tasks table has foldable columns
 (spec `2026-07-30-foldable-task-table-columns`). In the TUI, columns have priorities
@@ -906,7 +959,9 @@ action-id shared with the `:` command line and the keymap.
 `confirm.rs` (destructive actions), `toast.rs` (transient, matching the web's
 toaster), `help.rs` (`?` — effective keymap, context-filtered), `provider_banner.rs`
 (the auth/quota banner with its Connect action), `project_switcher.rs`,
-`link_safety.rs` (the external-link confirm the web app shows).
+`link_safety.rs` (the external-link confirm the web app shows), `logs.rs` (§7.7 —
+tails the supervised `cezar serve` child's captured output; Phases A/B only, deleted
+in Phase C with the child process it tails).
 
 ---
 
@@ -1014,7 +1069,9 @@ The frame loop (input → update → render, with a 30 fps render budget and
 input coalescing), the `Route` enum + history, the theme with capability detection,
 the keymap loader, and the `HitMap` hit-testing/hover infrastructure. Plus the
 `service` module that supervises the `cezar serve` child process (spawn, health-poll,
-adopt an already-running instance, restart on crash, kill on exit).
+adopt an already-running instance, restart on crash, kill on exit), with stdout/stderr
+piped rather than inherited and captured to the ring buffer + log file per §7.7 — the
+terminal stays the TUI's alone from this step forward.
 *Accept:* two placeholder screens navigate by key, by `:open`, by mouse click, and by
 history back/forward; snapshot tests at 80×24, 120×40 and 200×60.
 
@@ -1392,6 +1449,9 @@ A sweep for everything else that exists **because there was a browser, a registr
 a shared deployment**. All three tiers are now decided (owner, decisions 7 and 8):
 **everything below is deleted except clone-from-GitHub.** The tables are kept as the
 record of what went and why, because a future reader will otherwise re-propose them.
+This section is the enumerated, owner-decided deletions; it doesn't cap cleanup —
+Goal 7 (§2) still applies to legacy junk encountered elsewhere that isn't named here
+or in "What is explicitly not on this list" below.
 
 ### Tier 1 — dead by construction, deleted at A15 (no decision needed)
 
