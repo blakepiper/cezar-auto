@@ -15,10 +15,11 @@ export const ACCENT_STORAGE_KEY = 'cez-accent'
 export const DENSITY_STORAGE_KEY = 'cez-density'
 export const WIDTH_STORAGE_KEY = 'cez-width'
 
-/** The two accents the token sheet can express today: `lime` is `--primary` as shipped;
- *  `violet` swaps the `--primary` family onto the existing `--violet` tokens (index.css
- *  `:root[data-accent="violet"]`). More accents = more token families there, nothing here. */
-export type Accent = 'lime' | 'violet'
+/** The accents the token sheet can express today: `lime` is `--primary` as shipped; `violet`
+ *  swaps the `--primary` family onto the existing `--violet` tokens; `lazyvim` swaps the whole
+ *  palette to LazyVim's Tokyonight default (index.css `:root[data-accent="…"]`). More accents =
+ *  more token families there, nothing here. */
+export type Accent = 'lime' | 'violet' | 'lazyvim'
 
 /** Density shrinks Tailwind v4's one spacing token (`--spacing`, default 4px/unit) so every
  *  padding/gap/control height tightens while type stays full-size: `compact` → 3.5px (~12%),
@@ -42,7 +43,7 @@ export interface Appearance {
 
 /** Coerce anything (missing key, a future value, garbage) into an Accent. */
 export function normalizeAccent(raw: unknown): Accent {
-  return raw === 'lime' || raw === 'violet' ? raw : DEFAULT_ACCENT
+  return raw === 'lime' || raw === 'violet' || raw === 'lazyvim' ? raw : DEFAULT_ACCENT
 }
 
 export function normalizeDensity(raw: unknown): Density {

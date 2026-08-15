@@ -31,6 +31,7 @@ const THEME_OPTIONS: Array<{ value: Theme; label: string; icon: ComponentType<SV
 const ACCENT_OPTIONS: Array<{ value: Accent; label: string; swatch: string }> = [
   { value: 'lime', label: 'Lime', swatch: 'var(--accent-lime)' },
   { value: 'violet', label: 'Violet', swatch: 'var(--violet)' },
+  { value: 'lazyvim', label: 'LazyVim', swatch: 'var(--lazyvim-blue)' },
 ]
 
 const DENSITY_OPTIONS: Array<{ value: Density; label: string }> = [

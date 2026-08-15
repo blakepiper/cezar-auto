@@ -31,8 +31,9 @@
         // (src/lib/appearance.ts owns the contract; keep the two in sync). Defaults are the
         // absence of the attribute, so only the known deviations are stamped.
         try {
-          if (localStorage.getItem('cez-accent') === 'violet')
-            document.documentElement.dataset.accent = 'violet'
+          var accent = localStorage.getItem('cez-accent')
+          if (accent === 'violet' || accent === 'lazyvim')
+            document.documentElement.dataset.accent = accent
           var density = localStorage.getItem('cez-density')
           if (density === 'compact' || density === 'ultra')
             document.documentElement.dataset.density = density

@@ -24,6 +24,7 @@ describe('normalize', () => {
   it('accepts the known values and defaults everything else', () => {
     expect(normalizeAccent('violet')).toBe('violet')
     expect(normalizeAccent('lime')).toBe('lime')
+    expect(normalizeAccent('lazyvim')).toBe('lazyvim')
     // Unknown/garbage inputs — localStorage and ui-state.json both outlive this code's vocabulary.
     for (const raw of [null, undefined, 'magenta', 42, {}]) {
       expect(normalizeAccent(raw)).toBe('lime')

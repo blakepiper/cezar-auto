@@ -103,6 +103,11 @@
   --violet-foreground: #ffffff;
   --ring: #a8f372;
 
+  /* LazyVim accent — the stable "tokyonight blue" family token, named like `--accent-lime`/
+   * `--violet` above so the Settings swatch can point at it directly. */
+  --lazyvim-blue: #7aa2f7;
+  --lazyvim-blue-foreground: #16161e;
+
   /* status */
   --danger: #ef4444;
   --danger-foreground: #ffffff;
@@ -216,6 +221,55 @@
   --primary: var(--violet);
   --primary-foreground: var(--violet-foreground);
   --ring: var(--violet);
+}
+
+/* LazyVim accent: unlike violet (a `--primary`-only swap), this one reads as a real colorscheme —
+ * LazyVim's Tokyonight default is a full dark navy palette, not just a blue button — so it also
+ * repaints the neutral ramp, status colors and syntax tokens. It always renders dark (own
+ * `color-scheme`/background/foreground), the same way an editor colorscheme ignores the OS
+ * light/dark setting. A new *palette* accent like this = a new block here + one entry in
+ * ACCENT_OPTIONS (routes/settings/appearance.tsx); a plain color-only accent only needs the
+ * three lines the violet block above has. */
+:root[data-accent='lazyvim'] {
+  color-scheme: dark;
+
+  --background: #1a1b26;
+  --foreground: #c0caf5;
+  --card: #1f2335;
+  --card-2: #24283b;
+  --sidebar: #16161e;
+  --muted: #24283b;
+  --muted-foreground: #565f89;
+  --soft-foreground: #414868;
+  --border: #292e42;
+  --input: #292e42;
+  --contrast: #c0caf5;
+  --contrast-foreground: #16161e;
+
+  --primary: var(--lazyvim-blue);
+  --primary-foreground: var(--lazyvim-blue-foreground);
+  --ring: var(--lazyvim-blue);
+
+  --danger: #f7768e;
+  --danger-foreground: #16161e;
+  --success: #9ece6a;
+  --pending: #e0af68;
+  --pending-strong: #e0af68;
+  --info: #7dcfff;
+
+  --diff-add-bg: rgba(158, 206, 106, 0.12);
+  --diff-add-strong: rgba(158, 206, 106, 0.3);
+  --diff-del-bg: rgba(247, 118, 142, 0.12);
+  --diff-del-strong: rgba(247, 118, 142, 0.32);
+
+  /* shiki syntax highlighting (tokyonight) */
+  --syn-key: #bb9af7;
+  --syn-str: #9ece6a;
+  --syn-fn: #7aa2f7;
+  --syn-com: #565f89;
+  --syn-num: #ff9e64;
+  --syn-punc: #89ddff;
+  --syn-var: #c0caf5;
 }
 
 /* Compact density: Tailwind v4's whole numeric spacing scale keys off ONE token (`--spacing`,
