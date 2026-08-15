@@ -132,13 +132,13 @@ kill-on-exit) with stdout/stderr **piped, never inherited**, captured per §7.7.
 history back/forward; snapshot tests at 80×24, 120×40, 200×60.
 **Commit:** `feat(tui): A3 app skeleton, theme, HitMap, silent service supervisor` — pushed as `5616d883`.
 
-### [ ] A4 — Shell chrome
+### [x] A4 — Shell chrome
 **Ships:** header, sidebar (project groups, nav, badges, Active/Archived, task
 quick-list with NEEDS YOU/WORKING/RECENT grouping), status bar, toast layer, help
 overlay, confirm dialog, sidebar resize + collapse.
 **Accept:** nav by keyboard and click; badges update live from workspace SSE;
 snapshots at three widths including the auto-collapse breakpoint.
-**Commit:** `feat(tui): A4 shell chrome`
+**Commit:** `feat(tui): A4 shell chrome` — pushed as `deb37397`.
 
 ### [ ] A5 — Tasks overview + global tasks
 **Ships:** table widget (foldable columns, sort, filter, hover, row menu), both
