@@ -17,7 +17,7 @@ import { CloneProjectDialog } from '@/components/clone-project-dialog'
 import { openCommandPalette } from '@/components/command-palette'
 import { GithubIcon } from '@/components/icons'
 import { commandShortcutHint } from '@/lib/use-command-shortcut'
-import { Link, stripProjectPrefix } from '@/lib/project-router'
+import { Link, scopeTo, stripProjectPrefix } from '@/lib/project-router'
 import { StatusDot } from '@/components/status-dot'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { Button } from '@/components/ui/button'
@@ -86,6 +86,9 @@ export type AppShellProps = {
   /** Single-project capability gating: hides workspace-expansion affordances. Defaults off so
    *  standalone and older callers preserve the multi-project shell. */
   singleProject?: boolean
+  /** Known project target for project-local sidebar links. The container supplies the active
+   *  project, or the boot project during the brief legacy-path redirect at startup. */
+  projectId?: string | null
   /** Global chrome banner, rendered in its own row above the scroller. Absent renders nothing —
    *  the slot is generic and currently unused (the #391 skills promo it once held is gone,
    *  replaced by the opt-in Import panel on the Skills page). */
@@ -151,6 +154,7 @@ export function AppShell({
   inboxAvailable = true,
   automationsAvailable = true,
   singleProject = false,
+  projectId = null,
   banner,
   projectGroups,
 }: AppShellProps) {
@@ -221,6 +225,7 @@ export function AppShell({
     toolsMenu,
     projectGroups,
     singleProject,
+    projectId,
   }
 
   return (
@@ -278,6 +283,7 @@ type NavProps = {
   toolsMenu?: ReactNode
   projectGroups?: ReactNode
   singleProject: boolean
+  projectId: string | null
 }
 
 /**
@@ -461,6 +467,7 @@ function SidebarContent({
   toolsMenu,
   projectGroups,
   singleProject,
+  projectId,
   onNavigate,
   headerAction,
 }: NavProps & {
@@ -504,7 +511,7 @@ function SidebarContent({
               New task affordances stay inside the SPA. Full document loads of /new (the
               bookmarklet contract) land on the shell like any route (static-ui.ts) — the
               React composer has owned auto-start parity since R4 Step 1.3. */}
-          <Link to="/new" onClick={onNavigate}>
+          <Link to={scopeTo(projectId, '/new')} onClick={onNavigate}>
             <PlusIcon className="size-[15px]" aria-hidden="true" />
             New task
             {/* Decorative: the `c`-to-create accelerator is registered in the command palette.
@@ -556,7 +563,7 @@ function SidebarContent({
               return (
                 <Link
                   key={item.to}
-                  to={item.to}
+                  to={scopeTo(projectId, item.to)}
                   onClick={onNavigate}
                   aria-current={isActive ? 'page' : undefined}
                   className={cn(

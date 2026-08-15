@@ -129,6 +129,12 @@ describe('AppShell', () => {
     ])
   })
 
+  it('uses the known project for links while the legacy URL redirect is settling', () => {
+    renderShell('/', { projectId: 'cezar' })
+    expect(screen.getByRole('link', { name: 'IDE' }).getAttribute('href')).toBe('/p/cezar/ide')
+    expect(screen.getByRole('link', { name: /New task/ }).getAttribute('href')).toBe('/p/cezar/new')
+  })
+
   // R6 Step 1.1: no forge, no GitHub tab — the nav item disappears entirely (spec's
   // degradation table), it does not render disabled.
   it('drops the GitHub item when the forge is unavailable', () => {

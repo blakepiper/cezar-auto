@@ -132,6 +132,9 @@ export function AppShellContainer({ children }: { children: ReactNode }) {
         inboxAvailable={inboxAvailable}
         // Hidden unless health reports the opt-in automations capability (#801).
         automationsAvailable={automationsAvailable}
+        // The reserved `default` alias is served by the API even before health/registry settle,
+        // so startup clicks never take the browser through an unscoped `/ide` legacy URL.
+        projectId={projectId ?? bootProjectId ?? 'default'}
         banner={<ProviderBannerContainer />}
         singleProject={health.data?.capabilities.singleProject === true}
         taskQuickList={<TaskQuickListContainer />}
