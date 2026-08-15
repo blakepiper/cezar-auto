@@ -2485,9 +2485,9 @@ export class RunManager {
         { configuredProvider: await configuredModelProvider(continueBackend, state.cwd) },
       );
       continueModel = normalized?.backendModel;
-      this.store.updateRun(runId, {
-        modelIdentity: normalized ? formatModelIdentity(normalized.identity) : undefined,
-      });
+      const continueModelIdentity = normalized ? formatModelIdentity(normalized.identity) : undefined;
+      this.store.updateRun(runId, { modelIdentity: continueModelIdentity });
+      this.store.updateStep(runId, stepId, { modelIdentity: continueModelIdentity });
     } catch (err) {
       if (!(err instanceof ModelIdentityError)) {
         release?.();
@@ -3338,9 +3338,9 @@ export class RunManager {
       // (line ~993) is best-effort from `taskBackend`/`input.model`; a per-step `runner`/`model`
       // override makes it assert a model that never ran. Re-write it here, from the resolved
       // step identity, so the record — the product of this PR — is always one that ran.
-      this.store.updateRun(runId, {
-        modelIdentity: normalized ? formatModelIdentity(normalized.identity) : undefined,
-      });
+      const stepModelIdentity = normalized ? formatModelIdentity(normalized.identity) : undefined;
+      this.store.updateRun(runId, { modelIdentity: stepModelIdentity });
+      this.store.updateStep(runId, step.id, { modelIdentity: stepModelIdentity });
     } catch (err) {
       if (err instanceof ModelIdentityError) {
         release?.();

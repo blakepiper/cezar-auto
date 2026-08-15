@@ -968,6 +968,73 @@ describe('meta line, tabs, pill and resume hint', () => {
     })
   })
 
+  describe('usage breakdown by model (#model-usage-breakdown)', () => {
+    const openAgentMenu = async () => {
+      const meta = document.querySelector('[data-slot="run-meta"]') as HTMLElement
+      const badge = within(meta).getByRole('button', { name: /^Agent:/ })
+      fireEvent.pointerDown(badge, { button: 0, ctrlKey: false, pointerType: 'mouse' })
+      await waitFor(() => expect(document.querySelector('[role="menu"]')).not.toBeNull())
+      return document.querySelector('[role="menu"]') as HTMLElement
+    }
+
+    it('weighs each model/reasoning combo by tokens spent, not step count', async () => {
+      stubFetch()
+      renderHeader(run('done', {
+        runner: 'claude',
+        model: 'auto',
+        steps: [
+          step({
+            id: 'a',
+            modelIdentity: 'anthropic/claude-opus-4-8',
+            reasoningEffort: 'low',
+            tokensUsed: 7_500,
+          }),
+          step({
+            id: 'b',
+            modelIdentity: 'anthropic/claude-sonnet-4-8',
+            reasoningEffort: 'high',
+            tokensUsed: 2_500,
+          }),
+        ],
+      }))
+      const menu = await openAgentMenu()
+      const entries = [...menu.querySelectorAll('[data-slot="agent-badge-breakdown-entry"]')]
+        .map((el) => el.textContent)
+      expect(entries).toEqual([
+        'claude-opus-4-8 · low — 75%',
+        'claude-sonnet-4-8 · high — 25%',
+      ])
+    })
+
+    it('says nothing when the run never switched model or reasoning', async () => {
+      // A single-model run is already fully described by the `model:`/`reasoning:` lines —
+      // a one-entry breakdown would just repeat them.
+      stubFetch()
+      renderHeader(run('done', {
+        runner: 'claude',
+        model: 'opus',
+        steps: [step({ modelIdentity: 'anthropic/claude-opus-4-8', reasoningEffort: 'high', tokensUsed: 1_000 })],
+      }))
+      const menu = await openAgentMenu()
+      expect(menu.querySelector('[data-slot="agent-badge-breakdown-entry"]')).toBeNull()
+    })
+
+    it('skips steps with no recorded model identity or tokens rather than guessing', async () => {
+      stubFetch()
+      renderHeader(run('done', {
+        runner: 'claude',
+        model: 'auto',
+        steps: [
+          step({ id: 'a', modelIdentity: 'anthropic/claude-opus-4-8', reasoningEffort: 'low', tokensUsed: 1_000 }),
+          step({ id: 'b', modelIdentity: 'anthropic/claude-sonnet-4-8', reasoningEffort: 'high', tokensUsed: 0 }),
+          step({ id: 'c', tokensUsed: 5_000 }),
+        ],
+      }))
+      const menu = await openAgentMenu()
+      expect(menu.querySelector('[data-slot="agent-badge-breakdown-entry"]')).toBeNull()
+    })
+  })
+
   it('a claude run still gets an agent badge — Claude is the default, not a hidden runner', () => {
     stubFetch()
     renderHeader(run('done', { runner: 'claude' }))

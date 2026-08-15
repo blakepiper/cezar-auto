@@ -99,6 +99,11 @@ const stepStateSchema = z.object({
   reasoningEffort: z.enum(['low', 'medium', 'high', 'xhigh']).optional(),
   /** Dollar cost reported by the claude CLI for this step's turns. */
   costUsd: z.number().optional(),
+  /** Canonical provider/model identity (#405) this step actually spawned with — the per-step
+   *  twin of the run-level `modelIdentity`. A follow-up or resume can switch model between
+   *  steps, so the run-level field alone can't tell which model did which chunk of work;
+   *  this is what a per-model usage breakdown groups by. Absent on pre-this-feature records. */
+  modelIdentity: z.string().optional(),
 });
 
 /** One prompt message stacked onto a run while it waits for a free agent slot

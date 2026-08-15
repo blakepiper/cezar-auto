@@ -656,6 +656,46 @@ function MonitoringSchedule({ run }: { run: ApiRun }) {
   )
 }
 
+type ModelBreakdownEntry = {
+  key: string
+  model: string
+  reasoningEffort?: string
+  pct: number
+}
+
+/** Groups a run's steps by (model identity, reasoning level) and weighs each group by tokens
+ *  spent, so the badge can answer "which models actually did this work, and how much of it?" —
+ *  not just "what's running right now" (the summary line above already answers that). Tokens,
+ *  not step count: a two-line "check" step and a long agent turn are not equal-sized slices of
+ *  the task. Steps predating per-step `modelIdentity` (#model-usage-breakdown) or with zero
+ *  recorded tokens are skipped rather than guessed into a group. */
+function computeModelBreakdown(run: ApiRun): ModelBreakdownEntry[] {
+  const groups = new Map<string, { model: string; reasoningEffort?: string; weight: number }>()
+  let totalWeight = 0
+  for (const step of run.steps) {
+    const model = step.modelIdentity
+    const weight = step.tokensUsed
+    if (!model || !weight || weight <= 0) continue
+    const key = `${model}::${step.reasoningEffort ?? ''}`
+    const existing = groups.get(key)
+    if (existing) {
+      existing.weight += weight
+    } else {
+      groups.set(key, { model, reasoningEffort: step.reasoningEffort, weight })
+    }
+    totalWeight += weight
+  }
+  if (totalWeight <= 0) return []
+  return [...groups.entries()]
+    .map(([key, g]) => ({
+      key,
+      model: g.model,
+      reasoningEffort: g.reasoningEffort,
+      pct: (g.weight / totalWeight) * 100,
+    }))
+    .sort((a, b) => b.pct - a.pct)
+}
+
 /** The agent icon by the token counter (#416): hover/focus reveals the runner, account, model and
  *  canonical model identity — the answer to "what am I actually running here?" — without turning
  *  them into permanent text next to the live status pill. Always rendered (a run always has an
@@ -715,6 +755,7 @@ function AgentBadge({ run }: { run: ApiRun }) {
   // one this header may invent.
   const identity = run.modelIdentity && run.modelIdentity !== model ? run.modelIdentity : undefined
   const summary = [runner, account, model, reasoningEffort].filter(Boolean).join(' · ')
+  const breakdown = computeModelBreakdown(run)
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -782,6 +823,28 @@ function AgentBadge({ run }: { run: ApiRun }) {
           >
             identity: {identity}
           </DropdownMenuLabel>
+        ) : null}
+        {/* Only when the run actually split work across models/reasoning levels — a run that
+            never switched is fully described by the `model:`/`reasoning:` lines above. */}
+        {breakdown.length > 1 ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="font-mono text-[10px] font-normal text-soft-foreground">
+              usage by model
+            </DropdownMenuLabel>
+            {breakdown.map((entry) => (
+              <DropdownMenuLabel
+                key={entry.key}
+                data-slot="agent-badge-breakdown-entry"
+                className="font-mono text-[11px] font-normal text-muted-foreground"
+              >
+                {entry.model.split('/').pop()}
+                {entry.reasoningEffort ? ` · ${entry.reasoningEffort}` : ''}
+                {' — '}
+                {entry.pct >= 10 ? Math.round(entry.pct) : entry.pct.toFixed(1)}%
+              </DropdownMenuLabel>
+            ))}
+          </>
         ) : null}
       </DropdownMenuContent>
     </DropdownMenu>

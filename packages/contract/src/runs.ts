@@ -100,6 +100,10 @@ export const stepStateSchema = z.object({
    * written here, so the run history shows what each chunk actually received. */
   reasoningEffort: reasoningEffortSchema.exclude(['auto']).optional(),
   costUsd: z.number().optional(),
+  /** Canonical provider/model identity (#405) this step actually spawned with — the per-step
+   *  twin of the run-level `modelIdentity`, since a follow-up or resume can switch model
+   *  between steps. Groups a per-model usage breakdown; absent on pre-this-feature records. */
+  modelIdentity: z.string().optional(),
 });
 export type StepState = z.infer<typeof stepStateSchema>;
 
