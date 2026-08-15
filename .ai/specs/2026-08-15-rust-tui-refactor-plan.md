@@ -22,6 +22,13 @@ The end state this plan drives toward is the spec's own: **Phase C, step C3 —
 one Rust binary, no Node, no listening port, no browser.** That is what "the
 completed Rust TUI" means throughout this document.
 
+> **Progress tracking for future coding agents:** Treat every numbered step heading
+> below as a checkbox. Do not mark a step `[x]` until its acceptance criterion and
+> required checks pass, its plan-step commit exists, and that commit has been pushed
+> to `origin main`. After completion, change the heading to `[x]` and add the pushed
+> commit hash on the step's `Commit` line. Keep future steps `[ ]`; never tick ahead
+> based on intent or partial implementation.
+
 ---
 
 ## 0. Ground rules — apply to every chunk below
@@ -87,14 +94,14 @@ Source: spec §10. Deliverable at the end: a feature-complete terminal cockpit, 
 still running underneath but invisible to the user (§7.7). This alone is a shippable
 product if Phase B never happens (spec §4, "Recommendation").
 
-### A0 — Toolchain and workspace
+### [x] A0 — Toolchain and workspace
 **Ships:** root `Cargo.toml` workspace, `rust-toolchain.toml` (pinned stable, edition
 2024), `.cargo/config.toml`, `clippy.toml`, CI wiring, `crates/cezar-tui` hello-world
 with a panic hook that restores the terminal.
 **Accept:** `cargo run -p cezar-tui` opens and `q` exits with the terminal intact.
-**Commit:** `feat(tui): A0 workspace scaffold and terminal-safe hello world`
+**Commit:** `feat(tui): A0 workspace scaffold and terminal-safe hello world` — pushed as `10586992`.
 
-### A1 — `cezar-contract`
+### [x] A1 — `cezar-contract`
 **Ships:** `packages/contract/src/*.ts` ported to serde types, one Rust module per TS
 file, **except `automations.ts`** — decision 7 deletes that subsystem outright
 (§16a Tier 2), so it's never ported, not even to be deleted again later. Keep only
@@ -102,9 +109,9 @@ the `RunRecord.automation` provenance stamp, folded into `runs.rs` as a
 passthrough-compatible field. Zod-compat conventions (§11.2) established even though
 Phase A only reads.
 **Accept:** a test deserializes captured real responses from a live `cezar serve`.
-**Commit:** `feat(contract): A1 port TS contract types to serde (minus automations)`
+**Commit:** `feat(contract): A1 port TS contract types to serde (minus automations)` — pushed as `6e2b90cc`.
 
-### A2 — `cezar-protocol` + `cezar-client`, behind the `Engine` trait
+### [x] A2 — `cezar-protocol` + `cezar-client`, behind the `Engine` trait
 **Ships:** the `Engine` trait (§10, quoted in full in the spec) defined now, not
 retrofitted at C1 — this is decision 1's practical consequence. `HttpEngine` as the
 only implementor. Review gates: no `reqwest`/`url`/HTTP status under
@@ -113,9 +120,9 @@ only implementor. Review gates: no `reqwest`/`url`/HTTP status under
 deserialize into `UiEvent` without loss; a `wiremock`-backed test covers SSE resume
 and WS resubscribe-on-reconnect; a `trybuild`/grep-based CI lint enforces the
 no-HTTP-in-screens rule.
-**Commit:** `feat(engine): A2 Engine trait + HttpEngine over /api/v1`
+**Commit:** `feat(engine): A2 Engine trait + HttpEngine over /api/v1` — pushed as `ba29badf`.
 
-### A3 — App skeleton: event loop, router, theme, HitMap, service supervisor
+### [ ] A3 — App skeleton: event loop, router, theme, HitMap, service supervisor
 **Ships:** frame loop (30 fps budget, input coalescing), `Route` enum + history,
 theme with capability detection (§7.5, three named themes — no `system`, no accent
 picker), keymap loader, `HitMap`, and the `service` module supervising the
@@ -125,7 +132,7 @@ kill-on-exit) with stdout/stderr **piped, never inherited**, captured per §7.7.
 history back/forward; snapshot tests at 80×24, 120×40, 200×60.
 **Commit:** `feat(tui): A3 app skeleton, theme, HitMap, silent service supervisor`
 
-### A4 — Shell chrome
+### [ ] A4 — Shell chrome
 **Ships:** header, sidebar (project groups, nav, badges, Active/Archived, task
 quick-list with NEEDS YOU/WORKING/RECENT grouping), status bar, toast layer, help
 overlay, confirm dialog, sidebar resize + collapse.
@@ -133,21 +140,21 @@ overlay, confirm dialog, sidebar resize + collapse.
 snapshots at three widths including the auto-collapse breakpoint.
 **Commit:** `feat(tui): A4 shell chrome`
 
-### A5 — Tasks overview + global tasks
+### [ ] A5 — Tasks overview + global tasks
 **Ships:** table widget (foldable columns, sort, filter, hover, row menu), both
 screens, SSE-driven live updates, archive/read/delete.
 **Accept:** against `CEZ_DRY_RUN=1 cezar serve`, starting a run makes a row appear
 and progress through statuses; E2E pty test asserts it.
 **Commit:** `feat(tui): A5 tasks overview + global tasks`
 
-### A6 — Composer widget + New task
+### [ ] A6 — Composer widget + New task
 **Ships:** shared composer (auto-grow, attachments, `/` skills, `@` files, quick
 replies, submit shortcuts, draft persistence), picker overlays, New Task screen.
 **Accept:** a task starts end-to-end from the TUI and appears in the Tasks table;
 picker grouping/ranking matches `lib/skills.ts`.
 **Commit:** `feat(tui): A6 composer + new task`
 
-### A7 — Markdown, images, and the transcript
+### [ ] A7 — Markdown, images, and the transcript
 **Ships:** `tui-markdown` + render cache, `ratatui-image` with protocol detection
 and fallbacks, tool cards, virtualized scrolling with sticky-bottom.
 **Accept:** 5,000-item transcript scrolls at ≥30 fps (criterion bench); an image
@@ -155,14 +162,14 @@ event renders or falls back honestly; snapshots cover message/reasoning/tool/ima
 in both collapsed and expanded states.
 **Commit:** `feat(tui): A7 markdown, images, transcript virtualization`
 
-### A8 — Task thread, complete
+### [ ] A8 — Task thread, complete
 **Ships:** header + actions, step rail, plan dock, subagent sheet, ask card, review
 panel, queued messages, auto-resume hint, composer host, cancel/continue/finish/PR.
 **Accept:** full run lifecycle (start → live → ask → answer → review → send back →
 accept → archive) driven entirely from the TUI in an E2E pty test.
 **Commit:** `feat(tui): A8 task thread, full lifecycle`
 
-### A9 — Diff engine + task git + repo git + compare
+### [ ] A9 — Diff engine + task git + repo git + compare
 **Ships:** diff widget (unified/split, syntect, intra-line, collapsed context,
 per-file fold), file trees, commit lists, commit dialog, branch actions, variant
 compare.
@@ -170,13 +177,13 @@ compare.
 split mode degrades below 140 columns.
 **Commit:** `feat(tui): A9 diffs, task/repo git, compare`
 
-### A10 — IDE
+### [ ] A10 — IDE
 **Ships:** explorer, editor, save, dirty guard, `$EDITOR` handoff.
 **Accept:** edit-and-save round-trips through `PUT /ide/file`; 1 MB cap and
 symlink/`.git` exclusions respected and explained in the UI.
 **Commit:** `feat(tui): A10 IDE`
 
-### A11 — GitHub, Skills, Inbox, Workflows
+### [ ] A11 — GitHub, Skills, Inbox, Workflows
 **Ships:** the four remaining content screens (Automations stays deleted, decision
 7), each with its degradation path. Skills is the reduced reader from §8.11 — **no**
 import panel, **no** update banner.
@@ -184,14 +191,14 @@ import panel, **no** update banner.
 and no error; with `DUCK_FOLLOWUPS` unset, Inbox shows its opt-in explainer.
 **Commit:** `feat(tui): A11 GitHub, Skills, Inbox, Workflows`
 
-### A12 — Settings + palette + notifications + external open
+### [ ] A12 — Settings + palette + notifications + external open
 **Ships:** all Settings sections per §8.14's registry pattern, command palette
 (§8.15), notification plumbing, `open-in-*` handoff.
 **Accept:** every setting the web app can change is changeable in the TUI, and the
 two clients observe each other's writes.
 **Commit:** `feat(tui): A12 settings, palette, notifications, external open`
 
-### A13 — CLI surface
+### [ ] A13 — CLI surface
 **Ships:** `clap` parser for the TUI binary reproducing the protected flags, `cez
 tui` / bare-invocation-launches-TUI wiring. Do **not** touch the Node CLI's contract
 yet — that's A15/B10.
@@ -199,7 +206,7 @@ yet — that's A15/B10.
 unchanged.
 **Commit:** `feat(cli): A13 clap surface for the TUI binary`
 
-### A14 — Install path and docs
+### [ ] A14 — Install path and docs
 **Ships:** `cargo install --path crates/cezar-tui` as the documented one-liner
 (both `cezar` and `cez` land on PATH), root `install.sh` (checks `rustup`, builds,
 reports the binary path — no curl-pipe-to-shell, no release artifacts), a
@@ -211,7 +218,7 @@ written so removing that line at B12 is a one-line diff.
 on PATH; the README's prerequisite list has no surprises.
 **Commit:** `docs(install): A14 source-first install path and TUI docs`
 
-### A15 — Retire npm and remote-access surfaces from the Node tree ⚠ own commit
+### [ ] A15 — Retire npm and remote-access surfaces from the Node tree ⚠ own commit
 **⚠ Ship this as its own commit on `main`, not folded into A14 or B1** — spec §15
 risk table calls this out explicitly: it's a pure-deletion step with a green suite
 as its own check, and anything it breaks needs to be a one-line `git revert`, not
@@ -260,7 +267,7 @@ an incomplete state.
 Source: spec §11. Deliverable: `cezar serve` is a Rust binary; Node is deleted. Every
 step here keeps the React cockpit working until B12 — that's the oracle (spec §4).
 
-### B0 — Verify the ground is clear
+### [ ] B0 — Verify the ground is clear
 **Ships:** nothing new — re-run A15's `rg` assertions, confirm nothing crept back.
 If A15 was skipped or partial, finish it now; porting condemned code is the single
 most wasteful thing this plan can do.
@@ -268,7 +275,7 @@ most wasteful thing this plan can do.
 **Commit:** `chore(verify): B0 confirm A15 deletions are clean` (skip the commit
 entirely if there's nothing to fix — this step can be a no-op check.)
 
-### B1 — File layer
+### [ ] B1 — File layer
 **Ships:** `cezar-core::paths`, `config`, `workspace::{config, ui_state, migrations,
 agent_accounts}`. Port the migration framework first — riskiest to get wrong,
 easiest to test in isolation.
@@ -276,13 +283,13 @@ easiest to test in isolation.
 and vice versa) passes — start this test here and keep it through cutover (spec §14).
 **Commit:** `feat(core): B1 paths, config, workspace, migrations`
 
-### B2 — Runs store
+### [ ] B2 — Runs store
 **Ships:** `cezar-core::runs::store` — `runs.json`, NDJSON log, atomic writes,
 `reconcileLoadedRun`, retention.
 **Accept:** tests against real files written by the Node version pass.
 **Commit:** `feat(core): B2 runs store`
 
-### B3 — Git layer
+### [ ] B3 — Git layer
 **Ships:** `cezar-core::git` — worktrees, base-ref resolution, autosave commits,
 diff, shortstat, refs. **Shell out to `git`**, exactly as today — do not introduce
 `git2`/`gix` here (spec §16, rejected for the port itself).
@@ -290,13 +297,13 @@ diff, shortstat, refs. **Shell out to `git`**, exactly as today — do not intro
 fixtures.
 **Commit:** `feat(core): B3 git layer (shell-out, no git2/gix)`
 
-### B4 — Skills, workflows, handoff, todos, markers
+### [ ] B4 — Skills, workflows, handoff, todos, markers
 **Ships:** `cezar-core::{skills, workflows::load, handoff, todos, task_markers,
 task_refs}`.
 **Accept:** existing behavior-equivalence tests pass against the ported module.
 **Commit:** `feat(core): B4 skills, workflows::load, handoff, todos, markers`
 
-### B5 — Agent runner mappers ⚠ do carefully, best oracle in the project
+### [ ] B5 — Agent runner mappers ⚠ do carefully, best oracle in the project
 **Ships:** `cezar-protocol` mappers → `cezar-runners`, one runner at a time (claude
 → codex → opencode → pi), each validated **byte-for-byte** against its committed
 golden fixtures; the `ui-parity` capability matrix re-implemented as a Rust test.
@@ -308,7 +315,7 @@ no new fixtures authored.
 **Commit(s):** `feat(runners): B5.1 claude mapper`, `B5.2 codex mapper`, `B5.3
 opencode mapper`, `B5.4 pi mapper + ui-parity matrix`
 
-### B6 — RunManager
+### [ ] B6 — RunManager
 **Ships:** `cezar-core::workflows::run`. Split the 4.2k-line source into
 `lifecycle`, `session`, `recovery`, `review_gate`, `auto_resume`, `context_refresh`,
 `variants`, `quota`, `semaphore` modules. Port `run.test.ts` (2k lines) alongside —
@@ -318,19 +325,20 @@ do not shortcut the test port.
 **Commit:** `feat(core): B6 RunManager (lifecycle/session/recovery/review_gate/
 auto_resume/context_refresh/variants/quota/semaphore)`
 
-### B7 — `cezar-forge`
+### [ ] B7 — `cezar-forge`
 **Ships:** the `gh` driver, ported against `github.test.ts` (2.3k lines).
 **Accept:** ported suite green.
 **Commit:** `feat(forge): B7 gh driver`
 
-### B8 — removed from the plan (decision 7)
+### [x] B8 — removed from the plan (decision 7)
 The spec now says explicitly (§11.1): `cezar-core::automations` is **not** ported.
 The automations engine — store, scheduler, poller, task templates — was deleted
 outright from the TypeScript tree at A15 (§16a Tier 2), the same decision that
 deleted its screen (§8.10). There is nothing left to port at B8, so there is no
 chunk here and no commit — B9 follows directly after B7.
+**Commit:** none — intentionally removed from the plan by decision 7.
 
-### B9 — `cezar-server` ⚠ set up HTTP-suite reuse in the first commit
+### [ ] B9 — `cezar-server` ⚠ set up HTTP-suite reuse in the first commit
 **Ships:** `axum` server, route by route, family by family. Handlers stay thin —
 parse-validate-delegate over `cezar-core`, no business logic (spec §11.3, this
 crate is temporary and deleted whole at C2).
@@ -347,7 +355,7 @@ then one commit per route family, e.g. `feat(server): B9.1 runs routes`, `B9.2
 workspace routes`, … (split by the same route families the spec's protected
 surfaces already group by, §1.4).
 
-### B10 — `cezar-cli`
+### [ ] B10 — `cezar-cli`
 **Ships:** `serve`, `run`, `init`, `usage`, `projects` subcommands. `-p/--port` and
 `--no-open` are **not** ported (waived, §1.4). No `--server`, no `--token`.
 **Accept:** exit codes match the protected CLI contract; `--help` names every
@@ -357,7 +365,7 @@ protected flag.
 *(B10a is a no-op — `server-install`/`server-deploy`/`server-uninstall` were
 removed from the Node tree at A15 and are never ported. No commit for this line.)*
 
-### B11 — Cutover and soak ⚠ do not reorder with B12
+### [ ] B11 — Cutover and soak ⚠ do not reorder with B12
 **Ships:** `cez serve` runs the Rust server; the React bundle is served from it
 **unchanged** for the whole soak; a `--legacy-server` flag makes side-by-side
 comparison one command. Run both implementations against the same repo until the
@@ -370,7 +378,7 @@ the soak window and comparison method before starting — e.g. N days of daily-d
 use, or a scripted comparison run against a fixed set of repos/workflows).
 **Commit:** `feat(server): B11 cutover to Rust server + legacy-server soak flag`
 
-### B12 — Delete the TypeScript
+### [ ] B12 — Delete the TypeScript
 **Ships:** deletions in this order, each separately revertable: `packages/web` →
 `packages/api-client` → `packages/contract` → `packages/cezar` → root npm workspace
 files (`package.json`, `package-lock.json`, `vitest.config.ts`, `node_modules`),
@@ -398,7 +406,7 @@ and a listening port. Phase C is what removes those.
 Source: spec §12. This is the phase that produces "the completed Rust TUI" as the
 user means it: one binary, nothing listening, no Node, no browser, ever.
 
-### C1 — `InProcessEngine`
+### [ ] C1 — `InProcessEngine`
 **Ships:** `InProcessEngine` in `cezar-core` against the `Engine` trait defined
 back at A2. Because the trait predates the server, this is an implementation, not
 an extraction — the A2 review gates (no HTTP leakage into screens) guarantee no
@@ -407,7 +415,7 @@ surprises here.
 passes.
 **Commit:** `feat(engine): C1 InProcessEngine`
 
-### C2 — Switch default backend, delete `cezar-server`
+### [ ] C2 — Switch default backend, delete `cezar-server`
 **Ships:** `cezar-tui`'s default backend becomes `InProcess`; then **delete
 `cezar-server` entirely** — the `axum` dependency, every handler, SSE/WS
 transports, `origin-guard`, `host-guard`, the WS `trusted`/`loopbackReadable`
@@ -417,7 +425,7 @@ split, and `HttpEngine` in `cezar-client`. Event streams become in-process
 graph; every screen-level test from Phase A still passes against `InProcessEngine`.
 **Commit:** `feat(engine): C2 switch to InProcessEngine, delete cezar-server`
 
-### C3 — Retire remaining server-shaped concepts
+### [ ] C3 — Retire remaining server-shaped concepts
 **Ships:** `cez serve` as a command, port-selection logic (`pickPort`, the 4321
 default, the auto-increment probe), the health-poll startup wait, the A3
 child-process supervisor (and with it, the §7.7 log-capture/`logs.rs` overlay
