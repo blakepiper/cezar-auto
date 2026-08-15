@@ -170,9 +170,69 @@ describe('workspace runs index API', () => {
       'peakRssBytes',
       'peakProcCount',
       'usage',
+      // No runner was requested and no step recorded one, and no step carries a model
+      // identity/tokens either — nothing to name, so all three stay absent.
+      'runner',
+      'model',
+      'modelUsage',
     ]) {
       expect(Object.keys(row!), key).not.toContain(key);
     }
+  });
+
+  it('carries which agent actually ran and its per-model usage breakdown', async () => {
+    // The global Tasks page's answer to "which model, from which provider, for what percentage
+    // of the work, at what reasoning level" — computed here from `steps[]` (`storedRun`'s default
+    // single zero-token step is replaced below) rather than shipping them to every consumer.
+    await registerProject(repoRoot);
+    await registerProject(otherRoot);
+    seedColdProject(otherRoot, [
+      storedRun({
+        id: 'multi-model',
+        title: 'Switched mid-run',
+        runner: 'claude',
+        model: 'auto',
+        steps: [
+          {
+            id: 's1',
+            name: 'first',
+            kind: 'agent',
+            status: 'done',
+            iterations: 1,
+            tokensUsed: 7_500,
+            backend: 'claude',
+            modelIdentity: 'anthropic/claude-opus-4-8',
+            reasoningEffort: 'low',
+          },
+          {
+            id: 's2',
+            name: 'second',
+            kind: 'agent',
+            status: 'done',
+            iterations: 1,
+            tokensUsed: 2_500,
+            backend: 'codex',
+            modelIdentity: 'openai/gpt-5.2-codex',
+            reasoningEffort: 'high',
+          },
+        ],
+      }),
+    ]);
+
+    const body = await getIndex();
+    const row = body.runs.find((entry) => entry.id === 'multi-model');
+
+    expect(row).toMatchObject({
+      // The LATEST step's backend wins over the run's own requested runner — a mid-run failover
+      // from claude to codex, exactly as the task-detail agent badge resolves it.
+      runner: 'codex',
+      model: 'auto',
+      modelUsage: [
+        { model: 'anthropic/claude-opus-4-8', reasoningEffort: 'low', pct: 75 },
+        { model: 'openai/gpt-5.2-codex', reasoningEffort: 'high', pct: 25 },
+      ],
+    });
+    expect(row).not.toHaveProperty('steps');
   });
 
   it('carries cost and the persisted usage peaks the cross-project table paints', async () => {

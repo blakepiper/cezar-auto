@@ -848,6 +848,82 @@ describe('global tasks page', () => {
     })
   })
 
+  describe('agent / model usage', () => {
+    it('shows the runner and model the run actually used', async () => {
+      stubFetch({ runs: [{ ...RUNS[0]!, runner: 'codex', model: 'gpt-5.2-codex' }] })
+      renderPage()
+      await screen.findByText('Add checkout endpoint')
+
+      const row = document.querySelector('[data-slot="global-task-row"][data-run-id="a1"]')!
+      expect(row.textContent).toContain('codex · gpt-5.2-codex')
+    })
+
+    it('says nothing for a task that never recorded a runner or model', async () => {
+      stubFetch()
+      renderPage()
+      await screen.findByText('Bump the runner')
+
+      const row = document.querySelector('[data-slot="global-task-row"][data-run-id="i1"]')!
+      expect(row.querySelector('[data-slot="agent-usage-trigger"]')).toBeNull()
+    })
+
+    it('discloses the per-model breakdown, weighted by tokens, once a run switched mid-task', async () => {
+      stubFetch({
+        runs: [
+          {
+            ...RUNS[0]!,
+            runner: 'codex',
+            model: 'auto',
+            modelUsage: [
+              { model: 'anthropic/claude-opus-4-8', reasoningEffort: 'low', pct: 75 },
+              { model: 'openai/gpt-5.2-codex', reasoningEffort: 'high', pct: 25 },
+            ],
+          },
+        ],
+      })
+      renderPage()
+      await screen.findByText('Add checkout endpoint')
+
+      fireEvent.click(screen.getByRole('button', { name: 'codex · auto' }))
+
+      await waitFor(() => {
+        const entries = [...document.querySelectorAll('[data-slot="agent-usage-breakdown-entry"]')].map(
+          (el) => el.textContent,
+        )
+        expect(entries).toEqual([
+          'anthropic/claude-opus-4-8 · low — 75%',
+          'openai/gpt-5.2-codex · high — 25%',
+        ])
+      })
+    })
+
+    it('discloses provider, percentage, and reasoning for a single-model run', async () => {
+      stubFetch({
+        runs: [
+          {
+            ...RUNS[0]!,
+            runner: 'claude',
+            model: 'opus',
+            modelUsage: [{ model: 'anthropic/claude-opus-4-8', reasoningEffort: 'high', pct: 100 }],
+          },
+        ],
+      })
+      renderPage()
+      await screen.findByText('Add checkout endpoint')
+
+      fireEvent.click(screen.getByRole('button', { name: 'claude · opus' }))
+
+      await waitFor(() => {
+        const breakdown = document.querySelector('[data-slot="agent-usage-breakdown"]')!
+        expect(breakdown.textContent).toContain('provider: claude')
+        expect(breakdown.textContent).toContain('requested model: opus')
+        expect(breakdown.querySelector('[data-slot="agent-usage-breakdown-entry"]')?.textContent).toBe(
+          'anthropic/claude-opus-4-8 · high — 100%',
+        )
+      })
+    })
+  })
+
   describe('read / unread', () => {
     // A finished, unopened task — the state the marker exists for.
     const unreadRun = () => [

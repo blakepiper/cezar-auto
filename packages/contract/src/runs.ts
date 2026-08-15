@@ -298,6 +298,15 @@ export type ApiRun = z.infer<typeof apiRunSchema>;
 
 // ---- the cross-project index --------------------------------------------------------------
 
+/** One (model identity, reasoning level) slice of a run's token spend — see `modelUsage` on
+ *  `runIndexEntrySchema` for what builds and reads this. */
+export const modelUsageEntrySchema = z.object({
+  model: z.string(),
+  reasoningEffort: reasoningEffortSchema.exclude(['auto']).optional(),
+  pct: z.number(),
+});
+export type ModelUsageEntry = z.infer<typeof modelUsageEntrySchema>;
+
 /**
  * One run in the WORKSPACE-level index (`GET /api/v1/workspace/runs-index`) — the ⌘K palette's
  * "find a task in any project" list, and the global Tasks page's rows.
@@ -384,6 +393,23 @@ export const runIndexEntrySchema = z.object({
    * event stream per project (it could not — the run stream is project-scoped).
    */
   usage: processUsageSchema.optional(),
+  /** The backend that actually ran the run's latest step, falling back to the requested
+   *  `RunRecord.runner` — the same resolution the task-detail agent badge leads with. Omitted
+   *  only when neither is known (a queued run with no step yet and no explicit runner). */
+  runner: runnerSchema.optional(),
+  /** `RunRecord.model`, the free text the caller asked for — `opus`, `auto`, a gateway id.
+   *  Alongside `modelUsage` below, this is what lets the global Tasks page answer "which model,
+   *  from which provider" without shipping every project's full `steps[]`. */
+  model: z.string().optional(),
+  /**
+   * Usage weighted by tokens spent, grouped by (model identity, reasoning level) and sorted
+   * heaviest first — the server-computed twin of the task-detail agent badge's breakdown
+   * (`computeModelBreakdown`/`computeModelUsageBreakdown`), done once here rather than requiring
+   * the full `steps[]` on every row of a cross-project table. Present only when at least one step
+   * recorded both a canonical model identity and nonzero tokens; a run that never switched model
+   * or reasoning mid-run collapses to a single entry.
+   */
+  modelUsage: z.array(modelUsageEntrySchema).optional(),
 });
 export type RunIndexEntry = z.infer<typeof runIndexEntrySchema>;
 

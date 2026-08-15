@@ -687,6 +687,7 @@ function TaskTable({
               <Th className="hidden w-[120px] xl:table-cell">Tags</Th>
               <Th className="w-[84px]">Ref</Th>
               <Th className="hidden w-[108px] xl:table-cell">Workflow</Th>
+              <Th className="hidden w-[150px] lg:table-cell">Agent</Th>
               {showCost ? <Th className="hidden w-[64px] text-right lg:table-cell">Cost</Th> : null}
               <Th className="hidden w-[56px] text-right xl:table-cell">CPU</Th>
               <Th className="hidden w-[84px] text-right xl:table-cell">Mem</Th>
@@ -838,6 +839,9 @@ function TaskRow({
       </td>
       <td className={cn(TD_BASE, 'hidden text-[12.5px] text-muted-foreground xl:table-cell')}>
         {run.workflow}
+      </td>
+      <td className={cn(TD_BASE, 'hidden lg:table-cell')}>
+        <AgentCell run={run} />
       </td>
       {showCost ? (
         <td
@@ -1159,6 +1163,69 @@ function UsageTd({ column, cell }: { column: 'cpu' | 'memory'; cell: UsageCell }
 
 function Dash() {
   return <span className="text-xs text-soft-foreground">—</span>
+}
+
+/**
+ * The Agent column: "which model was used, from which provider, at what reasoning level" —
+ * the cross-project answer to the same question the task-detail agent badge answers per task
+ * (`AgentBadge` in `routes/task-thread/run-header.tsx`).
+ *
+ * The index ships the summary pre-resolved (`RunIndexEntry.runner`/`.model`) and the
+ * tokens-weighted breakdown pre-grouped (`.modelUsage`, server-computed by
+ * `computeModelUsageBreakdown`) rather than the run's full `steps[]` — this table paints
+ * hundreds of rows across a whole workspace, and per-row `steps[]` is exactly the cost the slim
+ * index exists to avoid. A run that never switched model or reasoning mid-run collapses to at
+ * most one breakdown entry, but even that one is worth disclosing: it carries the canonical
+ * provider/model, measured percentage, and concrete reasoning level.
+ */
+function AgentCell({ run }: { run: RunIndexEntry }) {
+  const summary = [run.runner, run.model].filter(Boolean).join(' · ')
+  const breakdown = run.modelUsage ?? []
+  if (!summary && breakdown.length === 0) return <Dash />
+  if (breakdown.length === 0) {
+    return (
+      <span className="block truncate text-[12.5px] text-muted-foreground" title={summary}>
+        {summary}
+      </span>
+    )
+  }
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          data-slot="agent-usage-trigger"
+          title={summary || breakdown[0]?.model || 'Agent details'}
+          className="block max-w-full truncate rounded-sm px-1 py-0.5 text-left font-mono text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+        >
+          {summary || breakdown[0]?.model || 'Agent details'}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-auto min-w-56 p-1.5" data-slot="agent-usage-breakdown">
+        {run.runner ? (
+          <p className="px-1 pb-1 text-[10.5px] text-soft-foreground">provider: {run.runner}</p>
+        ) : null}
+        {run.model ? (
+          <p className="px-1 pb-1.5 text-[10.5px] text-soft-foreground">requested model: {run.model}</p>
+        ) : null}
+        <p className="px-1 pb-1.5 text-[10.5px] text-soft-foreground">Usage by model</p>
+        <span className="flex flex-col items-start gap-1">
+          {breakdown.map((entry) => (
+            <span
+              key={`${entry.model}::${entry.reasoningEffort ?? ''}`}
+              data-slot="agent-usage-breakdown-entry"
+              className="px-1 font-mono text-[11px] text-muted-foreground"
+            >
+              {entry.model}
+              {entry.reasoningEffort ? ` · ${entry.reasoningEffort}` : ''}
+              {' — '}
+              {entry.pct >= 10 ? Math.round(entry.pct) : entry.pct.toFixed(1)}%
+            </span>
+          ))}
+        </span>
+      </PopoverContent>
+    </Popover>
+  )
 }
 
 /** What an empty global list honestly means, given how it got empty. */

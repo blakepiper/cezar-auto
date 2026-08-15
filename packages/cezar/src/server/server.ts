@@ -78,6 +78,7 @@ import { getTeamSkillsCached, refreshTeamSkills, waitForTeamSkills } from '../sk
 import { appendHandoffHeartbeat, handoffProgressExcerpt, readHandoff } from '../handoff.ts';
 import { markStarted, onTodosChanged, readTodos, removeTodo, todoTaskText, type TodoItem } from '../todos.ts';
 import type { RunEvent, RunRecord, RunStatus, RunStore } from '../runs/store.ts';
+import { computeModelUsageBreakdown } from '../runs/store.ts';
 import {
   HistoryCursorError,
   deriveRunContextEvents,
@@ -5308,6 +5309,12 @@ export function createApp(deps: ServerDeps) {
 
   const runIndexEntry = (projectId: string, run: RunRecord): RunIndexEntry => {
     const usage = currentUsage(run.id);
+    // Same resolution the task-detail agent badge leads with (`run-header.tsx`): the latest step
+    // that actually recorded a backend wins over the run's own requested `runner`, because a
+    // mid-run provider failover means the record's own field only reflects the FIRST resolution.
+    const lastBackendStep = [...run.steps].reverse().find((step) => step.backend);
+    const runner = lastBackendStep?.backend ?? run.runner;
+    const modelUsage = computeModelUsageBreakdown(run.steps);
     return {
     projectId,
     id: run.id,
@@ -5340,6 +5347,9 @@ export function createApp(deps: ServerDeps) {
     // The live sample, on the same terms as `GET /runs`: process-wide sampler, so a
     // workspace-level answer can carry it for every project's runs at once.
     ...(usage ? { usage } : {}),
+    ...(runner !== undefined ? { runner } : {}),
+    ...(run.model !== undefined ? { model: run.model } : {}),
+    ...(modelUsage.length > 0 ? { modelUsage } : {}),
     };
   };
 

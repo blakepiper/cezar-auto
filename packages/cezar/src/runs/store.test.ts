@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { RunStore } from './store.ts';
+import { computeModelUsageBreakdown, RunStore, type StepState } from './store.ts';
 
 /** A minimal pre-#389 record, exactly as an old runs.json holds it — no
  *  titleSummary, no diffStat. Loading it must keep working (additive proof). */
@@ -1428,5 +1428,47 @@ describe('RunStore — the legacy `claude-cli` runner id (#547)', () => {
       'utf8',
     );
     expect(RunStore.open(dataDir).getRun('legacy-1')).toBeUndefined();
+  });
+});
+
+describe('computeModelUsageBreakdown — the runs-index badge feed', () => {
+  // The server-side twin of the task-detail agent badge's `computeModelBreakdown`
+  // (`web/src/routes/task-thread/run-header.tsx`) — same grouping rule, tested here against the
+  // same shape of input so the two cannot silently drift.
+  const step = (extra: Partial<StepState> = {}): StepState => ({
+    id: 'task',
+    name: 'Do the task',
+    kind: 'agent',
+    status: 'done',
+    iterations: 1,
+    tokensUsed: 0,
+    ...extra,
+  });
+
+  it('weighs each model/reasoning combo by tokens spent, not step count', () => {
+    const breakdown = computeModelUsageBreakdown([
+      step({ id: 'a', modelIdentity: 'anthropic/claude-opus-4-8', reasoningEffort: 'low', tokensUsed: 7_500 }),
+      step({ id: 'b', modelIdentity: 'anthropic/claude-sonnet-4-8', reasoningEffort: 'high', tokensUsed: 2_500 }),
+    ]);
+    expect(breakdown).toEqual([
+      { model: 'anthropic/claude-opus-4-8', reasoningEffort: 'low', pct: 75 },
+      { model: 'anthropic/claude-sonnet-4-8', reasoningEffort: 'high', pct: 25 },
+    ]);
+  });
+
+  it('skips steps with no recorded model identity or tokens rather than guessing', () => {
+    const breakdown = computeModelUsageBreakdown([
+      step({ id: 'a', modelIdentity: 'anthropic/claude-opus-4-8', reasoningEffort: 'low', tokensUsed: 0 }),
+      step({ id: 'b', tokensUsed: 5_000 }),
+    ]);
+    expect(breakdown).toEqual([]);
+  });
+
+  it('collapses repeated steps of the same model/reasoning into one entry', () => {
+    const breakdown = computeModelUsageBreakdown([
+      step({ id: 'a', modelIdentity: 'anthropic/claude-opus-4-8', reasoningEffort: 'high', tokensUsed: 1_000 }),
+      step({ id: 'b', modelIdentity: 'anthropic/claude-opus-4-8', reasoningEffort: 'high', tokensUsed: 1_000 }),
+    ]);
+    expect(breakdown).toEqual([{ model: 'anthropic/claude-opus-4-8', reasoningEffort: 'high', pct: 100 }]);
   });
 });

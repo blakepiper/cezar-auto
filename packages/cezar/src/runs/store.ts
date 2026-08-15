@@ -329,6 +329,45 @@ export type StepState = z.infer<typeof stepStateSchema>;
 export type QueuedMessage = z.infer<typeof queuedMessageSchema>;
 export type RunRecord = z.infer<typeof runRecordSchema>;
 
+export interface ModelUsageEntry {
+  model: string;
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
+  pct: number;
+}
+
+/**
+ * Groups a run's steps by (model identity, reasoning level) and weighs each group by tokens
+ * spent — "which models actually did this work, and how much of it?" rather than "what's
+ * running right now". The server-side twin of the task-detail agent badge's
+ * `computeModelBreakdown` (`web/src/routes/task-thread/run-header.tsx`): same grouping rule, run
+ * here so the cross-project runs index (`GET /workspace/runs-index`) can ship the small, already
+ * summarized answer instead of every project's full `steps[]`.
+ *
+ * Steps predating per-step `modelIdentity` or with zero recorded tokens are skipped rather than
+ * guessed into a group — same omitted-not-guessed rule as the badge.
+ */
+export function computeModelUsageBreakdown(steps: readonly StepState[]): ModelUsageEntry[] {
+  const groups = new Map<string, { model: string; reasoningEffort?: StepState['reasoningEffort']; weight: number }>();
+  let totalWeight = 0;
+  for (const step of steps) {
+    const model = step.modelIdentity;
+    const weight = step.tokensUsed;
+    if (!model || !weight || weight <= 0) continue;
+    const key = `${model}::${step.reasoningEffort ?? ''}`;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.weight += weight;
+    } else {
+      groups.set(key, { model, reasoningEffort: step.reasoningEffort, weight });
+    }
+    totalWeight += weight;
+  }
+  if (totalWeight <= 0) return [];
+  return [...groups.values()]
+    .map((g) => ({ model: g.model, reasoningEffort: g.reasoningEffort, pct: (g.weight / totalWeight) * 100 }))
+    .sort((a, b) => b.pct - a.pct);
+}
+
 /** One persisted event line; `type` mirrors AgentEvent plus engine lifecycle. */
 export interface RunEvent {
   seq: number;
