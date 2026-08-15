@@ -122,7 +122,7 @@ and WS resubscribe-on-reconnect; a `trybuild`/grep-based CI lint enforces the
 no-HTTP-in-screens rule.
 **Commit:** `feat(engine): A2 Engine trait + HttpEngine over /api/v1` — pushed as `ba29badf`.
 
-### [ ] A3 — App skeleton: event loop, router, theme, HitMap, service supervisor
+### [x] A3 — App skeleton: event loop, router, theme, HitMap, service supervisor
 **Ships:** frame loop (30 fps budget, input coalescing), `Route` enum + history,
 theme with capability detection (§7.5, three named themes — no `system`, no accent
 picker), keymap loader, `HitMap`, and the `service` module supervising the
@@ -130,7 +130,7 @@ picker), keymap loader, `HitMap`, and the `service` module supervising the
 kill-on-exit) with stdout/stderr **piped, never inherited**, captured per §7.7.
 **Accept:** two placeholder screens navigate by key, `:open`, mouse click, and
 history back/forward; snapshot tests at 80×24, 120×40, 200×60.
-**Commit:** `feat(tui): A3 app skeleton, theme, HitMap, silent service supervisor`
+**Commit:** `feat(tui): A3 app skeleton, theme, HitMap, silent service supervisor` — pushed as `5616d883`.
 
 ### [ ] A4 — Shell chrome
 **Ships:** header, sidebar (project groups, nav, badges, Active/Archived, task
