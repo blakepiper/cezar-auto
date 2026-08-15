@@ -4,11 +4,13 @@ import { deriveAttention, wantsAttention } from './attention'
 /* Browser notifications (R6 Step 1.7, spec §"Cross-cutting"): the pure half.
  *
  * The spec's sentence, verbatim: "browser Notification on `waiting`/`review`/failed via the
- * attention function — off by default, Settings toggle". Every decision here is one of those
- * clauses made executable:
+ * attention function — off by default, Settings toggle". Successful completion is also a
+ * notification transition, while `done` remains outside the attention ladder. Every decision
+ * here is one of those clauses made executable:
  *
- *  - "via the attention function": the entering-set below is `wantsAttention` (lib/attention.ts),
- *    never a local status list — the one status grammar the whole cockpit shares.
+ *  - "via the attention function": waiting/review/failed transitions use `wantsAttention`
+ *    (lib/attention.ts), never a local status list — the one status grammar the whole cockpit
+ *    shares. `done` is the one additional lifecycle transition.
  *  - "off by default": `normalizeNotifications` answers `enabled: false` for anything but the
  *    literal `true`, so an absent key, an old ui-state.json and garbage all mean off.
  *  - Fires only when the tab is hidden, and only with permission granted: `shouldNotify` — a
@@ -54,7 +56,7 @@ export function notificationSupport(): NotificationSupport {
 // ---- transition detection ------------------------------------------------------------------
 
 export interface RunTransitions {
-  /** Runs that ENTERED an attention state in this observation — the ones worth a notification. */
+  /** Runs that ENTERED a notification state in this observation — the ones worth a notification. */
   entering: RunRecord[]
   /** The statuses to remember for the next observation. Rebuilt each time, so deleted runs
    *  fall out instead of accumulating forever. */
@@ -65,8 +67,8 @@ export interface RunTransitions {
  * Diff one observation of the run list against the last known statuses.
  *
  * "Entering" is literal: a run notifies only when its status CHANGED into one that
- * `wantsAttention` — the top rungs of the attention ladder (permission/error/waiting-review),
- * exactly the spec's `waiting`/`review`/failed set. Two silences are deliberate:
+ * `wantsAttention` — the top rungs of the attention ladder (permission/error/waiting-review) —
+ * or into `done`, the successful completion state. Two silences are deliberate:
  *
  *  - a run seen for the first time never notifies, whatever its status. First sight is the
  *    boot fetch or a reconnect reconciliation seeding the cache — a run that has been sitting
@@ -87,7 +89,7 @@ export function diffRunTransitions(
     statuses.set(run.id, run.status)
     const before = previous.get(run.id)
     if (before === undefined || before === run.status) continue
-    if (wantsAttention(run)) entering.push(run)
+    if (wantsAttention(run) || run.status === 'done') entering.push(run)
   }
   return { entering, statuses }
 }

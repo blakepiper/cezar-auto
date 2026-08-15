@@ -102,19 +102,25 @@ describe('RunNotifications', () => {
     ])
   })
 
-  it('review and failed transitions notify too — one per run, tagged for replacement', () => {
+  it('review, failed, and finished transitions notify — one per run, tagged for replacement', () => {
     const constructed = stubNotification('granted')
     hideTab()
     const { patch } = mount({ notifications: { enabled: true } }, [
       run({ id: 'a', status: 'running' }),
       run({ id: 'b', status: 'running' }),
+      run({ id: 'c', status: 'running' }),
     ])
 
-    patch([run({ id: 'a', status: 'review' }), run({ id: 'b', status: 'failed' })])
+    patch([
+      run({ id: 'a', status: 'review' }),
+      run({ id: 'b', status: 'failed' }),
+      run({ id: 'c', status: 'done' }),
+    ])
 
     expect(constructed.map((n) => [n.options?.tag, n.options?.body])).toEqual([
       ['cezar-run-a', 'Task needs review'],
       ['cezar-run-b', 'Task failed'],
+      ['cezar-run-c', 'Task done'],
     ])
   })
 

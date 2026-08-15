@@ -94,8 +94,8 @@ export function NotificationsSection() {
               <label htmlFor="notifications-enabled">Notify when an agent needs you</label>
             </h2>
             <p className="text-[13px] text-muted-foreground">
-              A browser notification when a task starts waiting, asks for review, or fails —
-              only while this tab is in the background. Off by default.
+              A browser notification when a task starts waiting, asks for review, fails, or
+              finishes — only while this tab is in the background. Off by default.
             </p>
           </div>
           <Switch

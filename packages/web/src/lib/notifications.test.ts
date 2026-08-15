@@ -54,20 +54,22 @@ describe('normalizeNotifications (the ui-state `notifications` key)', () => {
 describe('diffRunTransitions (attention → notify mapping)', () => {
   const seen = (entries: Array<[string, RunStatus]>) => new Map<string, RunStatus>(entries)
 
-  it('a run ENTERING waiting/review/failed notifies — the spec set, via wantsAttention', () => {
-    for (const status of ['waiting', 'review', 'failed'] as const) {
+  it('a run ENTERING waiting/review/failed or done notifies', () => {
+    for (const status of ['waiting', 'review', 'failed', 'done'] as const) {
       const { entering } = diffRunTransitions(seen([['r1', 'running']]), [run({ status })])
       expect(entering.map((r) => r.id)).toEqual(['r1'])
     }
   })
 
-  it('the entering set IS wantsAttention — never a second status list', () => {
+  it('the entering set follows attention plus successful completion', () => {
     const all: readonly RunStatus[] = ['queued', 'running', 'waiting', 'review', 'done', 'failed', 'cancelled']
     for (const status of all) {
       const record = run({ status })
       const { entering } = diffRunTransitions(seen([['r1', 'queued']]), [record])
-      // status change from 'queued' in every case except 'queued' itself; notify iff attention.
-      expect(entering.includes(record)).toBe(status !== 'queued' && wantsAttention(record))
+      // status change from 'queued' in every case except 'queued' itself; notify iff attention or done.
+      expect(entering.includes(record)).toBe(
+        status !== 'queued' && (wantsAttention(record) || status === 'done'),
+      )
     }
   })
 
@@ -90,8 +92,8 @@ describe('diffRunTransitions (attention → notify mapping)', () => {
     expect(entering.map((r) => r.id)).toEqual(['r1'])
   })
 
-  it('leaving attention notifies nothing (waiting → done)', () => {
-    const { entering } = diffRunTransitions(seen([['r1', 'waiting']]), [run({ status: 'done' })])
+  it('leaving attention for cancellation notifies nothing', () => {
+    const { entering } = diffRunTransitions(seen([['r1', 'waiting']]), [run({ status: 'cancelled' })])
     expect(entering).toEqual([])
   })
 

@@ -143,7 +143,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   {
     id: 'notifications',
     title: 'Notifications',
-    description: 'Browser notifications when an agent needs you.',
+    description: 'Browser notifications when an agent needs you or finishes.',
     icon: BellIcon,
     component: NotificationsSection,
     scope: 'global',
