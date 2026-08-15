@@ -550,8 +550,13 @@ export const runCommitSchema = z.object({
 });
 export type RunCommit = z.infer<typeof runCommitSchema>;
 
-/** `GET /runs/:id/commits` — `<base>..HEAD` on the worktree branch, newest first. */
-export const runCommitsResponseSchema = z.object({ commits: z.array(runCommitSchema) });
+/** `GET /runs/:id/commits` — `<base>..HEAD` on the worktree branch, newest first. The git state
+ *  fields let the finished-task footer say whether the task's latest commit is on its upstream. */
+export const runCommitsResponseSchema = z.object({
+  commits: z.array(runCommitSchema),
+  branch: z.string().optional(),
+  pushed: z.boolean(),
+});
 export type RunCommitsResponse = z.infer<typeof runCommitsResponseSchema>;
 
 // ---- parallel variants (spec 010) ----------------------------------------------------------

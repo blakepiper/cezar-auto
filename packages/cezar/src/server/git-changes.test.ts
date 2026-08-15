@@ -10,6 +10,7 @@ import {
   FILE_CONTENT_CAP,
   assemblePayload,
   collectChanges,
+  collectRunGitStatus,
   collectRunCommits,
   commitAll,
   createOrSwitchBranch,
@@ -389,6 +390,40 @@ describe('collectRunCommits — the run branch commits since base', () => {
   });
 });
 
+describe('collectRunGitStatus — branch publication state', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cez-gitstatus-'));
+    initRepo(dir);
+    writeFileSync(join(dir, 'base.txt'), 'base\n');
+    g(dir, 'add', '-A');
+    g(dir, 'commit', '-m', 'base');
+    g(dir, 'checkout', '-b', 'task');
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('reports a branch without an upstream as not pushed', async () => {
+    await expect(collectRunGitStatus(dir)).resolves.toEqual({ branch: 'task', pushed: false });
+  });
+
+  it('reports an upstream as pushed only when the local branch is not ahead', async () => {
+    const remote = mkdtempSync(join(tmpdir(), 'cez-gitstatus-remote-'));
+    try {
+      execFileSync('git', ['init', '--bare', remote], { encoding: 'utf8' });
+      g(dir, 'remote', 'add', 'origin', remote);
+      g(dir, 'push', '-u', 'origin', 'task');
+      await expect(collectRunGitStatus(dir)).resolves.toEqual({ branch: 'task', pushed: true });
+
+      writeFileSync(join(dir, 'unpublished.txt'), 'not pushed\n');
+      g(dir, 'add', '-A');
+      g(dir, 'commit', '-m', 'unpublished');
+      await expect(collectRunGitStatus(dir)).resolves.toEqual({ branch: 'task', pushed: false });
+    } finally {
+      rmSync(remote, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('readWorktreePath — Files tab browsing', () => {
   let dir: string;
 
@@ -659,7 +694,13 @@ describe('session git API routes', () => {
 
     const list = await apiRequest(app, `/api/v1/runs/${run.id}/commits`);
     expect(list.status).toBe(200);
-    const { commits } = (await list.json()) as { commits: Array<{ sha: string; subject: string }> };
+    const body = (await list.json()) as {
+      commits: Array<{ sha: string; subject: string }>;
+      branch?: string;
+      pushed: boolean;
+    };
+    const { commits } = body;
+    expect(body).toMatchObject({ branch: 'task', pushed: false });
     expect(commits).toHaveLength(1);
     expect(commits[0]?.subject).toBe('add feature');
 

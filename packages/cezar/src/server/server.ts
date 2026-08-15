@@ -99,6 +99,7 @@ import { getBranches, getCommit, getDiff, getLog, getRepoInfo, getStatus } from 
 import {
   collectChanges,
   collectCommitChanges,
+  collectRunGitStatus,
   collectRunCommits,
   commitAll,
   createOrSwitchBranch,
@@ -4065,7 +4066,13 @@ export function createApp(deps: ServerDeps) {
       if (!workingDirectory) return c.json({ error: NO_WORKTREE }, 409);
       const result = await collectRunCommits(workingDirectory, run.baseBranch ?? 'HEAD');
       if (!result.ok) return c.json({ error: result.error }, 409);
-      return c.json({ commits: result.commits });
+      const gitStatus = await collectRunGitStatus(workingDirectory);
+      const branch = run.branch ?? gitStatus.branch;
+      return c.json({
+        commits: result.commits,
+        pushed: gitStatus.pushed,
+        ...(branch ? { branch } : {}),
+      });
     })
 
     // One of the run's commits, structured like the Changes tab (reuses collectCommitChanges).
