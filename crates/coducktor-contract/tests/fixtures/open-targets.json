@@ -1,0 +1,1 @@
+{"targets":[{"id":"finder","label":"Files","icon":"folder"},{"id":"terminal","label":"Terminal","icon":"terminal"},{"id":"cli:claude","label":"Claude CLI","icon":"claude"},{"id":"cli:codex","label":"Codex CLI","icon":"codex"},{"id":"cli:opencode","label":"OpenCode","icon":"opencode"},{"id":"cli:pi","label":"pi CLI","icon":"pi"}]}

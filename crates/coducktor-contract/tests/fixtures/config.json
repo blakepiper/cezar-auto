@@ -1,0 +1,1 @@
+{"baseBranch":null,"defaultRunner":"claude","systemPrompt":null,"defaultModels":{"claude":"sonnet","codex":"gpt-5.6-luna"},"modelsLocked":false,"maxParallel":2,"memoryLimitMb":null,"worktreeRetention":10,"liveTitleUpdates":null,"reviewGate":null}
