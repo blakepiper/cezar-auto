@@ -626,6 +626,12 @@ describe('legacy flat URLs redirect to the boot project', () => {
     expect(currentPathname()).toBe(`/p/${BOOT}/definitely-not-a-route`)
   })
 
+  it('redirects the flat IDE link to the boot project instead of showing a 404', () => {
+    renderAt('/ide')
+    expect(routeName()).toBe('ide')
+    expect(currentPathname()).toBe(`/p/${BOOT}/ide`)
+  })
+
   it('a bare /p names no project and lands on the boot project home', () => {
     renderAt('/p')
     expect(routeName()).toBe('tasks')
