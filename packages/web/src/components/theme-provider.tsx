@@ -12,7 +12,7 @@ import {
 } from '@/lib/theme'
 
 type ThemeContextValue = {
-  /** What the user chose: `light`, `dark`, or `system`. */
+  /** What the user chose: `light`, `dark`, `system`, or `lazyvim`. */
   theme: Theme
   /** What is actually painting — `system` collapsed against the OS preference. */
   resolvedTheme: ResolvedTheme

@@ -103,8 +103,7 @@
   --violet-foreground: #ffffff;
   --ring: #a8f372;
 
-  /* LazyVim accent — the stable "tokyonight blue" family token, named like `--accent-lime`/
-   * `--violet` above so the Settings swatch can point at it directly. */
+  /* LazyVim theme — the stable "tokyonight blue" family token used by the full theme below. */
   --lazyvim-blue: #7aa2f7;
   --lazyvim-blue-foreground: #16161e;
 
@@ -211,7 +210,7 @@
  * `data-accent` / `data-density` land on <html> before first paint (the index.html pre-paint
  * script reads the localStorage mirror; ui-state.json is the authoritative store — see
  * src/lib/appearance.ts). The default (lime / comfortable) is the ABSENCE of the attribute,
- * so these blocks only name the deviations.
+ * so these blocks only name the deviations. LazyVim is a theme class, not an accent attribute.
  */
 
 /* Violet accent: the `--primary` family swaps onto the existing violet tokens. An accent is
@@ -223,14 +222,10 @@
   --ring: var(--violet);
 }
 
-/* LazyVim accent: unlike violet (a `--primary`-only swap), this one reads as a real colorscheme —
- * LazyVim's Tokyonight default is a full dark navy palette, not just a blue button — so it also
- * repaints the neutral ramp, status colors and syntax tokens. It always renders dark (own
- * `color-scheme`/background/foreground), the same way an editor colorscheme ignores the OS
- * light/dark setting. A new *palette* accent like this = a new block here + one entry in
- * ACCENT_OPTIONS (routes/settings/appearance.tsx); a plain color-only accent only needs the
- * three lines the violet block above has. */
-:root[data-accent='lazyvim'] {
+/* LazyVim theme: a full dark navy palette, including its matching Tokyonight blue primary color.
+ * `:root.lazyvim` deliberately outranks `:root[data-accent='violet']`, so choosing LazyVim always
+ * makes the accent match the theme without destroying the user's saved lime/violet preference. */
+:root.lazyvim {
   color-scheme: dark;
 
   --background: #1a1b26;

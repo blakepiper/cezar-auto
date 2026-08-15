@@ -12,21 +12,24 @@ export const THEME_STORAGE_KEY = 'cez-theme'
 /** The media query `system` follows. Light is the query (not dark) because dark is our default. */
 export const LIGHT_MEDIA_QUERY = '(prefers-color-scheme: light)'
 
-export type Theme = 'light' | 'dark' | 'system'
-export type ResolvedTheme = 'light' | 'dark'
+/** `lazyvim` is a fixed palette (LazyVim's Tokyonight default) — like `light`/`dark` it never
+ *  moves with the OS preference, it just sits alongside them as a third named theme. */
+export type Theme = 'light' | 'dark' | 'system' | 'lazyvim'
+export type ResolvedTheme = 'light' | 'dark' | 'lazyvim'
 
 /** Dark, matching the legacy page's `localStorage.getItem('cez-theme') || 'dark'`. */
 export const DEFAULT_THEME: Theme = 'dark'
 
 /** Coerce anything (missing key, a future value, garbage) into a Theme. */
 export function normalizeTheme(raw: unknown): Theme {
-  return raw === 'light' || raw === 'dark' || raw === 'system' ? raw : DEFAULT_THEME
+  return raw === 'light' || raw === 'dark' || raw === 'system' || raw === 'lazyvim' ? raw : DEFAULT_THEME
 }
 
 /** Which palette actually paints. Deliberately defensive about `pref` — it can come from
  *  localStorage, where the type system doesn't reach. */
 export function resolveTheme(pref: Theme, systemPrefersLight: boolean): ResolvedTheme {
   if (pref === 'light') return 'light'
+  if (pref === 'lazyvim') return 'lazyvim'
   if (pref === 'system') return systemPrefersLight ? 'light' : 'dark'
   return 'dark'
 }
@@ -59,9 +62,11 @@ export function systemPrefersLight(): boolean {
     : false
 }
 
-/** Stamp the root element. `.light` flips the token sheet; `color-scheme` makes native scrollbars,
- *  form controls and the canvas match before/independently of our stylesheet. */
+/** Stamp the root element. `.light`/`.lazyvim` flip the token sheet (dark is the class-less
+ *  default); `color-scheme` makes native scrollbars, form controls and the canvas match
+ *  before/independently of our stylesheet — lazyvim is a dark palette, so it reports `dark`. */
 export function applyResolvedTheme(root: HTMLElement, resolved: ResolvedTheme): void {
   root.classList.toggle('light', resolved === 'light')
-  root.style.colorScheme = resolved
+  root.classList.toggle('lazyvim', resolved === 'lazyvim')
+  root.style.colorScheme = resolved === 'light' ? 'light' : 'dark'
 }

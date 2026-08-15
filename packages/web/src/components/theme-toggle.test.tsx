@@ -52,7 +52,8 @@ describe('ThemeToggle', () => {
   it.each([
     { theme: 'light', name: 'Theme: light. Switch to dark.' },
     { theme: 'dark', name: 'Theme: dark. Switch to system.' },
-    { theme: 'system', name: 'Theme: system. Switch to light.' },
+    { theme: 'system', name: 'Theme: system. Switch to LazyVim.' },
+    { theme: 'lazyvim', name: 'Theme: LazyVim. Switch to light.' },
   ] as const)('has an accessible name announcing $theme and what is next', ({ theme, name }) => {
     renderToggle(theme)
 
@@ -68,7 +69,7 @@ describe('ThemeToggle', () => {
     expect(document.documentElement.classList.contains('light')).toBe(true)
   })
 
-  it('cycles light → dark → system → light, persisting each step', () => {
+  it('cycles light → dark → system → lazyvim → light, persisting each step', () => {
     const button = renderToggle('light')
 
     fireEvent.click(button)
@@ -78,6 +79,10 @@ describe('ThemeToggle', () => {
     fireEvent.click(button)
     expect(button.dataset.themePref).toBe('system')
     expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe('system')
+
+    fireEvent.click(button)
+    expect(button.dataset.themePref).toBe('lazyvim')
+    expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe('lazyvim')
 
     fireEvent.click(button)
     expect(button.dataset.themePref).toBe('light')

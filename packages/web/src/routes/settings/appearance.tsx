@@ -1,4 +1,4 @@
-import { MonitorIcon, MoonIcon, SunIcon } from 'lucide-react'
+import { MonitorIcon, MoonIcon, PaletteIcon, SunIcon } from 'lucide-react'
 import type { ComponentType, ReactNode, SVGProps } from 'react'
 
 import { useAppearance } from '@/components/appearance-provider'
@@ -24,6 +24,7 @@ const THEME_OPTIONS: Array<{ value: Theme; label: string; icon: ComponentType<SV
   { value: 'system', label: 'System', icon: MonitorIcon },
   { value: 'light', label: 'Light', icon: SunIcon },
   { value: 'dark', label: 'Dark', icon: MoonIcon },
+  { value: 'lazyvim', label: 'LazyVim', icon: PaletteIcon },
 ]
 
 /** Swatches point at the STABLE family tokens (`--accent-lime`, `--violet`), not `--primary` —
@@ -31,7 +32,6 @@ const THEME_OPTIONS: Array<{ value: Theme; label: string; icon: ComponentType<SV
 const ACCENT_OPTIONS: Array<{ value: Accent; label: string; swatch: string }> = [
   { value: 'lime', label: 'Lime', swatch: 'var(--accent-lime)' },
   { value: 'violet', label: 'Violet', swatch: 'var(--violet)' },
-  { value: 'lazyvim', label: 'LazyVim', swatch: 'var(--lazyvim-blue)' },
 ]
 
 const DENSITY_OPTIONS: Array<{ value: Density; label: string }> = [
@@ -120,7 +120,7 @@ export function AppearanceSection() {
       data-slot="appearance-section"
       className="mx-auto flex w-full max-w-2xl flex-col gap-7 p-4 pb-[calc(90px+env(safe-area-inset-bottom))] md:p-6 md:pb-6"
     >
-      <Field title="Theme" hint="System follows your OS preference. Applies to this browser.">
+      <Field title="Theme" hint="System follows your OS preference. LazyVim includes its matching blue accent.">
         <Segmented slot="appearance-theme" label="Theme" value={theme} options={THEME_OPTIONS} onChange={setTheme} />
       </Field>
 

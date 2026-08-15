@@ -98,6 +98,17 @@ describe('ThemeProvider', () => {
     expect(root().style.colorScheme).toBe('light')
   })
 
+  it('applies LazyVim as a dark theme with its matching accent palette', () => {
+    localStorage.setItem(THEME_STORAGE_KEY, 'lazyvim')
+    mockMatchMedia(true)
+    renderProvider()
+
+    expect(seen).toEqual({ theme: 'lazyvim', resolvedTheme: 'lazyvim' })
+    expect(root().classList.contains('light')).toBe(false)
+    expect(root().classList.contains('lazyvim')).toBe(true)
+    expect(root().style.colorScheme).toBe('dark')
+  })
+
   it.each([
     { osPrefersLight: true, resolved: 'light' },
     { osPrefersLight: false, resolved: 'dark' },

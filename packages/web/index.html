@@ -14,15 +14,17 @@
     <title>coducktor</title>
     <!-- Theme before first paint — no flash. Mirrors resolveTheme()/applyResolvedTheme() in
          src/lib/theme.ts; keep the two in sync. Shares the legacy cockpit's `cez-theme` key
-         ('light' | 'dark' | 'system'); anything else falls back to dark, as legacy does. -->
+         ('light' | 'dark' | 'system' | 'lazyvim'); anything else falls back to dark, as legacy does. -->
     <script>
       (function () {
         try {
           var pref = localStorage.getItem('cez-theme')
+          var lazyvim = pref === 'lazyvim'
           var light =
             pref === 'light' ||
             (pref === 'system' && matchMedia('(prefers-color-scheme: light)').matches)
           document.documentElement.classList.toggle('light', light)
+          document.documentElement.classList.toggle('lazyvim', lazyvim)
           document.documentElement.style.colorScheme = light ? 'light' : 'dark'
         } catch (e) {
           // Storage or matchMedia unavailable — the default dark tokens already apply.
@@ -32,7 +34,7 @@
         // absence of the attribute, so only the known deviations are stamped.
         try {
           var accent = localStorage.getItem('cez-accent')
-          if (accent === 'violet' || accent === 'lazyvim')
+          if (accent === 'violet')
             document.documentElement.dataset.accent = accent
           var density = localStorage.getItem('cez-density')
           if (density === 'compact' || density === 'ultra')

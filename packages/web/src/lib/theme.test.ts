@@ -34,6 +34,8 @@ describe('resolveTheme', () => {
     { pref: 'dark', systemPrefersLight: true, expected: 'dark' },
     { pref: 'system', systemPrefersLight: false, expected: 'dark' },
     { pref: 'system', systemPrefersLight: true, expected: 'light' },
+    { pref: 'lazyvim', systemPrefersLight: false, expected: 'lazyvim' },
+    { pref: 'lazyvim', systemPrefersLight: true, expected: 'lazyvim' },
   ] as const)(
     '$pref + systemPrefersLight=$systemPrefersLight → $expected',
     ({ pref, systemPrefersLight: light, expected }) => {
@@ -53,7 +55,7 @@ describe('resolveTheme', () => {
 })
 
 describe('normalizeTheme', () => {
-  it.each(['light', 'dark', 'system'] as const)('passes %s through', (theme) => {
+  it.each(['light', 'dark', 'system', 'lazyvim'] as const)('passes %s through', (theme) => {
     expect(normalizeTheme(theme)).toBe(theme)
   })
 
@@ -120,25 +122,37 @@ describe('systemPrefersLight', () => {
 
 describe('applyResolvedTheme', () => {
   it.each([
-    { resolved: 'light', hasClass: true },
-    { resolved: 'dark', hasClass: false },
-  ] as const)('stamps $resolved on the root', ({ resolved, hasClass }) => {
+    { resolved: 'light', hasLightClass: true, hasLazyVimClass: false, colorScheme: 'light' },
+    { resolved: 'dark', hasLightClass: false, hasLazyVimClass: false, colorScheme: 'dark' },
+    { resolved: 'lazyvim', hasLightClass: false, hasLazyVimClass: true, colorScheme: 'dark' },
+  ] as const)('stamps $resolved on the root', ({ resolved, hasLightClass, hasLazyVimClass, colorScheme }) => {
     const root = document.createElement('html')
 
     applyResolvedTheme(root, resolved)
 
-    expect(root.classList.contains('light')).toBe(hasClass)
-    expect(root.style.colorScheme).toBe(resolved)
+    expect(root.classList.contains('light')).toBe(hasLightClass)
+    expect(root.classList.contains('lazyvim')).toBe(hasLazyVimClass)
+    expect(root.style.colorScheme).toBe(colorScheme)
   })
 
-  it('removes the light class when switching back to dark', () => {
+  it('removes the light class when switching to LazyVim', () => {
     const root = document.createElement('html')
 
     applyResolvedTheme(root, 'light')
-    applyResolvedTheme(root, 'dark')
+    applyResolvedTheme(root, 'lazyvim')
 
     expect(root.classList.contains('light')).toBe(false)
+    expect(root.classList.contains('lazyvim')).toBe(true)
     expect(root.style.colorScheme).toBe('dark')
+  })
+
+  it('removes the LazyVim class when switching back to a regular theme', () => {
+    const root = document.createElement('html')
+
+    applyResolvedTheme(root, 'lazyvim')
+    applyResolvedTheme(root, 'dark')
+
+    expect(root.classList.contains('lazyvim')).toBe(false)
   })
 
   it('leaves unrelated classes alone', () => {

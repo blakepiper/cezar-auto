@@ -89,6 +89,18 @@ describe('settings → appearance against the live dry-run server', () => {
     // Back to dark so every other suite screenshots the default palette.
     browser.click('[data-slot="appearance-theme"] [data-value="dark"]')
     browser.waitForFunction(`!document.documentElement.classList.contains('light')`)
+
+    browser.click('[data-slot="appearance-theme"] [data-value="lazyvim"]')
+    browser.waitForFunction(`document.documentElement.classList.contains('lazyvim')`)
+    expect(browser.count('[data-slot="appearance-accent"] [data-value="lazyvim"]')).toBe(0)
+    expect(String(browser.evaluate(`getComputedStyle(document.documentElement).getPropertyValue('--primary').trim()`))).toBe('#7aa2f7')
+
+    browser.goto(`${baseUrl}/settings/global/appearance`)
+    browser.waitForFunction(`document.documentElement.classList.contains('lazyvim')`)
+    expect(browser.count('[data-slot="appearance-theme"] [data-value="lazyvim"][aria-checked="true"]')).toBe(1)
+
+    browser.click('[data-slot="appearance-theme"] [data-value="dark"]')
+    browser.waitForFunction(`!document.documentElement.classList.contains('lazyvim')`)
   })
 
   it('accent lands in ui-state.json and re-applies at boot', async () => {

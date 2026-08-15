@@ -24,9 +24,8 @@ describe('normalize', () => {
   it('accepts the known values and defaults everything else', () => {
     expect(normalizeAccent('violet')).toBe('violet')
     expect(normalizeAccent('lime')).toBe('lime')
-    expect(normalizeAccent('lazyvim')).toBe('lazyvim')
     // Unknown/garbage inputs — localStorage and ui-state.json both outlive this code's vocabulary.
-    for (const raw of [null, undefined, 'magenta', 42, {}]) {
+    for (const raw of [null, undefined, 'lazyvim', 'magenta', 42, {}]) {
       expect(normalizeAccent(raw)).toBe('lime')
       expect(normalizeDensity(raw)).toBe('comfortable')
       expect(normalizeWidth(raw)).toBe('narrow')
@@ -72,6 +71,12 @@ describe('the localStorage mirror', () => {
 
   it('defaults when the mirror is empty', () => {
     expect(readStoredAppearance()).toEqual({ accent: 'lime', density: 'comfortable', width: 'narrow' })
+  })
+
+  it('treats the former LazyVim accent value as the default accent', () => {
+    localStorage.setItem(ACCENT_STORAGE_KEY, 'lazyvim')
+
+    expect(readStoredAppearance().accent).toBe('lime')
   })
 })
 
