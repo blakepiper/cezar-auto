@@ -407,7 +407,7 @@ export async function fetchGithub(repoRoot: string, refresh = false, limit = 30)
     // window and no more — the default 30-item load pays ONE counts round-trip, not ten. Rows
     // beyond the window keep `comments: 0`, which the UI reads as "no badge" (same as before).
     const countsMaxPages = Math.min(GH_COUNTS_MAX_PAGES, Math.max(1, Math.ceil(capped / 100)));
-    const [issuesOut, prsOut, counts] = await Promise.all([
+    const [issuesResult, prsResult, countsResult] = await Promise.allSettled([
       gh(repoRoot, ['issue', 'list', '--limit', String(capped), '--json', fields], timeout),
       gh(repoRoot, ['pr', 'list', '--limit', String(capped), '--json', `${fields},isDraft,additions,deletions`], timeout),
       // Real comment counts (#499). Degrades to empty maps on its own — a failure here leaves
@@ -416,6 +416,16 @@ export async function fetchGithub(repoRoot: string, refresh = false, limit = 30)
         ? fetchCommentCounts(runGraphql, ownerName.owner, ownerName.name, countsMaxPages)
         : Promise.resolve<{ issues: Record<number, number>; prs: Record<number, number> }>({ issues: {}, prs: {} }),
     ]);
+    // GitHub repositories can disable Issues independently of Pull requests. One failed list
+    // must not hide the other: the tab can still be useful with either collection available.
+    if (issuesResult.status === 'rejected' && prsResult.status === 'rejected') {
+      throw new Error([issuesResult.reason, prsResult.reason].map(errorMessage).filter(Boolean).join('; ') || 'gh list failed');
+    }
+    const issuesOut = issuesResult.status === 'fulfilled' ? issuesResult.value : '[]';
+    const prsOut = prsResult.status === 'fulfilled' ? prsResult.value : '[]';
+    const counts = countsResult.status === 'fulfilled'
+      ? countsResult.value
+      : { issues: {} as Record<number, number>, prs: {} as Record<number, number> };
     // One repo-wide label→color map, filled as we flatten each item's labels.
     const labelColors: Record<string, string> = {};
     const recordColor = (l: { name: string; color: string }) => {
@@ -486,6 +496,10 @@ export async function fetchGithub(repoRoot: string, refresh = false, limit = 30)
 
 function firstLine(s: string): string {
   return s.split('\n').find((l) => l.trim().length > 0)?.trim() ?? 'gh failed';
+}
+
+function errorMessage(value: unknown): string {
+  return firstLine(value instanceof Error ? value.message : String(value));
 }
 
 /** CEZ_DRY_RUN=1 — a small fixed catalog so the GitHub tab is demoable offline. */

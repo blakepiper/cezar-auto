@@ -490,6 +490,57 @@ describe('fetchGithub per-project list-cache isolation (step 2.6)', () => {
   });
 });
 
+describe('fetchGithub list capability degradation', () => {
+  beforeEach(() => {
+    vi.stubEnv('CEZ_DRY_RUN', '');
+    execFileMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('keeps pull requests available when the repository has disabled issues', async () => {
+    execFileMock.mockImplementation((...args: unknown[]) => {
+      const argv = args[1] as string[];
+      const cb = args[args.length - 1] as (error: unknown, result?: unknown) => void;
+      if (argv[0] === 'repo') {
+        cb(null, { stdout: 'owner/no-issues\n', stderr: '' });
+        return;
+      }
+      if (argv[0] === 'issue') {
+        cb(new Error("the 'owner/no-issues' repository has disabled issues"));
+        return;
+      }
+      if (argv[0] === 'pr') {
+        cb(null, {
+          stdout: JSON.stringify([{
+            number: 7,
+            title: 'Keep the tab useful',
+            author: { login: 'ada' },
+            createdAt: '2026-08-15T00:00:00Z',
+            labels: [],
+            body: '',
+            url: 'https://github.com/owner/no-issues/pull/7',
+            isDraft: false,
+            additions: 1,
+            deletions: 0,
+          }]),
+          stderr: '',
+        });
+        return;
+      }
+      cb(null, { stdout: '{}', stderr: '' });
+    });
+
+    const data = await fetchGithub('/repo/list-capability/no-issues');
+
+    expect(data.available).toBe(true);
+    expect(data.issues).toEqual([]);
+    expect(data.prs.map((pr) => pr.number)).toEqual([7]);
+  });
+});
+
 describe('fetchGithubComments per-project cache isolation (step 2.6)', () => {
   beforeEach(() => {
     vi.stubEnv('CEZ_DRY_RUN', '');
