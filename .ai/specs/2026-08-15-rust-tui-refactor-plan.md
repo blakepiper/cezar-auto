@@ -210,12 +210,16 @@ import panel, **no** update banner.
 and no error; with `DUCK_FOLLOWUPS` unset, Inbox shows its opt-in explainer.
 **Commit:** `feat(tui): A11 GitHub, Skills, Inbox, Workflows` — pushed as `7f972869`.
 
-### [ ] A12 — Settings + palette + notifications + external open
+### [x] A12 — Settings + palette + notifications + external open
 **Ships:** all Settings sections per §8.14's registry pattern, command palette
 (§8.15), notification plumbing, `open-in-*` handoff.
 **Accept:** every setting the web app can change is changeable in the TUI, and the
 two clients observe each other's writes.
-**Commit:** `feat(tui): A12 settings, palette, notifications, external open`
+**Commit:** `feat(tui): A12 settings, palette, notifications, external open` — pushed as `c01eec07`.
+**Note:** §8.14's own text enumerates 9 sections (not the plan heading's "all 12");
+built exactly those 9 per this plan's own ground rule 0 (spec wins on disagreement)
+— see the commit message and `screens/settings/mod.rs`'s module doc for the
+reasoning and the accompanying scope cuts.
 
 ### [ ] A13 — CLI surface
 **Ships:** `clap` parser for the TUI binary reproducing the protected flags, `cez
