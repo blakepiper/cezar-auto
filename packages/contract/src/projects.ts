@@ -76,6 +76,12 @@ export const projectsResponseSchema = z.object({
 });
 export type ProjectsResponse = z.infer<typeof projectsResponseSchema>;
 
+/** `POST /api/v1/projects` — register an existing local project folder. */
+export const registerProjectInputSchema = z.object({
+  root: z.string().trim().min(1).max(4096),
+});
+export type RegisterProjectInput = z.infer<typeof registerProjectInputSchema>;
+
 /**
  * `POST /api/v1/projects` (multi-project spec, step 4.2) — what the folder-browser dialog gets
  * back. `error` is present ONLY on the 409 (already registered), where `project` is the EXISTING

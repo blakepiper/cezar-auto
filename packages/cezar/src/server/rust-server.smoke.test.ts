@@ -53,4 +53,34 @@ describe('Rust server HTTP harness', () => {
     expect(deleted.status).toBe(200);
     expect(await deleted.json()).toEqual({ deleted: true });
   });
+
+  it.skipIf(!baseUrl)('serves workspace registry and preference routes over a real listener', async () => {
+    const projects = await request('/api/v1/projects');
+    expect(projects.status).toBe(200);
+    const projectBody = (await projects.json()) as { projects: unknown[] };
+    expect(projectBody.projects.length).toBe(0);
+
+    const config = await request('/api/v1/workspace/config');
+    expect(config.status).toBe(200);
+    const configBody = (await config.json()) as { resources: { maxParallel: number } };
+    expect(configBody.resources.maxParallel).toBe(2);
+
+    const updatedConfig = await request('/api/v1/workspace/config', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ resources: { maxParallel: 4 } }),
+    });
+    expect(updatedConfig.status).toBe(200);
+    const updatedConfigBody = (await updatedConfig.json()) as { resources: { maxParallel: number } };
+    expect(updatedConfigBody.resources.maxParallel).toBe(4);
+
+    const updatedUiState = await request('/api/v1/workspace/ui-state', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ appearance: { density: 'compact' }, futurePreference: { enabled: true } }),
+    });
+    expect(updatedUiState.status).toBe(200);
+    const updatedUiStateBody = (await updatedUiState.json()) as { futurePreference: { enabled: boolean } };
+    expect(updatedUiStateBody.futurePreference.enabled).toBe(true);
+  });
 });

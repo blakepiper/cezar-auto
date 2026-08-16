@@ -53,6 +53,13 @@ pub struct ProjectsResponse {
     pub projects_dir: String,
 }
 
+/// Mirrors `packages/contract/src/projects.ts::RegisterProjectInput`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterProjectInput {
+    pub root: String,
+}
+
 /// Mirrors `packages/contract/src/projects.ts::RegisterProjectResponse`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

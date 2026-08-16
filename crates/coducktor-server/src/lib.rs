@@ -25,11 +25,23 @@ use axum::{Json, Router};
 use coducktor_contract::{
     ApiRun, BackendCheck, BackendCheckName, Capabilities, ContinueInput, CreateRunInput,
     CreateRunResponse, DeleteRunResponse, ForgeInfo, ForgeKind, HealthProject, HealthResponse,
-    MarkAllReadResponse, MessageInput, PatchRunInput, RepoInfo, RunRecord, RunnerSelection,
+    MarkAllReadResponse, MessageInput, PatchRunInput, ProjectListEntry, ProjectSource,
+    ProjectStatus, ProjectsResponse, RegisterProjectInput, RegisterProjectResponse,
+    RemoveProjectResponse, RepoInfo, RunRecord, RunnerSelection, SetWorkspaceConfigInput,
+    SetWorkspaceUiStateInput, UpdateProjectInput, UpdateProjectResponse, WorkspaceConfigResponse,
 };
+use coducktor_core::paths::{ProcessEnv, coducktor_home_dir};
+use coducktor_core::time::now_iso8601;
 use coducktor_core::workflows::load::load_workflows;
 use coducktor_core::workflows::run::{
     ContinueOptions, RunManager, StartRunInput as CoreStartRunInput,
+};
+use coducktor_core::workspace::config::{
+    ProjectSource as CoreProjectSource, WorkspaceConfig, WorkspaceProject, load_workspace_config,
+    merge_write_workspace_config,
+};
+use coducktor_core::workspace::ui_state::{
+    merge_write_workspace_ui_state, read_workspace_ui_state,
 };
 use serde::Deserialize;
 use serde::Serialize;
@@ -60,6 +72,7 @@ impl ServerConfig {
 pub struct ServerState {
     config: Arc<ServerConfig>,
     manager: Arc<Mutex<RunManager>>,
+    workspace_dir: Arc<PathBuf>,
 }
 
 impl ServerState {
@@ -69,9 +82,19 @@ impl ServerState {
     }
 
     pub fn with_manager(config: ServerConfig, manager: RunManager) -> Self {
+        let workspace_dir = coducktor_home_dir(&ProcessEnv);
+        Self::with_manager_and_workspace_dir(config, manager, workspace_dir)
+    }
+
+    pub fn with_manager_and_workspace_dir(
+        config: ServerConfig,
+        manager: RunManager,
+        workspace_dir: impl Into<PathBuf>,
+    ) -> Self {
         Self {
             config: Arc::new(config),
             manager: Arc::new(Mutex::new(manager)),
+            workspace_dir: Arc::new(workspace_dir.into()),
         }
     }
 
@@ -81,6 +104,14 @@ impl ServerState {
 
     pub fn manager(&self) -> &Arc<Mutex<RunManager>> {
         &self.manager
+    }
+
+    fn workspace_config_path(&self) -> PathBuf {
+        self.workspace_dir.join("config.json")
+    }
+
+    fn workspace_ui_state_path(&self) -> PathBuf {
+        self.workspace_dir.join("ui-state.json")
     }
 }
 
@@ -172,6 +203,23 @@ pub fn router_with_state(state: ServerState) -> Router {
             "/api/v1/p/{project}/runs/{id}/auto-resume",
             axum::routing::delete(cancel_auto_resume),
         )
+        .route(
+            "/api/v1/projects",
+            get(list_projects).post(register_project),
+        )
+        .route(
+            "/api/v1/projects/{project_id}",
+            axum::routing::patch(update_project).delete(remove_project),
+        )
+        .route(
+            "/api/v1/workspace/config",
+            get(get_workspace_config).put(update_workspace_config),
+        )
+        .route(
+            "/api/v1/workspace/ui-state",
+            get(get_workspace_ui_state).put(update_workspace_ui_state),
+        )
+        .route("/api/v1/workspace/usage", get(get_workspace_usage))
         .fallback(not_found)
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state, request_origin_guard))
@@ -199,6 +247,548 @@ async fn health(State(state): State<ServerState>) -> Response {
 
 async fn not_found() -> Response {
     error_response(StatusCode::NOT_FOUND, "not found")
+}
+
+fn workspace_config(state: &ServerState) -> WorkspaceConfig {
+    load_workspace_config(&state.workspace_config_path(), &ProcessEnv)
+}
+
+fn boot_project_id(config: &WorkspaceConfig, repo_root: &Path) -> String {
+    let canonical_root = repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf());
+    if let Some(project) = config.projects.iter().find(|project| {
+        Path::new(&project.root)
+            .canonicalize()
+            .is_ok_and(|root| root == canonical_root)
+    }) {
+        return project.id.clone();
+    }
+    let taken = config
+        .projects
+        .iter()
+        .map(|project| project.id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    allocate_project_id(
+        repo_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("project"),
+        &taken,
+    )
+}
+
+const RESERVED_PROJECT_IDS: &[&str] = &["default", "new", "settings", "api", "p", "assets"];
+
+fn project_slug(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+}
+
+fn allocate_project_id(value: &str, taken: &std::collections::BTreeSet<String>) -> String {
+    let base = {
+        let slug = project_slug(value);
+        let slug = slug.trim_matches('-').chars().take(64).collect::<String>();
+        if slug.is_empty() {
+            "project".to_owned()
+        } else {
+            slug
+        }
+    };
+    if !taken.contains(&base) && !RESERVED_PROJECT_IDS.contains(&base.as_str()) {
+        return base;
+    }
+    let mut suffix_number = 2;
+    loop {
+        let suffix = format!("-{suffix_number}");
+        let prefix = base.chars().take(64 - suffix.len()).collect::<String>();
+        let candidate = format!("{prefix}{suffix}");
+        if !taken.contains(&candidate) && !RESERVED_PROJECT_IDS.contains(&candidate.as_str()) {
+            return candidate;
+        }
+        suffix_number += 1;
+    }
+}
+
+fn project_entry(project: &WorkspaceProject) -> ProjectListEntry {
+    let root = Path::new(&project.root);
+    let (status, branch) = if !root.is_dir() {
+        (ProjectStatus::Missing, None)
+    } else if git_output(root, &["rev-parse", "--is-inside-work-tree"]).as_deref() == Some("true") {
+        (
+            ProjectStatus::Ok,
+            git_output(root, &["branch", "--show-current"]),
+        )
+    } else {
+        (ProjectStatus::NotGit, None)
+    };
+    ProjectListEntry {
+        id: project.id.clone(),
+        name: project.name.clone(),
+        root: project.root.clone(),
+        added_at: project.added_at.clone(),
+        last_opened_at: project.last_opened_at.clone(),
+        source: match project.source {
+            CoreProjectSource::Local => ProjectSource::Local,
+            CoreProjectSource::Checkout => ProjectSource::Checkout,
+        },
+        status,
+        branch,
+        forge: None,
+        repo_url: None,
+        max_parallel: project.max_parallel.map(|value| value as f64),
+        tags: project.tags.clone(),
+    }
+}
+
+fn project_snapshot(config: &WorkspaceConfig, repo_root: &Path) -> (Vec<ProjectListEntry>, String) {
+    let boot_id = boot_project_id(config, repo_root);
+    (config.projects.iter().map(project_entry).collect(), boot_id)
+}
+
+async fn list_projects(State(state): State<ServerState>) -> Response {
+    let config = workspace_config(&state);
+    let (projects, boot_project) = project_snapshot(&config, &state.config.repo_root);
+    Json(ProjectsResponse {
+        projects,
+        boot_project,
+        projects_dir: config.projects_dir,
+    })
+    .into_response()
+}
+
+async fn register_project(
+    State(state): State<ServerState>,
+    Json(input): Json<RegisterProjectInput>,
+) -> Response {
+    let requested = input.root.trim();
+    let requested_path = Path::new(requested);
+    if requested.is_empty() || !requested_path.is_absolute() {
+        return error_response(StatusCode::BAD_REQUEST, "root must be an absolute path");
+    }
+    let Ok(root) = requested_path.canonicalize() else {
+        return error_response(StatusCode::BAD_REQUEST, "root must be a non-empty path");
+    };
+    if !root.is_dir() {
+        return error_response(StatusCode::BAD_REQUEST, "root must be a directory");
+    }
+    let root_string = root.to_string_lossy().into_owned();
+    let path = state.workspace_config_path();
+    let config = load_workspace_config(&path, &ProcessEnv);
+    if let Some(existing) = config.projects.iter().find(|project| {
+        Path::new(&project.root)
+            .canonicalize()
+            .is_ok_and(|existing| existing == root)
+    }) {
+        return (
+            StatusCode::CONFLICT,
+            Json(RegisterProjectResponse {
+                project: project_entry(existing),
+                error: Some("project already registered".to_owned()),
+            }),
+        )
+            .into_response();
+    }
+    let taken = config
+        .projects
+        .iter()
+        .map(|project| project.id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let id = allocate_project_id(
+        root.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("project"),
+        &taken,
+    );
+    let now = now_iso8601();
+    let project = WorkspaceProject {
+        id,
+        root: root_string,
+        name: root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("project")
+            .to_owned(),
+        added_at: now.clone(),
+        last_opened_at: now,
+        source: CoreProjectSource::Local,
+        max_parallel: None,
+        tags: None,
+        extra: Map::new(),
+    };
+    let saved = project.clone();
+    if let Err(error) = merge_write_workspace_config(&path, &ProcessEnv, move |config| {
+        config.projects.push(saved);
+    }) {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string());
+    }
+    Json(RegisterProjectResponse {
+        project: project_entry(&project),
+        error: None,
+    })
+    .into_response()
+}
+
+async fn remove_project(
+    State(state): State<ServerState>,
+    AxumPath(project_id): AxumPath<String>,
+) -> Response {
+    let config_path = state.workspace_config_path();
+    let config = load_workspace_config(&config_path, &ProcessEnv);
+    let boot_id = boot_project_id(&config, &state.config.repo_root);
+    let id = if project_id == "default" {
+        boot_id.clone()
+    } else {
+        project_id
+    };
+    if !config.projects.iter().any(|project| project.id == id) {
+        return error_response(StatusCode::NOT_FOUND, &format!("unknown project: {id}"));
+    }
+    if id == boot_id {
+        return error_response(StatusCode::CONFLICT, "cannot remove the boot project");
+    }
+    if let Err(error) = merge_write_workspace_config(&config_path, &ProcessEnv, |config| {
+        config.projects.retain(|project| project.id != id);
+    }) {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string());
+    }
+    Json(RemoveProjectResponse { removed: true, id }).into_response()
+}
+
+fn normalize_project_tags(tags: Option<Vec<String>>) -> Option<Vec<String>> {
+    let mut tags = tags?
+        .into_iter()
+        .map(|tag| tag.trim().to_owned())
+        .collect::<Vec<_>>();
+    tags.retain(|tag| !tag.is_empty());
+    tags.sort_by_key(|tag| tag.to_ascii_lowercase());
+    tags.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    (!tags.is_empty()).then_some(tags)
+}
+
+fn validate_project_update(input: &UpdateProjectInput) -> Result<(), String> {
+    if input.max_parallel.is_none() && input.tags.is_none() {
+        return Err("specify maxParallel or tags".to_owned());
+    }
+    if let Some(Some(max_parallel)) = input.max_parallel
+        && !(1..=16).contains(&max_parallel)
+    {
+        return Err("maxParallel must be an integer from 1 to 16".to_owned());
+    }
+    if let Some(Some(tags)) = &input.tags {
+        if tags.len() > coducktor_contract::PROJECT_TAGS_MAX {
+            return Err(format!(
+                "tags must have at most {} entries",
+                coducktor_contract::PROJECT_TAGS_MAX
+            ));
+        }
+        if tags.iter().any(|tag| {
+            let trimmed = tag.trim();
+            trimmed.is_empty()
+                || trimmed.chars().count() > coducktor_contract::PROJECT_TAG_MAX_LENGTH
+        }) {
+            return Err(format!(
+                "tags must contain non-empty values of at most {} characters",
+                coducktor_contract::PROJECT_TAG_MAX_LENGTH
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn update_project(
+    State(state): State<ServerState>,
+    AxumPath(project_id): AxumPath<String>,
+    Json(input): Json<UpdateProjectInput>,
+) -> Response {
+    if let Err(error) = validate_project_update(&input) {
+        return error_response(StatusCode::BAD_REQUEST, &error);
+    }
+    let config_path = state.workspace_config_path();
+    let config = load_workspace_config(&config_path, &ProcessEnv);
+    let boot_id = boot_project_id(&config, &state.config.repo_root);
+    let id = if project_id == "default" {
+        boot_id
+    } else {
+        project_id
+    };
+    if !config.projects.iter().any(|project| project.id == id) {
+        return error_response(StatusCode::NOT_FOUND, &format!("unknown project: {id}"));
+    }
+    let mut updated = None;
+    let max_parallel = input.max_parallel;
+    let tags = input.tags;
+    if let Err(error) = merge_write_workspace_config(&config_path, &ProcessEnv, |config| {
+        if let Some(project) = config.projects.iter_mut().find(|project| project.id == id) {
+            if let Some(value) = max_parallel {
+                project.max_parallel = value;
+            }
+            if let Some(value) = tags.clone() {
+                project.tags = normalize_project_tags(value);
+            }
+            updated = Some(project.clone());
+        }
+    }) {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string());
+    }
+    let Some(updated) = updated else {
+        return error_response(StatusCode::NOT_FOUND, &format!("unknown project: {id}"));
+    };
+    Json(UpdateProjectResponse {
+        project: project_entry(&updated),
+    })
+    .into_response()
+}
+
+fn workspace_config_response(config: &WorkspaceConfig) -> WorkspaceConfigResponse {
+    let models =
+        config
+            .agent_defaults
+            .models
+            .as_ref()
+            .map(|models| coducktor_contract::RunnerModels {
+                claude: models.claude.clone(),
+                codex: models.codex.clone(),
+                opencode: models.opencode.clone(),
+                pi: models.pi.clone(),
+            });
+    WorkspaceConfigResponse {
+        projects_dir: config.projects_dir.clone(),
+        composer_defaults: coducktor_contract::ComposerDefaults {
+            autonomous: config.composer_defaults.autonomous,
+            worktree: config.composer_defaults.worktree,
+            inherited_autonomous: coducktor_contract::InheritedAutonomous::Value(true),
+            inherited_worktree: true,
+        },
+        resources: coducktor_contract::WorkspaceResources {
+            max_parallel: config.resources.max_parallel,
+            max_monitoring_sessions: config.resources.max_monitoring_sessions,
+            monitoring_wake_interval_minutes: config.resources.monitoring_wake_interval_minutes,
+            auto_resume_on_usage_limit: config.resources.auto_resume_on_usage_limit,
+            intelligent_context_refresh: config.resources.intelligent_context_refresh,
+            memory_limit_mb: config.resources.memory_limit_mb,
+            worktree_retention_default: config.resources.worktree_retention_default,
+        },
+        quota_routing: config
+            .quota_routing
+            .enabled
+            .then_some(coducktor_contract::QuotaRouting {
+                enabled: true,
+                provider_order: config.quota_routing.provider_order,
+                unknown_usage_policy: config.quota_routing.unknown_usage_policy,
+            }),
+        agent_defaults: coducktor_contract::AgentDefaults {
+            runner: config.agent_defaults.runner,
+            models,
+        },
+    }
+}
+
+fn validate_workspace_config_input(input: &SetWorkspaceConfigInput) -> Result<(), String> {
+    if let Some(projects_dir) = &input.projects_dir {
+        let projects_dir = projects_dir.trim();
+        if projects_dir.is_empty() || projects_dir.chars().count() > 4096 {
+            return Err(
+                "projectsDir must be a non-empty path of at most 4096 characters".to_owned(),
+            );
+        }
+        if !projects_dir.starts_with('~') && !Path::new(projects_dir).is_absolute() {
+            return Err(format!(
+                "not writable: {projects_dir} is not an absolute path"
+            ));
+        }
+    }
+    if let Some(resources) = &input.resources {
+        if let Some(value) = resources.max_parallel
+            && !(1..=16).contains(&value)
+        {
+            return Err("maxParallel must be an integer from 1 to 16".to_owned());
+        }
+        if let Some(value) = resources.max_monitoring_sessions
+            && value > 16
+        {
+            return Err("maxMonitoringSessions must be an integer from 0 to 16".to_owned());
+        }
+        if let Some(Some(value)) = resources.monitoring_wake_interval_minutes
+            && !(1..=60).contains(&value)
+        {
+            return Err("monitoringWakeIntervalMinutes must be an integer from 1 to 60".to_owned());
+        }
+        if let Some(Some(value)) = resources.memory_limit_mb
+            && value > 1_048_576
+        {
+            return Err("memoryLimitMb must be an integer from 0 to 1048576".to_owned());
+        }
+        if let Some(value) = resources.worktree_retention_default
+            && value > 1000
+        {
+            return Err("worktreeRetentionDefault must be an integer from 0 to 1000".to_owned());
+        }
+    }
+    if let Some(agent) = &input.agent_defaults
+        && let Some(models) = &agent.models
+        && [
+            models.claude.as_ref(),
+            models.codex.as_ref(),
+            models.opencode.as_ref(),
+            models.pi.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|value| {
+            let value = value.trim();
+            value.is_empty() || value.chars().count() > 200
+        })
+    {
+        return Err("model names must be between 1 and 200 characters".to_owned());
+    }
+    Ok(())
+}
+
+async fn get_workspace_config(State(state): State<ServerState>) -> Response {
+    Json(workspace_config_response(&workspace_config(&state))).into_response()
+}
+
+async fn update_workspace_config(
+    State(state): State<ServerState>,
+    Json(input): Json<SetWorkspaceConfigInput>,
+) -> Response {
+    if let Err(error) = validate_workspace_config_input(&input) {
+        return error_response(StatusCode::BAD_REQUEST, &error);
+    }
+    let path = state.workspace_config_path();
+    let saved = match merge_write_workspace_config(&path, &ProcessEnv, |config| {
+        if let Some(projects_dir) = &input.projects_dir {
+            config.projects_dir = projects_dir.trim().to_owned();
+        }
+        if let Some(composer) = &input.composer_defaults {
+            if let Some(autonomous) = composer.autonomous {
+                config.composer_defaults.autonomous = autonomous;
+            }
+            if let Some(worktree) = composer.worktree {
+                config.composer_defaults.worktree = worktree;
+            }
+        }
+        if let Some(resources) = &input.resources {
+            if let Some(value) = resources.max_parallel {
+                config.resources.max_parallel = value;
+            }
+            if let Some(value) = resources.max_monitoring_sessions {
+                config.resources.max_monitoring_sessions = value;
+            }
+            if let Some(value) = resources.monitoring_wake_interval_minutes {
+                config.resources.monitoring_wake_interval_minutes = value;
+            }
+            if let Some(value) = resources.auto_resume_on_usage_limit {
+                config.resources.auto_resume_on_usage_limit = value;
+            }
+            if let Some(value) = resources.intelligent_context_refresh {
+                config.resources.intelligent_context_refresh = value;
+            }
+            if let Some(value) = resources.memory_limit_mb {
+                config.resources.memory_limit_mb = value;
+            }
+            if let Some(value) = resources.worktree_retention_default {
+                config.resources.worktree_retention_default = value;
+            }
+        }
+        if let Some(agent) = &input.agent_defaults {
+            if let Some(runner) = agent.runner {
+                config.agent_defaults.runner = runner;
+            }
+            if let Some(models) = &agent.models {
+                let has_patch = [&models.claude, &models.codex, &models.opencode, &models.pi]
+                    .into_iter()
+                    .any(Option::is_some);
+                if has_patch {
+                    let target = config
+                        .agent_defaults
+                        .models
+                        .get_or_insert_with(Default::default);
+                    if let Some(value) = &models.claude {
+                        target.claude = value.as_ref().map(|value| value.trim().to_owned());
+                    }
+                    if let Some(value) = &models.codex {
+                        target.codex = value.as_ref().map(|value| value.trim().to_owned());
+                    }
+                    if let Some(value) = &models.opencode {
+                        target.opencode = value.as_ref().map(|value| value.trim().to_owned());
+                    }
+                    if let Some(value) = &models.pi {
+                        target.pi = value.as_ref().map(|value| value.trim().to_owned());
+                    }
+                    if target.claude.is_none()
+                        && target.codex.is_none()
+                        && target.opencode.is_none()
+                        && target.pi.is_none()
+                        && target.extra.is_empty()
+                    {
+                        config.agent_defaults.models = None;
+                    }
+                }
+            }
+        }
+        if let Some(quota) = &input.quota_routing
+            && let Some(enabled) = quota.enabled
+        {
+            config.quota_routing.enabled = enabled;
+        }
+    }) {
+        Ok(config) => config,
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+    };
+    Json(workspace_config_response(&saved)).into_response()
+}
+
+async fn get_workspace_ui_state(State(state): State<ServerState>) -> Response {
+    Json(read_workspace_ui_state(&state.workspace_ui_state_path())).into_response()
+}
+
+async fn update_workspace_ui_state(
+    State(state): State<ServerState>,
+    Json(input): Json<SetWorkspaceUiStateInput>,
+) -> Response {
+    let path = state.workspace_ui_state_path();
+    match merge_write_workspace_ui_state(&path, |state| {
+        if input.sidebar.is_some() {
+            state.sidebar = input.sidebar.clone();
+        }
+        if input.dismissed_provider_auth_failures.is_some() {
+            state.dismissed_provider_auth_failures = input.dismissed_provider_auth_failures.clone();
+        }
+        if input.appearance.is_some() {
+            state.appearance = input.appearance.clone();
+        }
+        if input.notifications.is_some() {
+            state.notifications = input.notifications.clone();
+        }
+        if input.task_table.is_some() {
+            state.task_table = input.task_table.clone();
+        }
+        if input.last_location.is_some() {
+            state.last_location = input.last_location.clone();
+        }
+        if input.imported_skills.is_some() {
+            state.imported_skills = input.imported_skills.clone();
+        }
+        state.extra.extend(input.extra.clone());
+    }) {
+        Ok(state) => Json(state).into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+    }
+}
+
+async fn get_workspace_usage() -> Response {
+    Json(coducktor_contract::WorkspaceUsageResponse { providers: vec![] }).into_response()
 }
 
 async fn list_runs(State(state): State<ServerState>) -> Response {
@@ -981,6 +1571,107 @@ mod tests {
         assert_eq!(bodies[0], bodies[2]);
 
         let response = send(&router, Method::GET, "/api/v1/p/no-such-project/runs", None).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test]
+    async fn workspace_routes_persist_projects_config_and_ui_state() {
+        let repo = test_repo();
+        let workspace = repo.join("workspace");
+        let manager = RunManager::open(repo.join(".ai").join("coducktor"));
+        let router = router_with_state(ServerState::with_manager_and_workspace_dir(
+            ServerConfig::new(&repo, "test"),
+            manager,
+            &workspace,
+        ));
+
+        let response = send(&router, Method::GET, "/api/v1/projects", None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let projects = json_body(response).await;
+        assert_eq!(projects["projects"].as_array().map(Vec::len), Some(0));
+        let boot_project = projects["bootProject"].as_str().expect("boot project");
+
+        let child = repo.join("child");
+        fs::create_dir_all(&child).expect("child project directory");
+        let response = send(
+            &router,
+            Method::POST,
+            "/api/v1/projects",
+            Some(serde_json::json!({ "root": child })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let registered = json_body(response).await;
+        let child_id = registered["project"]["id"]
+            .as_str()
+            .expect("child project id")
+            .to_owned();
+
+        let response = send(
+            &router,
+            Method::PATCH,
+            &format!("/api/v1/projects/{child_id}"),
+            Some(serde_json::json!({ "maxParallel": 4, "tags": [" Storefront ", "storefront"] })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let updated = json_body(response).await;
+        assert_eq!(updated["project"]["maxParallel"].as_f64(), Some(4.0));
+        assert_eq!(
+            updated["project"]["tags"],
+            serde_json::json!(["Storefront"])
+        );
+
+        let response = send(&router, Method::GET, "/api/v1/workspace/config", None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(json_body(response).await["resources"]["maxParallel"], 2);
+
+        let response = send(
+            &router,
+            Method::PUT,
+            "/api/v1/workspace/config",
+            Some(serde_json::json!({ "resources": { "maxParallel": 4 } })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(json_body(response).await["resources"]["maxParallel"], 4);
+
+        let response = send(
+            &router,
+            Method::PUT,
+            "/api/v1/workspace/ui-state",
+            Some(serde_json::json!({
+                "appearance": { "density": "compact" },
+                "futurePreference": { "enabled": true }
+            })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let ui_state = json_body(response).await;
+        assert_eq!(ui_state["appearance"]["density"], "compact");
+        assert_eq!(ui_state["futurePreference"]["enabled"], true);
+
+        let response = send(
+            &router,
+            Method::DELETE,
+            &format!("/api/v1/projects/{child_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(response).await,
+            serde_json::json!({ "removed": true, "id": child_id })
+        );
+
+        let response = send(
+            &router,
+            Method::DELETE,
+            &format!("/api/v1/projects/{boot_project}"),
+            None,
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         fs::remove_dir_all(repo).expect("remove test repo");
     }

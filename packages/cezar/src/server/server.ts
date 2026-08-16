@@ -14,6 +14,7 @@ import { jsonZodValidator, paramZodValidator, queryZodValidator } from './valida
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { z } from 'zod';
 import {
+  registerProjectInputSchema,
   setWorkspaceUiStateInputSchema,
   taskSourceSchema,
   type GroupResponse,
@@ -2168,7 +2169,7 @@ export function createApp(deps: ServerDeps) {
       return c.json(body);
     })
 
-    .post('/projects', jsonZodValidator(() => registerProjectSchema, { message: 'root must be a non-empty path' }), async (c) => {
+    .post('/projects', jsonZodValidator(() => registerProjectInputSchema, { message: 'root must be a non-empty path' }), async (c) => {
       const parsed = { data: c.req.valid('json') };
       const registered = await registerFolder(parsed.data.root, 'local');
       if (registered.status !== 200) return c.json(registered.body, registered.status);
@@ -2356,10 +2357,6 @@ export function createApp(deps: ServerDeps) {
   // folder-browser dialog's commit step, step 4.2). Workspace-level like its
   // GET twin. Everything here is a guard; the registry write itself is one
   // idempotent `registerProject` call.
-  const registerProjectSchema = z.object({
-    root: z.string().trim().min(1).max(4096),
-  });
-
   /**
    * The register-a-folder half of `POST /api/projects`, factored out so the
    * checkout route (step 4.3) commits its fresh clone through the SAME guards

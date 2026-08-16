@@ -1,8 +1,10 @@
+import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = resolve(packageDir, '../..');
@@ -42,6 +44,8 @@ async function waitForHealth(baseUrl, child) {
 
 const port = await freePort();
 const baseUrl = `http://127.0.0.1:${port}`;
+const tempRepo = mkdtempSync(join(tmpdir(), 'coducktor-rust-repo-'));
+const tempHome = mkdtempSync(join(tmpdir(), 'coducktor-rust-home-'));
 const child = spawn(
   'cargo',
   [
@@ -53,9 +57,13 @@ const child = spawn(
     '--bind',
     `127.0.0.1:${port}`,
     '--repo-root',
-    repoRoot,
+    tempRepo,
   ],
-  { cwd: repoRoot, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] },
+  {
+    cwd: repoRoot,
+    env: { ...process.env, DUCK_HOME: tempHome, CEZ_HOME: tempHome },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  },
 );
 let stderr = '';
 child.stderr.setEncoding('utf8');
@@ -71,7 +79,12 @@ try {
       ['test', '--', 'packages/cezar/src/server/rust-server.smoke.test.ts'],
       {
         cwd: repoRoot,
-        env: { ...process.env, DUCK_HTTP_BASE_URL: baseUrl },
+        env: {
+          ...process.env,
+          DUCK_HTTP_BASE_URL: baseUrl,
+          DUCK_HOME: tempHome,
+          CEZ_HOME: tempHome,
+        },
         stdio: 'inherit',
       },
     );
@@ -85,4 +98,6 @@ try {
   child.kill('SIGTERM');
   await Promise.race([once(child, 'exit'), new Promise((resolveExit) => setTimeout(resolveExit, 2_000))]);
   if (process.exitCode && stderr.trim()) process.stderr.write(stderr);
+  rmSync(tempHome, { force: true, recursive: true });
+  rmSync(tempRepo, { force: true, recursive: true });
 }
