@@ -406,12 +406,18 @@ fn reasoning_item(
     let streamed = state.reasonings.get(id);
     let summary = longer(
         reasoning_snapshot_text(raw.get("summary")),
-        streamed.map(|value| value.summary.as_str()),
+        streamed
+            .map(|value| value.summary.as_str())
+            .filter(|value| !value.is_empty()),
     );
+    let streamed_text = streamed
+        .map(|value| value.text.as_str())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
     UiReasoningItem {
         id: id.to_owned(),
         text: reasoning_snapshot_text(raw.get("content"))
-            .or_else(|| streamed.map(|value| value.text.clone()))
+            .or(streamed_text)
             .or(summary)
             .unwrap_or_default(),
         parent_item_id: None,

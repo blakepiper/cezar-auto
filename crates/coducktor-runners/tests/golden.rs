@@ -10,6 +10,9 @@ use coducktor_runners::opencode::{
     OpencodeUiMapperState, create_opencode_ui_state, map_opencode_event, opencode_session_started,
     opencode_turn_started,
 };
+use coducktor_runners::pi::{
+    PiUiMapperState, create_pi_ui_state, map_pi_rpc_message, pi_turn_started,
+};
 use serde_json::Value;
 
 const CLAUDE_FIXTURES: &[&str] = &[
@@ -47,6 +50,8 @@ const OPENCODE_FIXTURES: &[&str] = &[
 ];
 
 const OPENCODE_SESSION_ID: &str = "ses_01J8ZE00MAIN";
+
+const PI_FIXTURES: &[&str] = &["rpc-lifecycle"];
 
 fn fixture_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/cezar/src/core/__fixtures__")
@@ -146,6 +151,34 @@ fn fold_opencode(
     events.extend(mapped.events);
 }
 
+fn replay_pi(name: &str) -> Vec<UiEvent> {
+    let path = fixture_root().join("pi").join(format!("{name}.ndjson"));
+    let raw = fs::read_to_string(path).expect("fixture must be readable");
+    let mut state = create_pi_ui_state();
+    let mut events = Vec::new();
+    fold_pi(pi_turn_started(&state), &mut state, &mut events);
+    for line in raw.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: Value = match serde_json::from_str(line) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        fold_pi(map_pi_rpc_message(&value, &state), &mut state, &mut events);
+    }
+    events
+}
+
+fn fold_pi(
+    mapped: coducktor_runners::pi::PiUiMapping,
+    state: &mut PiUiMapperState,
+    events: &mut Vec<UiEvent>,
+) {
+    *state = mapped.state;
+    events.extend(mapped.events);
+}
+
 fn assert_json_equivalent(left: &Value, right: &Value, context: &str) {
     match (left, right) {
         (Value::Number(left), Value::Number(right)) => {
@@ -206,6 +239,21 @@ fn opencode_fixtures_match_the_typescript_mapper_output() {
         let actual = serde_json::to_value(replay_opencode(fixture)).expect("events must serialize");
         let expected_path = fixture_root()
             .join("opencode")
+            .join(format!("{fixture}.expected.json"));
+        let expected: Value = serde_json::from_slice(
+            &fs::read(expected_path).expect("expected fixture must be readable"),
+        )
+        .expect("expected fixture must be JSON");
+        assert_json_equivalent(&actual, &expected, fixture);
+    }
+}
+
+#[test]
+fn pi_fixtures_match_the_typescript_mapper_output() {
+    for fixture in PI_FIXTURES {
+        let actual = serde_json::to_value(replay_pi(fixture)).expect("events must serialize");
+        let expected_path = fixture_root()
+            .join("pi")
             .join(format!("{fixture}.expected.json"));
         let expected: Value = serde_json::from_slice(
             &fs::read(expected_path).expect("expected fixture must be readable"),
