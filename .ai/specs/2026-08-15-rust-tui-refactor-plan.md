@@ -202,13 +202,13 @@ split mode degrades below 140 columns.
 symlink/`.git` exclusions respected and explained in the UI.
 **Commit:** `feat(tui): A10 IDE` — pushed as `6c999b46`.
 
-### [ ] A11 — GitHub, Skills, Inbox, Workflows
+### [x] A11 — GitHub, Skills, Inbox, Workflows
 **Ships:** the four remaining content screens (Automations stays deleted, decision
 7), each with its degradation path. Skills is the reduced reader from §8.11 — **no**
 import panel, **no** update banner.
 **Accept:** with `gh` absent, every GitHub surface shows `{available:false,reason}`
 and no error; with `DUCK_FOLLOWUPS` unset, Inbox shows its opt-in explainer.
-**Commit:** `feat(tui): A11 GitHub, Skills, Inbox, Workflows`
+**Commit:** `feat(tui): A11 GitHub, Skills, Inbox, Workflows` — pushed as `7f972869`.
 
 ### [ ] A12 — Settings + palette + notifications + external open
 **Ships:** all Settings sections per §8.14's registry pattern, command palette
