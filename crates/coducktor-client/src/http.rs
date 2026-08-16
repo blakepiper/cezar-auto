@@ -1,10 +1,14 @@
 use std::pin::Pin;
 
 use coducktor_contract::{
-    AgentProfilesResponse, ApiRun, ArchiveFinishedResponse, ConfigResponse, CreateRunInput,
-    CreateRunResponse, DeleteRunResponse, GithubData, HealthResponse, MarkAllReadResponse,
-    PlanResponse, ProjectsResponse, ProviderStatusResponse, RunEvent, Runner,
-    RunnerModelCatalogResponse, RunsIndexResponse, SetConfigInput, Skill, UiState,
+    AgentProfilesResponse, ApiRun, ArchiveFinishedResponse, CancelAutoResumeResponse,
+    CancelResponse, ConfigResponse, ContinueInput, ContinueResponse, CreatePrResponse,
+    CreateRunInput, CreateRunResponse, DeleteRunResponse, EditQueuedMessageResponse,
+    FinishResponse, GitCommitInput, GitCommitResponse, GitPushResponse, GithubData, HealthResponse,
+    MarkAllReadResponse, MessageInput, MessageResponse, OpenInCliResponse, OpenInInput,
+    PatchRunInput, PlanResponse, ProjectsResponse, ProviderStatusResponse, QueuedMessagePatchInput,
+    RemoveQueuedMessageResponse, RunCommitsResponse, RunEvent, RunHistoryContext, RunHistoryPage,
+    Runner, RunnerModelCatalogResponse, RunsIndexResponse, SetConfigInput, Skill, UiState,
     WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUsageResponse,
 };
 use futures_core::Stream;
@@ -226,6 +230,258 @@ impl HttpEngine {
             scope,
             "/plan",
             Some(&serde_json::json!({ "task": task })),
+        )
+        .await
+    }
+
+    /// One page of a run's persisted event history (§8.4), newest-first cursor semantics.
+    pub async fn run_history(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        cursor: Option<&str>,
+    ) -> Result<RunHistoryPage, EngineError> {
+        let query = query(&[("cursor", cursor)]);
+        self.get_json(
+            scope,
+            &format!("/runs/{}/history{query}", encode_path_segment(run_id)),
+        )
+        .await
+    }
+
+    pub async fn run_history_context(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<RunHistoryContext, EngineError> {
+        self.get_json(
+            scope,
+            &format!("/runs/{}/history-context", encode_path_segment(run_id)),
+        )
+        .await
+    }
+
+    /// Editable title/prompt (§8.4 `run-header.tsx` / queued-run task edit).
+    pub async fn patch_run(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        input: &PatchRunInput,
+    ) -> Result<ApiRun, EngineError> {
+        self.send_json(
+            Method::PATCH,
+            scope,
+            &format!("/runs/{}", encode_path_segment(run_id)),
+            Some(input),
+        )
+        .await
+    }
+
+    pub async fn cancel_run(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<CancelResponse, EngineError> {
+        self.send_json(
+            Method::POST,
+            scope,
+            &format!("/runs/{}/cancel", encode_path_segment(run_id)),
+            Option::<&serde_json::Value>::None,
+        )
+        .await
+    }
+
+    /// Live-session participation: deliver a message into the run's open session, fold
+    /// it into a queued prompt, or buffer it while the run is still starting (§8.4's
+    /// three-rung delivery ladder — `MessageResponse` names which rung answered).
+    pub async fn send_message(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        input: &MessageInput,
+    ) -> Result<MessageResponse, EngineError> {
+        self.send_json(
+            Method::POST,
+            scope,
+            &format!("/runs/{}/messages", encode_path_segment(run_id)),
+            Some(input),
+        )
+        .await
+    }
+
+    pub async fn edit_queued_message(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        message_id: &str,
+        input: &QueuedMessagePatchInput,
+    ) -> Result<EditQueuedMessageResponse, EngineError> {
+        self.send_json(
+            Method::PATCH,
+            scope,
+            &format!(
+                "/runs/{}/queued-messages/{}",
+                encode_path_segment(run_id),
+                encode_path_segment(message_id)
+            ),
+            Some(input),
+        )
+        .await
+    }
+
+    pub async fn remove_queued_message(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        message_id: &str,
+    ) -> Result<RemoveQueuedMessageResponse, EngineError> {
+        self.send_json(
+            Method::DELETE,
+            scope,
+            &format!(
+                "/runs/{}/queued-messages/{}",
+                encode_path_segment(run_id),
+                encode_path_segment(message_id)
+            ),
+            Option::<&serde_json::Value>::None,
+        )
+        .await
+    }
+
+    /// Gracefully close a waiting session — the run completes as done.
+    pub async fn finish_run(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<FinishResponse, EngineError> {
+        self.send_json(
+            Method::POST,
+            scope,
+            &format!("/runs/{}/finish", encode_path_segment(run_id)),
+            Option::<&serde_json::Value>::None,
+        )
+        .await
+    }
+
+    /// Reopen a finished run's session in-process — Continue, the review panel's
+    /// "Send back" (prefixed `Review feedback:` by the caller), and an ask-answer resume
+    /// all ride this one route.
+    pub async fn continue_run(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        input: &ContinueInput,
+    ) -> Result<ContinueResponse, EngineError> {
+        self.send_json(
+            Method::POST,
+            scope,
+            &format!("/runs/{}/continue", encode_path_segment(run_id)),
+            Some(input),
+        )
+        .await
+    }
+
+    /// Hand the session off to a real terminal in the run's worktree.
+    pub async fn open_in_cli(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<OpenInCliResponse, EngineError> {
+        self.send_json(
+            Method::POST,
+            scope,
+            &format!("/runs/{}/open-in-cli", encode_path_segment(run_id)),
+            Option::<&serde_json::Value>::None,
+        )
+        .await
+    }
+
+    /// Open a run's worktree file/session in the chosen local app or CLI. The response
+    /// shape varies by `target` (an opened path, a resumed command, …), so callers read
+    /// it as JSON rather than through one fixed contract type.
+    pub async fn open_in(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        input: &OpenInInput,
+    ) -> Result<Value, EngineError> {
+        self.send_json(
+            Method::POST,
+            scope,
+            &format!("/runs/{}/open-in", encode_path_segment(run_id)),
+            Some(input),
+        )
+        .await
+    }
+
+    pub async fn git_commit(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        input: &GitCommitInput,
+    ) -> Result<GitCommitResponse, EngineError> {
+        self.send_json(
+            Method::POST,
+            scope,
+            &format!("/runs/{}/git/commit", encode_path_segment(run_id)),
+            Some(input),
+        )
+        .await
+    }
+
+    pub async fn git_push(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<GitPushResponse, EngineError> {
+        self.send_json(
+            Method::POST,
+            scope,
+            &format!("/runs/{}/git/push", encode_path_segment(run_id)),
+            Option::<&serde_json::Value>::None,
+        )
+        .await
+    }
+
+    pub async fn run_commits(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<RunCommitsResponse, EngineError> {
+        self.get_json(
+            scope,
+            &format!("/runs/{}/commits", encode_path_segment(run_id)),
+        )
+        .await
+    }
+
+    /// Draft PR from the review gate: final autosave, push, `gh pr create --draft`.
+    pub async fn create_pr(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<CreatePrResponse, EngineError> {
+        self.send_json(
+            Method::POST,
+            scope,
+            &format!("/runs/{}/pr", encode_path_segment(run_id)),
+            Option::<&serde_json::Value>::None,
+        )
+        .await
+    }
+
+    /// The auto-resume hint's "Don't resume" — idempotent (a run with nothing pending
+    /// still answers `{cancelled: true}`).
+    pub async fn cancel_auto_resume(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<CancelAutoResumeResponse, EngineError> {
+        self.send_json(
+            Method::DELETE,
+            scope,
+            &format!("/runs/{}/auto-resume", encode_path_segment(run_id)),
+            Option::<&serde_json::Value>::None,
         )
         .await
     }

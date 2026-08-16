@@ -378,6 +378,49 @@ pub enum PendingAction {
         project: String,
         base_branch: Option<String>,
     },
+    /// Load a run's detail + first history page and open its live event stream (§8.4 A8).
+    LoadThread {
+        project: String,
+        id: String,
+    },
+    /// Deliver a message into the run's open session (or fold it into a queued prompt).
+    SendMessage {
+        project: String,
+        id: String,
+        input: coducktor_contract::MessageInput,
+    },
+    CancelRun {
+        project: String,
+        id: String,
+    },
+    /// Reopen a finished run's session — Continue, the review panel's Send back (prefixed by
+    /// the caller), and an ask-answer resume all ride this one action.
+    ContinueRun {
+        project: String,
+        id: String,
+        text: Option<String>,
+    },
+    FinishRun {
+        project: String,
+        id: String,
+    },
+    CreatePr {
+        project: String,
+        id: String,
+    },
+    OpenInCli {
+        project: String,
+        id: String,
+    },
+    RemoveQueuedMessage {
+        project: String,
+        id: String,
+        message_id: String,
+    },
+    CancelAutoResume {
+        project: String,
+        id: String,
+    },
     Quit,
 }
 
@@ -457,6 +500,7 @@ pub struct App {
     pub tasks_ui: crate::screens::tasks::TasksUi,
     pub global_ui: crate::screens::global_tasks::GlobalUi,
     pub new_task_ui: crate::screens::new_task::NewTaskUi,
+    pub thread_ui: crate::screens::thread::ThreadUi,
     pub pending: Vec<PendingAction>,
     pub filter_mode: bool,
     pub sort_picker_index: usize,
@@ -505,6 +549,7 @@ impl App {
             tasks_ui: crate::screens::tasks::TasksUi::default(),
             global_ui: crate::screens::global_tasks::GlobalUi::default(),
             new_task_ui: crate::screens::new_task::NewTaskUi::default(),
+            thread_ui: crate::screens::thread::ThreadUi::default(),
             pending: Vec::new(),
             filter_mode: false,
             sort_picker_index: 0,
@@ -981,9 +1026,10 @@ impl App {
                 crate::screens::new_task::render(frame, area, self);
                 return;
             }
-            Route::Thread { project, id } => format!(
-                "{title}\n\nProject: {project}  Run: {id}\n\nThe task thread screen lands in A8."
-            ),
+            Route::Thread { .. } => {
+                crate::screens::thread::render(frame, area, self);
+                return;
+            }
             Route::Placeholder { nav, project } => format!(
                 "{title}\n\nProject: {project}\n\nThe shell route for {} is ready for its content screen in a later step.",
                 nav.label()
@@ -1275,6 +1321,7 @@ impl App {
             Route::Tasks { .. } if crate::screens::tasks::handle_key(self, key) => return,
             Route::GlobalTasks if crate::screens::global_tasks::handle_key(self, key) => return,
             Route::NewTask { .. } if crate::screens::new_task::handle_key(self, key) => return,
+            Route::Thread { .. } if crate::screens::thread::handle_key(self, key) => return,
             _ => {}
         }
         if let Some(action) = self.keymap.action_for(KeyMode::Normal, &key) {
@@ -1504,6 +1551,11 @@ impl App {
                     crate::screens::new_task::apply_hit(self, action);
                 }
             }
+            HitAction::ThreadScreen(action) => {
+                if matches!(self.route(), Route::Thread { .. }) {
+                    crate::screens::thread::apply_hit(self, action);
+                }
+            }
         }
     }
 
@@ -1651,12 +1703,7 @@ fn apply_menu_action(app: &mut App, action: MenuAction) {
     let project = menu.project;
     let id = menu.run_id;
     match action {
-        MenuAction::Open => {
-            app.history.navigate(Route::Thread {
-                project: project.clone(),
-                id: id.clone(),
-            });
-        }
+        MenuAction::Open => crate::screens::thread::open(app, &project, &id),
         MenuAction::Archive => app.pending.push(PendingAction::Archive {
             project,
             id,

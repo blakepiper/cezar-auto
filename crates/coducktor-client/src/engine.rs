@@ -1,12 +1,17 @@
 use async_trait::async_trait;
 use coducktor_contract::{
-    AgentProfilesResponse, ApiRun, ArchiveFinishedResponse, ConfigResponse, CreateRunInput,
-    CreateRunResponse, DeleteRunResponse, GithubData, HealthResponse, MarkAllReadResponse,
-    PlanResponse, ProjectsResponse, ProviderStatusResponse, Runner, RunnerModelCatalogResponse,
-    RunsIndexResponse, SetConfigInput, Skill, UiState, WorkflowsResponse, WorkspaceConfigResponse,
-    WorkspaceUsageResponse,
+    AgentProfilesResponse, ApiRun, ArchiveFinishedResponse, CancelAutoResumeResponse,
+    CancelResponse, ConfigResponse, ContinueInput, ContinueResponse, CreatePrResponse,
+    CreateRunInput, CreateRunResponse, DeleteRunResponse, EditQueuedMessageResponse,
+    FinishResponse, GitCommitInput, GitCommitResponse, GitPushResponse, GithubData, HealthResponse,
+    MarkAllReadResponse, MessageInput, MessageResponse, OpenInCliResponse, OpenInInput,
+    PatchRunInput, PlanResponse, ProjectsResponse, ProviderStatusResponse, QueuedMessagePatchInput,
+    RemoveQueuedMessageResponse, RunCommitsResponse, RunHistoryContext, RunHistoryPage, Runner,
+    RunnerModelCatalogResponse, RunsIndexResponse, SetConfigInput, Skill, UiState,
+    WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUsageResponse,
 };
 use futures_core::stream::BoxStream;
+use serde_json::Value;
 
 use crate::error::EngineError;
 use crate::http::HttpEngine;
@@ -71,6 +76,83 @@ pub trait Engine: Send + Sync {
     async fn ui_state(&self, scope: &Scope) -> Result<UiState, EngineError>;
     async fn put_ui_state(&self, scope: &Scope, state: &UiState) -> Result<UiState, EngineError>;
     async fn plan(&self, scope: &Scope, task: &str) -> Result<PlanResponse, EngineError>;
+
+    // ---- task thread (§8.4) ------------------------------------------------------------
+    async fn run_history(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        cursor: Option<&str>,
+    ) -> Result<RunHistoryPage, EngineError>;
+    async fn run_history_context(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<RunHistoryContext, EngineError>;
+    async fn patch_run(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        input: PatchRunInput,
+    ) -> Result<ApiRun, EngineError>;
+    async fn cancel_run(&self, scope: &Scope, run_id: &str) -> Result<CancelResponse, EngineError>;
+    async fn send_message(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        input: MessageInput,
+    ) -> Result<MessageResponse, EngineError>;
+    async fn edit_queued_message(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        message_id: &str,
+        input: QueuedMessagePatchInput,
+    ) -> Result<EditQueuedMessageResponse, EngineError>;
+    async fn remove_queued_message(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        message_id: &str,
+    ) -> Result<RemoveQueuedMessageResponse, EngineError>;
+    async fn finish_run(&self, scope: &Scope, run_id: &str) -> Result<FinishResponse, EngineError>;
+    async fn continue_run(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        input: ContinueInput,
+    ) -> Result<ContinueResponse, EngineError>;
+    async fn open_in_cli(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<OpenInCliResponse, EngineError>;
+    async fn open_in(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        input: OpenInInput,
+    ) -> Result<Value, EngineError>;
+    async fn git_commit(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        input: GitCommitInput,
+    ) -> Result<GitCommitResponse, EngineError>;
+    async fn git_push(&self, scope: &Scope, run_id: &str) -> Result<GitPushResponse, EngineError>;
+    async fn run_commits(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<RunCommitsResponse, EngineError>;
+    async fn create_pr(&self, scope: &Scope, run_id: &str)
+    -> Result<CreatePrResponse, EngineError>;
+    async fn cancel_auto_resume(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<CancelAutoResumeResponse, EngineError>;
+
     fn subscribe(&self, topic: Topic) -> BoxStream<'static, EngineEvent>;
 }
 
@@ -194,6 +276,131 @@ impl Engine for HttpEngine {
 
     async fn plan(&self, scope: &Scope, task: &str) -> Result<PlanResponse, EngineError> {
         HttpEngine::plan(self, scope, task).await
+    }
+
+    async fn run_history(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        cursor: Option<&str>,
+    ) -> Result<RunHistoryPage, EngineError> {
+        HttpEngine::run_history(self, scope, run_id, cursor).await
+    }
+
+    async fn run_history_context(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<RunHistoryContext, EngineError> {
+        HttpEngine::run_history_context(self, scope, run_id).await
+    }
+
+    async fn patch_run(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        input: PatchRunInput,
+    ) -> Result<ApiRun, EngineError> {
+        HttpEngine::patch_run(self, scope, run_id, &input).await
+    }
+
+    async fn cancel_run(&self, scope: &Scope, run_id: &str) -> Result<CancelResponse, EngineError> {
+        HttpEngine::cancel_run(self, scope, run_id).await
+    }
+
+    async fn send_message(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        input: MessageInput,
+    ) -> Result<MessageResponse, EngineError> {
+        HttpEngine::send_message(self, scope, run_id, &input).await
+    }
+
+    async fn edit_queued_message(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        message_id: &str,
+        input: QueuedMessagePatchInput,
+    ) -> Result<EditQueuedMessageResponse, EngineError> {
+        HttpEngine::edit_queued_message(self, scope, run_id, message_id, &input).await
+    }
+
+    async fn remove_queued_message(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        message_id: &str,
+    ) -> Result<RemoveQueuedMessageResponse, EngineError> {
+        HttpEngine::remove_queued_message(self, scope, run_id, message_id).await
+    }
+
+    async fn finish_run(&self, scope: &Scope, run_id: &str) -> Result<FinishResponse, EngineError> {
+        HttpEngine::finish_run(self, scope, run_id).await
+    }
+
+    async fn continue_run(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        input: ContinueInput,
+    ) -> Result<ContinueResponse, EngineError> {
+        HttpEngine::continue_run(self, scope, run_id, &input).await
+    }
+
+    async fn open_in_cli(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<OpenInCliResponse, EngineError> {
+        HttpEngine::open_in_cli(self, scope, run_id).await
+    }
+
+    async fn open_in(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        input: OpenInInput,
+    ) -> Result<Value, EngineError> {
+        HttpEngine::open_in(self, scope, run_id, &input).await
+    }
+
+    async fn git_commit(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        input: GitCommitInput,
+    ) -> Result<GitCommitResponse, EngineError> {
+        HttpEngine::git_commit(self, scope, run_id, &input).await
+    }
+
+    async fn git_push(&self, scope: &Scope, run_id: &str) -> Result<GitPushResponse, EngineError> {
+        HttpEngine::git_push(self, scope, run_id).await
+    }
+
+    async fn run_commits(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<RunCommitsResponse, EngineError> {
+        HttpEngine::run_commits(self, scope, run_id).await
+    }
+
+    async fn create_pr(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<CreatePrResponse, EngineError> {
+        HttpEngine::create_pr(self, scope, run_id).await
+    }
+
+    async fn cancel_auto_resume(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<CancelAutoResumeResponse, EngineError> {
+        HttpEngine::cancel_auto_resume(self, scope, run_id).await
     }
 
     fn subscribe(&self, topic: Topic) -> BoxStream<'static, EngineEvent> {

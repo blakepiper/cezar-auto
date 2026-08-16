@@ -1,5 +1,6 @@
 use ratatui::layout::Rect;
 
+use crate::screens::thread::ThreadAction;
 use crate::widgets::table::ColumnId;
 
 /// A new-task screen control (a pill, a button, or the composer).
@@ -58,6 +59,8 @@ pub enum HitAction {
     ComposerRemoveAttachment(usize),
     /// A new-task screen control (pill/button/composer) — routed by the screen.
     NewTaskScreen(NewTaskAction),
+    /// A task-thread screen control — routed by the screen.
+    ThreadScreen(ThreadAction),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

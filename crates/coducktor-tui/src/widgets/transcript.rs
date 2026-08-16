@@ -527,6 +527,29 @@ impl Transcript {
         self.items.push(item);
     }
 
+    /// Reconcile against a freshly-built ordered item list (A8's reducer rebuilds this on
+    /// every new batch of events): items whose id already exists keep their user-toggled
+    /// expand state; everything else is the new list verbatim. The height cache is dropped
+    /// wholesale since ids can be reordered or removed between rebuilds.
+    pub fn reconcile(&mut self, mut next: Vec<TranscriptItem>) {
+        for item in &mut next {
+            let Some(existing) = self.items.iter().find(|old| old.id() == item.id()) else {
+                continue;
+            };
+            match (existing, &mut *item) {
+                (TranscriptItem::Reasoning(old), TranscriptItem::Reasoning(new)) => {
+                    new.expanded = old.expanded;
+                }
+                (TranscriptItem::Tool(old), TranscriptItem::Tool(new)) => {
+                    new.user_expanded = old.user_expanded;
+                }
+                _ => {}
+            }
+        }
+        self.items = next;
+        self.height_cache = HeightCache::default();
+    }
+
     pub fn len(&self) -> usize {
         self.items.len()
     }

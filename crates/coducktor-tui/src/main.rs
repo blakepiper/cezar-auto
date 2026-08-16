@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use coducktor_client::{HttpEngine, Scope, SseFrame};
+use coducktor_client::{HttpEngine, RunStreamEvent, Scope, SseFrame};
 use coducktor_contract::{ApiRun, BackendCheckName};
 use crossterm::event::{self, Event, MouseEventKind};
 use futures_util::StreamExt;
@@ -315,10 +315,7 @@ async fn execute_pending(engine: &HttpEngine, app: &mut App) {
                 match engine.start_run(&scope, &input).await {
                     Ok(response) => {
                         if let Some(id) = new_task_form::started_run_id(&response) {
-                            app.history.navigate(app::Route::Thread {
-                                project: project.clone(),
-                                id,
-                            });
+                            screens::thread::open(app, &project, &id);
                         }
                         screens::new_task::clear_draft(app);
                         refresh_tasks(engine, app, &project).await;
@@ -376,8 +373,117 @@ async fn execute_pending(engine: &HttpEngine, app: &mut App) {
                     Err(error) => app.notice = Some(format!("base branch failed: {error}")),
                 }
             }
+            PendingAction::LoadThread { project, id } => {
+                let scope = Scope::Project(project.clone());
+                let run = engine.get_run(&scope, &id).await;
+                let history = engine.run_history(&scope, &id, None).await;
+                match (run, history) {
+                    (Ok(run), Ok(history)) => {
+                        let events = history
+                            .events
+                            .into_iter()
+                            .map(thread_history_event)
+                            .collect();
+                        app.thread_ui
+                            .load(project, id, run, events, history.as_of_seq as f64);
+                    }
+                    (Err(error), _) | (_, Err(error)) => {
+                        app.notice = Some(format!("load task failed: {error}"));
+                    }
+                }
+            }
+            PendingAction::SendMessage { project, id, input } => {
+                let scope = Scope::Project(project.clone());
+                if let Err(error) = engine.send_message(&scope, &id, &input).await {
+                    app.notice = Some(format!("send failed: {error}"));
+                }
+                refresh_thread_run(engine, app, &project, &id).await;
+            }
+            PendingAction::CancelRun { project, id } => {
+                let scope = Scope::Project(project.clone());
+                if let Err(error) = engine.cancel_run(&scope, &id).await {
+                    app.notice = Some(format!("cancel failed: {error}"));
+                }
+                refresh_thread_run(engine, app, &project, &id).await;
+            }
+            PendingAction::ContinueRun { project, id, text } => {
+                let scope = Scope::Project(project.clone());
+                let input = coducktor_contract::ContinueInput {
+                    text,
+                    ..coducktor_contract::ContinueInput::default()
+                };
+                if let Err(error) = engine.continue_run(&scope, &id, &input).await {
+                    app.notice = Some(format!("continue failed: {error}"));
+                }
+                refresh_thread_run(engine, app, &project, &id).await;
+            }
+            PendingAction::FinishRun { project, id } => {
+                let scope = Scope::Project(project.clone());
+                if let Err(error) = engine.finish_run(&scope, &id).await {
+                    app.notice = Some(format!("finish failed: {error}"));
+                }
+                refresh_thread_run(engine, app, &project, &id).await;
+            }
+            PendingAction::CreatePr { project, id } => {
+                let scope = Scope::Project(project.clone());
+                match engine.create_pr(&scope, &id).await {
+                    Ok(response) => {
+                        app.notice = Some(format!("draft PR created — {}", response.url))
+                    }
+                    Err(error) => app.notice = Some(format!("draft PR failed: {error}")),
+                }
+                refresh_thread_run(engine, app, &project, &id).await;
+            }
+            PendingAction::OpenInCli { project, id } => {
+                let scope = Scope::Project(project.clone());
+                if let Err(error) = engine.open_in_cli(&scope, &id).await {
+                    app.notice = Some(format!("open in terminal failed: {error}"));
+                }
+            }
+            PendingAction::RemoveQueuedMessage {
+                project,
+                id,
+                message_id,
+            } => {
+                let scope = Scope::Project(project.clone());
+                if let Err(error) = engine.remove_queued_message(&scope, &id, &message_id).await {
+                    app.notice = Some(format!("remove message failed: {error}"));
+                }
+                refresh_thread_run(engine, app, &project, &id).await;
+            }
+            PendingAction::CancelAutoResume { project, id } => {
+                let scope = Scope::Project(project.clone());
+                if let Err(error) = engine.cancel_auto_resume(&scope, &id).await {
+                    app.notice = Some(format!("cancel auto-resume failed: {error}"));
+                }
+                refresh_thread_run(engine, app, &project, &id).await;
+            }
             PendingAction::Quit => {}
         }
+    }
+}
+
+/// Every thread-mutating action re-fetches the run record so the header/actions/dock reflect
+/// the server's answer immediately, rather than waiting for the next workspace `run` frame.
+async fn refresh_thread_run(engine: &HttpEngine, app: &mut App, project: &str, id: &str) {
+    if app.thread_ui.data.project != project || app.thread_ui.data.run_id != id {
+        return;
+    }
+    let scope = Scope::Project(project.to_owned());
+    if let Ok(run) = engine.get_run(&scope, id).await {
+        app.thread_ui.set_run(run);
+    }
+}
+
+fn thread_history_event(
+    event: coducktor_contract::RunHistoryEvent,
+) -> coducktor_contract::RunEvent {
+    coducktor_contract::RunEvent {
+        seq: event.seq,
+        ts: event.ts,
+        step_id: event.step_id,
+        event_type: event.event_type,
+        extra: event.extra,
     }
 }
 
@@ -466,6 +572,43 @@ fn backend_check_name(name: BackendCheckName) -> String {
     }
 }
 
+/// The currently open thread's live event stream (§8.4 A8) — opened when the route enters
+/// `Route::Thread`, aborted the moment it leaves. Unlike the workspace listener (one for the
+/// whole session), this one is per-navigation.
+struct ThreadListener {
+    project: String,
+    id: String,
+    handle: JoinHandle<()>,
+    receiver: UnboundedReceiver<RunStreamEvent>,
+}
+
+async fn open_run_listener(engine: HttpEngine, project: String, id: String) -> ThreadListener {
+    let (sender, receiver) = unbounded_channel();
+    let handle = tokio::spawn({
+        let project = project.clone();
+        let id = id.clone();
+        async move {
+            let scope = Scope::Project(project);
+            let Ok(mut stream) = engine.run_events(&scope, &id, None, None).await else {
+                return;
+            };
+            while let Some(frame) = stream.next().await {
+                if let Ok(frame) = frame
+                    && sender.send(frame).is_err()
+                {
+                    return;
+                }
+            }
+        }
+    });
+    ThreadListener {
+        project,
+        id,
+        handle,
+        receiver,
+    }
+}
+
 async fn run(
     terminal: &mut AppTerminal,
     app: &mut App,
@@ -473,6 +616,7 @@ async fn run(
     workspace_events: Option<&mut UnboundedReceiver<WorkspaceEvent>>,
 ) -> io::Result<()> {
     let mut workspace_events = workspace_events;
+    let mut thread_listener: Option<ThreadListener> = None;
     while !app.should_quit() {
         let frame_started = Instant::now();
         app.now_epoch = current_epoch_seconds();
@@ -493,6 +637,32 @@ async fn run(
                 app.apply_workspace_event(event);
             }
         }
+        let desired_thread = match app.route() {
+            app::Route::Thread { project, id } => Some((project.clone(), id.clone())),
+            _ => None,
+        };
+        let listener_matches = thread_listener
+            .as_ref()
+            .map(|listener| (listener.project.clone(), listener.id.clone()))
+            == desired_thread;
+        if !listener_matches {
+            if let Some(listener) = thread_listener.take() {
+                listener.handle.abort();
+            }
+            if let (Some((project, id)), Some(supervisor)) = (desired_thread, service.as_ref()) {
+                let engine = supervisor.engine().clone();
+                thread_listener = Some(open_run_listener(engine, project, id).await);
+            }
+        }
+        if let Some(listener) = thread_listener.as_mut() {
+            while let Ok(frame) = listener.receiver.try_recv() {
+                if app.thread_ui.data.project == listener.project
+                    && app.thread_ui.data.run_id == listener.id
+                {
+                    app.thread_ui.push_event(frame.seq, frame.event);
+                }
+            }
+        }
         if let Some(supervisor) = service.as_mut() {
             let _ = supervisor.monitor_once().await;
             app.set_service_state(supervisor.state());
@@ -507,6 +677,9 @@ async fn run(
         if !remaining.is_zero() {
             thread::sleep(remaining);
         }
+    }
+    if let Some(listener) = thread_listener {
+        listener.handle.abort();
     }
 
     Ok(())

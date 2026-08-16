@@ -610,3 +610,43 @@ pub struct PatchRunInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
 }
+
+/// Mirrors `continueSchema` in `packages/cezar/src/server/server.ts` (§8.4 "Continue").
+/// Every field optional: an empty body reopens the last session on the run's own
+/// backend, exactly as `POST /runs/:id/continue` with no body does today.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ContinueInput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<Vec<ImageInput>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner: Option<RunnerSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// Mirrors `openInSchema` in `packages/cezar/src/server/server.ts`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenInInput {
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+/// Mirrors `gitCommitSchema` in `packages/cezar/src/server/server.ts`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitCommitInput {
+    pub message: String,
+}
+
+/// Mirrors `queuedMessagePatchSchema` in `packages/cezar/src/server/server.ts`. PATCH
+/// semantics: an omitted field keeps its current value — the cockpit edits text
+/// without re-uploading existing attachments.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct QueuedMessagePatchInput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<Vec<ImageInput>>,
+}

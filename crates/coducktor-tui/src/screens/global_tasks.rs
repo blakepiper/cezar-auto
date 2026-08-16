@@ -801,8 +801,7 @@ pub fn open_thread(app: &mut App, key: &str) {
     let Some((project, id)) = split_key(key) else {
         return;
     };
-    app.history
-        .navigate(crate::app::Route::Thread { project, id });
+    crate::screens::thread::open(app, &project, &id);
 }
 
 fn split_key(key: &str) -> Option<(String, String)> {

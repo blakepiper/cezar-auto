@@ -638,10 +638,7 @@ fn open_selected_pr(app: &mut App) {
 
 pub fn open_thread(app: &mut App, id: &str) {
     let project = app.current_project().to_owned();
-    app.history.navigate(crate::app::Route::Thread {
-        project,
-        id: id.to_owned(),
-    });
+    crate::screens::thread::open(app, &project, id);
 }
 
 /// Set the row menu for the selected row.
