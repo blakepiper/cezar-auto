@@ -38,9 +38,9 @@ use coducktor_contract::{
     IdeFileInput, IdeFileQuery, IdeFileResponse, LogEntry, MarkAllReadResponse, MessageInput,
     ModelDiscoveryQuery, ModelDiscoveryRunner, OpenAgentAccountFileInput,
     OpenAgentAccountFileResponse, OpenProjectInRequest, OpenProjectInResponse, OpenTarget,
-    OpenTargetsResponse, ParseWorkflowInput, ParsedWorkflow, PatchRunInput, PresentRepoResponse,
-    ProjectListEntry, ProjectSource, ProjectStatus, ProjectsResponse,
-    ProviderConnectAlreadyConnected, ProviderConnectInput, ProviderConnectOpened,
+    OpenTargetsResponse, ParseWorkflowInput, ParsedWorkflow, PatchRunInput, PlanInput,
+    PlanResponse, PresentRepoResponse, ProjectListEntry, ProjectSource, ProjectStatus,
+    ProjectsResponse, ProviderConnectAlreadyConnected, ProviderConnectInput, ProviderConnectOpened,
     ProviderConnectResponse, ProviderConnectionState, ProviderEnabledInput, ProviderRetryInput,
     ProviderStatus, ProviderStatusQuery, ProviderStatusResponse, ReclaimWorktreesResponse,
     RegisterProjectInput, RegisterProjectResponse, RemoveAgentProfileResponse,
@@ -332,6 +332,11 @@ pub fn router_with_state(state: ServerState) -> Router {
         .route(
             "/api/v1/p/{project}/workflows/parse",
             axum::routing::post(parse_scoped_workflow),
+        )
+        .route("/api/v1/plan", axum::routing::post(create_plan))
+        .route(
+            "/api/v1/p/{project}/plan",
+            axum::routing::post(create_scoped_plan),
         )
         .route("/api/v1/ui-state", get(get_ui_state).put(update_ui_state))
         .route(
@@ -1387,6 +1392,96 @@ async fn parse_scoped_workflow(
     parse_workflow(Json(input)).await
 }
 
+fn parse_plan_input(value: Value) -> Result<PlanInput, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "task must be between 1 and 100000 characters".to_owned())?;
+    let task = object
+        .get("task")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|task| !task.is_empty() && task.chars().count() <= 100_000)
+        .ok_or_else(|| "task must be between 1 and 100000 characters".to_owned())?;
+    Ok(PlanInput {
+        task: task.to_owned(),
+    })
+}
+
+fn plan_provider_disabled(state: &ServerState) -> Option<String> {
+    let workspace = workspace_config(state);
+    let config = load_config(&state.config.repo_root, &workspace.agent_defaults);
+    let provider = match config.default_runner {
+        coducktor_contract::RunnerSelection::Auto => return None,
+        coducktor_contract::RunnerSelection::Claude => Runner::Claude,
+        coducktor_contract::RunnerSelection::Codex => Runner::Codex,
+        coducktor_contract::RunnerSelection::OpenCode => Runner::OpenCode,
+        coducktor_contract::RunnerSelection::Pi => Runner::Pi,
+    };
+    workspace.disabled_providers.contains(&provider).then(|| {
+        format!(
+            "{} is disabled. Enable it in Settings → Agents → Providers.",
+            provider_label(provider)
+        )
+    })
+}
+
+fn fallback_plan() -> PlanResponse {
+    PlanResponse {
+        name: None,
+        steps: vec![WorkflowStepDef {
+            id: "task".to_owned(),
+            name: Some("Do the task".to_owned()),
+            prompt: Some("{{task}}".to_owned()),
+            skill: None,
+            model: None,
+            runner: None,
+            allowed_tools: None,
+            bash_allowlist: None,
+            command: None,
+            on_fail: None,
+        }],
+        rationale: "planner unavailable — single-step plan".to_owned(),
+        fallback: true,
+    }
+}
+
+async fn create_plan_at(
+    state: &ServerState,
+    input: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Ok(Json(value)) = input else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "task must be between 1 and 100000 characters",
+        );
+    };
+    if parse_plan_input(value).is_err() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "task must be between 1 and 100000 characters",
+        );
+    }
+    if let Some(error) = plan_provider_disabled(state) {
+        return error_response(StatusCode::CONFLICT, &error);
+    }
+    Json(fallback_plan()).into_response()
+}
+
+async fn create_plan(
+    State(state): State<ServerState>,
+    input: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    create_plan_at(&state, input).await
+}
+
+async fn create_scoped_plan(
+    State(state): State<ServerState>,
+    AxumPath(_project): AxumPath<String>,
+    input: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    create_plan_at(&state, input).await
+}
+
 fn workspace_config(state: &ServerState) -> WorkspaceConfig {
     load_workspace_config(&state.workspace_config_path(), &ProcessEnv)
 }
@@ -2264,6 +2359,15 @@ fn provider_name(provider: Runner) -> &'static str {
         Runner::Claude => "claude",
         Runner::Codex => "codex",
         Runner::OpenCode => "opencode",
+        Runner::Pi => "pi",
+    }
+}
+
+fn provider_label(provider: Runner) -> &'static str {
+    match provider {
+        Runner::Claude => "Claude Code",
+        Runner::Codex => "Codex",
+        Runner::OpenCode => "OpenCode",
         Runner::Pi => "pi",
     }
 }
@@ -6165,6 +6269,33 @@ mod tests {
         assert_eq!(models[0].id, "openai/gpt-5");
         assert_eq!(models[1].description, "via anthropic");
         assert!(parse_opencode_models("warning: no models\n").is_err());
+    }
+
+    #[tokio::test]
+    async fn plan_routes_return_the_safe_fallback_and_share_scope_aliases() {
+        let router = test_router();
+        let body = serde_json::json!({ "task": "Plan this work" });
+        let unscoped = send(&router, Method::POST, "/api/v1/plan", Some(body.clone())).await;
+        let scoped = send(&router, Method::POST, "/api/v1/p/default/plan", Some(body)).await;
+        assert_eq!(unscoped.status(), StatusCode::OK);
+        assert_eq!(scoped.status(), StatusCode::OK);
+        let unscoped_body = json_body(unscoped).await;
+        assert_eq!(unscoped_body, json_body(scoped).await);
+        assert_eq!(unscoped_body["fallback"], true);
+        assert_eq!(unscoped_body["steps"][0]["prompt"], "{{task}}");
+
+        let response = send(
+            &router,
+            Method::POST,
+            "/api/v1/plan",
+            Some(serde_json::json!({ "task": "x".repeat(100_001) })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(response).await["error"],
+            "task must be between 1 and 100000 characters"
+        );
     }
 
     #[tokio::test]

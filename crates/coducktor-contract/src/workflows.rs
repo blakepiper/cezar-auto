@@ -113,6 +113,12 @@ pub struct ParseWorkflowInput {
     pub yaml: String,
 }
 
+/// The planning prompt accepted by `POST /api/v1/plan`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanInput {
+    pub task: String,
+}
+
 /// Mirrors `packages/contract/src/workflows.ts::DeleteWorkflowResponse`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeleteWorkflowResponse {
