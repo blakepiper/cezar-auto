@@ -17,6 +17,7 @@ use std::process::Command;
 use coducktor_contract::events::RunEvent;
 use coducktor_contract::runs::{RunRecord, StepState};
 use coducktor_contract::{RunStatus, Runner, RunnerSelection, StepKind, StepStatus};
+use coducktor_core::git::worktree;
 use coducktor_core::paths::EnvSource;
 use coducktor_core::runs::{events, store as run_store};
 use coducktor_core::workspace::agent_accounts::{self, AgentAccountStore};
@@ -62,6 +63,24 @@ fn run_fixture(tsx: &Path, script: &str, home_dir: &Path) -> String {
     let output = Command::new(tsx)
         .arg(format!("crates/coducktor-core/tests/cross_impl/{script}"))
         .arg(home_dir)
+        .current_dir(repo_root())
+        .output()
+        .unwrap_or_else(|err| panic!("failed to spawn tsx for {script}: {err}"));
+    assert!(
+        output.status.success(),
+        "{script} exited with {}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+    );
+    String::from_utf8(output.stdout).expect("fixture stdout is UTF-8")
+}
+
+/// Like [`run_fixture`], but for fixtures that take more than one positional argument
+/// (the git-layer scripts: a repo path plus a ref/run id/branch).
+fn run_fixture_args(tsx: &Path, script: &str, args: &[&str]) -> String {
+    let output = Command::new(tsx)
+        .arg(format!("crates/coducktor-core/tests/cross_impl/{script}"))
+        .args(args)
         .current_dir(repo_root())
         .output()
         .unwrap_or_else(|err| panic!("failed to spawn tsx for {script}: {err}"));
@@ -385,4 +404,150 @@ fn rust_writes_a_run_and_events_and_node_reads_them() {
     assert_eq!(node["events"].as_array().map(Vec::len), Some(1));
     assert_eq!(node["events"][0]["seq"], 1);
     assert_eq!(node["events"][0]["text"], "hello from rust");
+}
+
+// B3's git-layer cross-impl tests, below. Repos are language-neutral, so unlike the
+// JSON-file fixtures above, the fixture repo is built directly in Rust with `git` — no need
+// to round-trip the setup through a `.ts` script. Scoped to two representative surfaces
+// rather than all four the plan sketched (`resolveBaseRef`'s local/origin/stale matrix, and
+// `createWorktree`'s cross-implementation reuse): `git-worktree.test.ts`/
+// `git-diff-base.test.ts`/`autosave-conflict-guard.test.ts` are already ported byte-for-byte
+// as `coducktor_core::git`'s own inline unit tests (real git binary, same scenarios,
+// `cargo test -p coducktor-core`), which is the plan's actual accept criterion ("behavior
+// matches the Node shell-out implementation on the existing test fixtures"). These two
+// additionally confirm the TWO implementations agree with each OTHER, not just with a
+// hand-ported copy of the same oracle.
+
+fn run_git(args: &[&str], cwd: &std::path::Path) {
+    assert!(
+        Command::new("git")
+            .current_dir(cwd)
+            .args(args)
+            .status()
+            .unwrap()
+            .success(),
+        "git {args:?} failed in {}",
+        cwd.display()
+    );
+}
+
+/// Mirrors `git-worktree.test.ts`'s `fixtureRepo()`: a `main`-branch repo with one commit.
+fn init_fixture_repo(root: &Path) {
+    run_git(&["init", "-q", "-b", "main"], root);
+    std::fs::write(root.join("base.txt"), "base\n").unwrap();
+    run_git(&["add", "-A"], root);
+    run_git(
+        &[
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@local",
+            "commit",
+            "-q",
+            "-m",
+            "base",
+        ],
+        root,
+    );
+}
+
+/// `resolveBaseRef`/`resolve_base_ref` must agree on which ref a worktree forks from —
+/// getting this wrong is the "phantom 142k-line diff" bug the TS doc comment describes.
+/// Exercises the plain (no origin) case and the stale-local-base case, matching
+/// `git-worktree.test.ts`'s own matrix.
+#[test]
+fn resolve_base_ref_agrees_between_node_and_rust() {
+    let Some(tsx) = require_tsx() else { return };
+    let tsx = tsx.as_path();
+
+    let repo = tempfile::tempdir().unwrap();
+    init_fixture_repo(repo.path());
+
+    let node_plain = run_fixture_args(
+        tsx,
+        "resolve_base_ref.ts",
+        &[repo.path().to_str().unwrap(), "main"],
+    );
+    let node_plain: serde_json::Value = serde_json::from_str(node_plain.trim()).unwrap();
+    let rust_plain = worktree::resolve_base_ref(repo.path(), "main");
+    assert_eq!(node_plain.as_str(), rust_plain.as_deref());
+    assert_eq!(rust_plain.as_deref(), Some("main"));
+
+    // Wire an origin remote, then advance it so the repo's local `main` goes stale.
+    let remote = tempfile::tempdir().unwrap();
+    init_fixture_repo(remote.path());
+    run_git(
+        &["remote", "add", "origin", remote.path().to_str().unwrap()],
+        repo.path(),
+    );
+    run_git(&["fetch", "-q", "origin"], repo.path());
+    std::fs::write(remote.path().join("more.txt"), "more\n").unwrap();
+    run_git(&["add", "-A"], remote.path());
+    run_git(
+        &[
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@local",
+            "commit",
+            "-q",
+            "-m",
+            "advance",
+        ],
+        remote.path(),
+    );
+    run_git(&["fetch", "-q", "origin"], repo.path());
+
+    let node_stale = run_fixture_args(
+        tsx,
+        "resolve_base_ref.ts",
+        &[repo.path().to_str().unwrap(), "main"],
+    );
+    let node_stale: serde_json::Value = serde_json::from_str(node_stale.trim()).unwrap();
+    let rust_stale = worktree::resolve_base_ref(repo.path(), "main");
+    assert_eq!(node_stale.as_str(), rust_stale.as_deref());
+    assert_eq!(
+        rust_stale.as_deref(),
+        Some("origin/main"),
+        "a stale local base must lose to origin"
+    );
+}
+
+/// `createWorktree`/`create_worktree` must agree on the idempotency ladder: whichever
+/// implementation registers a task's worktree first, the OTHER must recognize and reuse it
+/// rather than erroring or double-creating — this is what lets Phase B's cutover (spec §11,
+/// B11) run the two servers side by side against the same run without corrupting each
+/// other's worktrees.
+#[test]
+fn create_worktree_reuse_agrees_between_node_and_rust() {
+    let Some(tsx) = require_tsx() else { return };
+    let tsx = tsx.as_path();
+
+    let repo = tempfile::tempdir().unwrap();
+    init_fixture_repo(repo.path());
+
+    // Node creates; Rust must reuse the exact same registration.
+    let node_created = run_fixture_args(
+        tsx,
+        "create_worktree.ts",
+        &[repo.path().to_str().unwrap(), "node-first", "main"],
+    );
+    let node_created: serde_json::Value = serde_json::from_str(node_created.trim()).unwrap();
+    let rust_reused = worktree::create_worktree(repo.path(), "node-first", "main").unwrap();
+    assert_eq!(node_created["path"], rust_reused.path);
+    assert_eq!(node_created["branch"], rust_reused.branch);
+    assert_eq!(node_created["branch"], "duck/node-fir"); // first 8 chars of "node-first"
+    assert_eq!(node_created["baseBranch"], rust_reused.base_branch);
+
+    // Rust creates; Node must reuse the exact same registration.
+    let rust_created = worktree::create_worktree(repo.path(), "rust-first", "main").unwrap();
+    let node_reused = run_fixture_args(
+        tsx,
+        "create_worktree.ts",
+        &[repo.path().to_str().unwrap(), "rust-first", "main"],
+    );
+    let node_reused: serde_json::Value = serde_json::from_str(node_reused.trim()).unwrap();
+    assert_eq!(node_reused["path"], rust_created.path);
+    assert_eq!(node_reused["branch"], rust_created.branch);
+    assert_eq!(node_reused["baseBranch"], rust_created.base_branch);
 }

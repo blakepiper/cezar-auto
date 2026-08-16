@@ -1,18 +1,26 @@
-//! Count-based worktree retention (#483). Mirrors the PURE half of
-//! `packages/cezar/src/runs/retention.ts`: which finished worktrees are over budget and
-//! should have their *directory* reclaimed (the `duck/<id8>` branch stays, so the work is
-//! always recoverable via `git worktree add`).
+//! Count-based worktree retention (#483). Mirrors `packages/cezar/src/runs/retention.ts`:
+//! which finished worktrees are over budget and should have their *directory* reclaimed
+//! (the `duck/<id8>` branch stays, so the work is always recoverable via
+//! `git worktree add`).
 //!
-//! `retention.ts`'s I/O enforcer (`reclaimWorktrees`) and re-materializer
-//! (`rematerializeReclaimedWorktree`) are deliberately NOT ported here: both call into
-//! `git-worktree.ts` (`createWorktree`/`removeWorktree`), which does not exist in Rust yet —
-//! that is `cezar-core::git`, landing at **B3**. Porting the enforcer against a git layer
-//! that doesn't exist would mean re-deriving it there anyway; the selector below is exactly
-//! the boundary `retention.ts` itself draws between "pure and unit-testable" and "thin I/O",
-//! so B3 wires this selector straight into its own `reclaim_worktrees`.
+//! [`reclaim_worktrees`] and [`rematerialize_reclaimed_worktree`] are the B3 I/O half,
+//! wired against `crate::git::worktree` now that it exists. They deliberately do **not**
+//! match `reclaimWorktrees`/`rematerializeReclaimedWorktree`'s TS signatures: those take an
+//! injectable `store` (`RetentionStore`/`RematerializeStore`, backed by the real `RunStore`
+//! class) and mutate it directly via `store.updateRun(id, { worktreeReclaimedAt })`. No
+//! live run store exists in Rust yet — `RunManager` is **B6** — so these functions return
+//! what changed (reclaimed run ids + timestamps, or the rematerialized `WorktreeInfo`)
+//! instead of persisting it; B6's `RunManager` is what will call these and write the result
+//! through `runs::store::write_run_index`. That keeps this step honest about which layer
+//! actually exists right now rather than inventing a store trait whose real shape is B6's
+//! to decide.
+
+use std::path::Path;
 
 use coducktor_contract::RunStatus;
 use coducktor_contract::runs::RunRecord;
+
+use crate::git::worktree;
 
 /// The "finished" status set — mirrors `RunStore.archiveFinished`. A run at the `review`
 /// gate is deliberately excluded: it still needs its worktree to render the diff and open a
@@ -51,6 +59,59 @@ pub fn select_reclaimable_worktrees(runs: &[RunRecord], keep: u64) -> Vec<String
         .skip(keep as usize)
         .map(|r| r.id.clone())
         .collect()
+}
+
+/// Enforce the retention budget: reclaim the *directory* of every over-limit finished
+/// worktree (branch kept — `worktree::remove_worktree` is called without a branch arg).
+/// Returns `(run_id, reclaimed_at)` for each run actually reclaimed, for the caller to
+/// persist and log/SSE.
+///
+/// Never panics (helper discipline). `remove_worktree` is best-effort and does not report
+/// failure, so a run is reported reclaimed only once its directory is confirmed gone — a
+/// locked/permission failure leaves it unreported so the next pass retries. Idempotent
+/// under races: `remove_worktree` is `--force` + `prune`, so a repeated call is harmless.
+pub fn reclaim_worktrees(
+    repo_root: &Path,
+    runs: &[RunRecord],
+    keep: u64,
+    now: impl Fn() -> String,
+) -> Vec<(String, String)> {
+    let by_id = |id: &str| runs.iter().find(|r| r.id == id);
+    let mut reclaimed = Vec::new();
+    for id in select_reclaimable_worktrees(runs, keep) {
+        let Some(run) = by_id(&id) else { continue };
+        let Some(worktree_path) = run.worktree_path.as_deref() else {
+            continue;
+        };
+        let path = Path::new(worktree_path);
+        worktree::remove_worktree(repo_root, path, None);
+        if path.exists() {
+            continue; // reclaim failed; retry next pass
+        }
+        reclaimed.push((id, now()));
+    }
+    reclaimed
+}
+
+/// Re-materialize a reclaimed worktree directory on demand (a run the user comes back to
+/// after its directory was reclaimed). `None` when the run has no worktree to restore, was
+/// never reclaimed, its directory is already present, or `git worktree add` fails. The
+/// caller clears `worktree_reclaimed_at` on `Some`.
+pub fn rematerialize_reclaimed_worktree(
+    repo_root: &Path,
+    run: &RunRecord,
+) -> Option<worktree::WorktreeInfo> {
+    let worktree_path = run.worktree_path.as_deref()?;
+    run.worktree_reclaimed_at.as_deref()?;
+    if Path::new(worktree_path).exists() {
+        return None;
+    }
+    worktree::create_worktree(
+        repo_root,
+        &run.id,
+        run.base_branch.as_deref().unwrap_or("HEAD"),
+    )
+    .ok()
 }
 
 #[cfg(test)]
@@ -231,5 +292,106 @@ mod tests {
             None,
             Some("2026-07-05T00:00:00Z")
         )));
+    }
+
+    /// A real repo with a real `duck/<id8>` worktree — `reclaim_worktrees`/
+    /// `rematerialize_reclaimed_worktree` are thin wrappers over `git::worktree`, but the
+    /// wrapping (which run's directory gets removed, whether the report is honest about
+    /// what actually happened on disk) is exactly what these tests check.
+    fn fixture_repo_with_worktree(run_id: &str) -> (tempfile::TempDir, worktree::WorktreeInfo) {
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+        let git = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .current_dir(root)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success(),
+                "git {args:?} failed"
+            );
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("base.txt"), "base\n").unwrap();
+        git(&["add", "-A"]);
+        git(&[
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@local",
+            "commit",
+            "-q",
+            "-m",
+            "base",
+        ]);
+        let info = worktree::create_worktree(root, run_id, "main").unwrap();
+        (repo, info)
+    }
+
+    #[test]
+    fn reclaim_worktrees_removes_the_directory_and_reports_it() {
+        let (repo, info) = fixture_repo_with_worktree("a");
+        // `keep` is how many to KEEP — `keep: 0` means "unlimited, never reclaim"
+        // ([`treats_keep_zero_as_unlimited`]), so a second, newer, kept-by-budget run is
+        // needed to actually exercise reclamation with `keep: 1`.
+        let runs = vec![
+            done_with_worktree("a", "2026-07-01T00:00:00Z", &info.path),
+            done_with_worktree("z", "2026-07-02T00:00:00Z", "/nonexistent/z"),
+        ];
+        let reclaimed =
+            reclaim_worktrees(repo.path(), &runs, 1, || "2026-08-01T00:00:00Z".to_owned());
+        assert_eq!(
+            reclaimed,
+            vec![("a".to_owned(), "2026-08-01T00:00:00Z".to_owned())]
+        );
+        assert!(!Path::new(&info.path).exists());
+        // The branch is kept — reclaiming a directory must not lose the work.
+        assert!(
+            std::process::Command::new("git")
+                .current_dir(repo.path())
+                .args(["show-ref", "--verify", "--quiet", "refs/heads/duck/a"])
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
+    fn done_with_worktree(id: &str, finished_at: &str, worktree_path: &str) -> RunRecord {
+        RunRecord {
+            worktree_path: Some(worktree_path.to_owned()),
+            ..done(id, finished_at)
+        }
+    }
+
+    #[test]
+    fn rematerialize_reclaimed_worktree_recreates_a_reclaimed_directory() {
+        let (repo, info) = fixture_repo_with_worktree("b");
+        let runs = vec![
+            done_with_worktree("b", "2026-07-01T00:00:00Z", &info.path),
+            done_with_worktree("z", "2026-07-02T00:00:00Z", "/nonexistent/z"),
+        ];
+        let reclaimed =
+            reclaim_worktrees(repo.path(), &runs, 1, || "2026-08-01T00:00:00Z".to_owned());
+        assert_eq!(
+            reclaimed,
+            vec![("b".to_owned(), "2026-08-01T00:00:00Z".to_owned())]
+        );
+
+        let mut run = runs.into_iter().next().unwrap();
+        run.worktree_reclaimed_at = Some(reclaimed[0].1.clone());
+        run.base_branch = Some("main".to_owned());
+
+        let rematerialized = rematerialize_reclaimed_worktree(repo.path(), &run).unwrap();
+        assert_eq!(rematerialized.path, info.path);
+        assert!(Path::new(&rematerialized.path).exists());
+    }
+
+    #[test]
+    fn rematerialize_reclaimed_worktree_is_none_when_the_directory_still_exists() {
+        let (repo, info) = fixture_repo_with_worktree("c");
+        let mut run = done_with_worktree("c", "2026-07-01T00:00:00Z", &info.path);
+        run.worktree_reclaimed_at = Some("2026-08-01T00:00:00Z".to_owned());
+        assert!(rematerialize_reclaimed_worktree(repo.path(), &run).is_none());
     }
 }

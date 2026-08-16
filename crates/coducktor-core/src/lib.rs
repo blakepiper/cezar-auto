@@ -7,6 +7,7 @@
 //! `paths::coducktor_home_dir`'s doc comment for the sharpest example of what that costs).
 
 pub mod config;
+pub mod git;
 pub mod paths;
 pub mod runs;
 pub mod time;
