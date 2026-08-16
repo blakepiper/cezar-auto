@@ -240,7 +240,7 @@ criterion was verified directly: `bc-route-inventory.test.ts` passes, and
 `npm pack --json` output-shape change in npm 12 the test predates, confirmed via
 `git stash` — unrelated to this step).
 
-### [ ] A14 — Install path and docs
+### [x] A14 — Install path and docs
 **Ships:** `cargo install --path crates/cezar-tui` as the documented one-liner
 (both `cezar` and `cez` land on PATH), root `install.sh` (checks `rustup`, builds,
 reports the binary path — no curl-pipe-to-shell, no release artifacts), a
@@ -248,9 +248,19 @@ reports the binary path — no curl-pipe-to-shell, no release artifacts), a
 rewritten for clone-and-build, `docs/tui/` (keymap reference, terminal matrix,
 screenshots). State the Node 20+ prerequisite honestly — Phase A still needs it —
 written so removing that line at B12 is a one-line diff.
+**Note:** same stale naming as A13's — "`cezar`/`cez`" above means `coducktor`/`duck`
+per decision 6 (spec §2.2.1); shipped a second `[[bin]] name = "duck"` target in
+`crates/coducktor-tui/Cargo.toml` alongside the existing `coducktor` one, both
+pointing at `src/main.rs`, so one `cargo install` lands both. Screenshots are honest
+plain-text `TestBackend` renders pulled from the real `insta` snapshots, not images —
+this was authored from a headless sandbox with no attached TTY, so `docs/tui/
+terminals.md`'s matrix is mostly marked "untested — needs manual verification"
+rather than guessed at; only the sandbox's own env-var-derived color capability is a
+verified row.
 **Accept:** on a clean machine, `git clone && ./install.sh` yields a working `cez`
 on PATH; the README's prerequisite list has no surprises.
-**Commit:** `docs(install): A14 source-first install path and TUI docs`
+**Commit:** `docs(install): A14 source-first install path and TUI docs` — pushed as
+`6e68c744`.
 
 ### [ ] A15 — Retire npm and remote-access surfaces from the Node tree ⚠ own commit
 **⚠ Ship this as its own commit on `main`, not folded into A14 or B1** — spec §15
