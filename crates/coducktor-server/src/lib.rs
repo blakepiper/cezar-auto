@@ -37,28 +37,29 @@ use coducktor_contract::{
     AgentProfileResponse, AgentProfileSelectionsResponse, AgentProfilesResponse, ApiRun,
     BackendCheck, BackendCheckName, Capabilities, ChangedFile, ChangedFileStatus, ChangesPayload,
     ConfigResponse, ContinueInput, CreateAgentProfileInput, CreatePrResponse, CreateRunInput,
-    CreateRunResponse, DeleteRunResponse, DeleteWorkflowResponse, EmptyRepoResponse, ForgeInfo,
-    ForgeKind, GitCommitInput, GitCommitResponse, GitPushResponse, GroupResponse, GroupVariant,
-    HealthProject, HealthResponse, IdeDirectoryQuery, IdeDirectoryResponse, IdeEntry, IdeEntryType,
-    IdeFileInput, IdeFileQuery, IdeFileResponse, LogEntry, MarkAllReadResponse, MessageInput,
-    ModelDiscoveryQuery, ModelDiscoveryRunner, OpenAgentAccountFileInput,
-    OpenAgentAccountFileResponse, OpenProjectInRequest, OpenProjectInResponse, OpenTarget,
+    CreateRunResponse, DeleteRunResponse, DeleteWorkflowResponse, EditQueuedMessageResponse,
+    EmptyRepoResponse, ForgeInfo, ForgeKind, GitCommitInput, GitCommitResponse, GitPushResponse,
+    GroupResponse, GroupVariant, HealthProject, HealthResponse, IdeDirectoryQuery,
+    IdeDirectoryResponse, IdeEntry, IdeEntryType, IdeFileInput, IdeFileQuery, IdeFileResponse,
+    ImageInput, LogEntry, MarkAllReadResponse, MessageInput, ModelDiscoveryQuery,
+    ModelDiscoveryRunner, OpenAgentAccountFileInput, OpenAgentAccountFileResponse,
+    OpenInCliResponse, OpenInInput, OpenProjectInRequest, OpenProjectInResponse, OpenTarget,
     OpenTargetsResponse, ParseWorkflowInput, ParsedWorkflow, PatchRunInput, PickVariantRequest,
     PickVariantResponse, PlanInput, PlanResponse, PresentRepoResponse, ProjectListEntry,
     ProjectSource, ProjectStatus, ProjectsResponse, ProviderConnectAlreadyConnected,
     ProviderConnectInput, ProviderConnectOpened, ProviderConnectResponse, ProviderConnectionState,
     ProviderEnabledInput, ProviderRetryInput, ProviderStatus, ProviderStatusQuery,
-    ProviderStatusResponse, ReclaimWorktreesResponse, RegisterProjectInput,
+    ProviderStatusResponse, QueuedMessage, ReclaimWorktreesResponse, RegisterProjectInput,
     RegisterProjectResponse, RemoveAgentProfileResponse, RemoveProjectResponse,
-    RemoveWorktreeResponse, RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoDiffStat,
-    RepoInfo, RepoResponse, RunCommit, RunCommitsResponse, RunEvent, RunEventsQuery,
-    RunHistoryContext, RunHistoryEvent, RunHistoryPage, RunRecord, Runner, RunnerModels,
-    RunnerSelection, SaveWorkflowInput, SaveWorkflowResponse, SelectAgentProfileInput,
-    SetAgentConfigInput, SetConfigInput, SetWorkspaceConfigInput, SetWorkspaceUiStateInput,
-    StartTodoResponse, StatusEntry, TodoItem, UiState, UpdateAgentProfileInput, UpdateProjectInput,
-    UpdateProjectResponse, UserMcpListing, WorkflowStepDef, WorkflowsResponse,
-    WorkspaceConfigResponse, WorktreeDirEntry, WorktreeEntry, WorktreeEntryType, WorktreeInfo,
-    WorktreeRunStatus, WorktreesResponse,
+    RemoveQueuedMessageResponse, RemoveWorktreeResponse, RepoBranchRequest, RepoBranchResponse,
+    RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse, RunCommit, RunCommitsResponse,
+    RunEvent, RunEventsQuery, RunHistoryContext, RunHistoryEvent, RunHistoryPage, RunRecord,
+    Runner, RunnerModels, RunnerSelection, SaveWorkflowInput, SaveWorkflowResponse,
+    SelectAgentProfileInput, SetAgentConfigInput, SetConfigInput, SetWorkspaceConfigInput,
+    SetWorkspaceUiStateInput, StartTodoResponse, StatusEntry, TodoItem, UiState,
+    UpdateAgentProfileInput, UpdateProjectInput, UpdateProjectResponse, UserMcpListing,
+    WorkflowStepDef, WorkflowsResponse, WorkspaceConfigResponse, WorktreeDirEntry, WorktreeEntry,
+    WorktreeEntryType, WorktreeInfo, WorktreeRunStatus, WorktreesResponse,
 };
 use coducktor_contract::{
     GithubChecksAvailable, GithubChecksData, GithubChecksUnavailable, GithubCommentsData,
@@ -272,6 +273,18 @@ pub fn router_with_state(state: ServerState) -> Router {
             axum::routing::post(send_message),
         )
         .route(
+            "/api/v1/runs/{id}/queued-messages/{msg_id}",
+            axum::routing::patch(edit_queued_message).delete(remove_queued_message),
+        )
+        .route(
+            "/api/v1/runs/{id}/open-in-cli",
+            axum::routing::post(open_run_in_cli),
+        )
+        .route(
+            "/api/v1/runs/{id}/open-in",
+            axum::routing::post(open_run_in),
+        )
+        .route(
             "/api/v1/runs/{id}/auto-resume",
             axum::routing::delete(cancel_auto_resume),
         )
@@ -344,6 +357,18 @@ pub fn router_with_state(state: ServerState) -> Router {
         .route(
             "/api/v1/p/{project}/runs/{id}/messages",
             axum::routing::post(send_message),
+        )
+        .route(
+            "/api/v1/p/{project}/runs/{id}/queued-messages/{msg_id}",
+            axum::routing::patch(scoped_edit_queued_message).delete(scoped_remove_queued_message),
+        )
+        .route(
+            "/api/v1/p/{project}/runs/{id}/open-in-cli",
+            axum::routing::post(scoped_open_run_in_cli),
+        )
+        .route(
+            "/api/v1/p/{project}/runs/{id}/open-in",
+            axum::routing::post(scoped_open_run_in),
         )
         .route(
             "/api/v1/p/{project}/runs/{id}/auto-resume",
@@ -7654,6 +7679,318 @@ async fn send_message(
     }
 }
 
+const MAX_QUEUED_IMAGES: usize = 8;
+const MAX_FOLDED_TASK_CHARS: usize = 200_000;
+
+fn image_input_urls(images: &[ImageInput]) -> Vec<String> {
+    images
+        .iter()
+        .map(|image| format!("data:{};base64,{}", image.media_type, image.data))
+        .collect()
+}
+
+fn folded_task_length(task: &str, messages: &[QueuedMessage]) -> usize {
+    std::iter::once(task)
+        .chain(messages.iter().map(|message| message.text.as_str()))
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+        .len()
+}
+
+fn valid_queued_text(text: &str) -> bool {
+    text.chars().count() <= 100_000
+}
+
+async fn edit_queued_message(
+    State(state): State<ServerState>,
+    AxumPath((id, msg_id)): AxumPath<(String, String)>,
+    input: Result<
+        Json<coducktor_contract::QueuedMessagePatchInput>,
+        axum::extract::rejection::JsonRejection,
+    >,
+) -> Response {
+    let run = match run_for_route(&state, &id) {
+        Ok(run) => run,
+        Err(response) => return *response,
+    };
+    let Ok(Json(input)) = input else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid body");
+    };
+    if input.text.is_none() && input.images.is_none() {
+        return error_response(StatusCode::BAD_REQUEST, "message edit needs text or images");
+    }
+    if input
+        .text
+        .as_deref()
+        .is_some_and(|text| !valid_queued_text(text))
+        || input.images.as_ref().is_some_and(|images| images.len() > 4)
+    {
+        return error_response(StatusCode::BAD_REQUEST, "queued message exceeds its limits");
+    }
+    let Some(stack) = run.queued_messages.clone() else {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    };
+    let Some(current) = stack.iter().find(|message| message.id == msg_id) else {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    };
+    if run.status != coducktor_contract::RunStatus::Queued {
+        return error_response(StatusCode::CONFLICT, "run already started");
+    }
+    let text = input.text.clone().unwrap_or_else(|| current.text.clone());
+    let images = input
+        .images
+        .as_deref()
+        .map(image_input_urls)
+        .or_else(|| current.images.clone());
+    let effective_images = images.as_ref().map_or(0, Vec::len);
+    let other_images = stack
+        .iter()
+        .filter(|message| message.id != msg_id)
+        .map(|message| message.images.as_ref().map_or(0, Vec::len))
+        .sum::<usize>();
+    if text.trim().is_empty() && effective_images == 0 {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "message needs text or at least one image",
+        );
+    }
+    if other_images + effective_images > MAX_QUEUED_IMAGES {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "too many queued images — 8 image limit across the stack",
+        );
+    }
+    let mut prospective = stack.clone();
+    if let Some(message) = prospective.iter_mut().find(|message| message.id == msg_id) {
+        message.text = text.clone();
+        message.images = images.clone().filter(|images| !images.is_empty());
+    }
+    if folded_task_length(&run.task, &prospective) > MAX_FOLDED_TASK_CHARS {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "prompt too long — 200000 character limit across the task and its queued messages",
+        );
+    }
+    let replacement = prospective
+        .iter()
+        .find(|message| message.id == msg_id)
+        .cloned();
+    let Ok(mut manager) = state.manager.lock() else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run manager unavailable");
+    };
+    if manager
+        .edit_run(&id, |record| record.queued_messages = Some(prospective))
+        .ok()
+        .flatten()
+        .is_none()
+    {
+        return error_response(StatusCode::CONFLICT, "run already started");
+    }
+    Json(EditQueuedMessageResponse {
+        message: replacement.unwrap_or_else(|| current.clone()),
+    })
+    .into_response()
+}
+
+async fn scoped_edit_queued_message(
+    State(state): State<ServerState>,
+    AxumPath((_project, id, msg_id)): AxumPath<(String, String, String)>,
+    input: Result<
+        Json<coducktor_contract::QueuedMessagePatchInput>,
+        axum::extract::rejection::JsonRejection,
+    >,
+) -> Response {
+    edit_queued_message(State(state), AxumPath((id, msg_id)), input).await
+}
+
+async fn remove_queued_message(
+    State(state): State<ServerState>,
+    AxumPath((id, msg_id)): AxumPath<(String, String)>,
+) -> Response {
+    let run = match run_for_route(&state, &id) {
+        Ok(run) => run,
+        Err(response) => return *response,
+    };
+    if !run
+        .queued_messages
+        .as_ref()
+        .is_some_and(|messages| messages.iter().any(|message| message.id == msg_id))
+    {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    }
+    if run.status != coducktor_contract::RunStatus::Queued {
+        return error_response(StatusCode::CONFLICT, "run already started");
+    }
+    let Ok(mut manager) = state.manager.lock() else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run manager unavailable");
+    };
+    let updated = manager
+        .edit_run(&id, |record| {
+            if let Some(messages) = record.queued_messages.as_mut() {
+                messages.retain(|message| message.id != msg_id);
+            }
+        })
+        .ok()
+        .flatten();
+    if updated.is_none() {
+        return error_response(StatusCode::CONFLICT, "run already started");
+    }
+    Json(RemoveQueuedMessageResponse { removed: true }).into_response()
+}
+
+async fn scoped_remove_queued_message(
+    State(state): State<ServerState>,
+    AxumPath((_project, id, msg_id)): AxumPath<(String, String, String)>,
+) -> Response {
+    remove_queued_message(State(state), AxumPath((id, msg_id))).await
+}
+
+fn safe_session_id(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    value.len() <= 200
+        && (first.is_ascii_alphanumeric() || matches!(first, '.' | '_'))
+        && chars.all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+        })
+}
+
+fn run_resume_command(run: &RunRecord) -> Option<String> {
+    let session_id = run
+        .steps
+        .iter()
+        .rev()
+        .find_map(|step| step.session_id.as_deref())?;
+    if !safe_session_id(session_id) {
+        return None;
+    }
+    Some(match run.runner {
+        Some(Runner::Codex) => format!("codex resume {session_id}"),
+        Some(Runner::OpenCode) => format!("opencode --session {session_id}"),
+        Some(Runner::Pi) => format!("pi --session {session_id}"),
+        Some(Runner::Claude) | None => format!("claude --resume {session_id}"),
+    })
+}
+
+async fn open_run_in_cli(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let run = match run_for_route(&state, &id) {
+        Ok(run) => run,
+        Err(response) => return *response,
+    };
+    let Some(command) = run_resume_command(&run) else {
+        return error_response(StatusCode::CONFLICT, "no agent session to resume");
+    };
+    let directory = worktree_of(&run).unwrap_or_else(|| state.config.repo_root.clone());
+    let launch = format!(
+        "cd {} && {command}",
+        shell_quote(&directory.to_string_lossy())
+    );
+    if !open_terminal_for_command(&launch) {
+        return error_response_with_command(
+            StatusCode::CONFLICT,
+            "no terminal emulator found",
+            &launch,
+        );
+    }
+    Json(OpenInCliResponse {
+        opened: true,
+        command,
+    })
+    .into_response()
+}
+
+async fn scoped_open_run_in_cli(
+    State(state): State<ServerState>,
+    AxumPath((_project, id)): AxumPath<(String, String)>,
+) -> Response {
+    open_run_in_cli(State(state), AxumPath(id)).await
+}
+
+async fn open_run_in(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+    input: Result<Json<OpenInInput>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let run = match run_for_route(&state, &id) {
+        Ok(run) => run,
+        Err(response) => return *response,
+    };
+    let Ok(Json(input)) = input else {
+        return error_response(StatusCode::BAD_REQUEST, "target required");
+    };
+    let target = input.target.trim();
+    if target.is_empty() || target.chars().count() > 200 {
+        return error_response(StatusCode::BAD_REQUEST, "target required");
+    }
+    let directory = worktree_of(&run).unwrap_or_else(|| state.config.repo_root.clone());
+    if target == "default" {
+        let Some(worktree) = worktree_of(&run) else {
+            return error_response(StatusCode::CONFLICT, NO_WORKTREE);
+        };
+        let Some(path) = input.path.as_deref().filter(|path| !path.is_empty()) else {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "path required for the default-app target",
+            );
+        };
+        let Ok(WorktreeEntry::File { path, .. }) = read_worktree_path(&worktree, path) else {
+            return error_response(StatusCode::CONFLICT, "path is not a file in the worktree");
+        };
+        let file = worktree.join(path);
+        if !account_open_default(&file) {
+            return error_response(StatusCode::CONFLICT, "could not open file");
+        }
+        return Json(serde_json::json!({ "opened": true, "path": file })).into_response();
+    }
+    if let Some(provider) = target.strip_prefix("cli:") {
+        let command = match provider {
+            "claude" => "claude",
+            "codex" => "codex",
+            "opencode" => "opencode",
+            "pi" => "pi",
+            _ => return error_response(StatusCode::BAD_REQUEST, "unknown target"),
+        };
+        let launch = format!(
+            "cd {} && {command}",
+            shell_quote(&directory.to_string_lossy())
+        );
+        if !open_terminal_for_command(&launch) {
+            return error_response_with_command(
+                StatusCode::CONFLICT,
+                "no terminal emulator found",
+                &launch,
+            );
+        }
+        return Json(serde_json::json!({ "opened": true, "path": directory, "command": command }))
+            .into_response();
+    }
+    if !open_targets()
+        .iter()
+        .any(|candidate| candidate.id == target)
+    {
+        return error_response(StatusCode::BAD_REQUEST, "unknown target");
+    }
+    if !open_target(&directory, target) {
+        return error_response(StatusCode::CONFLICT, &format!("could not open {target}"));
+    }
+    Json(serde_json::json!({ "opened": true, "path": directory })).into_response()
+}
+
+async fn scoped_open_run_in(
+    State(state): State<ServerState>,
+    AxumPath((_project, id)): AxumPath<(String, String)>,
+    input: Result<Json<OpenInInput>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    open_run_in(State(state), AxumPath(id), input).await
+}
+
 async fn cancel_auto_resume(
     State(state): State<ServerState>,
     AxumPath(id): AxumPath<String>,
@@ -8352,6 +8689,83 @@ mod tests {
         .await;
         assert_eq!(remove.status(), StatusCode::OK);
         assert_eq!(json_body(remove).await["removed"], true);
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test]
+    async fn queued_message_and_open_routes_validate_and_preserve_scope_aliases() {
+        let repo = test_repo();
+        let data_dir = repo.join(".ai").join("coducktor");
+        let mut manager = RunManager::open(&data_dir);
+        let run = manager
+            .create_run(CoreCreateRunInput {
+                title: "queued".to_owned(),
+                workflow: "manual".to_owned(),
+                task: "original".to_owned(),
+                ..CoreCreateRunInput::default()
+            })
+            .expect("seed run");
+        let run_id = run.id.clone();
+        manager
+            .edit_run(&run_id, |record| {
+                record.queued_messages = Some(vec![QueuedMessage {
+                    id: "m1".to_owned(),
+                    text: "old".to_owned(),
+                    images: None,
+                    created_at: "2026-08-16T00:00:00.000Z".to_owned(),
+                }]);
+            })
+            .expect("seed queued message");
+        let router = router_with_state(ServerState::with_manager(
+            ServerConfig::new(&repo, "test"),
+            manager,
+        ));
+
+        let edited = send(
+            &router,
+            Method::PATCH,
+            &format!("/api/v1/runs/{run_id}/queued-messages/m1"),
+            Some(serde_json::json!({ "text": "updated" })),
+        )
+        .await;
+        assert_eq!(edited.status(), StatusCode::OK);
+        assert_eq!(json_body(edited).await["message"]["text"], "updated");
+
+        let removed = send(
+            &router,
+            Method::DELETE,
+            &format!("/api/v1/p/default/runs/{run_id}/queued-messages/m1"),
+            None,
+        )
+        .await;
+        assert_eq!(removed.status(), StatusCode::OK);
+        assert_eq!(json_body(removed).await["removed"], true);
+
+        let missing = send(
+            &router,
+            Method::DELETE,
+            &format!("/api/v1/runs/{run_id}/queued-messages/m1"),
+            None,
+        )
+        .await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+        let cli = send(
+            &router,
+            Method::POST,
+            &format!("/api/v1/runs/{run_id}/open-in-cli"),
+            None,
+        )
+        .await;
+        assert_eq!(cli.status(), StatusCode::CONFLICT);
+        let invalid_target = send(
+            &router,
+            Method::POST,
+            &format!("/api/v1/runs/{run_id}/open-in"),
+            Some(serde_json::json!({ "target": "not-installed" })),
+        )
+        .await;
+        assert_eq!(invalid_target.status(), StatusCode::BAD_REQUEST);
         fs::remove_dir_all(repo).expect("remove test repo");
     }
 
