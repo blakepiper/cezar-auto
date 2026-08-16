@@ -884,6 +884,9 @@ pub struct App {
     pub tasks_ui: crate::screens::tasks::TasksUi,
     pub global_ui: crate::screens::global_tasks::GlobalUi,
     pub new_task_ui: crate::screens::new_task::NewTaskUi,
+    /// Per-project New Task drafts, keyed by project id. Survives navigation and
+    /// project switching for the lifetime of the cockpit (a TUI has no reload).
+    pub new_task_drafts: BTreeMap<String, crate::new_task_form::NewTaskDraft>,
     pub thread_ui: crate::screens::thread::ThreadUi,
     pub task_git_ui: crate::screens::task_git::TaskGitUi,
     pub repo_git_ui: crate::screens::repo_git::RepoGitUi,
@@ -955,6 +958,7 @@ impl App {
             tasks_ui: crate::screens::tasks::TasksUi::default(),
             global_ui: crate::screens::global_tasks::GlobalUi::default(),
             new_task_ui: crate::screens::new_task::NewTaskUi::default(),
+            new_task_drafts: BTreeMap::new(),
             thread_ui: crate::screens::thread::ThreadUi::default(),
             task_git_ui: crate::screens::task_git::TaskGitUi::default(),
             repo_git_ui: crate::screens::repo_git::RepoGitUi::default(),

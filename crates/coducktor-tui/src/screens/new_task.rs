@@ -345,16 +345,21 @@ fn runner_label(runner: Runner) -> &'static str {
 fn sync_draft(app: &mut App) {
     let project = app.current_project().to_owned();
     if app.new_task_ui.draft_project.as_deref() != Some(project.as_str()) {
-        let draft = new_task_form::read_draft(&project);
+        let draft = app
+            .new_task_drafts
+            .get(&project)
+            .cloned()
+            .unwrap_or_default();
         app.new_task_ui.composer.set_text(&draft.text);
         app.new_task_ui.draft = draft;
         app.new_task_ui.draft_project = Some(project);
     }
 }
 
-fn write_draft(app: &App) {
-    let project = app.current_project();
-    new_task_form::write_draft(project, &app.new_task_ui.draft);
+fn write_draft(app: &mut App) {
+    let project = app.current_project().to_owned();
+    app.new_task_drafts
+        .insert(project, app.new_task_ui.draft.clone());
 }
 
 fn composer_context<'a>(app: &'a App) -> ComposerContext<'a> {
@@ -442,8 +447,7 @@ pub fn remove_attachment(app: &mut App, index: usize) {
 pub fn clear_draft(app: &mut App) {
     app.new_task_ui.composer.set_text("");
     app.new_task_ui.draft.text.clear();
-    let project = app.current_project().to_owned();
-    new_task_form::clear_draft_text(&project);
+    write_draft(app);
 }
 
 /// The keyboard contract for the New Task screen. Returns true when consumed.
@@ -1511,8 +1515,6 @@ mod tests {
         app.new_task_ui.composer.focus();
     }
 
-    /// Each test uses its own project so the shared draft store never leaks across
-    /// the parallel test threads (drafts are per-project, exactly like the real app).
     fn app_with_new_task(project: &str) -> App {
         let mut app = App::new(project, Theme::detect(), Keymap::default());
         open_new_task(&mut app, project);

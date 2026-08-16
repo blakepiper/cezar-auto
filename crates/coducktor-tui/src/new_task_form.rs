@@ -1,14 +1,10 @@
-//! The new-task composer's picker rules, its POST body, and the per-project draft
-//! store — a faithful Rust port of `packages/web/src/routes/new-task-form.ts` and
-//! `new-task-draft.ts`. Every rule lives here as a pure function so drift from the
-//! web client is a diff in ONE file, not a scavenger hunt.
+//! The new-task composer's picker rules and its POST body — a faithful Rust port
+//! of `packages/web/src/routes/new-task-form.ts` and `new-task-draft.ts`. Every
+//! rule lives here as a pure function so drift from the web client is a diff in
+//! ONE file, not a scavenger hunt.
 //!
-//! Draft persistence: the web keeps the draft in `localStorage`; the TUI keeps it
-//! in a per-process map keyed by project, which survives navigation and project
-//! switching for the lifetime of the cockpit (a TUI has no reload).
-
-use std::collections::BTreeMap;
-use std::sync::{Mutex, OnceLock};
+//! Draft persistence (per-project, survives navigation for the lifetime of the
+//! cockpit) lives on `App::new_task_drafts` — see `screens::new_task::sync_draft`.
 
 use coducktor_contract::{
     ConfigResponse, CreateRunInput, CreateRunInputBase, CreateRunResponse, ImageInput,
@@ -583,36 +579,6 @@ impl Default for NewTaskDraft {
     }
 }
 
-fn draft_store() -> &'static Mutex<BTreeMap<String, NewTaskDraft>> {
-    static STORE: OnceLock<Mutex<BTreeMap<String, NewTaskDraft>>> = OnceLock::new();
-    STORE.get_or_init(|| Mutex::new(BTreeMap::new()))
-}
-
-/// Read a project's draft. Missing or unknown drafts are fresh.
-pub fn read_draft(project: &str) -> NewTaskDraft {
-    draft_store()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .get(project)
-        .cloned()
-        .unwrap_or_default()
-}
-
-/// Write a project's draft. Survives navigation for the lifetime of the process.
-pub fn write_draft(project: &str, draft: &NewTaskDraft) {
-    draft_store()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(project.to_owned(), draft.clone());
-}
-
-/// After a successful submit: the text is spent, the picker choices remain.
-pub fn clear_draft_text(project: &str) {
-    let mut draft = read_draft(project);
-    draft.text.clear();
-    write_draft(project, &draft);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1061,25 +1027,5 @@ mod tests {
             resolve_composer_run_mode(true, 1, None, false, Some(false), true),
             (false, true)
         );
-    }
-
-    #[test]
-    fn drafts_survive_rewrites_and_clear_only_the_text() {
-        let mut draft = read_draft("shop");
-        draft.text = "half-typed task".to_owned();
-        draft.source = Some(source("skill", "om-fix"));
-        write_draft("shop", &draft);
-
-        let mut reread = read_draft("shop");
-        assert_eq!(reread.text, "half-typed task");
-        assert_eq!(reread.source, Some(source("skill", "om-fix")));
-
-        clear_draft_text("shop");
-        reread = read_draft("shop");
-        assert!(reread.text.is_empty());
-        assert_eq!(reread.source, Some(source("skill", "om-fix")));
-
-        assert_eq!(read_draft("other"), NewTaskDraft::default());
-        draft_store().lock().unwrap().clear();
     }
 }

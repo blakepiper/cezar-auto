@@ -87,7 +87,8 @@ impl Default for WorkflowsUi {
 pub fn skill_stack_of(steps: &[WorkflowStepDef]) -> Option<Vec<String>> {
     let mut skills = Vec::new();
     for step in steps {
-        if step.command.is_some() || step.skill.is_none() {
+        let skill = step.skill.as_deref()?;
+        if step.command.is_some() {
             return None;
         }
         if step
@@ -97,11 +98,7 @@ pub fn skill_stack_of(steps: &[WorkflowStepDef]) -> Option<Vec<String>> {
         {
             return None;
         }
-        if step
-            .name
-            .as_deref()
-            .is_some_and(|name| name != step.skill.as_deref().unwrap_or(""))
-        {
+        if step.name.as_deref().is_some_and(|name| name != skill) {
             return None;
         }
         if step.model.is_some()
@@ -112,7 +109,7 @@ pub fn skill_stack_of(steps: &[WorkflowStepDef]) -> Option<Vec<String>> {
         {
             return None;
         }
-        skills.push(step.skill.clone().unwrap());
+        skills.push(skill.to_string());
     }
     if skills.is_empty() {
         None
