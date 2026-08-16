@@ -262,7 +262,7 @@ on PATH; the README's prerequisite list has no surprises.
 **Commit:** `docs(install): A14 source-first install path and TUI docs` — pushed as
 `6e68c744`.
 
-### [ ] A15 — Retire npm and remote-access surfaces from the Node tree ⚠ own commit
+### [x] A15 — Retire npm and remote-access surfaces from the Node tree ⚠ own commit
 **⚠ Ship this as its own commit on `main`, not folded into A14 or B1** — spec §15
 risk table calls this out explicitly: it's a pure-deletion step with a green suite
 as its own check, and anything it breaks needs to be a one-line `git revert`, not
@@ -295,7 +295,8 @@ with deleted subsystems' suites removed, not skipped;
 `rg -n "CEZ_REMOTE|localHandoff|launchKey|bookmarklet|server-install|skillsRepos|CEZ_HIDE|CEZ_SINGLE_PROJECT|browseRoot"`
 returns only CHANGELOG/`BACKWARD_COMPATIBILITY.md` history; a run started before
 the migration still loads and its `cez/` branch is still found.
-**Commit:** `chore(cleanup): A15 retire npm, remote-access, and Tier 1–3 surfaces`
+**Commit:** `chore(cleanup): A15 retire npm, remote-access, and Tier 1–3 surfaces` — pushed as
+`5414fce6`.
 
 ---
 
