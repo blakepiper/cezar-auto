@@ -665,6 +665,12 @@ pub enum ModelDiscoveryRunner {
 pub const MODEL_DISCOVERY_RUNNERS: [ModelDiscoveryRunner; 2] =
     [ModelDiscoveryRunner::Codex, ModelDiscoveryRunner::OpenCode];
 
+/// The query accepted by `GET /api/v1/models`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelDiscoveryQuery {
+    pub runner: ModelDiscoveryRunner,
+}
+
 /// Whether a runner has a host-discovered model catalog.
 pub fn runner_discovers_models(runner: Runner) -> bool {
     matches!(runner, Runner::Codex | Runner::OpenCode)

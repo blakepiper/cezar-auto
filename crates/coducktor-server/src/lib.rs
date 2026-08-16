@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
 use axum::extract::{Path as AxumPath, Query, State};
@@ -36,10 +36,11 @@ use coducktor_contract::{
     DeleteRunResponse, DeleteWorkflowResponse, EmptyRepoResponse, ForgeInfo, ForgeKind,
     HealthProject, HealthResponse, IdeDirectoryQuery, IdeDirectoryResponse, IdeEntry, IdeEntryType,
     IdeFileInput, IdeFileQuery, IdeFileResponse, LogEntry, MarkAllReadResponse, MessageInput,
-    OpenAgentAccountFileInput, OpenAgentAccountFileResponse, OpenProjectInRequest,
-    OpenProjectInResponse, OpenTarget, OpenTargetsResponse, ParseWorkflowInput, ParsedWorkflow,
-    PatchRunInput, PresentRepoResponse, ProjectListEntry, ProjectSource, ProjectStatus,
-    ProjectsResponse, ProviderConnectAlreadyConnected, ProviderConnectInput, ProviderConnectOpened,
+    ModelDiscoveryQuery, ModelDiscoveryRunner, OpenAgentAccountFileInput,
+    OpenAgentAccountFileResponse, OpenProjectInRequest, OpenProjectInResponse, OpenTarget,
+    OpenTargetsResponse, ParseWorkflowInput, ParsedWorkflow, PatchRunInput, PresentRepoResponse,
+    ProjectListEntry, ProjectSource, ProjectStatus, ProjectsResponse,
+    ProviderConnectAlreadyConnected, ProviderConnectInput, ProviderConnectOpened,
     ProviderConnectResponse, ProviderConnectionState, ProviderEnabledInput, ProviderRetryInput,
     ProviderStatus, ProviderStatusQuery, ProviderStatusResponse, ReclaimWorktreesResponse,
     RegisterProjectInput, RegisterProjectResponse, RemoveAgentProfileResponse,
@@ -80,6 +81,17 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::Command as TokioCommand;
+use tokio::time::timeout;
+
+#[derive(Debug, Clone)]
+struct CachedModelCatalog {
+    runner: coducktor_contract::ModelDiscoveryRunner,
+    models: Vec<coducktor_contract::RunnerModelOption>,
+    expires_at: Instant,
+    failure_reason: Option<String>,
+}
 
 const HEALTH_PATH: &str = "/api/v1/health";
 const SEC_FETCH_SITE: HeaderName = HeaderName::from_static("sec-fetch-site");
@@ -107,6 +119,7 @@ pub struct ServerState {
     config: Arc<ServerConfig>,
     manager: Arc<Mutex<RunManager>>,
     workspace_dir: Arc<PathBuf>,
+    model_catalog: Arc<Mutex<Vec<CachedModelCatalog>>>,
 }
 
 impl ServerState {
@@ -129,6 +142,7 @@ impl ServerState {
             config: Arc::new(config),
             manager: Arc::new(Mutex::new(manager)),
             workspace_dir: Arc::new(workspace_dir.into()),
+            model_catalog: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -253,6 +267,7 @@ pub fn router_with_state(state: ServerState) -> Router {
             "/api/v1/workspace/config",
             get(get_workspace_config).put(update_workspace_config),
         )
+        .route("/api/v1/models", get(get_models))
         .route("/api/v1/providers/status", get(get_provider_status))
         .route(
             "/api/v1/providers/{provider}/enabled",
@@ -1870,6 +1885,378 @@ async fn update_workspace_config(
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
     };
     Json(workspace_config_response(&saved)).into_response()
+}
+
+const MODEL_CATALOG_TTL: Duration = Duration::from_secs(5 * 60);
+const MODEL_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
+const CODEX_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_MODEL_OUTPUT_BYTES: usize = 512 * 1024;
+const MAX_DISCOVERED_MODELS: usize = 500;
+
+fn model_catalog_reason(runner: ModelDiscoveryRunner) -> String {
+    match runner {
+        ModelDiscoveryRunner::Codex => {
+            "Codex model discovery is temporarily unavailable".to_owned()
+        }
+        ModelDiscoveryRunner::OpenCode => {
+            "OpenCode model discovery is temporarily unavailable".to_owned()
+        }
+    }
+}
+
+fn model_catalog_wire(
+    runner: ModelDiscoveryRunner,
+    models: Vec<coducktor_contract::RunnerModelOption>,
+    source: coducktor_contract::ModelCatalogSource,
+    stale: bool,
+    reason: Option<String>,
+) -> coducktor_contract::RunnerModelCatalogResponse {
+    coducktor_contract::RunnerModelCatalogResponse {
+        runner: match runner {
+            ModelDiscoveryRunner::Codex => Runner::Codex,
+            ModelDiscoveryRunner::OpenCode => Runner::OpenCode,
+        },
+        models,
+        source,
+        stale,
+        reason,
+    }
+}
+
+async fn get_models(
+    State(state): State<ServerState>,
+    query: Result<Query<ModelDiscoveryQuery>, axum::extract::rejection::QueryRejection>,
+) -> Response {
+    let Ok(Query(query)) = query else {
+        return error_response(StatusCode::BAD_REQUEST, "runner must be codex or opencode");
+    };
+    let runner = query.runner;
+    let now = Instant::now();
+    if let Ok(cache) = state.model_catalog.lock()
+        && let Some(entry) = cache.iter().find(|entry| entry.runner == runner)
+        && now < entry.expires_at
+    {
+        let source = if entry.failure_reason.is_some() {
+            if entry.models.is_empty() {
+                coducktor_contract::ModelCatalogSource::Unavailable
+            } else {
+                coducktor_contract::ModelCatalogSource::Cache
+            }
+        } else {
+            coducktor_contract::ModelCatalogSource::Cache
+        };
+        return Json(model_catalog_wire(
+            runner,
+            entry.models.clone(),
+            source,
+            entry.failure_reason.is_some() && !entry.models.is_empty(),
+            entry.failure_reason.clone(),
+        ))
+        .into_response();
+    }
+
+    let discovered = match runner {
+        ModelDiscoveryRunner::Codex => discover_codex_models(&state.config.repo_root).await,
+        ModelDiscoveryRunner::OpenCode => discover_opencode_models(&state.config.repo_root).await,
+    };
+    let (models, source, stale, reason) = match discovered {
+        Ok(models) => (
+            models,
+            coducktor_contract::ModelCatalogSource::Live,
+            false,
+            None,
+        ),
+        Err(()) => {
+            let cached = state
+                .model_catalog
+                .lock()
+                .ok()
+                .and_then(|cache| cache.iter().find(|entry| entry.runner == runner).cloned());
+            let models = cached.map(|entry| entry.models).unwrap_or_default();
+            let stale = !models.is_empty();
+            (
+                models,
+                if stale {
+                    coducktor_contract::ModelCatalogSource::Cache
+                } else {
+                    coducktor_contract::ModelCatalogSource::Unavailable
+                },
+                stale,
+                Some(model_catalog_reason(runner)),
+            )
+        }
+    };
+    if let Ok(mut cache) = state.model_catalog.lock() {
+        cache.retain(|entry| entry.runner != runner);
+        cache.push(CachedModelCatalog {
+            runner,
+            models: models.clone(),
+            expires_at: Instant::now() + MODEL_CATALOG_TTL,
+            failure_reason: reason
+                .clone()
+                .filter(|_| source != coducktor_contract::ModelCatalogSource::Live),
+        });
+    }
+    Json(model_catalog_wire(runner, models, source, stale, reason)).into_response()
+}
+
+async fn read_bounded_stdout(
+    child: &mut tokio::process::Child,
+) -> Result<(Vec<u8>, std::process::ExitStatus), ()> {
+    let mut stdout = child.stdout.take().ok_or(())?;
+    timeout(MODEL_DISCOVERY_TIMEOUT, async {
+        let mut bytes = Vec::new();
+        let mut buffer = [0_u8; 8192];
+        loop {
+            let read = stdout.read(&mut buffer).await.map_err(|_| ())?;
+            if read == 0 {
+                break;
+            }
+            if bytes.len() + read > MAX_MODEL_OUTPUT_BYTES {
+                return Err(());
+            }
+            bytes.extend_from_slice(&buffer[..read]);
+        }
+        let status = child.wait().await.map_err(|_| ())?;
+        Ok((bytes, status))
+    })
+    .await
+    .map_err(|_| ())?
+}
+
+fn parse_opencode_models(stdout: &str) -> Result<Vec<coducktor_contract::RunnerModelOption>, ()> {
+    let mut models = Vec::new();
+    let mut ids = std::collections::BTreeSet::new();
+    let mut had_line = false;
+    for raw_line in stdout.lines() {
+        let line = strip_ansi(raw_line).trim().to_owned();
+        if line.is_empty() {
+            continue;
+        }
+        had_line = true;
+        let Some(slash) = line.find('/') else {
+            continue;
+        };
+        if slash == 0
+            || line[slash + 1..].is_empty()
+            || !line[..slash]
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+            || !line[slash + 1..]
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | ':' | '/' | '-'))
+        {
+            continue;
+        }
+        if !ids.insert(line.clone()) {
+            continue;
+        }
+        if models.len() >= MAX_DISCOVERED_MODELS {
+            return Err(());
+        }
+        let description = format!("via {}", &line[..slash]);
+        models.push(coducktor_contract::RunnerModelOption {
+            id: line.clone(),
+            label: line,
+            description,
+            reasoning_efforts: None,
+        });
+    }
+    if had_line && models.is_empty() {
+        return Err(());
+    }
+    Ok(models)
+}
+
+fn strip_ansi(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(character) = chars.next() {
+        if character == '\u{1b}' {
+            if chars.next() == Some('[') {
+                for character in chars.by_ref() {
+                    if character.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                output.push(character);
+            }
+        } else {
+            output.push(character);
+        }
+    }
+    output
+}
+
+async fn discover_opencode_models(
+    repo_root: &Path,
+) -> Result<Vec<coducktor_contract::RunnerModelOption>, ()> {
+    let executable = provider_executable(Runner::OpenCode);
+    let mut child = TokioCommand::new(executable)
+        .arg("models")
+        .current_dir(repo_root)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|_| ())?;
+    let (stdout, status) = read_bounded_stdout(&mut child).await?;
+    if !status.success() {
+        return Err(());
+    }
+    parse_opencode_models(&String::from_utf8(stdout).map_err(|_| ())?)
+}
+
+async fn write_codex_message(
+    stdin: &mut tokio::process::ChildStdin,
+    message: Value,
+) -> Result<(), ()> {
+    let mut bytes = serde_json::to_vec(&message).map_err(|_| ())?;
+    bytes.push(b'\n');
+    stdin.write_all(&bytes).await.map_err(|_| ())
+}
+
+async fn read_codex_response(
+    lines: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+    id: u64,
+) -> Result<Value, ()> {
+    while let Some(line) = lines.next_line().await.map_err(|_| ())? {
+        let frame: Value = serde_json::from_str(&line).map_err(|_| ())?;
+        if frame.get("id").and_then(Value::as_u64) != Some(id) {
+            continue;
+        }
+        if frame.get("error").is_some() {
+            return Err(());
+        }
+        return Ok(frame
+            .get("result")
+            .cloned()
+            .unwrap_or(Value::Object(Map::new())));
+    }
+    Err(())
+}
+
+async fn discover_codex_models(
+    repo_root: &Path,
+) -> Result<Vec<coducktor_contract::RunnerModelOption>, ()> {
+    let executable = provider_executable(Runner::Codex);
+    let mut child = TokioCommand::new(executable)
+        .arg("app-server")
+        .current_dir(repo_root)
+        .stdin(Stdio::piped())
+        .stderr(Stdio::null())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|_| ())?;
+    let mut stdin = child.stdin.take().ok_or(())?;
+    let stdout = child.stdout.take().ok_or(())?;
+    let mut lines = BufReader::new(stdout).lines();
+    let result = timeout(CODEX_DISCOVERY_TIMEOUT, async {
+        write_codex_message(
+            &mut stdin,
+            serde_json::json!({
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "clientInfo": { "name": "coducktor", "title": "Coducktor", "version": "0.1.0" },
+                    "capabilities": { "experimentalApi": true }
+                }
+            }),
+        )
+        .await?;
+        read_codex_response(&mut lines, 1).await?;
+        write_codex_message(
+            &mut stdin,
+            serde_json::json!({ "method": "initialized", "params": {} }),
+        )
+        .await?;
+        let mut cursor = Value::Null;
+        let mut cursors = std::collections::BTreeSet::new();
+        let mut models = Vec::new();
+        let mut ids = std::collections::BTreeSet::new();
+        for page in 0..25_u64 {
+            let id = page + 2;
+            write_codex_message(
+                &mut stdin,
+                serde_json::json!({
+                    "id": id,
+                    "method": "model/list",
+                    "params": { "cursor": cursor, "includeHidden": false }
+                }),
+            )
+            .await?;
+            let result = read_codex_response(&mut lines, id).await?;
+            let data = result.get("data").and_then(Value::as_array).ok_or(())?;
+            for model in data {
+                let object = model.as_object().ok_or(())?;
+                if object.get("hidden").and_then(Value::as_bool) == Some(true) {
+                    continue;
+                }
+                let id = object
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or(())?
+                    .to_owned();
+                if !ids.insert(id.clone()) {
+                    continue;
+                }
+                if models.len() >= MAX_DISCOVERED_MODELS {
+                    return Err(());
+                }
+                let reasoning_efforts = object
+                    .get("supportedReasoningEfforts")
+                    .map(|value| {
+                        value
+                            .as_array()
+                            .ok_or(())?
+                            .iter()
+                            .map(|value| {
+                                value
+                                    .as_str()
+                                    .filter(|value| !value.is_empty())
+                                    .map(str::to_owned)
+                                    .ok_or(())
+                            })
+                            .collect::<Result<Vec<_>, ()>>()
+                    })
+                    .transpose()?;
+                models.push(coducktor_contract::RunnerModelOption {
+                    label: object
+                        .get("displayName")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or(&id)
+                        .to_owned(),
+                    description: object
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    id,
+                    reasoning_efforts,
+                });
+            }
+            let next = result.get("nextCursor").cloned().unwrap_or(Value::Null);
+            let Some(next) = next.as_str() else {
+                return Ok(models);
+            };
+            if next.is_empty() || !cursors.insert(next.to_owned()) {
+                return Err(());
+            }
+            cursor = Value::String(next.to_owned());
+        }
+        Err(())
+    })
+    .await
+    .map_err(|_| ())?;
+    let _ = child.kill().await;
+    result
 }
 
 fn provider_name(provider: Runner) -> &'static str {
@@ -5753,6 +6140,31 @@ mod tests {
             "provider must be claude, codex, opencode, or pi"
         );
         fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test]
+    async fn model_catalog_route_rejects_missing_and_unsupported_runners() {
+        let router = test_router();
+        for path in ["/api/v1/models", "/api/v1/models?runner=claude"] {
+            let response = send(&router, Method::GET, path, None).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(
+                json_body(response).await["error"],
+                "runner must be codex or opencode"
+            );
+        }
+    }
+
+    #[test]
+    fn opencode_model_catalog_parser_preserves_order_and_rejects_banners() {
+        let models = parse_opencode_models(
+            "openai/gpt-5\n\u{1b}[32manthropic/claude-sonnet-4\u{1b}[0m\nopenai/gpt-5\n",
+        )
+        .expect("valid model listing");
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "openai/gpt-5");
+        assert_eq!(models[1].description, "via anthropic");
+        assert!(parse_opencode_models("warning: no models\n").is_err());
     }
 
     #[tokio::test]
