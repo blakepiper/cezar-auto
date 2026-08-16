@@ -456,7 +456,7 @@ resolve the same catalog and flag the same file). Added `regex` and `serde_yaml_
 one pre-existing `coducktor-client/tests/transport.rs` diff noted at B2 is untouched by this
 step).
 
-### [ ] B5 — Agent runner mappers ⚠ do carefully, best oracle in the project
+### [x] B5 — Agent runner mappers ⚠ do carefully, best oracle in the project
 **Ships:** `cezar-protocol` mappers → `cezar-runners`, one runner at a time (claude
 → codex → opencode → pi), each validated **byte-for-byte** against its committed
 golden fixtures; the `ui-parity` capability matrix re-implemented as a Rust test.
@@ -465,8 +465,15 @@ is fine, this step has the best oracle in the whole project and de-risks everyth
 downstream, so don't rush it into one giant commit.
 **Accept:** a diff against each committed `.expected.json` is the pass condition —
 no new fixtures authored.
-**Commit(s):** `feat(runners): B5.1 claude mapper`, `B5.2 codex mapper`, `B5.3
-opencode mapper`, `B5.4 pi mapper + ui-parity matrix`
+**Accept, verified:** all 26 committed Claude/Codex/OpenCode/Pi golden fixture
+transcripts replay byte-for-byte after JSON round-trip; the Rust parity matrix
+passes for all four backends; `cargo test --workspace`, `cargo clippy
+--workspace --all-targets -- -D warnings`, the runner-package format check, and
+`npm test` are green. The repository-wide format check still reports the
+pre-existing unrelated `coducktor-client/tests/transport.rs` drift noted at B2.
+**Commit(s):** `feat(runners): B5.1 claude mapper` — pushed as `2b7c736d`;
+`B5.2 codex mapper` — pushed as `2a5c1daa`; `B5.3 opencode mapper` — pushed as
+`3d0fced9`; `B5.4 pi mapper + ui-parity matrix` — pushed as `1a019aa1`.
 
 ### [ ] B6 — RunManager
 **Ships:** `cezar-core::workflows::run`. Split the 4.2k-line source into
