@@ -497,10 +497,20 @@ its cross-implementation oracle.
 **Commit:** `feat(core): B6 RunManager lifecycle and execution policies` — pushed as
 `b7792b9d`.
 
-### [ ] B7 — `cezar-forge`
-**Ships:** the `gh` driver, ported against `github.test.ts` (2.3k lines).
-**Accept:** ported suite green.
-**Commit:** `feat(forge): B7 gh driver`
+### [x] B7 — `cezar-forge`
+**Ships:** `crates/coducktor-forge` — the `gh` driver and forge seam, ported against the
+`github.test.ts`/`index.test.ts` oracle behavior. It includes injectable command and GraphQL
+boundaries, per-project caches, quiet degradation for missing/offline GitHub, issue/PR listing
+and counts, comments/reviews/timeline normalization, commit/PR checks, reference-status TTL and
+invalidation policy, bounded PR diffs, merge preflight/merge execution, draft-PR autosave/publish,
+remote parsing/host gating, and URL construction. The existing Node HTTP adapter remains in
+place until B9 wires the Rust driver into `cezar-server`.
+**Accept, verified:** the forge crate's 17 focused tests are green alongside the full Rust
+workspace (including workspace Clippy), the forge format check, `npm run typecheck`, and the
+full Node oracle suite (306 files / 5,582 tests). No live GitHub account is required: command
+and GraphQL seams are injected in the Rust tests, while real operation still shells out to `gh`
+and degrades to `{available:false,reason}` on failure.
+**Commit:** `feat(forge): B7 gh driver` — this commit.
 
 ### [x] B8 — removed from the plan (decision 7)
 The spec now says explicitly (§11.1): `cezar-core::automations` is **not** ported.
