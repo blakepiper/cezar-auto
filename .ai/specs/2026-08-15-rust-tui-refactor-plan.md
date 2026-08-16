@@ -147,12 +147,12 @@ screens, SSE-driven live updates, archive/read/delete.
 and progress through statuses; E2E pty test asserts it.
 **Commit:** `feat(tui): A5 tasks overview + global tasks` — pushed as `d7708105`.
 
-### [ ] A6 — Composer widget + New task
+### [x] A6 — Composer widget + New task
 **Ships:** shared composer (auto-grow, attachments, `/` skills, `@` files, quick
 replies, submit shortcuts, draft persistence), picker overlays, New Task screen.
 **Accept:** a task starts end-to-end from the TUI and appears in the Tasks table;
 picker grouping/ranking matches `lib/skills.ts`.
-**Commit:** `feat(tui): A6 composer + new task`
+**Commit:** `feat(tui): A6 composer + new task` — pushed as `df19e171`.
 
 ### [ ] A7 — Markdown, images, and the transcript
 **Ships:** `tui-markdown` + render cache, `ratatui-image` with protocol detection
