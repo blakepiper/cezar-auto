@@ -600,6 +600,35 @@ pub struct ProviderStatusResponse {
     pub providers: Vec<ProviderStatus>,
 }
 
+/// Mirrors the optional query accepted by `GET /api/v1/providers/status`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ProviderStatusQuery {
+    #[serde(default)]
+    pub refresh: Option<String>,
+}
+
+/// Mirrors `packages/contract/src/workspace.ts::ProviderEnabledInput`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderEnabledInput {
+    pub enabled: bool,
+}
+
+/// Mirrors the current-auth incident body accepted by the retry route.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderRetryInput {
+    pub auth_failure_id: String,
+}
+
+/// Mirrors `packages/contract/src/workspace.ts::ProviderConnectInput`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderConnectInput {
+    pub provider: Runner,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
+}
+
 /// The successful provider-connect branch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderConnectOpened {

@@ -39,7 +39,9 @@ use coducktor_contract::{
     OpenAgentAccountFileInput, OpenAgentAccountFileResponse, OpenProjectInRequest,
     OpenProjectInResponse, OpenTarget, OpenTargetsResponse, ParseWorkflowInput, ParsedWorkflow,
     PatchRunInput, PresentRepoResponse, ProjectListEntry, ProjectSource, ProjectStatus,
-    ProjectsResponse, ProviderConnectionState, ProviderStatus, ReclaimWorktreesResponse,
+    ProjectsResponse, ProviderConnectAlreadyConnected, ProviderConnectInput, ProviderConnectOpened,
+    ProviderConnectResponse, ProviderConnectionState, ProviderEnabledInput, ProviderRetryInput,
+    ProviderStatus, ProviderStatusQuery, ProviderStatusResponse, ReclaimWorktreesResponse,
     RegisterProjectInput, RegisterProjectResponse, RemoveAgentProfileResponse,
     RemoveProjectResponse, RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoDiffStat,
     RepoInfo, RepoResponse, RunRecord, Runner, RunnerModels, RunnerSelection, SaveWorkflowInput,
@@ -250,6 +252,19 @@ pub fn router_with_state(state: ServerState) -> Router {
         .route(
             "/api/v1/workspace/config",
             get(get_workspace_config).put(update_workspace_config),
+        )
+        .route("/api/v1/providers/status", get(get_provider_status))
+        .route(
+            "/api/v1/providers/{provider}/enabled",
+            axum::routing::put(set_provider_enabled),
+        )
+        .route(
+            "/api/v1/providers/{provider}/retry",
+            axum::routing::post(retry_provider),
+        )
+        .route(
+            "/api/v1/providers/connect",
+            axum::routing::post(connect_provider),
         )
         .route(
             "/api/v1/workspace/ui-state",
@@ -1855,6 +1870,355 @@ async fn update_workspace_config(
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
     };
     Json(workspace_config_response(&saved)).into_response()
+}
+
+fn provider_name(provider: Runner) -> &'static str {
+    match provider {
+        Runner::Claude => "claude",
+        Runner::Codex => "codex",
+        Runner::OpenCode => "opencode",
+        Runner::Pi => "pi",
+    }
+}
+
+fn runner_from_name(name: &str) -> Option<Runner> {
+    match name {
+        "claude" => Some(Runner::Claude),
+        "codex" => Some(Runner::Codex),
+        "opencode" => Some(Runner::OpenCode),
+        "pi" => Some(Runner::Pi),
+        _ => None,
+    }
+}
+
+fn provider_models_locked() -> bool {
+    std::env::var("DUCK_AGENT_MODELS_LOCKED")
+        .or_else(|_| std::env::var("CEZ_AGENT_MODELS_LOCKED"))
+        .is_ok_and(|value| value == "1")
+}
+
+fn provider_status_response(state: &ServerState) -> ProviderStatusResponse {
+    let config = workspace_config(state);
+    let locked = provider_models_locked();
+    let providers = coducktor_core::workspace::config::PROVIDER_IDS
+        .into_iter()
+        .map(|provider| {
+            let mut status = if locked {
+                ProviderStatus {
+                    provider,
+                    status: ProviderConnectionState::Connected,
+                    enabled: Some(true),
+                    hint: None,
+                    auth_failure_id: None,
+                    profile_id: None,
+                }
+            } else {
+                provider_status_for_profile(&default_agent_profile(provider))
+            };
+            status.enabled = Some(locked || !config.disabled_providers.contains(&provider));
+            status
+        })
+        .collect();
+    ProviderStatusResponse { providers }
+}
+
+fn parse_provider_enabled(value: Value) -> Result<ProviderEnabledInput, ()> {
+    let object = value.as_object().ok_or(())?;
+    if object.len() != 1 {
+        return Err(());
+    }
+    let enabled = object.get("enabled").and_then(Value::as_bool).ok_or(())?;
+    Ok(ProviderEnabledInput { enabled })
+}
+
+fn parse_provider_retry(value: Value) -> Result<ProviderRetryInput, ()> {
+    let object = value.as_object().ok_or(())?;
+    if object.len() != 1 {
+        return Err(());
+    }
+    let auth_failure_id = object
+        .get("authFailureId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty() && value.chars().count() <= 128)
+        .ok_or(())?
+        .to_owned();
+    Ok(ProviderRetryInput { auth_failure_id })
+}
+
+fn parse_provider_connect(value: Value) -> Result<ProviderConnectInput, ()> {
+    let object = value.as_object().ok_or(())?;
+    if object.len() > 2 || object.is_empty() {
+        return Err(());
+    }
+    if object
+        .keys()
+        .any(|key| key != "provider" && key != "profileId")
+    {
+        return Err(());
+    }
+    let provider = object
+        .get("provider")
+        .and_then(Value::as_str)
+        .and_then(runner_from_name)
+        .ok_or(())?;
+    let profile_id = object
+        .get("profileId")
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|value| !value.trim().is_empty() && value.chars().count() <= 64)
+                .map(str::to_owned)
+                .ok_or(())
+        })
+        .transpose()?;
+    Ok(ProviderConnectInput {
+        provider,
+        profile_id,
+    })
+}
+
+fn error_response_with_command(status: StatusCode, error: &str, command: &str) -> Response {
+    (
+        status,
+        Json(serde_json::json!({
+            "error": error,
+            "command": command,
+        })),
+    )
+        .into_response()
+}
+
+async fn get_provider_status(
+    State(state): State<ServerState>,
+    query: Result<Query<ProviderStatusQuery>, axum::extract::rejection::QueryRejection>,
+) -> Response {
+    let Ok(Query(query)) = query else {
+        return error_response(StatusCode::BAD_REQUEST, "refresh must be 1 when provided");
+    };
+    if query.refresh.as_deref().is_some_and(|value| value != "1") {
+        return error_response(StatusCode::BAD_REQUEST, "refresh must be 1 when provided");
+    }
+    Json(provider_status_response(&state)).into_response()
+}
+
+async fn set_provider_enabled(
+    State(state): State<ServerState>,
+    AxumPath(provider): AxumPath<String>,
+    input: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Some(provider) = runner_from_name(&provider) else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "provider and enabled boolean are required",
+        );
+    };
+    let Ok(Json(value)) = input else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "provider and enabled boolean are required",
+        );
+    };
+    let Ok(input) = parse_provider_enabled(value) else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "provider and enabled boolean are required",
+        );
+    };
+    let path = state.workspace_config_path();
+    if merge_write_workspace_config(&path, &ProcessEnv, |config| {
+        if input.enabled {
+            config.disabled_providers.retain(|item| item != &provider);
+        } else if !config.disabled_providers.contains(&provider) {
+            config.disabled_providers.push(provider);
+        }
+        config.disabled_providers = coducktor_core::workspace::config::PROVIDER_IDS
+            .into_iter()
+            .filter(|item| config.disabled_providers.contains(item))
+            .collect();
+    })
+    .is_err()
+    {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Provider preference could not be saved.",
+        );
+    }
+    Json(provider_status_response(&state)).into_response()
+}
+
+async fn retry_provider(
+    State(state): State<ServerState>,
+    AxumPath(provider): AxumPath<String>,
+    input: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Some(provider) = runner_from_name(&provider) else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "provider and current authFailureId are required",
+        );
+    };
+    let Ok(Json(value)) = input else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "provider and current authFailureId are required",
+        );
+    };
+    if parse_provider_retry(value).is_err() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "provider and current authFailureId are required",
+        );
+    }
+    // The Rust transport has no long-lived auth-incident latch yet.  A retry therefore
+    // refreshes the provider row; the runtime incident id is introduced with the in-process
+    // engine and can make this return the Node-compatible stale 409 at that seam.
+    let mut response = provider_status_response(&state);
+    if let Some(row) = response
+        .providers
+        .iter_mut()
+        .find(|row| row.provider == provider)
+    {
+        *row = provider_status_for_profile(&default_agent_profile(provider));
+        let config = workspace_config(&state);
+        row.enabled =
+            Some(provider_models_locked() || !config.disabled_providers.contains(&provider));
+    }
+    Json(response).into_response()
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn provider_login_command(provider: Runner, profile: &ResolvedAgentProfile) -> String {
+    let prefix = if profile.is_default {
+        String::new()
+    } else {
+        match provider {
+            Runner::Claude => format!(
+                "CLAUDE_CONFIG_DIR={} ",
+                shell_quote(&profile.path.to_string_lossy())
+            ),
+            Runner::Codex => format!(
+                "CODEX_HOME={} ",
+                shell_quote(&profile.path.to_string_lossy())
+            ),
+            Runner::OpenCode | Runner::Pi => String::new(),
+        }
+    };
+    let args = match provider {
+        Runner::Claude => ["auth", "login"].as_slice(),
+        Runner::Codex => ["login"].as_slice(),
+        Runner::OpenCode => ["auth", "login"].as_slice(),
+        Runner::Pi => ["/login"].as_slice(),
+    };
+    format!(
+        "{}{} {}",
+        prefix,
+        shell_quote(&provider_executable(provider)),
+        args.iter()
+            .map(|arg| shell_quote(arg))
+            .collect::<Vec<_>>()
+            .join(" ")
+    )
+}
+
+fn open_terminal_for_command(command: &str) -> bool {
+    if cfg!(target_os = "linux") {
+        return Command::new("x-terminal-emulator")
+            .args(["-e", "sh", "-lc", command])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .is_ok();
+    }
+    false
+}
+
+fn profile_for_connect(
+    state: &ServerState,
+    provider: Runner,
+    profile_id: Option<&str>,
+) -> Result<ResolvedAgentProfile, String> {
+    match profile_id {
+        None | Some(coducktor_contract::DEFAULT_AGENT_ACCOUNT_ID) => {
+            Ok(default_agent_profile(provider))
+        }
+        Some(id) => {
+            let profile = account_by_route_id(state, id)
+                .ok_or_else(|| format!("unknown {} account: {id}", provider_name(provider)))?;
+            if profile.provider != provider {
+                return Err(format!("unknown {} account: {id}", provider_name(provider)));
+            }
+            Ok(profile)
+        }
+    }
+}
+
+async fn connect_provider(
+    State(state): State<ServerState>,
+    input: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Ok(Json(value)) = input else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "provider must be claude, codex, opencode, or pi",
+        );
+    };
+    let Ok(input) = parse_provider_connect(value) else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "provider must be claude, codex, opencode, or pi",
+        );
+    };
+    let profile = match profile_for_connect(&state, input.provider, input.profile_id.as_deref()) {
+        Ok(profile) => profile,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, &error),
+    };
+    let command = provider_login_command(input.provider, &profile);
+    let status = provider_status_for_profile(&profile);
+    match status.status {
+        ProviderConnectionState::Connected => Json(ProviderConnectResponse::AlreadyConnected(
+            ProviderConnectAlreadyConnected {
+                opened: false,
+                connected: true,
+                command,
+            },
+        ))
+        .into_response(),
+        ProviderConnectionState::NotInstalled => error_response_with_command(
+            StatusCode::CONFLICT,
+            status
+                .hint
+                .as_deref()
+                .unwrap_or("Provider CLI is not installed."),
+            &command,
+        ),
+        ProviderConnectionState::Unknown => error_response_with_command(
+            StatusCode::CONFLICT,
+            status
+                .hint
+                .as_deref()
+                .unwrap_or("Authentication could not be verified. Try again."),
+            &command,
+        ),
+        ProviderConnectionState::Disconnected => {
+            if open_terminal_for_command(&command) {
+                Json(ProviderConnectResponse::Opened(ProviderConnectOpened {
+                    opened: true,
+                    command,
+                }))
+                .into_response()
+            } else {
+                error_response_with_command(
+                    StatusCode::CONFLICT,
+                    "No terminal emulator could be opened. Run this command manually.",
+                    &command,
+                )
+            }
+        }
+    }
 }
 
 async fn get_workspace_ui_state(State(state): State<ServerState>) -> Response {
@@ -5303,6 +5667,91 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test]
+    async fn provider_routes_persist_enablement_and_validate_actions() {
+        let repo = test_repo();
+        let workspace = repo.join("workspace");
+        let manager = RunManager::open(repo.join(".ai").join("coducktor"));
+        let router = router_with_state(ServerState::with_manager_and_workspace_dir(
+            ServerConfig::new(&repo, "test"),
+            manager,
+            &workspace,
+        ));
+
+        let response = send(
+            &router,
+            Method::PUT,
+            "/api/v1/providers/claude/enabled",
+            Some(serde_json::json!({ "enabled": false })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let status = json_body(response).await;
+        assert_eq!(status["providers"].as_array().map(Vec::len), Some(4));
+        assert_eq!(
+            status["providers"]
+                .as_array()
+                .and_then(|rows| rows.iter().find(|row| row["provider"] == "claude"))
+                .and_then(|row| row["enabled"].as_bool()),
+            Some(false)
+        );
+        let saved = load_workspace_config(&workspace.join("config.json"), &ProcessEnv);
+        assert_eq!(saved.disabled_providers, vec![Runner::Claude]);
+
+        let response = send(
+            &router,
+            Method::GET,
+            "/api/v1/providers/status?refresh=now",
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(response).await["error"],
+            "refresh must be 1 when provided"
+        );
+
+        let response = send(
+            &router,
+            Method::PUT,
+            "/api/v1/providers/claude/enabled",
+            Some(serde_json::json!({ "enabled": false, "extra": true })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(response).await["error"],
+            "provider and enabled boolean are required"
+        );
+
+        let response = send(
+            &router,
+            Method::POST,
+            "/api/v1/providers/claude/retry",
+            Some(serde_json::json!({})),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(response).await["error"],
+            "provider and current authFailureId are required"
+        );
+
+        let response = send(
+            &router,
+            Method::POST,
+            "/api/v1/providers/connect",
+            Some(serde_json::json!({ "provider": "future" })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(response).await["error"],
+            "provider must be claude, codex, opencode, or pi"
+        );
         fs::remove_dir_all(repo).expect("remove test repo");
     }
 
