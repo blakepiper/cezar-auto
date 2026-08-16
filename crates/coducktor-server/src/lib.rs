@@ -11,9 +11,10 @@ use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use axum::body::Body;
-use axum::extract::State;
+use axum::extract::{Path as AxumPath, State};
 use axum::http::header::HeaderName;
 use axum::http::header::{ACCESS_CONTROL_ALLOW_ORIGIN, HOST, ORIGIN};
 use axum::http::{HeaderValue, Method, Request, StatusCode};
@@ -22,10 +23,17 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use coducktor_contract::{
-    BackendCheck, BackendCheckName, Capabilities, ForgeInfo, ForgeKind, HealthProject,
-    HealthResponse, RepoInfo, RunnerSelection,
+    ApiRun, BackendCheck, BackendCheckName, Capabilities, ContinueInput, CreateRunInput,
+    CreateRunResponse, DeleteRunResponse, ForgeInfo, ForgeKind, HealthProject, HealthResponse,
+    MarkAllReadResponse, MessageInput, PatchRunInput, RepoInfo, RunRecord, RunnerSelection,
 };
+use coducktor_core::workflows::load::load_workflows;
+use coducktor_core::workflows::run::{
+    ContinueOptions, RunManager, StartRunInput as CoreStartRunInput,
+};
+use serde::Deserialize;
 use serde::Serialize;
+use serde_json::{Map, Value};
 
 const HEALTH_PATH: &str = "/api/v1/health";
 const SEC_FETCH_SITE: HeaderName = HeaderName::from_static("sec-fetch-site");
@@ -48,37 +56,122 @@ impl ServerConfig {
 
 /// Immutable state for the B9 transport shell. Mutable route-family state is added behind
 /// this `Arc` as each family lands; handlers never keep state in global statics.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ServerState {
     config: Arc<ServerConfig>,
+    manager: Arc<Mutex<RunManager>>,
 }
 
 impl ServerState {
     pub fn new(config: ServerConfig) -> Self {
+        let manager = RunManager::for_repo(&config.repo_root);
+        Self::with_manager(config, manager)
+    }
+
+    pub fn with_manager(config: ServerConfig, manager: RunManager) -> Self {
         Self {
             config: Arc::new(config),
+            manager: Arc::new(Mutex::new(manager)),
         }
     }
 
     pub fn config(&self) -> &ServerConfig {
         &self.config
     }
+
+    pub fn manager(&self) -> &Arc<Mutex<RunManager>> {
+        &self.manager
+    }
 }
 
 /// Build the versioned HTTP application.
 pub fn router(config: ServerConfig) -> Router {
     let state = ServerState::new(config);
-    Router::new()
-        .route(HEALTH_PATH, get(health))
-        .fallback(not_found)
-        .with_state(state.clone())
-        .layer(middleware::from_fn_with_state(state, request_origin_guard))
+    router_with_state(state)
 }
 
-/// Build a router from already constructed state. This is the seam used by route-family tests.
+/// Construct the application around a caller-owned manager. Route-family tests use this to
+/// seed durable records without reaching through HTTP; the production path uses [`router`].
 pub fn router_with_state(state: ServerState) -> Router {
     Router::new()
         .route(HEALTH_PATH, get(health))
+        .route("/api/v1/runs", get(list_runs).post(create_run))
+        .route(
+            "/api/v1/runs/archive-finished",
+            axum::routing::post(archive_finished),
+        )
+        .route("/api/v1/runs/read-all", axum::routing::post(mark_all_read))
+        .route(
+            "/api/v1/runs/{id}",
+            get(get_run).patch(patch_run).delete(delete_run),
+        )
+        .route(
+            "/api/v1/runs/{id}/archive",
+            axum::routing::post(archive_run),
+        )
+        .route("/api/v1/runs/{id}/read", axum::routing::post(read_run))
+        .route("/api/v1/runs/{id}/unread", axum::routing::post(unread_run))
+        .route("/api/v1/runs/{id}/cancel", axum::routing::post(cancel_run))
+        .route(
+            "/api/v1/runs/{id}/continue",
+            axum::routing::post(continue_run),
+        )
+        .route("/api/v1/runs/{id}/finish", axum::routing::post(finish_run))
+        .route(
+            "/api/v1/runs/{id}/messages",
+            axum::routing::post(send_message),
+        )
+        .route(
+            "/api/v1/runs/{id}/auto-resume",
+            axum::routing::delete(cancel_auto_resume),
+        )
+        // Project-scoped routes have the same default and boot-project aliases as the Node
+        // service.  The scope guard below admits only `default` and this server's boot project.
+        .route("/api/v1/p/{project}/runs", get(list_runs).post(create_run))
+        .route(
+            "/api/v1/p/{project}/runs/archive-finished",
+            axum::routing::post(archive_finished),
+        )
+        .route(
+            "/api/v1/p/{project}/runs/read-all",
+            axum::routing::post(mark_all_read),
+        )
+        .route(
+            "/api/v1/p/{project}/runs/{id}",
+            get(get_run).patch(patch_run).delete(delete_run),
+        )
+        .route(
+            "/api/v1/p/{project}/runs/{id}/archive",
+            axum::routing::post(archive_run),
+        )
+        .route(
+            "/api/v1/p/{project}/runs/{id}/read",
+            axum::routing::post(read_run),
+        )
+        .route(
+            "/api/v1/p/{project}/runs/{id}/unread",
+            axum::routing::post(unread_run),
+        )
+        .route(
+            "/api/v1/p/{project}/runs/{id}/cancel",
+            axum::routing::post(cancel_run),
+        )
+        .route(
+            "/api/v1/p/{project}/runs/{id}/continue",
+            axum::routing::post(continue_run),
+        )
+        .route(
+            "/api/v1/p/{project}/runs/{id}/finish",
+            axum::routing::post(finish_run),
+        )
+        .route(
+            "/api/v1/p/{project}/runs/{id}/messages",
+            axum::routing::post(send_message),
+        )
+        .route(
+            "/api/v1/p/{project}/runs/{id}/auto-resume",
+            axum::routing::delete(cancel_auto_resume),
+        )
         .fallback(not_found)
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state, request_origin_guard))
@@ -106,6 +199,332 @@ async fn health(State(state): State<ServerState>) -> Response {
 
 async fn not_found() -> Response {
     error_response(StatusCode::NOT_FOUND, "not found")
+}
+
+async fn list_runs(State(state): State<ServerState>) -> Response {
+    let Ok(manager) = state.manager.lock() else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run manager unavailable");
+    };
+    let runs = manager
+        .list_runs()
+        .into_iter()
+        .map(api_run)
+        .collect::<Vec<_>>();
+    Json(runs).into_response()
+}
+
+async fn get_run(State(state): State<ServerState>, AxumPath(id): AxumPath<String>) -> Response {
+    let Ok(manager) = state.manager.lock() else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run manager unavailable");
+    };
+    match manager.get_run(&id).cloned() {
+        Some(run) => Json(api_run(run)).into_response(),
+        None => error_response(StatusCode::NOT_FOUND, "not found"),
+    }
+}
+
+async fn create_run(
+    State(state): State<ServerState>,
+    Json(input): Json<CreateRunInput>,
+) -> Response {
+    let workflow = match workflow_for_input(state.config(), &input) {
+        Ok(workflow) => workflow,
+        Err((status, message)) => return error_response(status, &message),
+    };
+    let core_input = CoreStartRunInput {
+        task: input.task,
+        model: input.model,
+        reasoning_effort: input.reasoning_effort,
+        runner: input.runner,
+        agent_profile: input.agent_profile,
+        system_prompt: input.system_prompt,
+        generate_followups: input.generate_followups,
+        autonomous: input.autonomous,
+        worktree: input.worktree,
+    };
+    let Ok(mut manager) = state.manager.lock() else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run manager unavailable");
+    };
+    let variants = input.variants.unwrap_or(1.0);
+    if !variants.is_finite() || variants.fract() != 0.0 || !(1.0..=3.0).contains(&variants) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "variants must be an integer from 1 to 3",
+        );
+    }
+    if variants > 1.0 {
+        return match manager.start_variants(&workflow, core_input, variants as usize) {
+            Ok(runs) => {
+                (StatusCode::CREATED, Json(CreateRunResponse::Group { runs })).into_response()
+            }
+            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+        };
+    }
+    match manager.start_run(&workflow, core_input) {
+        Ok(run) => (
+            StatusCode::CREATED,
+            Json(CreateRunResponse::Single(Box::new(run))),
+        )
+            .into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+    }
+}
+
+async fn archive_finished(State(state): State<ServerState>) -> Response {
+    let Ok(mut manager) = state.manager.lock() else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run manager unavailable");
+    };
+    match manager.archive_finished() {
+        Ok(archived) => Json(coducktor_contract::ArchiveFinishedResponse {
+            archived: archived as f64,
+        })
+        .into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+    }
+}
+
+async fn mark_all_read(State(state): State<ServerState>) -> Response {
+    let Ok(mut manager) = state.manager.lock() else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run manager unavailable");
+    };
+    match manager.mark_all_read() {
+        Ok(read) => Json(MarkAllReadResponse { read: read as f64 }).into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ArchiveInput {
+    archived: Option<bool>,
+}
+
+async fn archive_run(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+    body: Option<Json<ArchiveInput>>,
+) -> Response {
+    let archived = body.and_then(|Json(value)| value.archived).unwrap_or(true);
+    let Ok(mut manager) = state.manager.lock() else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run manager unavailable");
+    };
+    match manager.archive(&id, archived) {
+        Ok(Some(run)) => Json(run).into_response(),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "not found"),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+    }
+}
+
+async fn read_run(State(state): State<ServerState>, AxumPath(id): AxumPath<String>) -> Response {
+    mutate_read(state, id, true)
+}
+
+async fn unread_run(State(state): State<ServerState>, AxumPath(id): AxumPath<String>) -> Response {
+    mutate_read(state, id, false)
+}
+
+fn mutate_read(state: ServerState, id: String, read: bool) -> Response {
+    let Ok(mut manager) = state.manager.lock() else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run manager unavailable");
+    };
+    let result = if read {
+        manager.mark_read(&id)
+    } else {
+        manager.mark_unread(&id)
+    };
+    match result {
+        Ok(Some(run)) => Json(run).into_response(),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "not found"),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+    }
+}
+
+async fn patch_run(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<PatchRunInput>,
+) -> Response {
+    let Ok(mut manager) = state.manager.lock() else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run manager unavailable");
+    };
+    let Some(current) = manager.get_run(&id).cloned() else {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    };
+    if input.task.is_some() && current.status != coducktor_contract::RunStatus::Queued {
+        return error_response(StatusCode::CONFLICT, "run already started");
+    }
+    let mut value = Map::new();
+    if let Some(title) = input.title {
+        value.insert("title".to_owned(), Value::String(title.clone()));
+        value.insert("titleSummary".to_owned(), Value::String(title));
+        value.insert("titleOrigin".to_owned(), Value::String("user".to_owned()));
+    }
+    if let Some(task) = input.task {
+        value.insert("task".to_owned(), Value::String(task));
+    }
+    match manager.update_run_value(&id, Value::Object(value)) {
+        Ok(Some(run)) => Json(run).into_response(),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "not found"),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, &error.to_string()),
+    }
+}
+
+async fn cancel_run(State(state): State<ServerState>, AxumPath(id): AxumPath<String>) -> Response {
+    let Ok(mut manager) = state.manager.lock() else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run manager unavailable");
+    };
+    if manager.get_run(&id).is_none() {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    }
+    match manager.cancel(&id) {
+        Ok(cancelled) => Json(coducktor_contract::CancelResponse { cancelled }).into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+    }
+}
+
+async fn finish_run(State(state): State<ServerState>, AxumPath(id): AxumPath<String>) -> Response {
+    let Ok(mut manager) = state.manager.lock() else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run manager unavailable");
+    };
+    if manager.get_run(&id).is_none() {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    }
+    match manager.finish(&id) {
+        Ok(true) => Json(coducktor_contract::FinishResponse { finished: true }).into_response(),
+        Ok(false) => error_response(StatusCode::CONFLICT, "no open session"),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+    }
+}
+
+async fn continue_run(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+    body: Option<Json<ContinueInput>>,
+) -> Response {
+    let input = body.map(|Json(value)| value).unwrap_or_default();
+    let options = ContinueOptions {
+        text: input.text,
+        runner: input.runner,
+        model: input.model,
+    };
+    let Ok(mut manager) = state.manager.lock() else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run manager unavailable");
+    };
+    if manager.get_run(&id).is_none() {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    }
+    match manager.continue_run(&id, options) {
+        Ok(result) if result.ok => {
+            Json(coducktor_contract::ContinueResponse { continued: true }).into_response()
+        }
+        Ok(result) => error_response(
+            StatusCode::CONFLICT,
+            result.error.as_deref().unwrap_or("cannot continue run"),
+        ),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+    }
+}
+
+async fn send_message(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<MessageInput>,
+) -> Response {
+    let Some(text) = input.text.filter(|value| !value.trim().is_empty()) else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "message needs text or at least one image",
+        );
+    };
+    let Ok(mut manager) = state.manager.lock() else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run manager unavailable");
+    };
+    if manager.get_run(&id).is_none() {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    }
+    match manager.send_message(&id, text) {
+        Ok(true) => {
+            Json(coducktor_contract::MessageResponse::Delivered { delivered: true }).into_response()
+        }
+        Ok(false) => error_response(StatusCode::CONFLICT, "session closed"),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+    }
+}
+
+async fn cancel_auto_resume(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let Ok(mut manager) = state.manager.lock() else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run manager unavailable");
+    };
+    if manager.get_run(&id).is_none() {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    }
+    let mut patch = Map::new();
+    patch.insert("autoResumeAt".to_owned(), Value::Null);
+    patch.insert("autoResumeAttempts".to_owned(), Value::Null);
+    match manager.update_run_value(&id, Value::Object(patch)) {
+        Ok(Some(_)) => {
+            Json(coducktor_contract::CancelAutoResumeResponse { cancelled: true }).into_response()
+        }
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "not found"),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+    }
+}
+
+async fn delete_run(State(state): State<ServerState>, AxumPath(id): AxumPath<String>) -> Response {
+    let Ok(mut manager) = state.manager.lock() else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run manager unavailable");
+    };
+    if manager.get_run(&id).is_none() {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    }
+    if manager.is_active(&id) {
+        return error_response(StatusCode::CONFLICT, "cannot delete an active run");
+    }
+    match manager.remove_run(&id) {
+        Ok(deleted) => Json(DeleteRunResponse { deleted }).into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+    }
+}
+
+fn workflow_for_input(
+    config: &ServerConfig,
+    input: &CreateRunInput,
+) -> Result<coducktor_contract::WorkflowDef, (StatusCode, String)> {
+    if let Some(steps) = &input.steps {
+        if steps.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "steps must not be empty".to_owned(),
+            ));
+        }
+        return Ok(coducktor_contract::WorkflowDef {
+            name: "(planned)".to_owned(),
+            description: None,
+            steps: steps.clone(),
+            source: coducktor_contract::WorkflowSource::BuiltIn,
+            path: None,
+        });
+    }
+    let Some(name) = input.workflow.as_deref() else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "workflow or steps is required".to_owned(),
+        ));
+    };
+    load_workflows(&config.repo_root)
+        .0
+        .into_iter()
+        .find(|workflow| workflow.name == name)
+        .ok_or((StatusCode::NOT_FOUND, format!("unknown workflow: {name}")))
+}
+
+fn api_run(record: RunRecord) -> ApiRun {
+    ApiRun {
+        record,
+        usage: None,
+    }
 }
 
 fn health_payload(config: &ServerConfig) -> HealthResponse {
@@ -209,7 +628,11 @@ fn first_line(bytes: &[u8]) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-async fn request_origin_guard(request: Request<Body>, next: Next) -> Response {
+async fn request_origin_guard(
+    State(state): State<ServerState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
     if !request.uri().path().starts_with("/api/") {
         return next.run(request).await;
     }
@@ -228,6 +651,12 @@ async fn request_origin_guard(request: Request<Body>, next: Next) -> Response {
 
     if request.uri().path() == HEALTH_PATH {
         return next.run(request).await;
+    }
+
+    if let Some(project) = scoped_project(request.uri().path())
+        && !project_alias_allowed(state.config(), project)
+    {
+        return error_response(StatusCode::NOT_FOUND, "not found");
     }
 
     if is_mutating(request.method()) {
@@ -270,6 +699,26 @@ async fn request_origin_guard(request: Request<Body>, next: Next) -> Response {
     }
 
     next.run(request).await
+}
+
+fn scoped_project(path: &str) -> Option<&str> {
+    let mut segments = path.split('/').filter(|segment| !segment.is_empty());
+    if segments.next() != Some("api")
+        || segments.next() != Some("v1")
+        || segments.next() != Some("p")
+    {
+        return None;
+    }
+    segments.next()
+}
+
+fn project_alias_allowed(config: &ServerConfig, project: &str) -> bool {
+    project == "default"
+        || config
+            .repo_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name == project)
 }
 
 fn is_mutating(method: &Method) -> bool {
@@ -322,10 +771,70 @@ mod tests {
     use super::*;
     use axum::body::to_bytes;
     use axum::http::Request;
+    use coducktor_core::workflows::run::{CreateRunInput as CoreCreateRunInput, RunManager};
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use tower::ServiceExt;
+
+    static TEST_REPO_ID: AtomicU64 = AtomicU64::new(0);
 
     fn test_router() -> Router {
         router(ServerConfig::new("/tmp/not-a-repo", "test"))
+    }
+
+    fn test_repo() -> std::path::PathBuf {
+        let id = TEST_REPO_ID.fetch_add(1, Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("coducktor-server-test-{}-{id}", std::process::id()));
+        fs::create_dir_all(&path).expect("test repo directory");
+        path
+    }
+
+    fn seeded_router() -> (Router, std::path::PathBuf, String) {
+        let repo = test_repo();
+        let data_dir = repo.join(".ai").join("coducktor");
+        let mut manager = RunManager::open(&data_dir);
+        let run = manager
+            .create_run(CoreCreateRunInput {
+                title: "original".to_owned(),
+                workflow: "manual".to_owned(),
+                task: "queued task".to_owned(),
+                ..CoreCreateRunInput::default()
+            })
+            .expect("seed run");
+        let state = ServerState::with_manager(ServerConfig::new(&repo, "test"), manager);
+        (router_with_state(state), repo, run.id)
+    }
+
+    async fn send(router: &Router, method: Method, uri: &str, body: Option<Value>) -> Response {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(HOST, "127.0.0.1:4321");
+        let request_body = match body {
+            Some(body) => {
+                builder = builder.header("content-type", "application/json");
+                Body::from(serde_json::to_vec(&body).expect("request JSON"))
+            }
+            None => Body::empty(),
+        };
+        router
+            .clone()
+            .oneshot(builder.body(request_body).expect("test request"))
+            .await
+            .expect("router response")
+    }
+
+    async fn json_body(response: Response) -> Value {
+        let bytes = response_body(response).await;
+        serde_json::from_slice(&bytes).expect("response JSON")
+    }
+
+    async fn response_body(response: Response) -> Vec<u8> {
+        to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body")
+            .to_vec()
     }
 
     #[tokio::test]
@@ -380,5 +889,170 @@ mod tests {
             .await
             .expect("router response");
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn runs_routes_cover_create_list_patch_receipts_archive_and_delete() {
+        let (router, repo, run_id) = seeded_router();
+
+        let response = send(&router, Method::GET, "/api/v1/runs", None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let runs = json_body(response).await;
+        assert_eq!(runs.as_array().map(Vec::len), Some(1));
+        assert_eq!(runs[0]["id"], run_id);
+
+        let response = send(
+            &router,
+            Method::PATCH,
+            &format!("/api/v1/runs/{run_id}"),
+            Some(serde_json::json!({ "title": "renamed", "task": "edited task" })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let patched = json_body(response).await;
+        assert_eq!(patched["title"], "renamed");
+        assert_eq!(patched["titleSummary"], "renamed");
+        assert_eq!(patched["titleOrigin"], "user");
+        assert_eq!(patched["task"], "edited task");
+
+        let response = send(
+            &router,
+            Method::POST,
+            &format!("/api/v1/runs/{run_id}/read"),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(json_body(response).await["seenAt"].is_string());
+
+        let response = send(
+            &router,
+            Method::POST,
+            &format!("/api/v1/runs/{run_id}/archive"),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(json_body(response).await["archived"], true);
+
+        let response = send(
+            &router,
+            Method::DELETE,
+            &format!("/api/v1/runs/{run_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(response).await,
+            serde_json::json!({ "deleted": true })
+        );
+
+        let response = send(
+            &router,
+            Method::GET,
+            &format!("/api/v1/runs/{run_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(json_body(response).await["error"], "not found");
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test]
+    async fn runs_routes_keep_default_and_boot_scope_aliases_byte_identical() {
+        let (router, repo, _) = seeded_router();
+        let boot = repo
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("test repo name");
+        let mut bodies = Vec::new();
+        for path in [
+            "/api/v1/runs".to_owned(),
+            "/api/v1/p/default/runs".to_owned(),
+            format!("/api/v1/p/{boot}/runs"),
+        ] {
+            let response = send(&router, Method::GET, &path, None).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            bodies.push(response_body(response).await);
+        }
+        assert_eq!(bodies[0], bodies[1]);
+        assert_eq!(bodies[0], bodies[2]);
+
+        let response = send(&router, Method::GET, "/api/v1/p/no-such-project/runs", None).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test]
+    async fn runs_routes_validate_workflow_selection_and_create_response() {
+        let (router, repo, _) = seeded_router();
+
+        let response = send(
+            &router,
+            Method::POST,
+            "/api/v1/runs",
+            Some(serde_json::json!({ "task": "missing workflow" })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(response).await["error"],
+            "workflow or steps is required"
+        );
+
+        let response = send(
+            &router,
+            Method::POST,
+            "/api/v1/runs",
+            Some(serde_json::json!({
+                "task": "run inline",
+                "steps": [{ "id": "work", "prompt": "{{task}}" }]
+            })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let created = json_body(response).await;
+        assert!(created["id"].is_string());
+        assert_eq!(created["task"], "run inline");
+
+        let response = send(&router, Method::POST, "/api/v1/runs/read-all", None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get("content-type").is_some());
+        assert!(json_body(response).await["read"].is_number());
+
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test]
+    async fn task_patch_is_rejected_after_a_run_leaves_the_queue() {
+        let (router, repo, _) = seeded_router();
+        let response = send(
+            &router,
+            Method::POST,
+            "/api/v1/runs",
+            Some(serde_json::json!({
+                "task": "starts and fails without a session factory",
+                "steps": [{ "id": "work", "prompt": "{{task}}" }]
+            })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let run_id = json_body(response).await["id"]
+            .as_str()
+            .expect("created run id")
+            .to_owned();
+
+        let response = send(
+            &router,
+            Method::PATCH,
+            &format!("/api/v1/runs/{run_id}"),
+            Some(serde_json::json!({ "task": "too late" })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(json_body(response).await["error"], "run already started");
+        fs::remove_dir_all(repo).expect("remove test repo");
     }
 }

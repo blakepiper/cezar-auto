@@ -8,6 +8,7 @@ version.workspace = true
 
 [dependencies]
 axum.workspace = true
+coducktor-core = { path = "../coducktor-core" }
 coducktor-contract = { path = "../coducktor-contract" }
 http = "1"
 serde.workspace = true

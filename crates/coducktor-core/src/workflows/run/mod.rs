@@ -203,8 +203,8 @@ pub struct RunEventNotification {
 /// The run delivered to an in-process run observer.
 pub type RunObserverId = u64;
 pub type EventObserverId = u64;
-type EventObservers = BTreeMap<EventObserverId, Box<dyn Fn(&RunEventNotification)>>;
-type RunObservers = BTreeMap<RunObserverId, Box<dyn Fn(&RunRecord)>>;
+type EventObservers = BTreeMap<EventObserverId, Box<dyn Fn(&RunEventNotification) + Send + Sync>>;
+type RunObservers = BTreeMap<RunObserverId, Box<dyn Fn(&RunRecord) + Send + Sync>>;
 
 /// Backend-neutral usage checkpoints emitted by the session layer.
 #[derive(Debug, Clone, PartialEq)]
@@ -509,7 +509,7 @@ pub enum SessionOutcome {
 
 /// Backend-neutral session seam. A real runner adapter belongs outside this crate and only needs
 /// to translate its own protocol into these outcomes.
-pub trait AgentSession {
+pub trait AgentSession: Send {
     fn turn(&mut self) -> Result<SessionOutcome, String>;
 
     fn send_message(&mut self, _prompt: &str) -> Result<SessionOutcome, String> {
@@ -529,8 +529,8 @@ pub trait AgentSession {
 
 /// Factory seam for session creation. It is injected by the CLI/server integration layer or by a
 /// deterministic test fake; no backend-specific runner type crosses this boundary.
-pub trait SessionFactory {
-    fn open(&mut self, request: SessionRequest) -> Result<Box<dyn AgentSession>, String>;
+pub trait SessionFactory: Send {
+    fn open(&mut self, request: SessionRequest) -> Result<Box<dyn AgentSession + Send>, String>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -541,13 +541,13 @@ pub struct CheckResult {
 
 /// Check execution is injected for the same reason as sessions: core owns workflow semantics, not
 /// a shell/process policy.
-pub trait CheckExecutor {
+pub trait CheckExecutor: Send {
     fn run(&mut self, command: &str) -> Result<CheckResult, String>;
 }
 
 /// Review settlement asks an injected diff reader whether the run has changes. This keeps Git
 /// worktree I/O out of the runtime foundation while preserving the review decision.
-pub trait DiffInspector {
+pub trait DiffInspector: Send {
     fn has_diff(&mut self, run: &RunRecord) -> bool;
 }
 
@@ -730,12 +730,29 @@ impl RunManager {
             .collect()
     }
 
+    /// Remove a run and its append-only event log. The server uses this only after checking the
+    /// run is not active; keeping the deletion here makes the persistence boundary explicit and
+    /// gives the future in-process engine the same operation without reimplementing file cleanup.
+    pub fn remove_run(&mut self, run_id: &str) -> io::Result<bool> {
+        let Some(run) = self.runs.remove(run_id) else {
+            return Ok(false);
+        };
+        self.cleanup_runtime(run_id);
+        if let Err(error) = self.persist() {
+            self.runs.insert(run_id.to_owned(), run);
+            return Err(error);
+        }
+        let event_path = events::events_path(&self.data_dir, run_id);
+        let _ = fs::remove_file(event_path);
+        Ok(true)
+    }
+
     /// Register an observer for appended events. The callback is invoked after the NDJSON append
     /// succeeds and receives an owned notification view, so it cannot mutate manager state by
     /// aliasing a record reference.
     pub fn subscribe_events<F>(&mut self, observer: F) -> EventObserverId
     where
-        F: Fn(&RunEventNotification) + 'static,
+        F: Fn(&RunEventNotification) + Send + Sync + 'static,
     {
         let id = self.next_observer_id();
         self.event_observers.insert(id, Box::new(observer));
@@ -749,7 +766,7 @@ impl RunManager {
     /// Register an observer for durable record updates.
     pub fn subscribe_runs<F>(&mut self, observer: F) -> RunObserverId
     where
-        F: Fn(&RunRecord) + 'static,
+        F: Fn(&RunRecord) + Send + Sync + 'static,
     {
         let id = self.next_observer_id();
         self.run_observers.insert(id, Box::new(observer));
@@ -3156,6 +3173,7 @@ mod tests {
     use super::*;
     use coducktor_contract::runs::{QueuedMessage, TitleOrigin};
     use serde_json::json;
+    use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
     use super::semaphore::{RepositoryRootLease, WorkspaceSemaphore};
@@ -3305,11 +3323,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut manager = RunManager::open(dir.path());
         let run = manager.create_run(create_input()).unwrap();
-        let observed = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let observed = Arc::new(Mutex::new(Vec::new()));
         let observed_by_callback = observed.clone();
         manager.subscribe_events(move |notification| {
             observed_by_callback
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .push(notification.event.seq);
         });
         assert_eq!(
@@ -3322,7 +3341,7 @@ mod tests {
         manager
             .append_event(&run.id, EventInput::new("note").field("message", "two"))
             .unwrap();
-        assert_eq!(*observed.borrow(), vec![1.0, 2.0]);
+        assert_eq!(*observed.lock().unwrap(), vec![1.0, 2.0]);
 
         let reopened = RunManager::open(dir.path());
         let continued = reopened.read_events(&run.id);
@@ -3553,20 +3572,24 @@ mod tests {
     }
 
     struct FakeFactory {
-        outcomes: std::rc::Rc<std::cell::RefCell<std::collections::VecDeque<SessionOutcome>>>,
-        requests: std::rc::Rc<std::cell::RefCell<Vec<SessionRequest>>>,
-        follow_ups: std::rc::Rc<std::cell::RefCell<std::collections::VecDeque<SessionOutcome>>>,
+        outcomes: Arc<Mutex<std::collections::VecDeque<SessionOutcome>>>,
+        requests: Arc<Mutex<Vec<SessionRequest>>>,
+        follow_ups: Arc<Mutex<std::collections::VecDeque<SessionOutcome>>>,
     }
 
     impl SessionFactory for FakeFactory {
-        fn open(&mut self, request: SessionRequest) -> Result<Box<dyn AgentSession>, String> {
-            self.requests.borrow_mut().push(request);
+        fn open(
+            &mut self,
+            request: SessionRequest,
+        ) -> Result<Box<dyn AgentSession + Send>, String> {
+            self.requests.lock().unwrap().push(request);
             let outcome = self
                 .outcomes
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .pop_front()
                 .ok_or_else(|| "fake factory ran out of outcomes".to_owned())?;
-            let follow_up = self.follow_ups.borrow_mut().pop_front();
+            let follow_up = self.follow_ups.lock().unwrap().pop_front();
             Ok(Box::new(FakeSession {
                 outcome: Some(outcome),
                 follow_up,
@@ -3575,13 +3598,14 @@ mod tests {
     }
 
     struct FakeChecks {
-        results: std::rc::Rc<std::cell::RefCell<std::collections::VecDeque<CheckResult>>>,
+        results: Arc<Mutex<std::collections::VecDeque<CheckResult>>>,
     }
 
     impl CheckExecutor for FakeChecks {
         fn run(&mut self, _command: &str) -> Result<CheckResult, String> {
             self.results
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .pop_front()
                 .ok_or_else(|| "fake check executor ran out of results".to_owned())
         }
@@ -3596,21 +3620,23 @@ mod tests {
     }
 
     struct RecordingWorkspaceSemaphore {
-        acquired: std::rc::Rc<std::cell::RefCell<Vec<(String, String)>>>,
-        released: std::rc::Rc<std::cell::RefCell<Vec<(String, String)>>>,
+        acquired: Arc<Mutex<Vec<(String, String)>>>,
+        released: Arc<Mutex<Vec<(String, String)>>>,
     }
 
     impl WorkspaceSemaphore for RecordingWorkspaceSemaphore {
         fn try_acquire(&mut self, run_id: &str, project_id: &str) -> bool {
             self.acquired
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .push((run_id.to_owned(), project_id.to_owned()));
             true
         }
 
         fn release(&mut self, run_id: &str, project_id: &str) {
             self.released
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .push((run_id.to_owned(), project_id.to_owned()));
         }
 
@@ -3624,34 +3650,29 @@ mod tests {
     }
 
     struct RecordingRepositoryLease {
-        acquired: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
-        released: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+        acquired: Arc<Mutex<Vec<String>>>,
+        released: Arc<Mutex<Vec<String>>>,
     }
 
     impl RepositoryRootLease for RecordingRepositoryLease {
         fn try_acquire(&mut self, run_id: &str) -> bool {
-            self.acquired.borrow_mut().push(run_id.to_owned());
+            self.acquired.lock().unwrap().push(run_id.to_owned());
             true
         }
 
         fn release(&mut self, run_id: &str) {
-            self.released.borrow_mut().push(run_id.to_owned());
+            self.released.lock().unwrap().push(run_id.to_owned());
         }
     }
 
     fn fake_factory(
         outcomes: Vec<SessionOutcome>,
-    ) -> (
-        FakeFactory,
-        std::rc::Rc<std::cell::RefCell<Vec<SessionRequest>>>,
-    ) {
-        let requests = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    ) -> (FakeFactory, Arc<Mutex<Vec<SessionRequest>>>) {
+        let requests = Arc::new(Mutex::new(Vec::new()));
         let factory = FakeFactory {
-            outcomes: std::rc::Rc::new(std::cell::RefCell::new(outcomes.into_iter().collect())),
+            outcomes: Arc::new(Mutex::new(outcomes.into_iter().collect())),
             requests: requests.clone(),
-            follow_ups: std::rc::Rc::new(
-                std::cell::RefCell::new(std::collections::VecDeque::new()),
-            ),
+            follow_ups: Arc::new(Mutex::new(std::collections::VecDeque::new())),
         };
         (factory, requests)
     }
@@ -3659,15 +3680,12 @@ mod tests {
     fn fake_factory_with_followups(
         outcomes: Vec<SessionOutcome>,
         follow_ups: Vec<SessionOutcome>,
-    ) -> (
-        FakeFactory,
-        std::rc::Rc<std::cell::RefCell<Vec<SessionRequest>>>,
-    ) {
-        let requests = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    ) -> (FakeFactory, Arc<Mutex<Vec<SessionRequest>>>) {
+        let requests = Arc::new(Mutex::new(Vec::new()));
         let factory = FakeFactory {
-            outcomes: std::rc::Rc::new(std::cell::RefCell::new(outcomes.into_iter().collect())),
+            outcomes: Arc::new(Mutex::new(outcomes.into_iter().collect())),
             requests: requests.clone(),
-            follow_ups: std::rc::Rc::new(std::cell::RefCell::new(follow_ups.into_iter().collect())),
+            follow_ups: Arc::new(Mutex::new(follow_ups.into_iter().collect())),
         };
         (factory, requests)
     }
@@ -3757,7 +3775,7 @@ mod tests {
     fn runtime_executes_agent_and_check_steps_and_persists_session_usage() {
         let dir = tempdir().unwrap();
         let (factory, requests) = fake_factory(vec![completed_session("session-1")]);
-        let checks = std::rc::Rc::new(std::cell::RefCell::new(std::collections::VecDeque::from([
+        let checks = Arc::new(Mutex::new(std::collections::VecDeque::from([
             CheckResult {
                 success: true,
                 output: "ok".to_owned(),
@@ -3782,7 +3800,7 @@ mod tests {
         assert_eq!(run.steps[0].tokens_used, 3.0);
         assert_eq!(run.steps[0].cost_usd, Some(0.25));
         assert_eq!(run.tokens_used, 3.0);
-        assert_eq!(requests.borrow()[0].prompt, "ship it");
+        assert_eq!(requests.lock().unwrap()[0].prompt, "ship it");
         assert!(manager.active.is_empty());
         assert!(manager.jobs.is_empty());
     }
@@ -3822,10 +3840,10 @@ mod tests {
     fn runtime_uses_injected_workspace_and_repository_lease_seams() {
         let dir = tempdir().unwrap();
         let (factory, _requests) = fake_factory(vec![completed_session("leased")]);
-        let acquired_workspace = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let released_workspace = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let acquired_repository = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let released_repository = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let acquired_workspace = Arc::new(Mutex::new(Vec::new()));
+        let released_workspace = Arc::new(Mutex::new(Vec::new()));
+        let acquired_repository = Arc::new(Mutex::new(Vec::new()));
+        let released_repository = Arc::new(Mutex::new(Vec::new()));
         let mut manager = RunManager::with_session_factory(dir.path(), factory);
         manager.set_project_id("project-a");
         manager.set_workspace_semaphore(RecordingWorkspaceSemaphore {
@@ -3842,10 +3860,10 @@ mod tests {
             .start_run(&workflow, start_input("leased run"))
             .unwrap();
         assert_eq!(run.status, RunStatus::Done);
-        assert_eq!(acquired_workspace.borrow()[0].1, "project-a");
-        assert_eq!(released_workspace.borrow().len(), 1);
-        assert_eq!(&*acquired_repository.borrow(), &vec![run.id.clone()]);
-        assert_eq!(&*released_repository.borrow(), &vec![run.id]);
+        assert_eq!(acquired_workspace.lock().unwrap()[0].1, "project-a");
+        assert_eq!(released_workspace.lock().unwrap().len(), 1);
+        assert_eq!(&*acquired_repository.lock().unwrap(), &vec![run.id.clone()]);
+        assert_eq!(&*released_repository.lock().unwrap(), &vec![run.id]);
     }
 
     #[test]
@@ -3853,7 +3871,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let (factory, _requests) =
             fake_factory(vec![completed_session("first"), completed_session("retry")]);
-        let checks = std::rc::Rc::new(std::cell::RefCell::new(std::collections::VecDeque::from([
+        let checks = Arc::new(Mutex::new(std::collections::VecDeque::from([
             CheckResult {
                 success: false,
                 output: "bad".to_owned(),
@@ -4040,9 +4058,17 @@ mod tests {
                 .collect::<Vec<_>>(),
             [Some("A"), Some("B"), Some("C")]
         );
-        assert_eq!(requests.borrow().len(), 3);
-        assert!(requests.borrow()[1].prompt.contains("minimal, surgical"));
-        assert!(requests.borrow()[2].prompt.contains("thorough, structural"));
+        assert_eq!(requests.lock().unwrap().len(), 3);
+        assert!(
+            requests.lock().unwrap()[1]
+                .prompt
+                .contains("minimal, surgical")
+        );
+        assert!(
+            requests.lock().unwrap()[2]
+                .prompt
+                .contains("thorough, structural")
+        );
     }
 
     #[test]
@@ -4137,7 +4163,7 @@ mod tests {
         assert_eq!(report.resumed, vec![run.id.clone()]);
         assert_eq!(recovered.get_run(&run.id).unwrap().status, RunStatus::Done);
         assert_eq!(
-            requests.borrow()[0].session_id.as_deref(),
+            requests.lock().unwrap()[0].session_id.as_deref(),
             Some("running-session")
         );
         assert!(
@@ -4252,9 +4278,9 @@ mod tests {
         let continued = manager.get_run(&run.id).unwrap();
         assert_eq!(continued.runner, Some(Runner::Codex));
         assert_eq!(continued.model.as_deref(), Some("gpt-5.1-codex"));
-        assert_eq!(requests.borrow()[1].runner, RunnerSelection::Codex);
-        assert_eq!(requests.borrow()[1].session_id, None);
-        assert_eq!(requests.borrow()[1].prompt, "keep going");
+        assert_eq!(requests.lock().unwrap()[1].runner, RunnerSelection::Codex);
+        assert_eq!(requests.lock().unwrap()[1].session_id, None);
+        assert_eq!(requests.lock().unwrap()[1].prompt, "keep going");
         assert!(
             continued
                 .steps
@@ -4292,8 +4318,11 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(requests.borrow()[1].runner, RunnerSelection::Claude);
-        assert_eq!(requests.borrow()[1].session_id.as_deref(), Some("old"));
+        assert_eq!(requests.lock().unwrap()[1].runner, RunnerSelection::Claude);
+        assert_eq!(
+            requests.lock().unwrap()[1].session_id.as_deref(),
+            Some("old")
+        );
         assert!(
             manager.get_run(&run.id).unwrap().steps.iter().any(
                 |step| step.id == "continue-1" && step.session_id.as_deref() == Some("resumed")

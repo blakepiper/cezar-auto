@@ -777,6 +777,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "coducktor-contract",
+ "coducktor-core",
  "http",
  "serde",
  "serde_json",

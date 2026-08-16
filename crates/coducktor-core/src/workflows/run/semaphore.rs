@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 
 /// Workspace-wide coordinator. Implementations may aggregate several project managers; core only
 /// asks for admission and release and never reads a config file here.
-pub trait WorkspaceSemaphore {
+pub trait WorkspaceSemaphore: Send {
     fn try_acquire(&mut self, run_id: &str, project_id: &str) -> bool;
     fn release(&mut self, run_id: &str, project_id: &str);
     fn busy_slots(&self) -> usize;
@@ -13,7 +13,7 @@ pub trait WorkspaceSemaphore {
 
 /// Exclusive repository-root lease. Worktree-backed jobs can inject a no-op implementation;
 /// in-place jobs inject the process-wide lease owned by their integration layer.
-pub trait RepositoryRootLease {
+pub trait RepositoryRootLease: Send {
     fn try_acquire(&mut self, run_id: &str) -> bool;
     fn release(&mut self, run_id: &str);
 }
