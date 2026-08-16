@@ -27,23 +27,25 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use coducktor_contract::{
-    AgentAccountFile, AgentAccountSelection, AgentConfigFile, AgentConfigFileContent,
-    AgentConfigFormat, AgentConfigKind, AgentConfigListing, AgentConfigScope, AgentConfigTracked,
-    AgentProfile, AgentProfileResponse, AgentProfileSelectionsResponse, AgentProfilesResponse,
-    ApiRun, BackendCheck, BackendCheckName, Capabilities, ChangedFile, ChangedFileStatus,
-    ChangesPayload, ConfigResponse, ContinueInput, CreateAgentProfileInput, CreateRunInput,
-    CreateRunResponse, DeleteRunResponse, DeleteWorkflowResponse, EmptyRepoResponse, ForgeInfo,
-    ForgeKind, HealthProject, HealthResponse, IdeDirectoryQuery, IdeDirectoryResponse, IdeEntry,
-    IdeEntryType, IdeFileInput, IdeFileQuery, IdeFileResponse, LogEntry, MarkAllReadResponse,
-    MessageInput, OpenProjectInRequest, OpenProjectInResponse, OpenTarget, OpenTargetsResponse,
-    ParseWorkflowInput, ParsedWorkflow, PatchRunInput, PresentRepoResponse, ProjectListEntry,
-    ProjectSource, ProjectStatus, ProjectsResponse, ReclaimWorktreesResponse, RegisterProjectInput,
-    RegisterProjectResponse, RemoveAgentProfileResponse, RemoveProjectResponse, RepoBranchRequest,
-    RepoBranchResponse, RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse, RunRecord, Runner,
-    RunnerModels, RunnerSelection, SaveWorkflowInput, SaveWorkflowResponse,
-    SelectAgentProfileInput, SetAgentConfigInput, SetConfigInput, SetWorkspaceConfigInput,
-    SetWorkspaceUiStateInput, StartTodoResponse, StatusEntry, TodoItem, UiState,
-    UpdateAgentProfileInput, UpdateProjectInput, UpdateProjectResponse, UserMcpListing,
+    AgentAccountDetailField, AgentAccountDetailsResponse, AgentAccountFile, AgentAccountSelection,
+    AgentAccountStatusResponse, AgentConfigFile, AgentConfigFileContent, AgentConfigFormat,
+    AgentConfigKind, AgentConfigListing, AgentConfigScope, AgentConfigTracked, AgentProfile,
+    AgentProfileResponse, AgentProfileSelectionsResponse, AgentProfilesResponse, ApiRun,
+    BackendCheck, BackendCheckName, Capabilities, ChangedFile, ChangedFileStatus, ChangesPayload,
+    ConfigResponse, ContinueInput, CreateAgentProfileInput, CreateRunInput, CreateRunResponse,
+    DeleteRunResponse, DeleteWorkflowResponse, EmptyRepoResponse, ForgeInfo, ForgeKind,
+    HealthProject, HealthResponse, IdeDirectoryQuery, IdeDirectoryResponse, IdeEntry, IdeEntryType,
+    IdeFileInput, IdeFileQuery, IdeFileResponse, LogEntry, MarkAllReadResponse, MessageInput,
+    OpenAgentAccountFileInput, OpenAgentAccountFileResponse, OpenProjectInRequest,
+    OpenProjectInResponse, OpenTarget, OpenTargetsResponse, ParseWorkflowInput, ParsedWorkflow,
+    PatchRunInput, PresentRepoResponse, ProjectListEntry, ProjectSource, ProjectStatus,
+    ProjectsResponse, ProviderConnectionState, ProviderStatus, ReclaimWorktreesResponse,
+    RegisterProjectInput, RegisterProjectResponse, RemoveAgentProfileResponse,
+    RemoveProjectResponse, RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoDiffStat,
+    RepoInfo, RepoResponse, RunRecord, Runner, RunnerModels, RunnerSelection, SaveWorkflowInput,
+    SaveWorkflowResponse, SelectAgentProfileInput, SetAgentConfigInput, SetConfigInput,
+    SetWorkspaceConfigInput, SetWorkspaceUiStateInput, StartTodoResponse, StatusEntry, TodoItem,
+    UiState, UpdateAgentProfileInput, UpdateProjectInput, UpdateProjectResponse, UserMcpListing,
     WorkflowStepDef, WorkflowsResponse, WorkspaceConfigResponse, WorktreeInfo, WorktreeRunStatus,
     WorktreesResponse,
 };
@@ -260,6 +262,18 @@ pub fn router_with_state(state: ServerState) -> Router {
         .route(
             "/api/v1/workspace/agent-profiles/{id}",
             axum::routing::patch(update_agent_profile).delete(remove_agent_profile),
+        )
+        .route(
+            "/api/v1/workspace/agent-profiles/{id}/status",
+            get(get_agent_profile_status),
+        )
+        .route(
+            "/api/v1/workspace/agent-profiles/{id}/details",
+            get(get_agent_profile_details),
+        )
+        .route(
+            "/api/v1/workspace/agent-profiles/{id}/open",
+            axum::routing::post(open_agent_profile_file),
         )
         .route(
             "/api/v1/workspace/agent-profiles/selection",
@@ -2353,6 +2367,419 @@ async fn select_agent_profile(
     Json(AgentProfileSelectionsResponse {
         selections,
         defaults: selection_wire(&saved.defaults),
+    })
+    .into_response()
+}
+
+fn account_by_route_id(state: &ServerState, id: &str) -> Option<ResolvedAgentProfile> {
+    if let Some(provider) = id.strip_prefix("default:").and_then(|name| match name {
+        "claude" => Some(Runner::Claude),
+        "codex" => Some(Runner::Codex),
+        "opencode" => Some(Runner::OpenCode),
+        "pi" => Some(Runner::Pi),
+        _ => None,
+    }) {
+        return Some(default_agent_profile(provider));
+    }
+    coducktor_core::workspace::agent_accounts::load_agent_accounts(&state.agent_accounts_path())
+        .accounts
+        .iter()
+        .find(|account| account.id == id)
+        .map(resolved_agent_profile)
+}
+
+fn provider_executable(provider: Runner) -> String {
+    let (duck, cez, default) = match provider {
+        Runner::Claude => ("DUCK_CLAUDE_BIN", "CEZ_CLAUDE_BIN", "claude"),
+        Runner::Codex => ("DUCK_CODEX_BIN", "CEZ_CODEX_BIN", "codex"),
+        Runner::OpenCode => ("DUCK_OPENCODE_BIN", "CEZ_OPENCODE_BIN", "opencode"),
+        Runner::Pi => ("DUCK_PI_BIN", "CEZ_PI_BIN", "pi"),
+    };
+    std::env::var(duck)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            std::env::var(cez)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .unwrap_or_else(|| default.to_owned())
+}
+
+fn provider_probe_args(provider: Runner) -> &'static [&'static str] {
+    match provider {
+        Runner::Claude => &["auth", "status", "--json"],
+        Runner::Codex => &["login", "status"],
+        Runner::OpenCode => &["auth", "list"],
+        Runner::Pi => &["--list-models"],
+    }
+}
+
+fn provider_install_hint(provider: Runner) -> &'static str {
+    match provider {
+        Runner::Claude => "Install Claude Code, then run `claude auth login`.",
+        Runner::Codex => "Install the Codex CLI, then run `codex login`.",
+        Runner::OpenCode => "Install OpenCode, then run `opencode auth login`.",
+        Runner::Pi => "Install pi, then run `pi /login`.",
+    }
+}
+
+fn provider_state_from_output(
+    provider: Runner,
+    stdout: &str,
+    stderr: &str,
+    exit_code: Option<i32>,
+) -> Option<ProviderConnectionState> {
+    let combined = format!("{stdout}\n{stderr}");
+    let lower = combined.to_ascii_lowercase();
+    match provider {
+        Runner::Claude => {
+            let logged_in = serde_json::from_str::<Value>(stdout)
+                .ok()?
+                .get("loggedIn")
+                .and_then(Value::as_bool)?;
+            if logged_in && exit_code == Some(0) {
+                Some(ProviderConnectionState::Connected)
+            } else if !logged_in && exit_code == Some(1) {
+                Some(ProviderConnectionState::Disconnected)
+            } else {
+                None
+            }
+        }
+        Runner::Codex => {
+            let connected = lower.lines().any(|line| {
+                let line = line.trim();
+                line.starts_with("logged in using ")
+            });
+            let disconnected = lower
+                .lines()
+                .any(|line| line.trim() == "not logged in" || line.contains("run codex login"));
+            match (connected, disconnected, exit_code) {
+                (true, false, Some(0)) => Some(ProviderConnectionState::Connected),
+                (false, true, Some(1)) => Some(ProviderConnectionState::Disconnected),
+                _ => None,
+            }
+        }
+        Runner::OpenCode => {
+            let mut counts = lower
+                .lines()
+                .filter_map(|line| {
+                    let mut words = line.split_whitespace();
+                    let count = words.next()?.parse::<u64>().ok()?;
+                    words.next().filter(|word| word.starts_with("credential"))?;
+                    Some(count)
+                })
+                .collect::<Vec<_>>();
+            if counts.len() != 1 || exit_code != Some(0) {
+                return None;
+            }
+            Some(if counts.remove(0) > 0 {
+                ProviderConnectionState::Connected
+            } else {
+                ProviderConnectionState::Disconnected
+            })
+        }
+        Runner::Pi => {
+            if exit_code != Some(0) {
+                return None;
+            }
+            if lower.lines().any(|line| {
+                line.split_whitespace().collect::<Vec<_>>()
+                    == [
+                        "provider", "model", "context", "max-out", "thinking", "images",
+                    ]
+            }) {
+                Some(ProviderConnectionState::Connected)
+            } else if lower.contains("no models available") && lower.contains("/login") {
+                Some(ProviderConnectionState::Disconnected)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn provider_status_for_profile(profile: &ResolvedAgentProfile) -> ProviderStatus {
+    let profile_id = (!profile.is_default).then(|| profile.id.clone());
+    if std::env::var("DUCK_DRY_RUN")
+        .or_else(|_| std::env::var("CEZ_DRY_RUN"))
+        .is_ok_and(|value| value == "1")
+    {
+        return ProviderStatus {
+            provider: profile.provider,
+            status: ProviderConnectionState::Connected,
+            enabled: None,
+            hint: None,
+            auth_failure_id: None,
+            profile_id,
+        };
+    }
+    let executable = provider_executable(profile.provider);
+    let mut command = Command::new(&executable);
+    command.args(provider_probe_args(profile.provider));
+    if !profile.is_default {
+        match profile.provider {
+            Runner::Claude => {
+                command.env("CLAUDE_CONFIG_DIR", &profile.path);
+            }
+            Runner::Codex => {
+                command.env("CODEX_HOME", &profile.path);
+            }
+            Runner::OpenCode | Runner::Pi => {}
+        }
+    }
+    let result = command.output();
+    let (status, hint) = match result {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (
+            ProviderConnectionState::NotInstalled,
+            Some(provider_install_hint(profile.provider).to_owned()),
+        ),
+        Err(_) => (
+            ProviderConnectionState::Unknown,
+            Some("Authentication could not be verified. Try again.".to_owned()),
+        ),
+        Ok(output) => {
+            let state = provider_state_from_output(
+                profile.provider,
+                &String::from_utf8_lossy(&output.stdout),
+                &String::from_utf8_lossy(&output.stderr),
+                output.status.code(),
+            );
+            match state {
+                Some(state) => (state, None),
+                None => (
+                    ProviderConnectionState::Unknown,
+                    Some("Authentication could not be verified. Try again.".to_owned()),
+                ),
+            }
+        }
+    };
+    ProviderStatus {
+        provider: profile.provider,
+        status,
+        enabled: None,
+        hint,
+        auth_failure_id: None,
+        profile_id,
+    }
+}
+
+fn capped_json_file(path: &Path) -> Option<Value> {
+    let size = fs::metadata(path).ok()?.len();
+    if size > 2 * 1024 * 1024 {
+        return None;
+    }
+    let raw = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn identity_text(value: Option<&Value>) -> Option<String> {
+    match value {
+        Some(Value::String(value)) if !value.trim().is_empty() => Some(value.trim().to_owned()),
+        Some(Value::Number(value)) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn agent_profile_details(profile: &ResolvedAgentProfile) -> AgentAccountDetailsResponse {
+    if matches!(profile.provider, Runner::OpenCode | Runner::Pi) {
+        return AgentAccountDetailsResponse {
+            available: false,
+            reason: Some(
+                "OpenCode keeps its login outside its config folder, so cezar cannot read it."
+                    .to_owned(),
+            ),
+            fields: Vec::new(),
+        };
+    }
+    let path = match profile.provider {
+        Runner::Claude => {
+            if profile.is_default && std::env::var("CLAUDE_CONFIG_DIR").is_err() {
+                profile
+                    .path
+                    .parent()
+                    .unwrap_or(profile.path.as_path())
+                    .join(".claude.json")
+            } else {
+                profile.path.join(".claude.json")
+            }
+        }
+        Runner::Codex => profile.path.join("auth.json"),
+        Runner::OpenCode | Runner::Pi => profile.path.clone(),
+    };
+    let Some(document) = capped_json_file(&path) else {
+        return AgentAccountDetailsResponse {
+            available: false,
+            reason: Some("Not signed in on this account yet — use Connect.".to_owned()),
+            fields: Vec::new(),
+        };
+    };
+    let mut fields = Vec::new();
+    match profile.provider {
+        Runner::Claude => {
+            if let Some(account) = document.get("oauthAccount").and_then(Value::as_object) {
+                for (label, key) in [
+                    ("Email", "emailAddress"),
+                    ("Name", "displayName"),
+                    ("Organization", "organizationName"),
+                    ("Role", "organizationRole"),
+                    ("Seat", "seatTier"),
+                    ("Billing", "billingType"),
+                ] {
+                    if let Some(value) = identity_text(account.get(key)) {
+                        fields.push(AgentAccountDetailField {
+                            label: label.to_owned(),
+                            value,
+                        });
+                    }
+                }
+            }
+        }
+        Runner::Codex => {
+            if document
+                .get("OPENAI_API_KEY")
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.is_empty())
+            {
+                fields.push(AgentAccountDetailField {
+                    label: "Login".to_owned(),
+                    value: "API key".to_owned(),
+                });
+            }
+        }
+        Runner::OpenCode | Runner::Pi => {}
+    }
+    if fields.is_empty() {
+        AgentAccountDetailsResponse {
+            available: false,
+            reason: Some("Could not read this account’s details.".to_owned()),
+            fields,
+        }
+    } else {
+        AgentAccountDetailsResponse {
+            available: true,
+            reason: None,
+            fields,
+        }
+    }
+}
+
+fn account_open_default(path: &Path) -> bool {
+    let (program, args) = if cfg!(target_os = "macos") {
+        ("open", vec![path.to_string_lossy().into_owned()])
+    } else if cfg!(target_os = "windows") {
+        ("explorer", vec![path.to_string_lossy().into_owned()])
+    } else {
+        ("xdg-open", vec![path.to_string_lossy().into_owned()])
+    };
+    Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .is_ok()
+}
+
+async fn get_agent_profile_status(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let Some(profile) = account_by_route_id(&state, &id) else {
+        return error_response(StatusCode::NOT_FOUND, &format!("unknown account: {id}"));
+    };
+    Json(AgentAccountStatusResponse {
+        status: provider_status_for_profile(&profile),
+    })
+    .into_response()
+}
+
+async fn get_agent_profile_details(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let Some(profile) = account_by_route_id(&state, &id) else {
+        return error_response(StatusCode::NOT_FOUND, &format!("unknown account: {id}"));
+    };
+    Json(agent_profile_details(&profile)).into_response()
+}
+
+async fn open_agent_profile_file(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+    input: Result<Json<OpenAgentAccountFileInput>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Some(profile) = account_by_route_id(&state, &id) else {
+        return error_response(StatusCode::NOT_FOUND, &format!("unknown account: {id}"));
+    };
+    let Ok(Json(input)) = input else {
+        return error_response(StatusCode::BAD_REQUEST, "file required");
+    };
+    let is_folder = input.file == "folder";
+    let path = if is_folder {
+        profile.path.clone()
+    } else if let Some(file) = profile_files(&profile)
+        .into_iter()
+        .find(|file| file.id == input.file)
+    {
+        PathBuf::from(file.path)
+    } else {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            &format!("unknown file: {}", input.file),
+        );
+    };
+    if !is_folder && fs::metadata(&path).is_err() {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("file");
+        return error_response(
+            StatusCode::CONFLICT,
+            &format!("this account has no {name} yet"),
+        );
+    }
+    if let Some(target) = input.target.as_deref() {
+        if target.starts_with("cli:") {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "agent CLIs open a task worktree, not a config folder",
+            );
+        }
+        if target == "terminal" && !is_folder {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "a terminal opens a folder, not a file",
+            );
+        }
+        if !open_targets()
+            .iter()
+            .any(|candidate| candidate.id == target)
+        {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("no such app on this machine: {target}"),
+            );
+        }
+    }
+    let opened = input
+        .target
+        .as_deref()
+        .map(|target| open_target(&path, target))
+        .unwrap_or_else(|| account_open_default(&path));
+    if !opened {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": format!("could not open {}", path.file_name().and_then(|name| name.to_str()).unwrap_or("file")),
+                "path": path,
+            })),
+        )
+            .into_response();
+    }
+    Json(OpenAgentAccountFileResponse {
+        opened: true,
+        path: path.to_string_lossy().into_owned(),
     })
     .into_response()
 }
@@ -4984,6 +5411,136 @@ mod tests {
                 .as_object()
                 .is_some_and(|selections| selections.contains_key(&root_key))
         );
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test]
+    async fn agent_profile_account_routes_probe_details_and_guard_file_handoffs() {
+        let repo = test_repo();
+        let workspace = repo.join("workspace");
+        let account_dir = repo.join("claude-work");
+        fs::create_dir_all(&account_dir).expect("account directory");
+        fs::write(account_dir.join("settings.json"), "{}").expect("settings file");
+        fs::write(
+            account_dir.join(".claude.json"),
+            serde_json::json!({
+                "oauthAccount": {
+                    "emailAddress": "me@example.com",
+                    "organizationName": "Acme"
+                },
+                "primaryApiKey": "secret-that-must-not-leak"
+            })
+            .to_string(),
+        )
+        .expect("identity file");
+        let manager = RunManager::open(repo.join(".ai").join("coducktor"));
+        let router = router_with_state(ServerState::with_manager_and_workspace_dir(
+            ServerConfig::new(&repo, "test"),
+            manager,
+            &workspace,
+        ));
+        let created = send(
+            &router,
+            Method::POST,
+            "/api/v1/workspace/agent-profiles",
+            Some(serde_json::json!({
+                "provider": "claude",
+                "label": "Work",
+                "configDir": account_dir,
+            })),
+        )
+        .await;
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let id = json_body(created).await["profile"]["id"]
+            .as_str()
+            .expect("profile id")
+            .to_owned();
+
+        let status = send(
+            &router,
+            Method::GET,
+            &format!("/api/v1/workspace/agent-profiles/{id}/status"),
+            None,
+        )
+        .await;
+        assert_eq!(status.status(), StatusCode::OK);
+        assert_eq!(json_body(status).await["status"]["provider"], "claude");
+        assert_eq!(
+            json_body(
+                send(
+                    &router,
+                    Method::GET,
+                    &format!("/api/v1/workspace/agent-profiles/{id}/details"),
+                    None,
+                )
+                .await,
+            )
+            .await["available"],
+            true
+        );
+        let details = send(
+            &router,
+            Method::GET,
+            &format!("/api/v1/workspace/agent-profiles/{id}/details"),
+            None,
+        )
+        .await;
+        let details_body = json_body(details).await;
+        assert_eq!(details_body["fields"][0]["value"], "me@example.com");
+        assert_eq!(details_body["fields"][1]["value"], "Acme");
+        assert!(
+            !details_body
+                .to_string()
+                .contains("secret-that-must-not-leak")
+        );
+
+        let unknown = send(
+            &router,
+            Method::POST,
+            &format!("/api/v1/workspace/agent-profiles/{id}/open"),
+            Some(serde_json::json!({ "file": "../../../etc/passwd" })),
+        )
+        .await;
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+
+        let missing = send(
+            &router,
+            Method::POST,
+            &format!("/api/v1/workspace/agent-profiles/{id}/open"),
+            Some(serde_json::json!({ "file": "claude.user.memory" })),
+        )
+        .await;
+        assert_eq!(missing.status(), StatusCode::CONFLICT);
+
+        let terminal_file = send(
+            &router,
+            Method::POST,
+            &format!("/api/v1/workspace/agent-profiles/{id}/open"),
+            Some(serde_json::json!({
+                "file": "claude.user.settings",
+                "target": "terminal"
+            })),
+        )
+        .await;
+        assert_eq!(terminal_file.status(), StatusCode::BAD_REQUEST);
+
+        let cli_folder = send(
+            &router,
+            Method::POST,
+            &format!("/api/v1/workspace/agent-profiles/{id}/open"),
+            Some(serde_json::json!({ "file": "folder", "target": "cli:claude" })),
+        )
+        .await;
+        assert_eq!(cli_folder.status(), StatusCode::BAD_REQUEST);
+
+        let bare_default = send(
+            &router,
+            Method::GET,
+            "/api/v1/workspace/agent-profiles/default/details",
+            None,
+        )
+        .await;
+        assert_eq!(bare_default.status(), StatusCode::NOT_FOUND);
         fs::remove_dir_all(repo).expect("remove test repo");
     }
 
