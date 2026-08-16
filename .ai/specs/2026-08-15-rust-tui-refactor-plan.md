@@ -383,13 +383,30 @@ independently produces the same `failed`/interrupted-error outcome. 93 tests tot
 warnings` clean, `cargo fmt --check` clean (the one remaining `cargo fmt` diff, in
 `coducktor-client/tests/transport.rs`, predates this step and is untouched by it).
 
-### [ ] B3 — Git layer
+### [x] B3 — Git layer
 **Ships:** `cezar-core::git` — worktrees, base-ref resolution, autosave commits,
 diff, shortstat, refs. **Shell out to `git`**, exactly as today — do not introduce
 `git2`/`gix` here (spec §16, rejected for the port itself).
 **Accept:** behavior matches the Node shell-out implementation on the existing test
 fixtures.
-**Commit:** `feat(core): B3 git layer (shell-out, no git2/gix)`
+**Commit:** `feat(core): B3 git layer (shell-out, no git2/gix)` — pushed as `51fdb13f`.
+**Note:** shipped as `crates/coducktor-core/src/git/{worktree,diff_base,refs}.rs`, one
+module per TS source file (`git-worktree.ts`, `git-diff-base.ts`, `git-refs.ts`), plus a
+`git::run_git` shell-out primitive both submodules share — a consolidation of the three
+near-identical private `git()` wrappers TS grew organically (`git-worktree.ts`,
+`server/git.ts`, `server/git-changes.ts`), not a behavior change. Every scenario in
+`git-worktree.test.ts`, `git-diff-base.test.ts`, and `autosave-conflict-guard.test.ts` is
+re-proven inline against a real `git` binary (tempdir fixtures), plus two new
+`tests/cross_impl.rs` checks (`resolveBaseRef`'s local/origin/stale matrix and
+`createWorktree`'s cross-implementation reuse) on top of that ported-oracle coverage.
+Also wired `runs::retention`'s I/O half (`reclaim_worktrees`/
+`rematerialize_reclaimed_worktree`), deferred from B2 because it needed this module —
+both return what changed rather than persisting it, since no live run store exists in
+Rust yet (`RunManager` is B6); that caller will do the actual `write_run_index` persist.
+**Scope call:** `packages/cezar/src/server/{git,git-changes}.ts` (the Repo/Changes/Files
+tab plumbing) were **not** ported here — neither is named in the spec's B3 ship list
+(§11.1), and both are server-route-adjacent logic that belongs at B9 (`cezar-server`,
+"handlers stay thin, delegate to cezar-core").
 
 ### [ ] B4 — Skills, workflows, handoff, todos, markers
 **Ships:** `cezar-core::{skills, workflows::load, handoff, todos, task_markers,
