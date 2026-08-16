@@ -4,6 +4,7 @@ members = [
     "crates/coducktor-contract",
     "crates/coducktor-core",
     "crates/coducktor-protocol",
+    "crates/coducktor-runners",
     "crates/coducktor-tui",
 ]
 resolver = "3"

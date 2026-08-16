@@ -680,6 +680,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "coducktor-runners"
+version = "0.1.0"
+dependencies = [
+ "coducktor-protocol",
+ "serde_json",
+]
+
+[[package]]
 name = "coducktor-tui"
 version = "0.1.0"
 dependencies = [
