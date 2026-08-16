@@ -29,6 +29,7 @@ use std::collections::HashSet;
 
 use serde_json::Value;
 
+use coducktor_contract::runs::StepKind;
 use coducktor_contract::workflows::{WorkflowDef, WorkflowSource, WorkflowStepDef};
 
 /// `skills: [a, b]` → agent steps, one per skill, each running `{{task}}`. Mirrors
@@ -87,6 +88,58 @@ pub fn steps_issue(steps: &[WorkflowStepDef]) -> Option<String> {
         }
     }
     None
+}
+
+pub fn step_kind(step: &WorkflowStepDef) -> StepKind {
+    if step.command.is_some() {
+        StepKind::Check
+    } else {
+        StepKind::Agent
+    }
+}
+
+/// Tools granted to an agent step when its workflow does not provide an explicit list.
+pub const DEFAULT_ALLOWED_TOOLS: &[&str] = &["Read", "Edit", "Write", "Grep", "Glob", "Bash"];
+
+/// Guard later agent sessions against mistaking an earlier chain step's DONE signal for their own.
+/// Check steps do not count toward chain position or total.
+pub fn chain_step_note(steps: &[WorkflowStepDef], index: usize) -> Option<String> {
+    let step = steps.get(index)?;
+    if step_kind(step) != StepKind::Agent {
+        return None;
+    }
+    let total = steps
+        .iter()
+        .filter(|step| step_kind(step) == StepKind::Agent)
+        .count();
+    if total <= 1 {
+        return None;
+    }
+    let position = steps[..index]
+        .iter()
+        .filter(|step| step_kind(step) == StepKind::Agent)
+        .count()
+        + 1;
+    let label = step
+        .name
+        .as_deref()
+        .map(|name| format!("\"{name}\""))
+        .or_else(|| {
+            step.skill
+                .as_deref()
+                .map(|skill| format!("the \"{skill}\" skill"))
+        })
+        .unwrap_or_else(|| "this step".to_owned());
+    let mut note = format!(
+        "This run is a chain of {total} agent steps; you are running step {position} of {total}. Your job in THIS step is {label} — do its work in full. "
+    );
+    if position > 1 {
+        note.push_str(&format!(
+            "An earlier step in this same run may already have reported its own work done; that does not mean step {position}'s work is done. "
+        ));
+    }
+    note.push_str(&format!("Only end this turn with DUCK:DONE once step {position}'s own goal is achieved, not just the run's overall task."));
+    Some(note)
 }
 
 /// The zero-config workflow: one agent step that just does the task. Mirrors
@@ -343,5 +396,43 @@ mod tests {
             "steps": [{ "id": "a", "prompt": "{{task}}", "runner": "claude-cli" }],
         });
         assert!(parse_workflow_file_doc(&doc).is_err());
+    }
+
+    #[test]
+    fn chain_notes_count_agent_steps_only_and_default_tools_are_stable() {
+        let steps = vec![
+            step("first"),
+            WorkflowStepDef {
+                id: "verify".to_owned(),
+                name: None,
+                prompt: None,
+                skill: None,
+                model: None,
+                runner: None,
+                allowed_tools: None,
+                bash_allowlist: None,
+                command: Some("true".to_owned()),
+                on_fail: None,
+            },
+            WorkflowStepDef {
+                id: "second".to_owned(),
+                name: Some("Second pass".to_owned()),
+                prompt: Some("{{task}}".to_owned()),
+                skill: None,
+                model: None,
+                runner: None,
+                allowed_tools: None,
+                bash_allowlist: None,
+                command: None,
+                on_fail: None,
+            },
+        ];
+        assert!(chain_step_note(&steps, 0).unwrap().contains("step 1 of 2"));
+        assert!(chain_step_note(&steps, 1).is_none());
+        assert!(chain_step_note(&steps, 2).unwrap().contains("step 2 of 2"));
+        assert_eq!(
+            DEFAULT_ALLOWED_TOOLS,
+            &["Read", "Edit", "Write", "Grep", "Glob", "Bash"]
+        );
     }
 }

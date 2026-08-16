@@ -1,6 +1,8 @@
-//! The workflow catalog. Mirrors the file-loading half of `packages/cezar/src/workflows/`
-//! — see `load`'s and `types`'s module docs for exactly what's ported at this step versus
-//! what's deferred to B6 (`workflows::run`, the `RunManager`).
+//! The workflow catalog and execution foundation. Mirrors the file-loading half of
+//! `packages/cezar/src/workflows/` — see `load`, `types`, and the focused
+//! `run::{lifecycle,session,recovery,review_gate,auto_resume,context_refresh,variants,quota,semaphore}`
+//! modules for the deliberately narrow B6 slice in this crate.
 
 pub mod load;
+pub mod run;
 pub mod types;
