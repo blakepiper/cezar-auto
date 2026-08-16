@@ -5,6 +5,7 @@ use coducktor_protocol::UiEvent;
 use coducktor_runners::claude::{
     ClaudeUiMapperState, claude_turn_started, create_claude_ui_state, map_claude_message,
 };
+use coducktor_runners::codex::{CodexUiMapperState, create_codex_ui_state, map_codex_notification};
 use serde_json::Value;
 
 const CLAUDE_FIXTURES: &[&str] = &[
@@ -14,6 +15,21 @@ const CLAUDE_FIXTURES: &[&str] = &[
     "subagent-task",
     "failed-and-denied",
     "task-tools-plan",
+];
+
+const CODEX_FIXTURES: &[&str] = &[
+    "text-turn",
+    "reasoning-stream",
+    "reasoning-snapshot-arrays",
+    "command-lifecycle",
+    "file-change-and-mcp",
+    "todo-list",
+    "turn-plan-updated",
+    "turn-failed",
+    "review-mode",
+    "collab-agent-tool-call",
+    "collab-tool-call",
+    "sub-agent-activity",
 ];
 
 fn fixture_root() -> PathBuf {
@@ -42,6 +58,37 @@ fn replay_claude(name: &str) -> Vec<UiEvent> {
 fn fold_claude(
     mapped: coducktor_runners::claude::ClaudeUiMapping,
     state: &mut ClaudeUiMapperState,
+    events: &mut Vec<UiEvent>,
+) {
+    *state = mapped.state;
+    events.extend(mapped.events);
+}
+
+fn replay_codex(name: &str) -> Vec<UiEvent> {
+    let path = fixture_root().join("codex").join(format!("{name}.ndjson"));
+    let raw = fs::read_to_string(path).expect("fixture must be readable");
+    let mut state = create_codex_ui_state();
+    let mut events = Vec::new();
+    for line in raw.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: Value = match serde_json::from_str(line) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        fold_codex(
+            map_codex_notification(&value, &state),
+            &mut state,
+            &mut events,
+        );
+    }
+    events
+}
+
+fn fold_codex(
+    mapped: coducktor_runners::codex::CodexUiMapping,
+    state: &mut CodexUiMapperState,
     events: &mut Vec<UiEvent>,
 ) {
     *state = mapped.state;
@@ -78,6 +125,21 @@ fn claude_fixtures_match_the_typescript_mapper_output() {
         let actual = serde_json::to_value(replay_claude(fixture)).expect("events must serialize");
         let expected_path = fixture_root()
             .join("claude")
+            .join(format!("{fixture}.expected.json"));
+        let expected: Value = serde_json::from_slice(
+            &fs::read(expected_path).expect("expected fixture must be readable"),
+        )
+        .expect("expected fixture must be JSON");
+        assert_json_equivalent(&actual, &expected, fixture);
+    }
+}
+
+#[test]
+fn codex_fixtures_match_the_typescript_mapper_output() {
+    for fixture in CODEX_FIXTURES {
+        let actual = serde_json::to_value(replay_codex(fixture)).expect("events must serialize");
+        let expected_path = fixture_root()
+            .join("codex")
             .join(format!("{fixture}.expected.json"));
         let expected: Value = serde_json::from_slice(
             &fs::read(expected_path).expect("expected fixture must be readable"),
