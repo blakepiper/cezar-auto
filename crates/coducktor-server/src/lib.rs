@@ -10,9 +10,9 @@
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::IpAddr;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -36,27 +36,29 @@ use coducktor_contract::{
     AgentConfigKind, AgentConfigListing, AgentConfigScope, AgentConfigTracked, AgentProfile,
     AgentProfileResponse, AgentProfileSelectionsResponse, AgentProfilesResponse, ApiRun,
     BackendCheck, BackendCheckName, Capabilities, ChangedFile, ChangedFileStatus, ChangesPayload,
-    ConfigResponse, ContinueInput, CreateAgentProfileInput, CreateRunInput, CreateRunResponse,
-    DeleteRunResponse, DeleteWorkflowResponse, EmptyRepoResponse, ForgeInfo, ForgeKind,
-    GroupResponse, GroupVariant, HealthProject, HealthResponse, IdeDirectoryQuery,
-    IdeDirectoryResponse, IdeEntry, IdeEntryType, IdeFileInput, IdeFileQuery, IdeFileResponse,
-    LogEntry, MarkAllReadResponse, MessageInput, ModelDiscoveryQuery, ModelDiscoveryRunner,
-    OpenAgentAccountFileInput, OpenAgentAccountFileResponse, OpenProjectInRequest,
-    OpenProjectInResponse, OpenTarget, OpenTargetsResponse, ParseWorkflowInput, ParsedWorkflow,
-    PatchRunInput, PickVariantRequest, PickVariantResponse, PlanInput, PlanResponse,
-    PresentRepoResponse, ProjectListEntry, ProjectSource, ProjectStatus, ProjectsResponse,
-    ProviderConnectAlreadyConnected, ProviderConnectInput, ProviderConnectOpened,
-    ProviderConnectResponse, ProviderConnectionState, ProviderEnabledInput, ProviderRetryInput,
-    ProviderStatus, ProviderStatusQuery, ProviderStatusResponse, ReclaimWorktreesResponse,
-    RegisterProjectInput, RegisterProjectResponse, RemoveAgentProfileResponse,
-    RemoveProjectResponse, RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoDiffStat,
-    RepoInfo, RepoResponse, RunEvent, RunEventsQuery, RunHistoryContext, RunHistoryEvent,
-    RunHistoryPage, RunRecord, Runner, RunnerModels, RunnerSelection, SaveWorkflowInput,
-    SaveWorkflowResponse, SelectAgentProfileInput, SetAgentConfigInput, SetConfigInput,
-    SetWorkspaceConfigInput, SetWorkspaceUiStateInput, StartTodoResponse, StatusEntry, TodoItem,
-    UiState, UpdateAgentProfileInput, UpdateProjectInput, UpdateProjectResponse, UserMcpListing,
-    WorkflowStepDef, WorkflowsResponse, WorkspaceConfigResponse, WorktreeInfo, WorktreeRunStatus,
-    WorktreesResponse,
+    ConfigResponse, ContinueInput, CreateAgentProfileInput, CreatePrResponse, CreateRunInput,
+    CreateRunResponse, DeleteRunResponse, DeleteWorkflowResponse, EmptyRepoResponse, ForgeInfo,
+    ForgeKind, GitCommitInput, GitCommitResponse, GitPushResponse, GroupResponse, GroupVariant,
+    HealthProject, HealthResponse, IdeDirectoryQuery, IdeDirectoryResponse, IdeEntry, IdeEntryType,
+    IdeFileInput, IdeFileQuery, IdeFileResponse, LogEntry, MarkAllReadResponse, MessageInput,
+    ModelDiscoveryQuery, ModelDiscoveryRunner, OpenAgentAccountFileInput,
+    OpenAgentAccountFileResponse, OpenProjectInRequest, OpenProjectInResponse, OpenTarget,
+    OpenTargetsResponse, ParseWorkflowInput, ParsedWorkflow, PatchRunInput, PickVariantRequest,
+    PickVariantResponse, PlanInput, PlanResponse, PresentRepoResponse, ProjectListEntry,
+    ProjectSource, ProjectStatus, ProjectsResponse, ProviderConnectAlreadyConnected,
+    ProviderConnectInput, ProviderConnectOpened, ProviderConnectResponse, ProviderConnectionState,
+    ProviderEnabledInput, ProviderRetryInput, ProviderStatus, ProviderStatusQuery,
+    ProviderStatusResponse, ReclaimWorktreesResponse, RegisterProjectInput,
+    RegisterProjectResponse, RemoveAgentProfileResponse, RemoveProjectResponse,
+    RemoveWorktreeResponse, RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoDiffStat,
+    RepoInfo, RepoResponse, RunCommit, RunCommitsResponse, RunEvent, RunEventsQuery,
+    RunHistoryContext, RunHistoryEvent, RunHistoryPage, RunRecord, Runner, RunnerModels,
+    RunnerSelection, SaveWorkflowInput, SaveWorkflowResponse, SelectAgentProfileInput,
+    SetAgentConfigInput, SetConfigInput, SetWorkspaceConfigInput, SetWorkspaceUiStateInput,
+    StartTodoResponse, StatusEntry, TodoItem, UiState, UpdateAgentProfileInput, UpdateProjectInput,
+    UpdateProjectResponse, UserMcpListing, WorkflowStepDef, WorkflowsResponse,
+    WorkspaceConfigResponse, WorktreeDirEntry, WorktreeEntry, WorktreeEntryType, WorktreeInfo,
+    WorktreeRunStatus, WorktreesResponse,
 };
 use coducktor_contract::{
     GithubChecksAvailable, GithubChecksData, GithubChecksUnavailable, GithubCommentsData,
@@ -92,8 +94,8 @@ use coducktor_core::workspace::ui_state::{
     merge_write_workspace_ui_state, read_workspace_ui_state,
 };
 use coducktor_forge::{
-    ForgeMergeInput, ForgeMergeResult, ForgePrDiffResult, ForgePrMergeStateResult, GithubDriver,
-    resolve_forge,
+    DraftPrInput, DraftPrOutcome, ForgeMergeInput, ForgeMergeResult, ForgePrDiffResult,
+    ForgePrMergeStateResult, GithubDriver, resolve_forge,
 };
 use serde::Deserialize;
 use serde::Serialize;
@@ -279,6 +281,26 @@ pub fn router_with_state(state: ServerState) -> Router {
             "/api/v1/runs/{id}/history-context",
             get(run_history_context),
         )
+        .route("/api/v1/runs/{id}/handoff", get(run_handoff))
+        .route("/api/v1/runs/{id}/images/{file}", get(run_image))
+        .route("/api/v1/runs/{id}/diff", get(run_diff))
+        .route("/api/v1/runs/{id}/changes", get(run_changes))
+        .route("/api/v1/runs/{id}/commits", get(run_commits))
+        .route("/api/v1/runs/{id}/commit/{sha}", get(run_commit))
+        .route("/api/v1/runs/{id}/files", get(run_files))
+        .route(
+            "/api/v1/runs/{id}/git/commit",
+            axum::routing::post(run_git_commit),
+        )
+        .route(
+            "/api/v1/runs/{id}/git/push",
+            axum::routing::post(run_git_push),
+        )
+        .route("/api/v1/runs/{id}/pr", axum::routing::post(run_pr))
+        .route(
+            "/api/v1/runs/{id}/remove-worktree",
+            axum::routing::post(remove_run_worktree),
+        )
         .route("/api/v1/events", get(project_events))
         // Project-scoped routes have the same default and boot-project aliases as the Node
         // service.  The scope guard below admits only `default` and this server's boot project.
@@ -338,6 +360,44 @@ pub fn router_with_state(state: ServerState) -> Router {
         .route(
             "/api/v1/p/{project}/runs/{id}/history-context",
             get(scoped_run_history_context),
+        )
+        .route(
+            "/api/v1/p/{project}/runs/{id}/handoff",
+            get(scoped_run_handoff),
+        )
+        .route(
+            "/api/v1/p/{project}/runs/{id}/images/{file}",
+            get(scoped_run_image),
+        )
+        .route("/api/v1/p/{project}/runs/{id}/diff", get(scoped_run_diff))
+        .route(
+            "/api/v1/p/{project}/runs/{id}/changes",
+            get(scoped_run_changes),
+        )
+        .route(
+            "/api/v1/p/{project}/runs/{id}/commits",
+            get(scoped_run_commits),
+        )
+        .route(
+            "/api/v1/p/{project}/runs/{id}/commit/{sha}",
+            get(scoped_run_commit),
+        )
+        .route("/api/v1/p/{project}/runs/{id}/files", get(scoped_run_files))
+        .route(
+            "/api/v1/p/{project}/runs/{id}/git/commit",
+            axum::routing::post(scoped_run_git_commit),
+        )
+        .route(
+            "/api/v1/p/{project}/runs/{id}/git/push",
+            axum::routing::post(scoped_run_git_push),
+        )
+        .route(
+            "/api/v1/p/{project}/runs/{id}/pr",
+            axum::routing::post(scoped_run_pr),
+        )
+        .route(
+            "/api/v1/p/{project}/runs/{id}/remove-worktree",
+            axum::routing::post(scoped_remove_run_worktree),
         )
         .route("/api/v1/p/{project}/events", get(scoped_project_events))
         .route(
@@ -5653,6 +5713,714 @@ async fn get_run(State(state): State<ServerState>, AxumPath(id): AxumPath<String
     }
 }
 
+const NO_WORKTREE: &str = "no worktree — this task ran directly in the repo working tree";
+const WORKTREE_FILE_CONTENT_CAP: u64 = 512_000;
+
+#[derive(Debug, Default, Deserialize)]
+struct RunFilesQuery {
+    path: Option<String>,
+    raw: Option<String>,
+}
+
+fn worktree_of(run: &RunRecord) -> Option<PathBuf> {
+    run.worktree_path
+        .as_deref()
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+}
+
+fn working_directory_of(state: &ServerState, run: &RunRecord) -> Option<PathBuf> {
+    if run.worktree == Some(false) {
+        Some(state.config.repo_root.clone())
+    } else {
+        worktree_of(run)
+    }
+}
+
+fn run_for_route(state: &ServerState, id: &str) -> Result<RunRecord, Box<Response>> {
+    let manager = state.manager.lock().map_err(|_| {
+        Box::new(error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "run manager unavailable",
+        ))
+    })?;
+    manager
+        .get_run(id)
+        .cloned()
+        .ok_or_else(|| Box::new(error_response(StatusCode::NOT_FOUND, "not found")))
+}
+
+async fn run_handoff(State(state): State<ServerState>, AxumPath(id): AxumPath<String>) -> Response {
+    let run = match run_for_route(&state, &id) {
+        Ok(run) => run,
+        Err(response) => return *response,
+    };
+    let mut response = read_handoff(&repo_data_dir(&state), &run.id).into_response();
+    response.headers_mut().insert(
+        HeaderName::from_static("content-type"),
+        HeaderValue::from_static("text/markdown; charset=utf-8"),
+    );
+    response
+}
+
+async fn scoped_run_handoff(
+    State(state): State<ServerState>,
+    AxumPath((_project, id)): AxumPath<(String, String)>,
+) -> Response {
+    run_handoff(State(state), AxumPath(id)).await
+}
+
+fn image_content_type(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => "application/octet-stream",
+    }
+}
+
+async fn run_image(
+    State(state): State<ServerState>,
+    AxumPath((id, file)): AxumPath<(String, String)>,
+) -> Response {
+    let run = match run_for_route(&state, &id) {
+        Ok(run) => run,
+        Err(response) => return *response,
+    };
+    let file = Path::new(&file)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let path = repo_data_dir(&state)
+        .join("runs")
+        .join(format!("{}-images", run.id))
+        .join(file);
+    let Ok(bytes) = fs::read(&path) else {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    };
+    let mut response = bytes.into_response();
+    response.headers_mut().insert(
+        HeaderName::from_static("content-type"),
+        HeaderValue::from_static(image_content_type(&path)),
+    );
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=31536000, immutable"),
+    );
+    response
+}
+
+async fn scoped_run_image(
+    State(state): State<ServerState>,
+    AxumPath((_project, id, file)): AxumPath<(String, String, String)>,
+) -> Response {
+    run_image(State(state), AxumPath((id, file))).await
+}
+
+async fn run_diff(State(state): State<ServerState>, AxumPath(id): AxumPath<String>) -> Response {
+    let run = match run_for_route(&state, &id) {
+        Ok(run) => run,
+        Err(response) => return *response,
+    };
+    let Some(worktree) = worktree_of(&run) else {
+        return (StatusCode::OK, NO_WORKTREE).into_response();
+    };
+    let diff = coducktor_core::git::worktree::worktree_diff(
+        &worktree,
+        run.base_branch.as_deref().unwrap_or("HEAD"),
+        400_000,
+    );
+    (StatusCode::OK, diff).into_response()
+}
+
+async fn scoped_run_diff(
+    State(state): State<ServerState>,
+    AxumPath((_project, id)): AxumPath<(String, String)>,
+) -> Response {
+    run_diff(State(state), AxumPath(id)).await
+}
+
+fn run_changes_payload(root: &Path, base: &str) -> Result<ChangesPayload, String> {
+    if !coducktor_core::git::refs::is_safe_git_ref(base) {
+        return Err("refusing option-like base ref".to_owned());
+    }
+    collect_git_changes(root, &[base.to_owned()])
+}
+
+async fn run_changes(State(state): State<ServerState>, AxumPath(id): AxumPath<String>) -> Response {
+    let run = match run_for_route(&state, &id) {
+        Ok(run) => run,
+        Err(response) => return *response,
+    };
+    let Some(root) = working_directory_of(&state, &run) else {
+        return error_response(StatusCode::CONFLICT, NO_WORKTREE);
+    };
+    match run_changes_payload(&root, run.base_branch.as_deref().unwrap_or("HEAD")) {
+        Ok(payload) => Json(payload).into_response(),
+        Err(error) => error_response(StatusCode::CONFLICT, &error),
+    }
+}
+
+async fn scoped_run_changes(
+    State(state): State<ServerState>,
+    AxumPath((_project, id)): AxumPath<(String, String)>,
+) -> Response {
+    run_changes(State(state), AxumPath(id)).await
+}
+
+fn run_git_status(root: &Path) -> (Option<String>, bool) {
+    let branch = git_capture(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    let Some(branch) = branch.clone() else {
+        return (None, false);
+    };
+    let remote_refs = git_capture(
+        root,
+        &[
+            "for-each-ref",
+            "--contains",
+            "HEAD",
+            "--format=%(refname)",
+            "refs/remotes/",
+        ],
+    )
+    .ok()
+    .is_some_and(|value| !value.trim().is_empty());
+    if remote_refs {
+        return (Some(branch), true);
+    }
+    let upstream = git_capture(
+        root,
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    );
+    if upstream.is_err() {
+        return (Some(branch), false);
+    }
+    let ahead = git_capture(root, &["rev-list", "--count", "@{u}..HEAD"])
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok());
+    (Some(branch), ahead == Some(0))
+}
+
+fn collect_run_commits(root: &Path, base: &str) -> Result<Vec<RunCommit>, String> {
+    if !coducktor_core::git::refs::is_safe_git_ref(base) {
+        return Err("refusing option-like base ref".to_owned());
+    }
+    let base = git_capture(root, &["merge-base", base, "HEAD"])
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| base.to_owned());
+    let revision = format!("{base}..HEAD");
+    let log = git_capture(
+        root,
+        &["log", "--pretty=format:%H%x1f%s%x1f%an%x1f%cr", &revision],
+    )?;
+    Ok(log
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let fields = line.split('\x1f').collect::<Vec<_>>();
+            RunCommit {
+                sha: fields.first().copied().unwrap_or_default().to_owned(),
+                subject: fields.get(1).copied().unwrap_or_default().to_owned(),
+                author: fields.get(2).copied().unwrap_or_default().to_owned(),
+                when: fields.get(3).copied().unwrap_or_default().to_owned(),
+            }
+        })
+        .collect())
+}
+
+async fn run_commits(State(state): State<ServerState>, AxumPath(id): AxumPath<String>) -> Response {
+    let run = match run_for_route(&state, &id) {
+        Ok(run) => run,
+        Err(response) => return *response,
+    };
+    let Some(root) = working_directory_of(&state, &run) else {
+        return error_response(StatusCode::CONFLICT, NO_WORKTREE);
+    };
+    let base = run.base_branch.as_deref().unwrap_or("HEAD");
+    let commits = match collect_run_commits(&root, base) {
+        Ok(commits) => commits,
+        Err(error) => return error_response(StatusCode::CONFLICT, &error),
+    };
+    let (current_branch, pushed) = run_git_status(&root);
+    Json(RunCommitsResponse {
+        commits,
+        branch: run.branch.or(current_branch),
+        pushed,
+    })
+    .into_response()
+}
+
+async fn scoped_run_commits(
+    State(state): State<ServerState>,
+    AxumPath((_project, id)): AxumPath<(String, String)>,
+) -> Response {
+    run_commits(State(state), AxumPath(id)).await
+}
+
+async fn run_commit(
+    State(state): State<ServerState>,
+    AxumPath((id, sha)): AxumPath<(String, String)>,
+) -> Response {
+    let run = match run_for_route(&state, &id) {
+        Ok(run) => run,
+        Err(response) => return *response,
+    };
+    let Some(root) = working_directory_of(&state, &run) else {
+        return error_response(StatusCode::CONFLICT, NO_WORKTREE);
+    };
+    match repo_commit_payload(&root, &sha) {
+        Ok(payload) => Json(payload).into_response(),
+        Err(error) => error_response(StatusCode::CONFLICT, &error),
+    }
+}
+
+async fn scoped_run_commit(
+    State(state): State<ServerState>,
+    AxumPath((_project, id, sha)): AxumPath<(String, String, String)>,
+) -> Response {
+    run_commit(State(state), AxumPath((id, sha))).await
+}
+
+fn contains_git_component(path: &str) -> bool {
+    Path::new(path)
+        .components()
+        .any(|component| component == Component::Normal(".git".as_ref()))
+}
+
+fn read_worktree_path(root: &Path, relative: &str) -> Result<WorktreeEntry, String> {
+    if relative.contains('\0') || contains_git_component(relative) {
+        return Err("invalid path".to_owned());
+    }
+    let real_root = fs::canonicalize(root).map_err(|_| "worktree is unavailable".to_owned())?;
+    let target = root.join(relative);
+    let metadata = fs::symlink_metadata(&target).map_err(|_| {
+        format!(
+            "no such file or directory in the worktree: {}",
+            if relative.is_empty() { "/" } else { relative }
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err("symlinks are not served".to_owned());
+    }
+    let real_target =
+        fs::canonicalize(&target).map_err(|_| "worktree path is unavailable".to_owned())?;
+    if real_target != real_root && !real_target.starts_with(&real_root) {
+        return Err(format!("path escapes the worktree: {relative}"));
+    }
+    let display = real_target
+        .strip_prefix(&real_root)
+        .ok()
+        .map(|path| {
+            path.to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "/")
+        })
+        .unwrap_or_default();
+    if metadata.is_dir() {
+        let mut entries = Vec::new();
+        let directory = fs::read_dir(&target).map_err(|error| error.to_string())?;
+        for entry in directory.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == ".git" {
+                continue;
+            }
+            let child_metadata = match fs::symlink_metadata(entry.path()) {
+                Ok(metadata) if !metadata.file_type().is_symlink() => metadata,
+                _ => continue,
+            };
+            let entry_type = if child_metadata.is_dir() {
+                WorktreeEntryType::Dir
+            } else if child_metadata.is_file() {
+                WorktreeEntryType::File
+            } else {
+                continue;
+            };
+            entries.push(WorktreeDirEntry {
+                name,
+                entry_type,
+                size: child_metadata
+                    .is_file()
+                    .then_some(child_metadata.len() as f64),
+            });
+        }
+        entries.sort_by(|left, right| {
+            let left_dir = matches!(left.entry_type, WorktreeEntryType::Dir);
+            let right_dir = matches!(right.entry_type, WorktreeEntryType::Dir);
+            right_dir
+                .cmp(&left_dir)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        return Ok(WorktreeEntry::Dir {
+            path: display,
+            entries,
+        });
+    }
+    if !metadata.is_file() {
+        return Err(format!("not a regular file: {display}"));
+    }
+    let size = metadata.len();
+    let too_large = size > WORKTREE_FILE_CONTENT_CAP;
+    let mut sample = Vec::new();
+    if let Ok(mut file) = fs::File::open(&target) {
+        let mut buffer = [0_u8; 8_192];
+        let read = file.read(&mut buffer).unwrap_or(0);
+        sample.extend_from_slice(&buffer[..read]);
+    }
+    let binary = sample.contains(&0);
+    let content = if binary || too_large {
+        None
+    } else {
+        fs::read(&target)
+            .ok()
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+    };
+    Ok(WorktreeEntry::File {
+        path: display,
+        size: size as f64,
+        binary,
+        too_large,
+        content,
+    })
+}
+
+async fn run_files(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+    Query(query): Query<RunFilesQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let run = match run_for_route(&state, &id) {
+        Ok(run) => run,
+        Err(response) => return *response,
+    };
+    let Some(root) = working_directory_of(&state, &run) else {
+        return error_response(StatusCode::CONFLICT, NO_WORKTREE);
+    };
+    let relative = query.path.as_deref().unwrap_or_default();
+    let entry = match read_worktree_path(&root, relative) {
+        Ok(entry) => entry,
+        Err(error) => return error_response(StatusCode::CONFLICT, &error),
+    };
+    let wants_raw = query.raw.as_deref() == Some("1")
+        || (query.raw.is_none()
+            && headers
+                .get("accept")
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.contains("image/")));
+    let mut response = match (&entry, wants_raw) {
+        (
+            WorktreeEntry::File {
+                path, too_large, ..
+            },
+            true,
+        ) => {
+            let mime = image_content_type(Path::new(path));
+            if !mime.starts_with("image/") || *too_large {
+                if query.raw.is_some() {
+                    let message = if !mime.starts_with("image/") {
+                        format!("raw serving is limited to images: {path}")
+                    } else {
+                        format!("file too large to serve raw: {path}")
+                    };
+                    return error_response(StatusCode::CONFLICT, &message);
+                }
+                Json(entry).into_response()
+            } else {
+                match fs::read(root.join(path)) {
+                    Ok(bytes) => {
+                        let mut response = bytes.into_response();
+                        response.headers_mut().insert(
+                            HeaderName::from_static("content-type"),
+                            HeaderValue::from_static(mime),
+                        );
+                        response.headers_mut().insert(
+                            HeaderName::from_static("x-content-type-options"),
+                            HeaderValue::from_static("nosniff"),
+                        );
+                        response.headers_mut().insert(
+                            HeaderName::from_static("content-security-policy"),
+                            HeaderValue::from_static(
+                                "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+                            ),
+                        );
+                        response
+                    }
+                    Err(error) => error_response(StatusCode::CONFLICT, &error.to_string()),
+                }
+            }
+        }
+        _ => Json(entry).into_response(),
+    };
+    response.headers_mut().insert(
+        HeaderName::from_static("vary"),
+        HeaderValue::from_static("Accept"),
+    );
+    response
+}
+
+async fn scoped_run_files(
+    State(state): State<ServerState>,
+    AxumPath((_project, id)): AxumPath<(String, String)>,
+    Query(query): Query<RunFilesQuery>,
+    headers: HeaderMap,
+) -> Response {
+    run_files(State(state), AxumPath(id), Query(query), headers).await
+}
+
+fn commit_all(root: &Path, message: &str) -> Result<String, String> {
+    if message.trim().is_empty() {
+        return Err("commit message is required".to_owned());
+    }
+    let status = git_capture(root, &["status", "--porcelain"])?;
+    if status.trim().is_empty() {
+        return Err("nothing to commit — the working tree is clean".to_owned());
+    }
+    git_capture(root, &["add", "-A"])?;
+    git_capture_owned(
+        root,
+        &["commit".to_owned(), "-m".to_owned(), message.to_owned()],
+    )?;
+    git_capture(root, &["rev-parse", "HEAD"]).map(|sha| sha.trim().to_owned())
+}
+
+fn push_current_branch(root: &Path) -> Result<GitPushResponse, String> {
+    let branch = git_capture(root, &["rev-parse", "--abbrev-ref", "HEAD"])?
+        .trim()
+        .to_owned();
+    if branch.is_empty() || branch == "HEAD" {
+        return Err("detached HEAD — check out a branch before pushing".to_owned());
+    }
+    let remotes = git_capture(root, &["remote"])?;
+    let remote = remotes
+        .lines()
+        .map(str::trim)
+        .find(|remote| *remote == "origin")
+        .or_else(|| {
+            remotes
+                .lines()
+                .map(str::trim)
+                .find(|remote| !remote.is_empty())
+        })
+        .ok_or_else(|| {
+            "no remote configured — add one with `git remote add origin <url>`".to_owned()
+        })?;
+    let upstream = git_capture(
+        root,
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    )
+    .is_ok();
+    let push_args = if upstream {
+        vec!["push".to_owned()]
+    } else {
+        vec![
+            "push".to_owned(),
+            "-u".to_owned(),
+            remote.to_owned(),
+            branch.clone(),
+        ]
+    };
+    git_capture_owned(root, &push_args)?;
+    Ok(GitPushResponse {
+        pushed: true,
+        branch,
+        remote: remote.to_owned(),
+        upstream_set: !upstream,
+    })
+}
+
+async fn run_git_commit(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+    input: Result<Json<GitCommitInput>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let run = match run_for_route(&state, &id) {
+        Ok(run) => run,
+        Err(response) => return *response,
+    };
+    let Some(worktree) = worktree_of(&run) else {
+        return error_response(StatusCode::CONFLICT, NO_WORKTREE);
+    };
+    let Ok(Json(input)) = input else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid body");
+    };
+    match commit_all(&worktree, &input.message) {
+        Ok(sha) => Json(GitCommitResponse {
+            committed: true,
+            sha,
+        })
+        .into_response(),
+        Err(error) => error_response(StatusCode::CONFLICT, &error),
+    }
+}
+
+async fn scoped_run_git_commit(
+    State(state): State<ServerState>,
+    AxumPath((_project, id)): AxumPath<(String, String)>,
+    input: Result<Json<GitCommitInput>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    run_git_commit(State(state), AxumPath(id), input).await
+}
+
+async fn run_git_push(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let run = match run_for_route(&state, &id) {
+        Ok(run) => run,
+        Err(response) => return *response,
+    };
+    let Some(worktree) = worktree_of(&run) else {
+        return error_response(StatusCode::CONFLICT, NO_WORKTREE);
+    };
+    match push_current_branch(&worktree) {
+        Ok(response) => Json(response).into_response(),
+        Err(error) => error_response(StatusCode::CONFLICT, &error),
+    }
+}
+
+async fn scoped_run_git_push(
+    State(state): State<ServerState>,
+    AxumPath((_project, id)): AxumPath<(String, String)>,
+) -> Response {
+    run_git_push(State(state), AxumPath(id)).await
+}
+
+async fn run_pr(State(state): State<ServerState>, AxumPath(id): AxumPath<String>) -> Response {
+    let run = match run_for_route(&state, &id) {
+        Ok(run) => run,
+        Err(response) => return *response,
+    };
+    if state
+        .manager
+        .lock()
+        .map(|manager| manager.is_active(&id))
+        .unwrap_or(true)
+    {
+        return error_response(
+            StatusCode::CONFLICT,
+            "run is still active — wait for the review gate",
+        );
+    }
+    if worktree_of(&run).is_none() || run.branch.is_none() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "no worktree/branch to publish — this task ran in the repo working tree",
+        );
+    }
+    let Some(driver) = github_driver(&state) else {
+        return error_response(
+            StatusCode::CONFLICT,
+            "no GitHub forge configured for this repository",
+        );
+    };
+    let outcome = driver.create_draft_pr(&DraftPrInput {
+        repo_root: state.config.repo_root.clone(),
+        run: run.clone(),
+        handoff_text: read_handoff(&repo_data_dir(&state), &id),
+    });
+    let (url, dry_run) = match outcome {
+        DraftPrOutcome::Created { url, dry_run } => (url, dry_run),
+        DraftPrOutcome::Failed { error } => {
+            return error_response(StatusCode::CONFLICT, &error);
+        }
+    };
+    let finished_at = run.finished_at.unwrap_or_else(now_iso8601);
+    let Ok(mut manager) = state.manager.lock() else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run manager unavailable");
+    };
+    if manager
+        .update_run_value(
+            &id,
+            serde_json::json!({
+                "pullRequestUrl": url,
+                "status": "done",
+                "finishedAt": finished_at,
+            }),
+        )
+        .is_err()
+    {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "could not update run");
+    }
+    let _ = manager.append_event(
+        &id,
+        EventInput::new("note").field(
+            "message",
+            format!(
+                "draft PR created: {url}{}",
+                if dry_run {
+                    " (dry run — no real PR)"
+                } else {
+                    ""
+                }
+            ),
+        ),
+    );
+    (StatusCode::CREATED, Json(CreatePrResponse { url, dry_run })).into_response()
+}
+
+async fn scoped_run_pr(
+    State(state): State<ServerState>,
+    AxumPath((_project, id)): AxumPath<(String, String)>,
+) -> Response {
+    run_pr(State(state), AxumPath(id)).await
+}
+
+async fn remove_run_worktree(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let run = match run_for_route(&state, &id) {
+        Ok(run) => run,
+        Err(response) => return *response,
+    };
+    if state
+        .manager
+        .lock()
+        .map(|manager| manager.is_active(&id))
+        .unwrap_or(true)
+    {
+        return error_response(StatusCode::CONFLICT, "run is active — cancel it first");
+    }
+    if let Some(worktree) = worktree_of(&run) {
+        coducktor_core::git::worktree::remove_worktree(
+            &state.config.repo_root,
+            &worktree,
+            run.branch.as_deref(),
+        );
+    }
+    let Ok(mut manager) = state.manager.lock() else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run manager unavailable");
+    };
+    if manager
+        .update_run_value(
+            &id,
+            serde_json::json!({ "worktreePath": null, "branch": null }),
+        )
+        .is_err()
+    {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "could not update run");
+    }
+    Json(RemoveWorktreeResponse { removed: true }).into_response()
+}
+
+async fn scoped_remove_run_worktree(
+    State(state): State<ServerState>,
+    AxumPath((_project, id)): AxumPath<(String, String)>,
+) -> Response {
+    remove_run_worktree(State(state), AxumPath(id)).await
+}
+
 fn run_events_path(state: &ServerState, id: &str) -> PathBuf {
     repo_data_dir(state)
         .join("runs")
@@ -7470,6 +8238,120 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test]
+    async fn run_artifact_and_git_routes_cover_worktree_off_and_scoped_aliases() {
+        let repo = test_repo();
+        fs::write(repo.join("README.md"), "hello\n").expect("readme");
+        for args in [
+            vec!["init"],
+            vec!["config", "user.email", "test@example.invalid"],
+            vec!["config", "user.name", "Test User"],
+            vec!["add", "README.md"],
+            vec!["commit", "-m", "initial"],
+        ] {
+            let output = Command::new("git")
+                .current_dir(&repo)
+                .args(args)
+                .output()
+                .expect("git command");
+            assert!(
+                output.status.success(),
+                "git failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let data_dir = repo.join(".ai").join("coducktor");
+        let mut manager = RunManager::open(&data_dir);
+        let run = manager
+            .create_run(CoreCreateRunInput {
+                title: "files".to_owned(),
+                workflow: "manual".to_owned(),
+                task: "inspect".to_owned(),
+                worktree: Some(false),
+                ..CoreCreateRunInput::default()
+            })
+            .expect("seed run");
+        let run_id = run.id.clone();
+        let router = router_with_state(ServerState::with_manager(
+            ServerConfig::new(&repo, "test"),
+            manager,
+        ));
+
+        let handoff = send(
+            &router,
+            Method::GET,
+            &format!("/api/v1/runs/{run_id}/handoff"),
+            None,
+        )
+        .await;
+        assert_eq!(handoff.status(), StatusCode::OK);
+        assert_eq!(
+            handoff.headers().get("content-type"),
+            Some(&HeaderValue::from_static("text/markdown; charset=utf-8"))
+        );
+
+        let listing = send(
+            &router,
+            Method::GET,
+            &format!("/api/v1/runs/{run_id}/files"),
+            None,
+        )
+        .await;
+        assert_eq!(listing.status(), StatusCode::OK);
+        assert_eq!(json_body(listing).await["type"], "dir");
+        let file = send(
+            &router,
+            Method::GET,
+            &format!("/api/v1/p/default/runs/{run_id}/files?path=README.md"),
+            None,
+        )
+        .await;
+        assert_eq!(file.status(), StatusCode::OK);
+        assert_eq!(json_body(file).await["content"], "hello\n");
+
+        let diff = send(
+            &router,
+            Method::GET,
+            &format!("/api/v1/runs/{run_id}/diff"),
+            None,
+        )
+        .await;
+        assert_eq!(diff.status(), StatusCode::OK);
+        assert_eq!(
+            String::from_utf8(response_body(diff).await).expect("diff text"),
+            NO_WORKTREE
+        );
+
+        let commits = send(
+            &router,
+            Method::GET,
+            &format!("/api/v1/runs/{run_id}/commits"),
+            None,
+        )
+        .await;
+        assert_eq!(commits.status(), StatusCode::OK);
+        assert_eq!(json_body(commits).await["commits"], serde_json::json!([]));
+
+        let push = send(
+            &router,
+            Method::POST,
+            &format!("/api/v1/runs/{run_id}/git/push"),
+            None,
+        )
+        .await;
+        assert_eq!(push.status(), StatusCode::CONFLICT);
+        let remove = send(
+            &router,
+            Method::POST,
+            &format!("/api/v1/runs/{run_id}/remove-worktree"),
+            None,
+        )
+        .await;
+        assert_eq!(remove.status(), StatusCode::OK);
+        assert_eq!(json_body(remove).await["removed"], true);
         fs::remove_dir_all(repo).expect("remove test repo");
     }
 

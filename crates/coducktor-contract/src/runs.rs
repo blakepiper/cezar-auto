@@ -433,6 +433,7 @@ pub struct ContinueResponse {
 
 /// Mirrors `packages/contract/src/runs.ts::CreatePrResponse`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreatePrResponse {
     pub url: String,
     pub dry_run: bool,
