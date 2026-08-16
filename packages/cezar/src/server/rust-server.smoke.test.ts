@@ -118,4 +118,28 @@ describe('Rust server HTTP harness', () => {
     const missing = await request('/api/v1/workflows/Rust%20Smoke', { method: 'DELETE' });
     expect(missing.status).toBe(404);
   });
+
+  it.skipIf(!baseUrl)('serves per-repo ui-state and gates the follow-up inbox', async () => {
+    const updated = await request('/api/v1/ui-state', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ appearance: { density: 'compact' }, futurePreference: { enabled: true } }),
+    });
+    expect(updated.status).toBe(200);
+    const updatedBody = (await updated.json()) as { futurePreference: { enabled: boolean } };
+    expect(updatedBody.futurePreference.enabled).toBe(true);
+
+    const scoped = await request('/api/v1/p/default/ui-state');
+    expect(scoped.status).toBe(200);
+    const scopedBody = (await scoped.json()) as { appearance: { density: string } };
+    expect(scopedBody.appearance.density).toBe('compact');
+
+    const todos = await request('/api/v1/todos');
+    expect(todos.status).toBe(200);
+    expect(await todos.json()).toEqual([]);
+
+    const dismissed = await request('/api/v1/todos/missing', { method: 'DELETE' });
+    expect(dismissed.status).toBe(409);
+    expect(((await dismissed.json()) as { error: string }).error).toContain('CEZ_FOLLOWUPS');
+  });
 });

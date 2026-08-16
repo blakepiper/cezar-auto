@@ -31,9 +31,11 @@ use coducktor_contract::{
     ParsedWorkflow, PatchRunInput, ProjectListEntry, ProjectSource, ProjectStatus,
     ProjectsResponse, RegisterProjectInput, RegisterProjectResponse, RemoveProjectResponse,
     RepoInfo, RunRecord, RunnerSelection, SaveWorkflowInput, SaveWorkflowResponse,
-    SetWorkspaceConfigInput, SetWorkspaceUiStateInput, UpdateProjectInput, UpdateProjectResponse,
-    WorkflowStepDef, WorkflowsResponse, WorkspaceConfigResponse,
+    SetWorkspaceConfigInput, SetWorkspaceUiStateInput, StartTodoResponse, TodoItem, UiState,
+    UpdateProjectInput, UpdateProjectResponse, WorkflowStepDef, WorkflowsResponse,
+    WorkspaceConfigResponse,
 };
+use coducktor_core::handoff::followups_enabled;
 use coducktor_core::paths::{ProcessEnv, coducktor_home_dir};
 use coducktor_core::skills::discover_skills;
 use coducktor_core::time::now_iso8601;
@@ -41,10 +43,12 @@ use coducktor_core::workflows::load::load_workflows;
 use coducktor_core::workflows::run::{
     ContinueOptions, RunManager, StartRunInput as CoreStartRunInput,
 };
-use coducktor_core::workflows::types::{parse_workflow_file_doc, skills_to_steps, steps_issue};
+use coducktor_core::workflows::types::{
+    parse_workflow_file_doc, quick_task_workflow, skills_to_steps, steps_issue,
+};
 use coducktor_core::workspace::config::{
-    ProjectSource as CoreProjectSource, WorkspaceConfig, WorkspaceProject, load_workspace_config,
-    merge_write_workspace_config,
+    ProjectSource as CoreProjectSource, WorkspaceConfig, WorkspaceProject, atomic_write_json_sync,
+    load_workspace_config, merge_write_workspace_config,
 };
 use coducktor_core::workspace::ui_state::{
     merge_write_workspace_ui_state, read_workspace_ui_state,
@@ -249,6 +253,23 @@ pub fn router_with_state(state: ServerState) -> Router {
             "/api/v1/p/{project}/workflows/parse",
             axum::routing::post(parse_scoped_workflow),
         )
+        .route("/api/v1/ui-state", get(get_ui_state).put(update_ui_state))
+        .route(
+            "/api/v1/p/{project}/ui-state",
+            get(get_scoped_ui_state).put(update_scoped_ui_state),
+        )
+        .route("/api/v1/todos", get(list_todos))
+        .route("/api/v1/p/{project}/todos", get(list_scoped_todos))
+        .route("/api/v1/todos/{id}", axum::routing::delete(delete_todo))
+        .route(
+            "/api/v1/p/{project}/todos/{id}",
+            axum::routing::delete(delete_scoped_todo),
+        )
+        .route("/api/v1/todos/{id}/start", axum::routing::post(start_todo))
+        .route(
+            "/api/v1/p/{project}/todos/{id}/start",
+            axum::routing::post(start_scoped_todo),
+        )
         .fallback(not_found)
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state, request_origin_guard))
@@ -280,6 +301,64 @@ async fn not_found() -> Response {
 
 fn workflow_repo_root(state: &ServerState) -> PathBuf {
     state.config.repo_root.clone()
+}
+
+fn repo_data_dir(state: &ServerState) -> PathBuf {
+    state.config.repo_root.join(".ai").join("coducktor")
+}
+
+fn repo_ui_state_path(state: &ServerState) -> PathBuf {
+    repo_data_dir(state).join("ui-state.json")
+}
+
+fn read_repo_ui_state(state: &ServerState) -> Map<String, Value> {
+    let Ok(raw) = fs::read_to_string(repo_ui_state_path(state)) else {
+        return Map::new();
+    };
+    serde_json::from_str::<Value>(&raw)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default()
+}
+
+fn validate_ui_state_input(input: Value) -> Result<Map<String, Value>, String> {
+    let Some(object) = input.as_object() else {
+        return Err("ui-state must be a JSON object".to_owned());
+    };
+    if object.len() > 200 {
+        return Err("ui-state has too many keys (max 200)".to_owned());
+    }
+    let copy = Value::Object(object.clone());
+    serde_json::from_value::<UiState>(copy).map_err(|error| error.to_string())?;
+    if let Some(usage) = object.get("skillUsage") {
+        let Some(entries) = usage.as_object() else {
+            return Err("skillUsage must be an object".to_owned());
+        };
+        if entries.len() > 200 {
+            return Err("skillUsage must have at most 200 entries".to_owned());
+        }
+        for (name, count) in entries {
+            if name.is_empty() || name.chars().count() > 200 {
+                return Err("skillUsage keys must be between 1 and 200 characters".to_owned());
+            }
+            let Some(count) = count.as_i64() else {
+                return Err("skillUsage counts must be integers from 0 to 1000000".to_owned());
+            };
+            if !(0..=1_000_000).contains(&count) {
+                return Err("skillUsage counts must be integers from 0 to 1000000".to_owned());
+            }
+        }
+    }
+    Ok(object.clone())
+}
+
+fn merge_repo_ui_state(state: &ServerState, input: Value) -> Result<Map<String, Value>, String> {
+    let patch = validate_ui_state_input(input)?;
+    let mut merged = read_repo_ui_state(state);
+    merged.extend(patch);
+    atomic_write_json_sync(&repo_ui_state_path(state), &Value::Object(merged.clone()))
+        .map_err(|error| error.to_string())?;
+    Ok(merged)
 }
 
 fn workflow_slug(value: &str) -> String {
@@ -1108,6 +1187,189 @@ async fn update_workspace_ui_state(
         Ok(state) => Json(state).into_response(),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
     }
+}
+
+async fn get_ui_state(State(state): State<ServerState>) -> Response {
+    Json(Value::Object(read_repo_ui_state(&state))).into_response()
+}
+
+async fn get_scoped_ui_state(
+    State(state): State<ServerState>,
+    AxumPath(_project): AxumPath<String>,
+) -> Response {
+    get_ui_state(State(state)).await
+}
+
+async fn update_ui_state(State(state): State<ServerState>, Json(input): Json<Value>) -> Response {
+    match merge_repo_ui_state(&state, input) {
+        Ok(merged) => Json(Value::Object(merged)).into_response(),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, &error),
+    }
+}
+
+async fn update_scoped_ui_state(
+    State(state): State<ServerState>,
+    AxumPath(_project): AxumPath<String>,
+    Json(input): Json<Value>,
+) -> Response {
+    update_ui_state(State(state), Json(input)).await
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StartTodoInput {
+    runner: Option<RunnerSelection>,
+    model: Option<String>,
+    prompt: Option<String>,
+}
+
+fn todo_workflow(state: &ServerState, todo: &TodoItem) -> coducktor_contract::WorkflowDef {
+    if let Some(skill_name) = todo.suggested_skill.as_deref() {
+        let skills = discover_skills(&workflow_repo_root(state), &ProcessEnv);
+        if skills.iter().any(|skill| skill.name == skill_name) {
+            return coducktor_contract::WorkflowDef {
+                name: "(inbox)".to_owned(),
+                description: Some(format!("Follow-up from the inbox — skill \"{skill_name}\"")),
+                steps: vec![WorkflowStepDef {
+                    id: "task".to_owned(),
+                    name: Some("Do the task".to_owned()),
+                    prompt: Some("{{task}}".to_owned()),
+                    skill: Some(skill_name.to_owned()),
+                    model: None,
+                    runner: None,
+                    allowed_tools: None,
+                    bash_allowlist: None,
+                    command: None,
+                    on_fail: None,
+                }],
+                source: coducktor_contract::WorkflowSource::BuiltIn,
+                path: None,
+            };
+        }
+    }
+    quick_task_workflow()
+}
+
+async fn list_todos(State(state): State<ServerState>) -> Response {
+    if !followups_enabled(&ProcessEnv) {
+        return Json(Vec::<TodoItem>::new()).into_response();
+    }
+    Json(coducktor_core::todos::read_todos(&repo_data_dir(&state))).into_response()
+}
+
+async fn list_scoped_todos(
+    State(state): State<ServerState>,
+    AxumPath(_project): AxumPath<String>,
+) -> Response {
+    list_todos(State(state)).await
+}
+
+async fn delete_todo(State(state): State<ServerState>, AxumPath(id): AxumPath<String>) -> Response {
+    if !followups_enabled(&ProcessEnv) {
+        return error_response(
+            StatusCode::CONFLICT,
+            "the follow-up inbox is disabled — set CEZ_FOLLOWUPS=1 to enable it",
+        );
+    }
+    match coducktor_core::todos::remove_todo(&repo_data_dir(&state), &id) {
+        Ok(true) => Json(coducktor_contract::RemoveTodoResponse { removed: true }).into_response(),
+        Ok(false) => error_response(StatusCode::NOT_FOUND, "not found"),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+    }
+}
+
+async fn delete_scoped_todo(
+    State(state): State<ServerState>,
+    AxumPath((_project, id)): AxumPath<(String, String)>,
+) -> Response {
+    delete_todo(State(state), AxumPath(id)).await
+}
+
+async fn start_todo(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+    body: Option<Json<StartTodoInput>>,
+) -> Response {
+    if !followups_enabled(&ProcessEnv) {
+        return error_response(
+            StatusCode::CONFLICT,
+            "the follow-up inbox is disabled — set CEZ_FOLLOWUPS=1 to enable it",
+        );
+    }
+    let data_dir = repo_data_dir(&state);
+    let Some(todo) = coducktor_core::todos::read_todos(&data_dir)
+        .into_iter()
+        .find(|todo| todo.id == id)
+    else {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    };
+    if todo.started_task_id.is_some() {
+        return error_response(StatusCode::CONFLICT, "already started");
+    }
+    let input = body.map(|Json(input)| input).unwrap_or_default();
+    if input
+        .model
+        .as_ref()
+        .is_some_and(|model| model.chars().count() > 200)
+    {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "model must be at most 200 characters",
+        );
+    }
+    let mut task = coducktor_core::todos::todo_task_text(
+        &todo.summary,
+        todo.suggested_prompt.as_deref(),
+        todo.suggested_args.as_deref(),
+    );
+    if let Some(prompt) = input
+        .prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|prompt| !prompt.is_empty())
+    {
+        if prompt.chars().count() > 20_000 {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "prompt must be at most 20000 characters",
+            );
+        }
+        task.push_str("\n\n");
+        task.push_str(prompt);
+    }
+    let workflow = todo_workflow(&state, &todo);
+    let run = {
+        let Ok(mut manager) = state.manager.lock() else {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run manager unavailable");
+        };
+        match manager.start_run(
+            &workflow,
+            CoreStartRunInput {
+                task,
+                runner: input.runner,
+                model: input.model,
+                ..CoreStartRunInput::default()
+            },
+        ) {
+            Ok(run) => run,
+            Err(error) => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string());
+            }
+        }
+    };
+    match coducktor_core::todos::mark_started(&data_dir, &id, &run.id) {
+        Ok(true) => (StatusCode::CREATED, Json(StartTodoResponse { run })).into_response(),
+        Ok(false) => error_response(StatusCode::CONFLICT, "already started"),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+    }
+}
+
+async fn start_scoped_todo(
+    State(state): State<ServerState>,
+    AxumPath((_project, id)): AxumPath<(String, String)>,
+    body: Option<Json<StartTodoInput>>,
+) -> Response {
+    start_todo(State(state), AxumPath(id), body).await
 }
 
 async fn get_workspace_usage() -> Response {
@@ -2088,6 +2350,93 @@ mod tests {
 
         let missing = send(&router, Method::DELETE, "/api/v1/workflows/Review", None).await;
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test]
+    async fn ui_state_and_todos_routes_keep_project_aliases_and_gates() {
+        let repo = test_repo();
+        let data_dir = repo.join(".ai").join("coducktor");
+        fs::create_dir_all(&data_dir).expect("data directory");
+        fs::write(
+            data_dir.join("todos.json"),
+            serde_json::json!([{ "id": "todo-1", "summary": "follow up" }]).to_string(),
+        )
+        .expect("todos file");
+        let manager = RunManager::open(&data_dir);
+        let router = router_with_state(ServerState::with_manager(
+            ServerConfig::new(&repo, "test"),
+            manager,
+        ));
+        let boot = repo
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("test repo name");
+
+        for path in [
+            "/api/v1/ui-state".to_owned(),
+            "/api/v1/p/default/ui-state".to_owned(),
+            format!("/api/v1/p/{boot}/ui-state"),
+        ] {
+            let response = send(&router, Method::GET, &path, None).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(json_body(response).await, serde_json::json!({}));
+        }
+
+        let updated = send(
+            &router,
+            Method::PUT,
+            "/api/v1/ui-state",
+            Some(serde_json::json!({
+                "appearance": { "density": "compact" },
+                "futurePreference": { "enabled": true }
+            })),
+        )
+        .await;
+        assert_eq!(updated.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(updated).await["futurePreference"]["enabled"],
+            true
+        );
+
+        let scoped = send(
+            &router,
+            Method::GET,
+            &format!("/api/v1/p/{boot}/ui-state"),
+            None,
+        )
+        .await;
+        assert_eq!(scoped.status(), StatusCode::OK);
+        assert_eq!(json_body(scoped).await["appearance"]["density"], "compact");
+
+        let invalid = send(
+            &router,
+            Method::PUT,
+            "/api/v1/ui-state",
+            Some(serde_json::json!([])),
+        )
+        .await;
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+
+        let todos = send(&router, Method::GET, "/api/v1/todos", None).await;
+        assert_eq!(todos.status(), StatusCode::OK);
+        assert_eq!(json_body(todos).await, serde_json::json!([]));
+        let scoped_todos = send(
+            &router,
+            Method::GET,
+            &format!("/api/v1/p/{boot}/todos"),
+            None,
+        )
+        .await;
+        assert_eq!(scoped_todos.status(), StatusCode::OK);
+        assert_eq!(json_body(scoped_todos).await, serde_json::json!([]));
+        let delete = send(&router, Method::DELETE, "/api/v1/todos/todo-1", None).await;
+        assert_eq!(delete.status(), StatusCode::CONFLICT);
+        assert!(
+            fs::read_to_string(data_dir.join("todos.json"))
+                .expect("todos file remains")
+                .contains("todo-1")
+        );
         fs::remove_dir_all(repo).expect("remove test repo");
     }
 
