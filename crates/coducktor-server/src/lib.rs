@@ -34,13 +34,14 @@ use coducktor_contract::{
     BackendCheck, BackendCheckName, Capabilities, ChangedFile, ChangedFileStatus, ChangesPayload,
     ConfigResponse, ContinueInput, CreateAgentProfileInput, CreateRunInput, CreateRunResponse,
     DeleteRunResponse, DeleteWorkflowResponse, EmptyRepoResponse, ForgeInfo, ForgeKind,
-    HealthProject, HealthResponse, IdeDirectoryQuery, IdeDirectoryResponse, IdeEntry, IdeEntryType,
-    IdeFileInput, IdeFileQuery, IdeFileResponse, LogEntry, MarkAllReadResponse, MessageInput,
-    ModelDiscoveryQuery, ModelDiscoveryRunner, OpenAgentAccountFileInput,
-    OpenAgentAccountFileResponse, OpenProjectInRequest, OpenProjectInResponse, OpenTarget,
-    OpenTargetsResponse, ParseWorkflowInput, ParsedWorkflow, PatchRunInput, PlanInput,
-    PlanResponse, PresentRepoResponse, ProjectListEntry, ProjectSource, ProjectStatus,
-    ProjectsResponse, ProviderConnectAlreadyConnected, ProviderConnectInput, ProviderConnectOpened,
+    GroupResponse, GroupVariant, HealthProject, HealthResponse, IdeDirectoryQuery,
+    IdeDirectoryResponse, IdeEntry, IdeEntryType, IdeFileInput, IdeFileQuery, IdeFileResponse,
+    LogEntry, MarkAllReadResponse, MessageInput, ModelDiscoveryQuery, ModelDiscoveryRunner,
+    OpenAgentAccountFileInput, OpenAgentAccountFileResponse, OpenProjectInRequest,
+    OpenProjectInResponse, OpenTarget, OpenTargetsResponse, ParseWorkflowInput, ParsedWorkflow,
+    PatchRunInput, PickVariantRequest, PickVariantResponse, PlanInput, PlanResponse,
+    PresentRepoResponse, ProjectListEntry, ProjectSource, ProjectStatus, ProjectsResponse,
+    ProviderConnectAlreadyConnected, ProviderConnectInput, ProviderConnectOpened,
     ProviderConnectResponse, ProviderConnectionState, ProviderEnabledInput, ProviderRetryInput,
     ProviderStatus, ProviderStatusQuery, ProviderStatusResponse, ReclaimWorktreesResponse,
     RegisterProjectInput, RegisterProjectResponse, RemoveAgentProfileResponse,
@@ -54,6 +55,7 @@ use coducktor_contract::{
 };
 use coducktor_core::config::load_config;
 use coducktor_core::handoff::followups_enabled;
+use coducktor_core::handoff::{append_handoff_heartbeat, handoff_progress_excerpt, read_handoff};
 use coducktor_core::paths::{
     ProcessEnv, agent_home_paths, coducktor_home_dir, expand_tilde, is_absolute_config_dir,
 };
@@ -61,7 +63,8 @@ use coducktor_core::skills::discover_skills;
 use coducktor_core::time::now_iso8601;
 use coducktor_core::workflows::load::load_workflows;
 use coducktor_core::workflows::run::{
-    ContinueOptions, RunManager, StartRunInput as CoreStartRunInput,
+    ContinueOptions, EventInput, RunManager, StartRunInput as CoreStartRunInput,
+    review_gate_enabled,
 };
 use coducktor_core::workflows::types::{
     parse_workflow_file_doc, quick_task_workflow, skills_to_steps, steps_issue,
@@ -337,6 +340,19 @@ pub fn router_with_state(state: ServerState) -> Router {
         .route(
             "/api/v1/p/{project}/plan",
             axum::routing::post(create_scoped_plan),
+        )
+        .route("/api/v1/groups/{group_id}", get(get_group))
+        .route(
+            "/api/v1/groups/{group_id}/pick",
+            axum::routing::post(pick_group),
+        )
+        .route(
+            "/api/v1/p/{project}/groups/{group_id}",
+            get(get_scoped_group),
+        )
+        .route(
+            "/api/v1/p/{project}/groups/{group_id}/pick",
+            axum::routing::post(pick_scoped_group),
         )
         .route("/api/v1/ui-state", get(get_ui_state).put(update_ui_state))
         .route(
@@ -1480,6 +1496,218 @@ async fn create_scoped_plan(
     input: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
     create_plan_at(&state, input).await
+}
+
+fn group_variants(state: &ServerState, group_id: &str) -> Result<Vec<RunRecord>, ()> {
+    let manager = state.manager.lock().map_err(|_| ())?;
+    let mut runs = manager
+        .list_runs()
+        .into_iter()
+        .filter(|run| run.group_id.as_deref() == Some(group_id))
+        .collect::<Vec<_>>();
+    runs.sort_by(|left, right| left.variant.cmp(&right.variant));
+    Ok(runs)
+}
+
+fn group_response(state: &ServerState, group_id: &str) -> Result<GroupResponse, ()> {
+    let runs = group_variants(state, group_id)?;
+    if runs.is_empty() {
+        return Err(());
+    }
+    let data_dir = repo_data_dir(state);
+    let runs = runs
+        .into_iter()
+        .map(|run| {
+            let diff_stat = run
+                .worktree_path
+                .as_deref()
+                .filter(|path| Path::new(path).exists())
+                .map(|path| {
+                    coducktor_core::git::worktree::worktree_diff_stat(
+                        Path::new(path),
+                        run.base_branch.as_deref().unwrap_or("HEAD"),
+                    )
+                })
+                .unwrap_or_default();
+            GroupVariant {
+                id: run.id.clone(),
+                variant: run.variant.unwrap_or_else(|| "?".to_owned()),
+                title: run.title,
+                status: run.status,
+                archived: run.archived,
+                tokens_used: run.tokens_used,
+                input_tokens: run.input_tokens,
+                output_tokens: run.output_tokens,
+                cost_usd: run.cost_usd,
+                diff_stat,
+                handoff_excerpt: handoff_progress_excerpt(&read_handoff(&data_dir, &run.id), 3),
+            }
+        })
+        .collect();
+    Ok(GroupResponse {
+        group_id: group_id.to_owned(),
+        runs,
+    })
+}
+
+async fn get_group(
+    State(state): State<ServerState>,
+    AxumPath(group_id): AxumPath<String>,
+) -> Response {
+    match group_response(&state, &group_id) {
+        Ok(response) => Json(response).into_response(),
+        Err(()) => error_response(StatusCode::NOT_FOUND, "not found"),
+    }
+}
+
+async fn get_scoped_group(
+    State(state): State<ServerState>,
+    AxumPath((_project, group_id)): AxumPath<(String, String)>,
+) -> Response {
+    get_group(State(state), AxumPath(group_id)).await
+}
+
+fn parse_pick_variant(value: Value) -> Result<PickVariantRequest, ()> {
+    let object = value.as_object().ok_or(())?;
+    let run_id = object
+        .get("runId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or(())?;
+    Ok(PickVariantRequest {
+        run_id: run_id.to_owned(),
+    })
+}
+
+fn lifecycle_event(message: String) -> EventInput {
+    let mut event = EventInput::new("lifecycle");
+    event
+        .extra
+        .insert("message".to_owned(), Value::String(message));
+    event
+}
+
+async fn pick_group_at(
+    state: &ServerState,
+    group_id: &str,
+    input: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Ok(Json(value)) = input else {
+        return error_response(StatusCode::BAD_REQUEST, "runId is required");
+    };
+    let Ok(input) = parse_pick_variant(value) else {
+        return error_response(StatusCode::BAD_REQUEST, "runId is required");
+    };
+    let Ok(mut manager) = state.manager.lock() else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run manager unavailable");
+    };
+    let runs = manager
+        .list_runs()
+        .into_iter()
+        .filter(|run| run.group_id.as_deref() == Some(group_id))
+        .collect::<Vec<_>>();
+    if runs.is_empty() {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    }
+    let Some(winner) = runs.iter().find(|run| run.id == input.run_id).cloned() else {
+        return error_response(StatusCode::NOT_FOUND, "runId is not part of this group");
+    };
+    if manager.is_active(&winner.id) {
+        return error_response(
+            StatusCode::CONFLICT,
+            "this variant is still active — wait for it to finish first",
+        );
+    }
+
+    let losers = runs
+        .into_iter()
+        .filter(|run| run.id != winner.id)
+        .collect::<Vec<_>>();
+    let repo_root = state.config.repo_root.clone();
+    let data_dir = repo_data_dir(state);
+    let config = load_config(&repo_root, &workspace_config(state).agent_defaults);
+    let review_gate = review_gate_enabled(
+        config.review_gate,
+        std::env::var("DUCK_REVIEW_GATE")
+            .or_else(|_| std::env::var("CEZ_REVIEW_GATE"))
+            .ok()
+            .as_deref(),
+    );
+    if winner.status != coducktor_contract::RunStatus::Review
+        && winner.autonomous != Some(true)
+        && review_gate
+        && let Some(worktree_path) = winner.worktree_path.as_deref()
+        && Path::new(worktree_path).exists()
+    {
+        let diff = coducktor_core::git::worktree::worktree_diff(
+            Path::new(worktree_path),
+            winner.base_branch.as_deref().unwrap_or("HEAD"),
+            1_000_000,
+        );
+        if !diff.trim().is_empty() && !diff.starts_with("(diff failed") {
+            let _ = manager.update_run_value(
+                &winner.id,
+                serde_json::json!({ "status": coducktor_contract::RunStatus::Review }),
+            );
+        }
+    }
+    let _ = manager.append_event(
+        &winner.id,
+        lifecycle_event(format!(
+            "picked from {} variants — {} other variant(s) archived",
+            losers.len() + 1,
+            losers.len()
+        )),
+    );
+    append_handoff_heartbeat(
+        &data_dir,
+        &winner.id,
+        &format!("picked from {} variants", losers.len() + 1),
+    );
+    for loser in losers {
+        if manager.is_active(&loser.id) {
+            let _ = manager.cancel(&loser.id);
+        }
+        if let Some(path) = loser.worktree_path.as_deref() {
+            coducktor_core::git::worktree::remove_worktree(
+                &repo_root,
+                Path::new(path),
+                loser.branch.as_deref(),
+            );
+        }
+        let _ = manager.update_run_value(
+            &loser.id,
+            serde_json::json!({ "worktreePath": null, "branch": null }),
+        );
+        let _ = manager.set_archived(&loser.id, true);
+        let _ = manager.append_event(
+            &loser.id,
+            lifecycle_event(format!(
+                "variant {} was picked — this variant is archived, its worktree removed",
+                winner.variant.as_deref().unwrap_or("?")
+            )),
+        );
+    }
+    Json(PickVariantResponse {
+        winner: manager.get_run(&winner.id).cloned(),
+    })
+    .into_response()
+}
+
+async fn pick_group(
+    State(state): State<ServerState>,
+    AxumPath(group_id): AxumPath<String>,
+    input: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    pick_group_at(&state, &group_id, input).await
+}
+
+async fn pick_scoped_group(
+    State(state): State<ServerState>,
+    AxumPath((_project, group_id)): AxumPath<(String, String)>,
+    input: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    pick_group_at(&state, &group_id, input).await
 }
 
 fn workspace_config(state: &ServerState) -> WorkspaceConfig {
@@ -6296,6 +6524,53 @@ mod tests {
             json_body(response).await["error"],
             "task must be between 1 and 100000 characters"
         );
+    }
+
+    #[tokio::test]
+    async fn group_routes_compare_variants_and_archive_losers_on_pick() {
+        let repo = test_repo();
+        let workspace = repo.join("workspace");
+        let data_dir = repo.join(".ai").join("coducktor");
+        let mut manager = RunManager::open(&data_dir);
+        for (variant, title) in [("A", "first"), ("B", "second")] {
+            manager
+                .create_run(CoreCreateRunInput {
+                    title: title.to_owned(),
+                    workflow: "manual".to_owned(),
+                    task: title.to_owned(),
+                    group_id: Some("group-1".to_owned()),
+                    variant: Some(variant.to_owned()),
+                    ..CoreCreateRunInput::default()
+                })
+                .expect("seed variant");
+        }
+        let router = router_with_state(ServerState::with_manager_and_workspace_dir(
+            ServerConfig::new(&repo, "test"),
+            manager,
+            &workspace,
+        ));
+
+        let response = send(&router, Method::GET, "/api/v1/groups/group-1", None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let group = json_body(response).await;
+        assert_eq!(group["runs"].as_array().map(Vec::len), Some(2));
+        let winner_id = group["runs"][0]["id"].as_str().expect("winner id");
+
+        let response = send(
+            &router,
+            Method::POST,
+            "/api/v1/p/default/groups/group-1/pick",
+            Some(serde_json::json!({ "runId": winner_id })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(json_body(response).await["winner"]["id"], winner_id);
+
+        let response = send(&router, Method::GET, "/api/v1/groups/group-1", None).await;
+        let group = json_body(response).await;
+        assert_eq!(group["runs"][0]["archived"], false);
+        assert_eq!(group["runs"][1]["archived"], true);
+        fs::remove_dir_all(repo).expect("remove test repo");
     }
 
     #[tokio::test]
