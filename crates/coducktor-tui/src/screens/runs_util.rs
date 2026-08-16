@@ -538,7 +538,7 @@ pub fn clock_time(iso: &str) -> Option<String> {
     Some(format!("{hour:02}:{minute:02}"))
 }
 
-/// A lenient ISO-8601 instant parser good enough for cezar's UTC timestamps.
+/// A lenient ISO-8601 instant parser good enough for coducktor's UTC timestamps.
 /// Handles `YYYY-MM-DDTHH:MM:SS(.sss)(Z|±HH:MM)`, returns epoch seconds.
 pub fn parse_iso_seconds(iso: &str) -> Option<i64> {
     let (date_part, rest) = iso.split_once('T')?;
