@@ -14,14 +14,23 @@ path = "src/main.rs"
 base64.workspace = true
 coducktor-client = { path = "../coducktor-client" }
 coducktor-contract = { path = "../coducktor-contract" }
+coducktor-protocol = { path = "../coducktor-protocol" }
 crossterm.workspace = true
 futures-util.workspace = true
+image.workspace = true
 ratatui.workspace = true
+ratatui-image.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 toml.workspace = true
+tui-markdown.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 insta = "1.46"
 tempfile = "3.23"
+
+[[bench]]
+name = "transcript"
+harness = false

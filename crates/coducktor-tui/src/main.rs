@@ -1,13 +1,3 @@
-mod app;
-mod input;
-mod new_task_form;
-mod screens;
-mod service;
-mod skills;
-mod terminal;
-mod theme;
-mod widgets;
-
 use std::env;
 use std::io;
 use std::path::PathBuf;
@@ -22,11 +12,12 @@ use serde::Deserialize;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::task::JoinHandle;
 
-use crate::app::{App, PendingAction, QuickTask, WorkspaceEvent};
-use crate::input::keymap::Keymap;
-use crate::service::{ServiceConfig, ServiceState, ServiceSupervisor};
-use crate::terminal::AppTerminal;
-use crate::theme::Theme;
+use coducktor_tui::app::{self, App, PendingAction, QuickTask, WorkspaceEvent};
+use coducktor_tui::input::keymap::Keymap;
+use coducktor_tui::service::{ServiceConfig, ServiceState, ServiceSupervisor};
+use coducktor_tui::terminal::AppTerminal;
+use coducktor_tui::theme::Theme;
+use coducktor_tui::{new_task_form, screens, terminal};
 
 const FRAME_BUDGET: Duration = Duration::from_millis(33);
 
@@ -201,7 +192,7 @@ async fn prime_app(app: &mut App, engine: &HttpEngine) {
         if !health.boot_project.is_empty()
             && app.projects.iter().all(|p| p.id != health.boot_project)
         {
-            app.history.navigate(crate::app::Route::Tasks {
+            app.history.navigate(app::Route::Tasks {
                 project: health.boot_project.clone(),
             });
             app.default_project = health.boot_project.clone();
@@ -323,13 +314,13 @@ async fn execute_pending(engine: &HttpEngine, app: &mut App) {
                 let scope = Scope::Project(project.clone());
                 match engine.start_run(&scope, &input).await {
                     Ok(response) => {
-                        if let Some(id) = crate::new_task_form::started_run_id(&response) {
-                            app.history.navigate(crate::app::Route::Thread {
+                        if let Some(id) = new_task_form::started_run_id(&response) {
+                            app.history.navigate(app::Route::Thread {
                                 project: project.clone(),
                                 id,
                             });
                         }
-                        crate::screens::new_task::clear_draft(app);
+                        screens::new_task::clear_draft(app);
                         refresh_tasks(engine, app, &project).await;
                         refresh_index_if_global(engine, app).await;
                     }
@@ -380,7 +371,7 @@ async fn execute_pending(engine: &HttpEngine, app: &mut App) {
                 match engine.put_config(&scope, &input).await {
                     Ok(config) => {
                         app.new_task_ui.data.config =
-                            Some(crate::new_task_form::ComposerConfig::from_config(&config));
+                            Some(new_task_form::ComposerConfig::from_config(&config));
                     }
                     Err(error) => app.notice = Some(format!("base branch failed: {error}")),
                 }
@@ -391,7 +382,7 @@ async fn execute_pending(engine: &HttpEngine, app: &mut App) {
 }
 
 async fn refresh_index_if_global(engine: &HttpEngine, app: &mut App) {
-    if matches!(app.route(), crate::app::Route::GlobalTasks)
+    if matches!(app.route(), app::Route::GlobalTasks)
         && let Ok(index) = engine.runs_index().await
     {
         app.set_global_index(index);
@@ -415,8 +406,7 @@ async fn refresh_tasks(engine: &HttpEngine, app: &mut App, project: &str) {
 async fn refresh_new_task(engine: &HttpEngine, app: &mut App, project: &str) {
     let scope = Scope::Project(project.to_owned());
     if let Ok(config) = engine.config(&scope).await {
-        app.new_task_ui.data.config =
-            Some(crate::new_task_form::ComposerConfig::from_config(&config));
+        app.new_task_ui.data.config = Some(new_task_form::ComposerConfig::from_config(&config));
     }
     if let Ok(skills) = engine.skills(&scope).await {
         app.new_task_ui.data.skills = skills;
