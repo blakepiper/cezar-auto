@@ -58,6 +58,12 @@ use coducktor_contract::{
     WorkflowStepDef, WorkflowsResponse, WorkspaceConfigResponse, WorktreeInfo, WorktreeRunStatus,
     WorktreesResponse,
 };
+use coducktor_contract::{
+    GithubChecksAvailable, GithubChecksData, GithubChecksUnavailable, GithubCommentsData,
+    GithubData, GithubItemKind, GithubMergeInput, GithubMergeResponse, GithubPrChangesAvailable,
+    GithubPrChangesData, GithubPrChangesUnavailable, GithubPrMergeStateResponse,
+    GithubRefStatusAvailable, GithubRefStatusData, GithubRefStatusUnavailable,
+};
 use coducktor_core::config::load_config;
 use coducktor_core::handoff::followups_enabled;
 use coducktor_core::handoff::{append_handoff_heartbeat, handoff_progress_excerpt, read_handoff};
@@ -84,6 +90,10 @@ use coducktor_core::workspace::config::{
 };
 use coducktor_core::workspace::ui_state::{
     merge_write_workspace_ui_state, read_workspace_ui_state,
+};
+use coducktor_forge::{
+    ForgeMergeInput, ForgeMergeResult, ForgePrDiffResult, ForgePrMergeStateResult, GithubDriver,
+    resolve_forge,
 };
 use serde::Deserialize;
 use serde::Serialize;
@@ -356,6 +366,25 @@ pub fn router_with_state(state: ServerState) -> Router {
             "/api/v1/providers/connect",
             axum::routing::post(connect_provider),
         )
+        .route("/api/v1/github", get(get_github))
+        .route(
+            "/api/v1/github/comments/{kind}/{number}",
+            get(get_github_comments),
+        )
+        .route("/api/v1/github/checks", get(get_github_checks))
+        .route("/api/v1/github/ref-status", get(get_github_ref_status))
+        .route(
+            "/api/v1/github/prs/{number}/merge-state",
+            get(get_github_merge_state),
+        )
+        .route(
+            "/api/v1/github/prs/{number}/merge",
+            axum::routing::post(merge_github_pr),
+        )
+        .route(
+            "/api/v1/github/prs/{number}/changes",
+            get(get_github_pr_changes),
+        )
         .route(
             "/api/v1/workspace/ui-state",
             get(get_workspace_ui_state).put(update_workspace_ui_state),
@@ -388,6 +417,31 @@ pub fn router_with_state(state: ServerState) -> Router {
         .route("/api/v1/workspace/events", get(workspace_events))
         .route("/api/v1/skills", get(list_skills))
         .route("/api/v1/p/{project}/skills", get(list_scoped_skills))
+        .route("/api/v1/p/{project}/github", get(get_scoped_github))
+        .route(
+            "/api/v1/p/{project}/github/comments/{kind}/{number}",
+            get(get_scoped_github_comments),
+        )
+        .route(
+            "/api/v1/p/{project}/github/checks",
+            get(get_scoped_github_checks),
+        )
+        .route(
+            "/api/v1/p/{project}/github/ref-status",
+            get(get_scoped_github_ref_status),
+        )
+        .route(
+            "/api/v1/p/{project}/github/prs/{number}/merge-state",
+            get(get_scoped_github_merge_state),
+        )
+        .route(
+            "/api/v1/p/{project}/github/prs/{number}/merge",
+            axum::routing::post(merge_scoped_github_pr),
+        )
+        .route(
+            "/api/v1/p/{project}/github/prs/{number}/changes",
+            get(get_scoped_github_pr_changes),
+        )
         .route("/api/v1/workflows", get(list_workflows).post(save_workflow))
         .route(
             "/api/v1/p/{project}/workflows",
@@ -6138,6 +6192,473 @@ async fn workspace_events(State(state): State<ServerState>) -> Response {
     project_events_for(state, true).await
 }
 
+const GITHUB_UNAVAILABLE_REASON: &str = "GitHub is unavailable for this repository";
+
+#[derive(Debug, Default, Deserialize)]
+struct GithubListQuery {
+    limit: Option<String>,
+    refresh: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct GithubRefreshQuery {
+    refresh: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct GithubChecksQuery {
+    prs: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct GithubRefStatusQuery {
+    prs: Option<String>,
+    issues: Option<String>,
+}
+
+fn github_driver(state: &ServerState) -> Option<GithubDriver> {
+    let remote = git_output(
+        &state.config.repo_root,
+        &["config", "--get", "remote.origin.url"],
+    );
+    resolve_forge(state.config.repo_root.clone(), remote.as_deref())
+}
+
+fn unavailable_github() -> GithubData {
+    GithubData {
+        available: false,
+        reason: Some(GITHUB_UNAVAILABLE_REASON.to_owned()),
+        repo: None,
+        synced_at: None,
+        issues: Vec::new(),
+        prs: Vec::new(),
+        label_colors: None,
+    }
+}
+
+fn unavailable_comments() -> GithubCommentsData {
+    GithubCommentsData {
+        available: false,
+        reason: Some(GITHUB_UNAVAILABLE_REASON.to_owned()),
+        comments: Vec::new(),
+        truncated: None,
+        events: None,
+    }
+}
+
+fn parse_github_number(value: &str) -> Option<u64> {
+    value.parse::<u64>().ok().filter(|number| *number > 0)
+}
+
+fn parse_github_numbers(raw: Option<&str>, cap: usize) -> Option<Vec<u64>> {
+    let parts = raw
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.len() > cap {
+        return None;
+    }
+    parts
+        .into_iter()
+        .map(|part| {
+            let number = parse_github_number(part)?;
+            (number.to_string() == part).then_some(number)
+        })
+        .collect()
+}
+
+fn refresh_requested(refresh: Option<&str>) -> bool {
+    refresh == Some("1")
+}
+
+async fn get_github(
+    State(state): State<ServerState>,
+    Query(query): Query<GithubListQuery>,
+) -> Response {
+    let limit = query
+        .limit
+        .as_deref()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(30);
+    let Some(driver) = github_driver(&state) else {
+        return Json(unavailable_github()).into_response();
+    };
+    Json(driver.list(refresh_requested(query.refresh.as_deref()), limit)).into_response()
+}
+
+async fn get_scoped_github(
+    State(state): State<ServerState>,
+    AxumPath(_project): AxumPath<String>,
+    Query(query): Query<GithubListQuery>,
+) -> Response {
+    get_github(State(state), Query(query)).await
+}
+
+async fn github_comments_for(
+    state: ServerState,
+    kind: String,
+    number: String,
+    refresh: Option<String>,
+) -> Response {
+    let kind = match kind.as_str() {
+        "issue" => GithubItemKind::Issue,
+        "pr" => GithubItemKind::Pr,
+        _ => return error_response(StatusCode::BAD_REQUEST, "invalid kind or number"),
+    };
+    let Some(number) = parse_github_number(&number) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid kind or number");
+    };
+    let data = github_driver(&state)
+        .map(|driver| driver.comments(kind, number, refresh_requested(refresh.as_deref())))
+        .unwrap_or_else(unavailable_comments);
+    Json(data).into_response()
+}
+
+async fn get_github_comments(
+    State(state): State<ServerState>,
+    AxumPath((kind, number)): AxumPath<(String, String)>,
+    Query(query): Query<GithubRefreshQuery>,
+) -> Response {
+    github_comments_for(state, kind, number, query.refresh).await
+}
+
+async fn get_scoped_github_comments(
+    State(state): State<ServerState>,
+    AxumPath((_project, kind, number)): AxumPath<(String, String, String)>,
+    Query(query): Query<GithubRefreshQuery>,
+) -> Response {
+    github_comments_for(state, kind, number, query.refresh).await
+}
+
+fn github_checks_unavailable(reason: impl Into<String>) -> GithubChecksData {
+    GithubChecksData::Unavailable(GithubChecksUnavailable {
+        available: false,
+        reason: reason.into(),
+    })
+}
+
+async fn github_checks_for(state: ServerState, raw: Option<String>) -> Response {
+    if raw.as_deref().is_none_or(str::is_empty) {
+        return error_response(StatusCode::BAD_REQUEST, "missing prs query");
+    }
+    let Some(numbers) = parse_github_numbers(raw.as_deref(), 100) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid prs query");
+    };
+    if numbers.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "invalid prs query");
+    }
+    let Some(driver) = github_driver(&state) else {
+        return Json(github_checks_unavailable(GITHUB_UNAVAILABLE_REASON)).into_response();
+    };
+    let data = match driver.checks(&numbers) {
+        Ok(checks) => GithubChecksData::Available(GithubChecksAvailable {
+            available: true,
+            checks: checks
+                .into_iter()
+                .map(|(number, glyph)| (number.to_string(), glyph))
+                .collect(),
+        }),
+        Err(reason) => github_checks_unavailable(reason),
+    };
+    Json(data).into_response()
+}
+
+async fn get_github_checks(
+    State(state): State<ServerState>,
+    Query(query): Query<GithubChecksQuery>,
+) -> Response {
+    github_checks_for(state, query.prs).await
+}
+
+async fn get_scoped_github_checks(
+    State(state): State<ServerState>,
+    AxumPath(_project): AxumPath<String>,
+    Query(query): Query<GithubChecksQuery>,
+) -> Response {
+    github_checks_for(state, query.prs).await
+}
+
+fn github_ref_status_unavailable(reason: impl Into<String>) -> GithubRefStatusData {
+    GithubRefStatusData::Unavailable(GithubRefStatusUnavailable {
+        available: false,
+        reason: reason.into(),
+        recheck_after_ms: None,
+    })
+}
+
+async fn github_ref_status_for(
+    state: ServerState,
+    prs: Option<String>,
+    issues: Option<String>,
+) -> Response {
+    let Some(prs) = parse_github_numbers(prs.as_deref(), 100) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid ref-status query");
+    };
+    let Some(issues) = parse_github_numbers(issues.as_deref(), 100) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid ref-status query");
+    };
+    if prs.is_empty() && issues.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "missing prs or issues query");
+    }
+    let Some(driver) = github_driver(&state) else {
+        return Json(github_ref_status_unavailable(GITHUB_UNAVAILABLE_REASON)).into_response();
+    };
+    let status = driver.ref_status(&prs, &issues);
+    if !status.available {
+        return Json(github_ref_status_unavailable(
+            status
+                .reason
+                .unwrap_or_else(|| GITHUB_UNAVAILABLE_REASON.to_owned()),
+        ))
+        .into_response();
+    }
+    Json(GithubRefStatusData::Available(GithubRefStatusAvailable {
+        available: true,
+        prs: status
+            .prs
+            .into_iter()
+            .map(|(number, value)| (number.to_string(), value))
+            .collect(),
+        issues: status
+            .issues
+            .into_iter()
+            .map(|(number, value)| (number.to_string(), value))
+            .collect(),
+        recheck_after_ms: status.recheck_after_ms.map(|value| value as f64),
+    }))
+    .into_response()
+}
+
+async fn get_github_ref_status(
+    State(state): State<ServerState>,
+    Query(query): Query<GithubRefStatusQuery>,
+) -> Response {
+    github_ref_status_for(state, query.prs, query.issues).await
+}
+
+async fn get_scoped_github_ref_status(
+    State(state): State<ServerState>,
+    AxumPath(_project): AxumPath<String>,
+    Query(query): Query<GithubRefStatusQuery>,
+) -> Response {
+    github_ref_status_for(state, query.prs, query.issues).await
+}
+
+async fn github_merge_state_for(
+    state: ServerState,
+    number: String,
+    refresh: Option<String>,
+) -> Response {
+    let Some(number) = parse_github_number(&number) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid pull request number");
+    };
+    let Some(driver) = github_driver(&state) else {
+        return Json(GithubPrMergeStateResponse::Unavailable {
+            available: false,
+            reason: GITHUB_UNAVAILABLE_REASON.to_owned(),
+        })
+        .into_response();
+    };
+    let result = match driver.pr_merge_state(number, refresh_requested(refresh.as_deref())) {
+        ForgePrMergeStateResult::Available(state) => GithubPrMergeStateResponse::Available {
+            available: true,
+            merge_state: state,
+        },
+        ForgePrMergeStateResult::Unavailable { reason } => {
+            GithubPrMergeStateResponse::Unavailable {
+                available: false,
+                reason,
+            }
+        }
+    };
+    Json(result).into_response()
+}
+
+async fn get_github_merge_state(
+    State(state): State<ServerState>,
+    AxumPath(number): AxumPath<String>,
+    Query(query): Query<GithubRefreshQuery>,
+) -> Response {
+    github_merge_state_for(state, number, query.refresh).await
+}
+
+async fn get_scoped_github_merge_state(
+    State(state): State<ServerState>,
+    AxumPath((_project, number)): AxumPath<(String, String)>,
+    Query(query): Query<GithubRefreshQuery>,
+) -> Response {
+    github_merge_state_for(state, number, query.refresh).await
+}
+
+async fn merge_github_pr_for(
+    state: ServerState,
+    number: String,
+    input: Result<Json<GithubMergeInput>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Some(number) = parse_github_number(&number) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid pull request number");
+    };
+    let Ok(Json(input)) = input else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid merge request");
+    };
+    if input.expected_head_sha.len() != 40
+        || !input
+            .expected_head_sha
+            .chars()
+            .all(|character| character.is_ascii_digit() || ('a'..='f').contains(&character))
+    {
+        return error_response(StatusCode::BAD_REQUEST, "invalid merge request");
+    }
+    let Some(driver) = github_driver(&state) else {
+        return error_response(StatusCode::CONFLICT, "GitHub merge is unavailable");
+    };
+    match driver.merge_pr(
+        number,
+        &ForgeMergeInput {
+            method: input.method,
+            expected_head_sha: input.expected_head_sha,
+            override_rules: input.override_rules.unwrap_or(false),
+        },
+    ) {
+        ForgeMergeResult::Merged {
+            number,
+            url,
+            method,
+            merge_commit_sha,
+        } => Json(GithubMergeResponse {
+            merged: true,
+            number,
+            url,
+            method,
+            merge_commit_sha,
+        })
+        .into_response(),
+        ForgeMergeResult::Rejected {
+            status,
+            error,
+            code,
+            current,
+        } => {
+            let mut body = Map::new();
+            body.insert("error".to_owned(), Value::String(error));
+            if let Some(code) = code {
+                body.insert("code".to_owned(), Value::String(code));
+            }
+            if let Some(current) = current
+                && let Ok(current) = serde_json::to_value(current)
+            {
+                body.insert("current".to_owned(), current);
+            }
+            (
+                StatusCode::from_u16(status).map_or(StatusCode::BAD_GATEWAY, |status| status),
+                Json(Value::Object(body)),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn merge_github_pr(
+    State(state): State<ServerState>,
+    AxumPath(number): AxumPath<String>,
+    input: Result<Json<GithubMergeInput>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    merge_github_pr_for(state, number, input).await
+}
+
+async fn merge_scoped_github_pr(
+    State(state): State<ServerState>,
+    AxumPath((_project, number)): AxumPath<(String, String)>,
+    input: Result<Json<GithubMergeInput>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    merge_github_pr_for(state, number, input).await
+}
+
+async fn github_pr_changes_for(
+    state: ServerState,
+    number: String,
+    refresh: Option<String>,
+) -> Response {
+    let Some(number) = parse_github_number(&number) else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid pull request number or refresh flag",
+        );
+    };
+    if refresh.as_deref().is_some_and(|value| value != "1") {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid pull request number or refresh flag",
+        );
+    }
+    let Some(driver) = github_driver(&state) else {
+        return Json(GithubPrChangesData::Unavailable(
+            GithubPrChangesUnavailable {
+                available: false,
+                reason: GITHUB_UNAVAILABLE_REASON.to_owned(),
+            },
+        ))
+        .into_response();
+    };
+    let result = match driver.pr_diff(number, refresh_requested(refresh.as_deref())) {
+        ForgePrDiffResult::Available {
+            number,
+            head_sha,
+            files,
+            additions,
+            deletions,
+            truncated,
+            reason,
+        } => GithubPrChangesData::Available(GithubPrChangesAvailable {
+            available: true,
+            number,
+            head_sha,
+            files: files
+                .into_iter()
+                .map(|file| coducktor_contract::GithubPrChange {
+                    path: file.path,
+                    previous_path: file.previous_path,
+                    status: file.status,
+                    additions: file.additions,
+                    deletions: file.deletions,
+                    patch: file.patch,
+                    patch_unavailable_reason: file.patch_unavailable_reason,
+                    truncated: file.truncated.then_some(true),
+                })
+                .collect(),
+            additions,
+            deletions,
+            truncated,
+            reason,
+        }),
+        ForgePrDiffResult::Unavailable { reason } => {
+            GithubPrChangesData::Unavailable(GithubPrChangesUnavailable {
+                available: false,
+                reason,
+            })
+        }
+    };
+    Json(result).into_response()
+}
+
+async fn get_github_pr_changes(
+    State(state): State<ServerState>,
+    AxumPath(number): AxumPath<String>,
+    Query(query): Query<GithubRefreshQuery>,
+) -> Response {
+    github_pr_changes_for(state, number, query.refresh).await
+}
+
+async fn get_scoped_github_pr_changes(
+    State(state): State<ServerState>,
+    AxumPath((_project, number)): AxumPath<(String, String)>,
+    Query(query): Query<GithubRefreshQuery>,
+) -> Response {
+    github_pr_changes_for(state, number, query.refresh).await
+}
+
 async fn create_run(
     State(state): State<ServerState>,
     Json(input): Json<CreateRunInput>,
@@ -6892,6 +7413,62 @@ mod tests {
             live.contains("event: run-event"),
             "unexpected live frame: {live:?}"
         );
+
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test]
+    async fn github_routes_degrade_without_a_github_remote_and_validate_queries() {
+        let (router, repo, _run_id) = seeded_router();
+
+        let response = send(&router, Method::GET, "/api/v1/github", None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(json_body(response).await["available"], false);
+
+        let scoped = send(&router, Method::GET, "/api/v1/p/default/github", None).await;
+        assert_eq!(scoped.status(), StatusCode::OK);
+        assert_eq!(json_body(scoped).await["available"], false);
+
+        let response = send(&router, Method::GET, "/api/v1/github/checks", None).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = send(&router, Method::GET, "/api/v1/github/ref-status", None).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = send(
+            &router,
+            Method::GET,
+            "/api/v1/github/comments/banana/1",
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = send(
+            &router,
+            Method::GET,
+            "/api/v1/github/prs/12/merge-state",
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(json_body(response).await["available"], false);
+        let response = send(
+            &router,
+            Method::GET,
+            "/api/v1/github/prs/12/changes?refresh=true",
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = send(
+            &router,
+            Method::POST,
+            "/api/v1/github/prs/12/merge",
+            Some(serde_json::json!({
+                "method": "squash",
+                "expectedHeadSha": "not-a-sha"
+            })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
         fs::remove_dir_all(repo).expect("remove test repo");
     }

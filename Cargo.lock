@@ -780,6 +780,7 @@ dependencies = [
  "base64",
  "coducktor-contract",
  "coducktor-core",
+ "coducktor-forge",
  "futures-core",
  "futures-util",
  "http",
