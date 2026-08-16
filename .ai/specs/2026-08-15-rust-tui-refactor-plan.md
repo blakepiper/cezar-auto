@@ -221,13 +221,24 @@ built exactly those 9 per this plan's own ground rule 0 (spec wins on disagreeme
 — see the commit message and `screens/settings/mod.rs`'s module doc for the
 reasoning and the accompanying scope cuts.
 
-### [ ] A13 — CLI surface
+### [x] A13 — CLI surface
 **Ships:** `clap` parser for the TUI binary reproducing the protected flags, `cez
 tui` / bare-invocation-launches-TUI wiring. Do **not** touch the Node CLI's contract
 yet — that's A15/B10.
 **Accept:** `bc-route-inventory` and the CLI compatibility tests still pass
 unchanged.
-**Commit:** `feat(cli): A13 clap surface for the TUI binary`
+**Commit:** `feat(cli): A13 clap surface for the TUI binary` — pushed as `5a13d246`.
+**Note:** `cez` is stale spelling from before decision 6 finalized `coducktor`/`duck`
+(spec §2.2.1) — bare invocation and `coducktor tui` are the equivalent wiring, never
+`cez`. Scope was read narrowly, per the plan's own text: `--repo`/`--workflow`/
+`--model`/`-h`/`-V` got real, testable meaning (repo switch by canonical-path match
+against the project registry, New Task preselection); `-p/--port`/`--no-open` stay
+waived (spec §1.4); `run`/`init`/`projects`/`usage`/`serve` were deliberately left
+unimplemented — that's `B10`, operating on the ported core/server crates. The Accept
+criterion was verified directly: `bc-route-inventory.test.ts` passes, and
+`package-cli.test.ts` fails identically on a clean pre-A13 checkout (a pre-existing
+`npm pack --json` output-shape change in npm 12 the test predates, confirmed via
+`git stash` — unrelated to this step).
 
 ### [ ] A14 — Install path and docs
 **Ships:** `cargo install --path crates/cezar-tui` as the documented one-liner
