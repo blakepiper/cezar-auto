@@ -412,7 +412,8 @@ tab plumbing) were **not** ported here — neither is named in the spec's B3 shi
 **Ships:** `cezar-core::{skills, workflows::load, handoff, todos, task_markers,
 task_refs}`.
 **Accept:** existing behavior-equivalence tests pass against the ported module.
-**Commit:** `feat(core): B4 skills, workflows::load, handoff, todos, markers`
+**Commit:** `feat(core): B4 skills, workflows::load, handoff, todos, markers` — pushed as
+`e7fcd360`.
 — shipped as `crates/coducktor-core/src/{skills,handoff,todos}.rs`,
 `crates/coducktor-core/src/runs/{task_markers,task_refs}.rs`, and a new
 `crates/coducktor-core/src/workflows/{mod,load,types}.rs`. Every TS test file in this
