@@ -154,13 +154,13 @@ replies, submit shortcuts, draft persistence), picker overlays, New Task screen.
 picker grouping/ranking matches `lib/skills.ts`.
 **Commit:** `feat(tui): A6 composer + new task` — pushed as `df19e171`.
 
-### [ ] A7 — Markdown, images, and the transcript
+### [x] A7 — Markdown, images, and the transcript
 **Ships:** `tui-markdown` + render cache, `ratatui-image` with protocol detection
 and fallbacks, tool cards, virtualized scrolling with sticky-bottom.
 **Accept:** 5,000-item transcript scrolls at ≥30 fps (criterion bench); an image
 event renders or falls back honestly; snapshots cover message/reasoning/tool/image
 in both collapsed and expanded states.
-**Commit:** `feat(tui): A7 markdown, images, transcript virtualization`
+**Commit:** `feat(tui): A7 markdown, images, transcript virtualization` — pushed as `9453f732`.
 
 ### [ ] A8 — Task thread, complete
 **Ships:** header + actions, step rail, plan dock, subagent sheet, ask card, review
