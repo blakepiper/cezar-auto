@@ -5,10 +5,12 @@
 //! in. Behavioral spec: `packages/web/src/routes/task-thread/{run-header,step-rail,plan-dock,
 //! agents-dock,subagent-sheet,ask-card,review-panel,auto-resume-hint}.tsx`.
 //!
-//! **Scope note:** the review panel here has no embedded diff — `RunDiff` is spec §8.4's own
-//! dependency on the diff engine, which is Phase A's *next* step (A9), not yet built. The
-//! banner, notes box and Send back / Draft PR / Accept actions are all present; the diff
-//! itself lands when A9's widget exists to embed.
+//! **Scope note:** the review panel here has no embedded diff — the diff engine now exists
+//! (`crate::diff`, built at A9), but wiring a `RunDiff` summary into this panel is left for a
+//! later pass; the banner, notes box and Send back / Draft PR / Accept actions are all
+//! present. The Session | Changes | Files | Commits tab row IS wired (A9): `render_header`
+//! registers a `HitAction::ThreadScreen(ThreadAction::OpenGitTab(_))` hit per tab, and
+//! `mod.rs`'s `handle_key` binds `[`/`]` to the same navigation.
 
 use coducktor_contract::{ApiRun, RunStatus};
 use coducktor_protocol::{PlanStatus, UiItem};
@@ -83,12 +85,36 @@ pub fn render_header(
     ));
     lines.push(Line::from(meta));
 
-    let tabs = ["Session", "Changes", "Files", "Commits"];
+    let tabs: [(&str, Option<HitAction>); 4] = [
+        ("Session", None),
+        (
+            "Changes",
+            Some(HitAction::ThreadScreen(ThreadAction::OpenGitTab(
+                crate::app::TaskGitTab::Changes,
+            ))),
+        ),
+        (
+            "Files",
+            Some(HitAction::ThreadScreen(ThreadAction::OpenGitTab(
+                crate::app::TaskGitTab::Files,
+            ))),
+        ),
+        (
+            "Commits",
+            Some(HitAction::ThreadScreen(ThreadAction::OpenGitTab(
+                crate::app::TaskGitTab::Commits,
+            ))),
+        ),
+    ];
     let mut tab_spans = Vec::new();
-    for (index, tab) in tabs.iter().enumerate() {
+    let tab_row_y = area.y.saturating_add(2);
+    let mut tab_x = area.x;
+    for (index, (tab, action)) in tabs.iter().enumerate() {
         let active = index == 0;
+        let label = format!(" {tab} ");
+        let width = label.chars().count() as u16;
         tab_spans.push(Span::styled(
-            format!(" {tab} "),
+            label,
             if active {
                 Style::default()
                     .fg(theme.palette.accent)
@@ -97,6 +123,12 @@ pub fn render_header(
                 Style::default().fg(theme.palette.soft_fg)
             },
         ));
+        if let Some(action) = action.clone()
+            && tab_row_y < area.bottom()
+        {
+            hitmap.register(Rect::new(tab_x, tab_row_y, width, 1), 3, action);
+        }
+        tab_x = tab_x.saturating_add(width);
     }
     lines.push(Line::from(tab_spans));
 

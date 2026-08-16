@@ -1,7 +1,43 @@
 use ratatui::layout::Rect;
 
+use crate::app::{RepoGitTab, TaskGitTab};
 use crate::screens::thread::ThreadAction;
 use crate::widgets::table::ColumnId;
+
+/// A task-git (`screens/task_git`) screen control — routed by `apply_hit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskGitAction {
+    SwitchTab(TaskGitTab),
+    SelectTreeRow(usize),
+    SelectCommit(usize),
+    SelectFileEntry(usize),
+    FilesUp,
+    ToggleMode,
+    ToggleWrap,
+    OpenCommitDialog,
+    CloseCommitDialog,
+    SubmitCommit,
+    Push,
+    CreatePr,
+}
+
+/// A repo-git (`screens/repo_git`) screen control — routed by `apply_hit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepoGitAction {
+    SwitchTab(RepoGitTab),
+    SelectTreeRow(usize),
+    SelectCommit(usize),
+    SelectBranch(usize),
+    ToggleMode,
+    ToggleWrap,
+    NewBranch,
+}
+
+/// A compare-variants (`screens/compare`) screen control — routed by `apply_hit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompareAction {
+    Pick(usize),
+}
 
 /// A new-task screen control (a pill, a button, or the composer).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +83,8 @@ pub enum HitAction {
     TableHeader(ColumnId),
     /// A row of the active run table — click to open, right-click to menu.
     TableRow(usize),
+    /// A tasks-overview "Compare" strip — click to open the compare screen for that group.
+    OpenCompare(String),
     /// The Tasks title row's "Mark all read" action.
     MarkAllRead,
     /// The Tasks title row's "Archive finished" action.
@@ -61,6 +99,12 @@ pub enum HitAction {
     NewTaskScreen(NewTaskAction),
     /// A task-thread screen control — routed by the screen.
     ThreadScreen(ThreadAction),
+    /// A task-git screen control — routed by the screen.
+    TaskGitScreen(TaskGitAction),
+    /// A repo-git screen control — routed by the screen.
+    RepoGitScreen(RepoGitAction),
+    /// A compare-variants screen control — routed by the screen.
+    CompareScreen(CompareAction),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

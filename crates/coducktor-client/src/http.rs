@@ -2,14 +2,16 @@ use std::pin::Pin;
 
 use coducktor_contract::{
     AgentProfilesResponse, ApiRun, ArchiveFinishedResponse, CancelAutoResumeResponse,
-    CancelResponse, ConfigResponse, ContinueInput, ContinueResponse, CreatePrResponse,
-    CreateRunInput, CreateRunResponse, DeleteRunResponse, EditQueuedMessageResponse,
-    FinishResponse, GitCommitInput, GitCommitResponse, GitPushResponse, GithubData, HealthResponse,
-    MarkAllReadResponse, MessageInput, MessageResponse, OpenInCliResponse, OpenInInput,
-    PatchRunInput, PlanResponse, ProjectsResponse, ProviderStatusResponse, QueuedMessagePatchInput,
-    RemoveQueuedMessageResponse, RunCommitsResponse, RunEvent, RunHistoryContext, RunHistoryPage,
-    Runner, RunnerModelCatalogResponse, RunsIndexResponse, SetConfigInput, Skill, UiState,
-    WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUsageResponse,
+    CancelResponse, ChangesPayload, ConfigResponse, ContinueInput, ContinueResponse,
+    CreatePrResponse, CreateRunInput, CreateRunResponse, DeleteRunResponse,
+    EditQueuedMessageResponse, FinishResponse, GitCommitInput, GitCommitResponse, GitPushResponse,
+    GithubData, GroupResponse, HealthResponse, MarkAllReadResponse, MessageInput, MessageResponse,
+    OpenInCliResponse, OpenInInput, PatchRunInput, PickVariantRequest, PickVariantResponse,
+    PlanResponse, ProjectsResponse, ProviderStatusResponse, QueuedMessagePatchInput,
+    RemoveQueuedMessageResponse, RepoBranchRequest, RepoBranchResponse, RepoCommitPayload,
+    RepoResponse, RunCommitsResponse, RunEvent, RunHistoryContext, RunHistoryPage, Runner,
+    RunnerModelCatalogResponse, RunsIndexResponse, SetConfigInput, Skill, UiState,
+    WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUsageResponse, WorktreeEntry,
 };
 use futures_core::Stream;
 use futures_util::StreamExt;
@@ -455,6 +457,138 @@ impl HttpEngine {
         .await
     }
 
+    /// The run's worktree diff vs its base, as plain text (spec 006). Used only where the
+    /// text form is the contract — the structured `/changes` route below is what screens
+    /// actually render.
+    pub async fn run_diff_text(&self, scope: &Scope, run_id: &str) -> Result<String, EngineError> {
+        self.get_text(
+            scope,
+            &format!("/runs/{}/diff", encode_path_segment(run_id)),
+        )
+        .await
+    }
+
+    /// The run's structured diff — the Changes tab's one read.
+    pub async fn run_changes(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<ChangesPayload, EngineError> {
+        self.get_json(
+            scope,
+            &format!("/runs/{}/changes", encode_path_segment(run_id)),
+        )
+        .await
+    }
+
+    /// One of the run's own commits, structured like the Changes tab.
+    pub async fn run_commit(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        sha: &str,
+    ) -> Result<RepoCommitPayload, EngineError> {
+        self.get_json(
+            scope,
+            &format!(
+                "/runs/{}/commit/{}",
+                encode_path_segment(run_id),
+                encode_path_segment(sha)
+            ),
+        )
+        .await
+    }
+
+    /// The Files tab's directory listing or one file's (size-capped) content.
+    pub async fn run_files(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        path: Option<&str>,
+    ) -> Result<WorktreeEntry, EngineError> {
+        let route = format!(
+            "/runs/{}/files{}",
+            encode_path_segment(run_id),
+            query(&[("path", path)])
+        );
+        self.get_json(scope, &route).await
+    }
+
+    /// The raw bytes behind one worktree file — the Files tab's image preview path (`?raw=1`).
+    pub async fn run_file_raw(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        path: &str,
+    ) -> Result<Vec<u8>, EngineError> {
+        let route = format!(
+            "/runs/{}/files{}",
+            encode_path_segment(run_id),
+            query(&[("path", Some(path)), ("raw", Some("1"))])
+        );
+        let response = self.send(Method::GET, scope, &route, None).await?;
+        response
+            .bytes()
+            .await
+            .map(|bytes| bytes.to_vec())
+            .map_err(|error| EngineError::Transport(error.to_string()))
+    }
+
+    /// `GET /repo` — the repo view's one read.
+    pub async fn repo(&self, scope: &Scope) -> Result<RepoResponse, EngineError> {
+        self.get_json(scope, "/repo").await
+    }
+
+    /// The MAIN working tree's structured diff vs `HEAD` — the repo Changes tab.
+    pub async fn repo_changes(&self, scope: &Scope) -> Result<ChangesPayload, EngineError> {
+        self.get_json(scope, "/repo/changes").await
+    }
+
+    /// One repo commit, structured like the Changes tab (`?structured=1`).
+    pub async fn repo_commit(
+        &self,
+        scope: &Scope,
+        sha: &str,
+    ) -> Result<RepoCommitPayload, EngineError> {
+        self.get_json(
+            scope,
+            &format!("/repo/commit/{}?structured=1", encode_path_segment(sha)),
+        )
+        .await
+    }
+
+    /// Switch to an existing branch, or create one and switch — the Branches tab's one write.
+    pub async fn repo_branch(
+        &self,
+        scope: &Scope,
+        input: &RepoBranchRequest,
+    ) -> Result<RepoBranchResponse, EngineError> {
+        self.send_json(Method::POST, scope, "/repo/branch", Some(input))
+            .await
+    }
+
+    /// `GET /groups/:groupId` — every run sharing a groupId, side by side (compare view).
+    pub async fn group(&self, scope: &Scope, group_id: &str) -> Result<GroupResponse, EngineError> {
+        self.get_json(scope, &format!("/groups/{}", encode_path_segment(group_id)))
+            .await
+    }
+
+    /// `POST /groups/:groupId/pick` — the compare view's "Pick this one".
+    pub async fn pick_variant(
+        &self,
+        scope: &Scope,
+        group_id: &str,
+        input: &PickVariantRequest,
+    ) -> Result<PickVariantResponse, EngineError> {
+        self.send_json(
+            Method::POST,
+            scope,
+            &format!("/groups/{}/pick", encode_path_segment(group_id)),
+            Some(input),
+        )
+        .await
+    }
+
     /// Draft PR from the review gate: final autosave, push, `gh pr create --draft`.
     pub async fn create_pr(
         &self,
@@ -572,6 +706,15 @@ impl HttpEngine {
     {
         self.send_json(Method::GET, scope, route, Option::<&Value>::None)
             .await
+    }
+
+    /// `GET` a `text/plain` route (the legacy diff-blob endpoints) rather than JSON.
+    async fn get_text(&self, scope: &Scope, route: &str) -> Result<String, EngineError> {
+        let response = self.send(Method::GET, scope, route, None).await?;
+        response
+            .text()
+            .await
+            .map_err(|error| EngineError::Transport(error.to_string()))
     }
 
     async fn send_json<T, B>(

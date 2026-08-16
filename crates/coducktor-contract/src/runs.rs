@@ -549,6 +549,15 @@ pub struct PickVariantResponse {
     pub winner: Option<RunRecord>,
 }
 
+/// The `POST /groups/:groupId/pick` request body (`pickSchema` in `server.ts`) — not exposed
+/// as a named contract type on the TS side (the route validates an inline `z.object`), but the
+/// Rust client needs a typed body the same way every other write does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PickVariantRequest {
+    pub run_id: String,
+}
+
 /// Mirrors `packages/contract/src/runs.ts::ImageInput`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

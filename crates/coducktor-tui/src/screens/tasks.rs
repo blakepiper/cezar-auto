@@ -365,12 +365,25 @@ fn render_compare_strips(frame: &mut Frame<'_>, area: Rect, app: &mut App, view:
             ])
         })
         .collect();
+    let block = Block::default().borders(Borders::ALL);
+    let inner = block.inner(area);
     frame.render_widget(
         Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL))
+            .block(block)
             .style(Style::default().bg(app.theme.palette.surface)),
         area,
     );
+    for (index, group) in groups.iter().enumerate() {
+        if let Some(y) = inner.y.checked_add(index as u16)
+            && y < inner.bottom()
+        {
+            app.hitmap.register(
+                Rect::new(inner.x, y, inner.width, 1),
+                2,
+                HitAction::OpenCompare(group.group_id.clone()),
+            );
+        }
+    }
 }
 
 /// Route mouse/keyboard interactions from the table back into the app.

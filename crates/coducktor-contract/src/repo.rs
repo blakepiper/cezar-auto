@@ -56,6 +56,15 @@ pub struct RepoBranchResponse {
     pub created: bool,
 }
 
+/// The `POST /repo/branch` request body (`repoBranchSchema` in `server.ts`) — inline on the TS
+/// side, typed here the same way every other write's body is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoBranchRequest {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+}
+
 /// Mirrors the module-local diff-stat shape from `packages/contract/src/repo.ts`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RepoDiffStat {

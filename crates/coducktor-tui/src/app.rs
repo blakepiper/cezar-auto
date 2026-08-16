@@ -92,13 +92,90 @@ impl NavItem {
 }
 
 /// The routed identity used by the TUI. Later screens keep this URL-shaped seam.
+/// A `screens/task_git` sub-tab (spec §8.5) — Changes / Files / Commits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskGitTab {
+    Changes,
+    Files,
+    Commits,
+}
+
+impl TaskGitTab {
+    fn path_segment(self) -> &'static str {
+        match self {
+            Self::Changes => "changes",
+            Self::Files => "files",
+            Self::Commits => "commits",
+        }
+    }
+
+    fn parse(segment: &str) -> Option<Self> {
+        match segment {
+            "changes" => Some(Self::Changes),
+            "files" => Some(Self::Files),
+            "commits" => Some(Self::Commits),
+            _ => None,
+        }
+    }
+}
+
+/// A `screens/repo_git` sub-tab (spec §8.6) — Changes / Commits / Branches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepoGitTab {
+    Changes,
+    Commits,
+    Branches,
+}
+
+impl RepoGitTab {
+    fn path_segment(self) -> &'static str {
+        match self {
+            Self::Changes => "changes",
+            Self::Commits => "commits",
+            Self::Branches => "branches",
+        }
+    }
+
+    fn parse(segment: &str) -> Option<Self> {
+        match segment {
+            "changes" => Some(Self::Changes),
+            "commits" => Some(Self::Commits),
+            "branches" => Some(Self::Branches),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Route {
-    Tasks { project: String },
+    Tasks {
+        project: String,
+    },
     GlobalTasks,
-    NewTask { project: String },
-    Thread { project: String, id: String },
-    Placeholder { project: String, nav: NavItem },
+    NewTask {
+        project: String,
+    },
+    Thread {
+        project: String,
+        id: String,
+    },
+    TaskGit {
+        project: String,
+        id: String,
+        tab: TaskGitTab,
+    },
+    RepoGit {
+        project: String,
+        tab: RepoGitTab,
+    },
+    Compare {
+        project: String,
+        group_id: String,
+    },
+    Placeholder {
+        project: String,
+        nav: NavItem,
+    },
 }
 
 impl Route {
@@ -123,11 +200,29 @@ impl Route {
             return match parts.get(2).copied() {
                 None => Some(Self::Tasks { project }),
                 Some("new") => Some(Self::NewTask { project }),
+                Some("tasks") if parts.len() >= 5 => {
+                    let id = (*parts.get(3)?).to_owned();
+                    match TaskGitTab::parse(parts.get(4)?) {
+                        Some(tab) => Some(Self::TaskGit { project, id, tab }),
+                        None => Some(Self::Thread { project, id }),
+                    }
+                }
                 Some("tasks") if parts.len() >= 4 => Some(Self::Thread {
                     project,
                     id: (*parts.get(3)?).to_owned(),
                 }),
                 Some("tasks") => Some(Self::Tasks { project }),
+                Some("compare") if parts.len() >= 4 => Some(Self::Compare {
+                    project,
+                    group_id: (*parts.get(3)?).to_owned(),
+                }),
+                Some("git" | "repo-git") => {
+                    let tab = parts
+                        .get(3)
+                        .and_then(|segment| RepoGitTab::parse(segment))
+                        .unwrap_or(RepoGitTab::Changes);
+                    Some(Self::RepoGit { project, tab })
+                }
                 Some(segment) => {
                     NavItem::parse(segment).map(|nav| Self::Placeholder { project, nav })
                 }
@@ -148,6 +243,13 @@ impl Route {
             Self::GlobalTasks => "/tasks".to_owned(),
             Self::NewTask { project } => format!("/p/{project}/new"),
             Self::Thread { project, id } => format!("/p/{project}/tasks/{id}"),
+            Self::TaskGit { project, id, tab } => {
+                format!("/p/{project}/tasks/{id}/{}", tab.path_segment())
+            }
+            Self::RepoGit { project, tab } => {
+                format!("/p/{project}/repo-git/{}", tab.path_segment())
+            }
+            Self::Compare { project, group_id } => format!("/p/{project}/compare/{group_id}"),
             Self::Placeholder { project, nav } => {
                 format!("/p/{project}/{}", nav.path_segment())
             }
@@ -160,6 +262,9 @@ impl Route {
             Self::GlobalTasks => "GLOBAL TASKS",
             Self::NewTask { .. } => "NEW TASK",
             Self::Thread { .. } => "TASK THREAD",
+            Self::TaskGit { .. } => "TASK GIT",
+            Self::RepoGit { .. } => "REPO GIT",
+            Self::Compare { .. } => "COMPARE",
             Self::Placeholder { nav, .. } => nav.uppercase_title(),
         }
     }
@@ -169,6 +274,9 @@ impl Route {
             Self::Tasks { project }
             | Self::NewTask { project }
             | Self::Thread { project, .. }
+            | Self::TaskGit { project, .. }
+            | Self::RepoGit { project, .. }
+            | Self::Compare { project, .. }
             | Self::Placeholder { project, .. } => Some(project),
             Self::GlobalTasks => None,
         }
@@ -421,6 +529,72 @@ pub enum PendingAction {
         project: String,
         id: String,
     },
+    /// Load the task-git screen's Changes tab (spec §8.5 A9).
+    LoadTaskGitChanges {
+        project: String,
+        id: String,
+    },
+    /// Load the task-git screen's Files tab at the given worktree path (`None` = root).
+    LoadTaskGitFiles {
+        project: String,
+        id: String,
+        path: Option<String>,
+    },
+    /// Load the task-git screen's Commits tab.
+    LoadTaskGitCommits {
+        project: String,
+        id: String,
+    },
+    /// Load one of the run's commits, structured — the Commits tab's detail pane.
+    LoadTaskGitCommitDiff {
+        project: String,
+        id: String,
+        sha: String,
+    },
+    /// `POST /runs/:id/git/commit` from the Changes tab's commit dialog.
+    TaskGitCommit {
+        project: String,
+        id: String,
+    },
+    /// `POST /runs/:id/git/push` from the Changes tab's toolbar.
+    TaskGitPush {
+        project: String,
+        id: String,
+    },
+    /// Load the repo-git screen (spec §8.6 A9).
+    LoadRepoGit {
+        project: String,
+    },
+    LoadRepoGitCommits {
+        project: String,
+    },
+    LoadRepoGitCommitDiff {
+        project: String,
+        sha: String,
+    },
+    /// `POST /repo/branch` from the Branches tab.
+    RepoGitBranch {
+        project: String,
+        name: String,
+        from: Option<String>,
+    },
+    /// Load the compare-variants screen (spec §8.7 A9).
+    LoadCompare {
+        project: String,
+        group_id: String,
+    },
+    /// `POST /groups/:groupId/pick` from the compare view.
+    PickVariant {
+        project: String,
+        group_id: String,
+        run_id: String,
+    },
+    /// Load one compare variant's full structured diff on demand (spec §8.7 "full diff").
+    LoadCompareVariantDiff {
+        project: String,
+        group_id: String,
+        run_id: String,
+    },
     Quit,
 }
 
@@ -501,6 +675,9 @@ pub struct App {
     pub global_ui: crate::screens::global_tasks::GlobalUi,
     pub new_task_ui: crate::screens::new_task::NewTaskUi,
     pub thread_ui: crate::screens::thread::ThreadUi,
+    pub task_git_ui: crate::screens::task_git::TaskGitUi,
+    pub repo_git_ui: crate::screens::repo_git::RepoGitUi,
+    pub compare_ui: crate::screens::compare::CompareUi,
     pub pending: Vec<PendingAction>,
     pub filter_mode: bool,
     pub sort_picker_index: usize,
@@ -550,6 +727,9 @@ impl App {
             global_ui: crate::screens::global_tasks::GlobalUi::default(),
             new_task_ui: crate::screens::new_task::NewTaskUi::default(),
             thread_ui: crate::screens::thread::ThreadUi::default(),
+            task_git_ui: crate::screens::task_git::TaskGitUi::default(),
+            repo_git_ui: crate::screens::repo_git::RepoGitUi::default(),
+            compare_ui: crate::screens::compare::CompareUi::default(),
             pending: Vec::new(),
             filter_mode: false,
             sort_picker_index: 0,
@@ -1030,6 +1210,18 @@ impl App {
                 crate::screens::thread::render(frame, area, self);
                 return;
             }
+            Route::TaskGit { .. } => {
+                crate::screens::task_git::render(frame, area, self);
+                return;
+            }
+            Route::RepoGit { .. } => {
+                crate::screens::repo_git::render(frame, area, self);
+                return;
+            }
+            Route::Compare { .. } => {
+                crate::screens::compare::render(frame, area, self);
+                return;
+            }
             Route::Placeholder { nav, project } => format!(
                 "{title}\n\nProject: {project}\n\nThe shell route for {} is ready for its content screen in a later step.",
                 nav.label()
@@ -1322,6 +1514,9 @@ impl App {
             Route::GlobalTasks if crate::screens::global_tasks::handle_key(self, key) => return,
             Route::NewTask { .. } if crate::screens::new_task::handle_key(self, key) => return,
             Route::Thread { .. } if crate::screens::thread::handle_key(self, key) => return,
+            Route::TaskGit { .. } if crate::screens::task_git::handle_key(self, key) => return,
+            Route::RepoGit { .. } if crate::screens::repo_git::handle_key(self, key) => return,
+            Route::Compare { .. } if crate::screens::compare::handle_key(self, key) => return,
             _ => {}
         }
         if let Some(action) = self.keymap.action_for(KeyMode::Normal, &key) {
@@ -1556,6 +1751,25 @@ impl App {
                     crate::screens::thread::apply_hit(self, action);
                 }
             }
+            HitAction::TaskGitScreen(action) => {
+                if matches!(self.route(), Route::TaskGit { .. }) {
+                    crate::screens::task_git::apply_hit(self, action);
+                }
+            }
+            HitAction::RepoGitScreen(action) => {
+                if matches!(self.route(), Route::RepoGit { .. }) {
+                    crate::screens::repo_git::apply_hit(self, action);
+                }
+            }
+            HitAction::CompareScreen(action) => {
+                if matches!(self.route(), Route::Compare { .. }) {
+                    crate::screens::compare::apply_hit(self, action);
+                }
+            }
+            HitAction::OpenCompare(group_id) => {
+                let project = self.current_project().to_owned();
+                crate::screens::compare::open(self, &project, &group_id);
+            }
         }
     }
 
@@ -1577,6 +1791,13 @@ impl App {
                 self.new_task_ui.composer_focused = true;
                 self.new_task_ui.composer.focus();
             }
+            NavItem::RepoGit => {
+                self.history.navigate(Route::RepoGit {
+                    project: project.clone(),
+                    tab: RepoGitTab::Changes,
+                });
+                self.pending.push(PendingAction::LoadRepoGit { project });
+            }
             _ => {
                 self.history.navigate(Route::Placeholder { project, nav });
             }
@@ -1589,6 +1810,7 @@ impl App {
             || (nav == NavItem::Tasks
                 && matches!(self.route(), Route::Tasks { .. } | Route::Thread { .. }))
             || (nav == NavItem::NewTask && matches!(self.route(), Route::NewTask { .. }))
+            || (nav == NavItem::RepoGit && matches!(self.route(), Route::RepoGit { .. }))
     }
 
     fn toggle_sidebar(&mut self) {

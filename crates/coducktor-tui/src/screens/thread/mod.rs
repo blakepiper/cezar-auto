@@ -5,14 +5,16 @@
 //! `reducer.rs` for the ported pure logic, and `widgets.rs` for the presentational pieces.
 //!
 //! **Scope notes carried from research, not oversights:**
-//! - The review panel has no embedded diff yet — that is A9's `RunDiff` widget, which does
-//!   not exist as of this step.
+//! - The review panel has no embedded diff yet — A9 built the diff widget
+//!   (`crate::diff`) but wiring it into the review gate's summary is not part of that step's
+//!   own accept criterion; revisit alongside a future review-panel pass.
 //! - The composer sends text only; image attachments (screenshot paste) are not wired into
 //!   the thread's live-message path in this pass.
 //! - Queued-message editing (`PATCH .../queued-messages/:id`) is reachable on `Engine` but
 //!   this screen only wires the remove half; the web's inline text-edit affordance is not
 //!   ported.
-//! - `Changes` / `Files` / `Commits` tabs render as labels only — their screens are A9/A10.
+//! - `Changes` / `Files` / `Commits` tabs (A9) now navigate to `screens::task_git`, cycling
+//!   with `[`/`]` alongside Session; `screens::task_git` cycles back here at either end.
 
 pub mod actions;
 pub mod reducer;
@@ -51,7 +53,10 @@ pub enum ThreadAction {
     ToggleAgentsDock,
     OpenSubagent(String),
     CloseSubagentSheet,
-    AskOption { question: usize, option: usize },
+    AskOption {
+        question: usize,
+        option: usize,
+    },
     AskSend,
     ReviewSendBack,
     ReviewDraftPr,
@@ -61,6 +66,9 @@ pub enum ThreadAction {
     RemoveQueuedMessage(String),
     FocusComposer,
     FocusReviewNotes,
+    /// Tab row (spec §8.4): Session is this screen; Changes/Files/Commits are `screens::
+    /// task_git` (A9) — leaving this screen is a navigation, not a local state change.
+    OpenGitTab(crate::app::TaskGitTab),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -529,6 +537,20 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             apply_action(app, ThreadAction::Finish);
             true
         }
+        KeyCode::Char(']') => {
+            apply_hit(
+                app,
+                ThreadAction::OpenGitTab(crate::app::TaskGitTab::Changes),
+            );
+            true
+        }
+        KeyCode::Char('[') => {
+            apply_hit(
+                app,
+                ThreadAction::OpenGitTab(crate::app::TaskGitTab::Commits),
+            );
+            true
+        }
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => false,
         KeyCode::Char('a') => {
             apply_action(app, ThreadAction::Archive);
@@ -755,6 +777,11 @@ pub fn apply_hit(app: &mut App, action: ThreadAction) {
         }
         ThreadAction::FocusReviewNotes => app.thread_ui.focus = ThreadFocus::ReviewNotes,
         ThreadAction::ReviewSendBack => apply_action(app, ThreadAction::ReviewSendBack),
+        ThreadAction::OpenGitTab(tab) => {
+            let project = app.thread_ui.data.project.clone();
+            let id = app.thread_ui.data.run_id.clone();
+            crate::screens::task_git::open(app, &project, &id, tab);
+        }
         other => apply_action(app, other),
     }
 }
@@ -833,7 +860,8 @@ fn apply_action(app: &mut App, action: ThreadAction) {
         | ThreadAction::TogglePlanDock
         | ThreadAction::ToggleAgentsDock
         | ThreadAction::FocusComposer
-        | ThreadAction::FocusReviewNotes => {}
+        | ThreadAction::FocusReviewNotes
+        | ThreadAction::OpenGitTab(_) => {}
     }
 }
 

@@ -458,6 +458,164 @@ async fn execute_pending(engine: &HttpEngine, app: &mut App) {
                 }
                 refresh_thread_run(engine, app, &project, &id).await;
             }
+            PendingAction::LoadTaskGitChanges { project, id } => {
+                let scope = Scope::Project(project.clone());
+                let run = engine.get_run(&scope, &id).await;
+                let changes = engine.run_changes(&scope, &id).await;
+                match (run, changes) {
+                    (Ok(run), Ok(changes)) => {
+                        app.task_git_ui.run = Some(run);
+                        app.task_git_ui.changes = Some(changes);
+                    }
+                    (Err(error), _) | (_, Err(error)) => {
+                        app.notice = Some(format!("load changes failed: {error}"));
+                    }
+                }
+            }
+            PendingAction::LoadTaskGitFiles { project, id, path } => {
+                let scope = Scope::Project(project.clone());
+                match engine.run_files(&scope, &id, path.as_deref()).await {
+                    Ok(entry) => app.task_git_ui.files_entry = Some(entry),
+                    Err(error) => app.notice = Some(format!("load files failed: {error}")),
+                }
+            }
+            PendingAction::LoadTaskGitCommits { project, id } => {
+                let scope = Scope::Project(project.clone());
+                match engine.run_commits(&scope, &id).await {
+                    Ok(commits) => app.task_git_ui.commits = Some(commits),
+                    Err(error) => app.notice = Some(format!("load commits failed: {error}")),
+                }
+            }
+            PendingAction::LoadTaskGitCommitDiff { project, id, sha } => {
+                let scope = Scope::Project(project.clone());
+                match engine.run_commit(&scope, &id, &sha).await {
+                    Ok(commit) => app.task_git_ui.commit_detail = Some(commit),
+                    Err(error) => app.notice = Some(format!("load commit failed: {error}")),
+                }
+            }
+            PendingAction::TaskGitCommit { project, id } => {
+                let scope = Scope::Project(project.clone());
+                let input = coducktor_contract::GitCommitInput {
+                    message: app.task_git_ui.commit_message.clone(),
+                };
+                match engine.git_commit(&scope, &id, &input).await {
+                    Ok(response) => {
+                        app.notice = Some(format!(
+                            "committed {}",
+                            &response.sha[..response.sha.len().min(7)]
+                        ));
+                    }
+                    Err(error) => app.notice = Some(format!("commit failed: {error}")),
+                }
+                app.pending
+                    .push(PendingAction::LoadTaskGitChanges { project, id });
+            }
+            PendingAction::TaskGitPush { project, id } => {
+                let scope = Scope::Project(project.clone());
+                match engine.git_push(&scope, &id).await {
+                    Ok(response) => {
+                        app.notice = Some(if response.upstream_set {
+                            format!(
+                                "pushed {} to {} (upstream set)",
+                                response.branch, response.remote
+                            )
+                        } else {
+                            format!("pushed {} to {}", response.branch, response.remote)
+                        });
+                    }
+                    Err(error) => app.notice = Some(format!("push failed: {error}")),
+                }
+            }
+            PendingAction::LoadRepoGit { project } => {
+                let scope = Scope::Project(project.clone());
+                match engine.repo(&scope).await {
+                    Ok(repo) => app.repo_git_ui.repo = Some(repo),
+                    Err(error) => app.notice = Some(format!("load repo failed: {error}")),
+                }
+                if let Ok(changes) = engine.repo_changes(&scope).await {
+                    app.repo_git_ui.repo_changes_files = changes.files;
+                }
+            }
+            PendingAction::LoadRepoGitCommits { project } => {
+                let scope = Scope::Project(project.clone());
+                match engine.repo(&scope).await {
+                    Ok(repo) => app.repo_git_ui.repo = Some(repo),
+                    Err(error) => app.notice = Some(format!("load repo failed: {error}")),
+                }
+            }
+            PendingAction::LoadRepoGitCommitDiff { project, sha } => {
+                let scope = Scope::Project(project.clone());
+                match engine.repo_commit(&scope, &sha).await {
+                    Ok(commit) => app.repo_git_ui.commit_detail = Some(commit),
+                    Err(error) => app.notice = Some(format!("load commit failed: {error}")),
+                }
+            }
+            PendingAction::RepoGitBranch {
+                project,
+                name,
+                from,
+            } => {
+                let scope = Scope::Project(project.clone());
+                let input = coducktor_contract::RepoBranchRequest { name, from };
+                match engine.repo_branch(&scope, &input).await {
+                    Ok(response) => {
+                        app.notice = Some(format!(
+                            "branch {} {}",
+                            response.branch,
+                            if response.created {
+                                "created"
+                            } else {
+                                "switched"
+                            }
+                        ));
+                    }
+                    Err(error) => app.notice = Some(format!("branch failed: {error}")),
+                }
+                app.pending.push(PendingAction::LoadRepoGit { project });
+            }
+            PendingAction::LoadCompare { project, group_id } => {
+                let scope = Scope::Project(project.clone());
+                match engine.group(&scope, &group_id).await {
+                    Ok(group) => {
+                        let first = group.runs.first().map(|variant| variant.id.clone());
+                        app.compare_ui.group = Some(group);
+                        if let Some(run_id) = first {
+                            app.pending.push(PendingAction::LoadCompareVariantDiff {
+                                project,
+                                group_id,
+                                run_id,
+                            });
+                        }
+                    }
+                    Err(error) => app.notice = Some(format!("load compare failed: {error}")),
+                }
+            }
+            PendingAction::LoadCompareVariantDiff {
+                project,
+                group_id: _,
+                run_id,
+            } => {
+                let scope = Scope::Project(project.clone());
+                match engine.run_changes(&scope, &run_id).await {
+                    Ok(changes) => {
+                        app.compare_ui.variant_diffs.insert(run_id, changes);
+                    }
+                    Err(error) => app.notice = Some(format!("load diff failed: {error}")),
+                }
+            }
+            PendingAction::PickVariant {
+                project,
+                group_id,
+                run_id,
+            } => {
+                let scope = Scope::Project(project.clone());
+                let input = coducktor_contract::PickVariantRequest { run_id };
+                match engine.pick_variant(&scope, &group_id, &input).await {
+                    Ok(_) => app.notice = Some("variant picked".to_owned()),
+                    Err(error) => app.notice = Some(format!("pick failed: {error}")),
+                }
+                refresh_tasks(engine, app, &project).await;
+            }
             PendingAction::Quit => {}
         }
     }

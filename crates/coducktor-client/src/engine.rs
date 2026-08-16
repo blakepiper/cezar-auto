@@ -1,14 +1,16 @@
 use async_trait::async_trait;
 use coducktor_contract::{
     AgentProfilesResponse, ApiRun, ArchiveFinishedResponse, CancelAutoResumeResponse,
-    CancelResponse, ConfigResponse, ContinueInput, ContinueResponse, CreatePrResponse,
-    CreateRunInput, CreateRunResponse, DeleteRunResponse, EditQueuedMessageResponse,
-    FinishResponse, GitCommitInput, GitCommitResponse, GitPushResponse, GithubData, HealthResponse,
-    MarkAllReadResponse, MessageInput, MessageResponse, OpenInCliResponse, OpenInInput,
-    PatchRunInput, PlanResponse, ProjectsResponse, ProviderStatusResponse, QueuedMessagePatchInput,
-    RemoveQueuedMessageResponse, RunCommitsResponse, RunHistoryContext, RunHistoryPage, Runner,
+    CancelResponse, ChangesPayload, ConfigResponse, ContinueInput, ContinueResponse,
+    CreatePrResponse, CreateRunInput, CreateRunResponse, DeleteRunResponse,
+    EditQueuedMessageResponse, FinishResponse, GitCommitInput, GitCommitResponse, GitPushResponse,
+    GithubData, GroupResponse, HealthResponse, MarkAllReadResponse, MessageInput, MessageResponse,
+    OpenInCliResponse, OpenInInput, PatchRunInput, PickVariantRequest, PickVariantResponse,
+    PlanResponse, ProjectsResponse, ProviderStatusResponse, QueuedMessagePatchInput,
+    RemoveQueuedMessageResponse, RepoBranchRequest, RepoBranchResponse, RepoCommitPayload,
+    RepoResponse, RunCommitsResponse, RunHistoryContext, RunHistoryPage, Runner,
     RunnerModelCatalogResponse, RunsIndexResponse, SetConfigInput, Skill, UiState,
-    WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUsageResponse,
+    WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUsageResponse, WorktreeEntry,
 };
 use futures_core::stream::BoxStream;
 use serde_json::Value;
@@ -147,6 +149,45 @@ pub trait Engine: Send + Sync {
     ) -> Result<RunCommitsResponse, EngineError>;
     async fn create_pr(&self, scope: &Scope, run_id: &str)
     -> Result<CreatePrResponse, EngineError>;
+
+    // ---- diff engine: task git, repo git, compare (§8.5–§8.7, A9) -----------------------
+    async fn run_diff_text(&self, scope: &Scope, run_id: &str) -> Result<String, EngineError>;
+    async fn run_changes(&self, scope: &Scope, run_id: &str)
+    -> Result<ChangesPayload, EngineError>;
+    async fn run_commit(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        sha: &str,
+    ) -> Result<RepoCommitPayload, EngineError>;
+    async fn run_files(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        path: Option<&str>,
+    ) -> Result<WorktreeEntry, EngineError>;
+    async fn run_file_raw(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        path: &str,
+    ) -> Result<Vec<u8>, EngineError>;
+    async fn repo(&self, scope: &Scope) -> Result<RepoResponse, EngineError>;
+    async fn repo_changes(&self, scope: &Scope) -> Result<ChangesPayload, EngineError>;
+    async fn repo_commit(&self, scope: &Scope, sha: &str)
+    -> Result<RepoCommitPayload, EngineError>;
+    async fn repo_branch(
+        &self,
+        scope: &Scope,
+        input: &RepoBranchRequest,
+    ) -> Result<RepoBranchResponse, EngineError>;
+    async fn group(&self, scope: &Scope, group_id: &str) -> Result<GroupResponse, EngineError>;
+    async fn pick_variant(
+        &self,
+        scope: &Scope,
+        group_id: &str,
+        input: &PickVariantRequest,
+    ) -> Result<PickVariantResponse, EngineError>;
     async fn cancel_auto_resume(
         &self,
         scope: &Scope,
@@ -393,6 +434,82 @@ impl Engine for HttpEngine {
         run_id: &str,
     ) -> Result<CreatePrResponse, EngineError> {
         HttpEngine::create_pr(self, scope, run_id).await
+    }
+
+    async fn run_diff_text(&self, scope: &Scope, run_id: &str) -> Result<String, EngineError> {
+        HttpEngine::run_diff_text(self, scope, run_id).await
+    }
+
+    async fn run_changes(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<ChangesPayload, EngineError> {
+        HttpEngine::run_changes(self, scope, run_id).await
+    }
+
+    async fn run_commit(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        sha: &str,
+    ) -> Result<RepoCommitPayload, EngineError> {
+        HttpEngine::run_commit(self, scope, run_id, sha).await
+    }
+
+    async fn run_files(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        path: Option<&str>,
+    ) -> Result<WorktreeEntry, EngineError> {
+        HttpEngine::run_files(self, scope, run_id, path).await
+    }
+
+    async fn run_file_raw(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+        path: &str,
+    ) -> Result<Vec<u8>, EngineError> {
+        HttpEngine::run_file_raw(self, scope, run_id, path).await
+    }
+
+    async fn repo(&self, scope: &Scope) -> Result<RepoResponse, EngineError> {
+        HttpEngine::repo(self, scope).await
+    }
+
+    async fn repo_changes(&self, scope: &Scope) -> Result<ChangesPayload, EngineError> {
+        HttpEngine::repo_changes(self, scope).await
+    }
+
+    async fn repo_commit(
+        &self,
+        scope: &Scope,
+        sha: &str,
+    ) -> Result<RepoCommitPayload, EngineError> {
+        HttpEngine::repo_commit(self, scope, sha).await
+    }
+
+    async fn repo_branch(
+        &self,
+        scope: &Scope,
+        input: &RepoBranchRequest,
+    ) -> Result<RepoBranchResponse, EngineError> {
+        HttpEngine::repo_branch(self, scope, input).await
+    }
+
+    async fn group(&self, scope: &Scope, group_id: &str) -> Result<GroupResponse, EngineError> {
+        HttpEngine::group(self, scope, group_id).await
+    }
+
+    async fn pick_variant(
+        &self,
+        scope: &Scope,
+        group_id: &str,
+        input: &PickVariantRequest,
+    ) -> Result<PickVariantResponse, EngineError> {
+        HttpEngine::pick_variant(self, scope, group_id, input).await
     }
 
     async fn cancel_auto_resume(
