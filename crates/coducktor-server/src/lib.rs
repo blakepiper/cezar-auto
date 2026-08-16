@@ -36,12 +36,12 @@ use coducktor_contract::{
     AgentConfigKind, AgentConfigListing, AgentConfigScope, AgentConfigTracked, AgentProfile,
     AgentProfileResponse, AgentProfileSelectionsResponse, AgentProfilesResponse, ApiRun,
     BackendCheck, BackendCheckName, Capabilities, ChangedFile, ChangedFileStatus, ChangesPayload,
-    ConfigResponse, ContinueInput, CreateAgentProfileInput, CreatePrResponse, CreateRunInput,
-    CreateRunResponse, DeleteRunResponse, DeleteWorkflowResponse, EditQueuedMessageResponse,
-    EmptyRepoResponse, ForgeInfo, ForgeKind, GitCommitInput, GitCommitResponse, GitPushResponse,
-    GroupResponse, GroupVariant, HealthProject, HealthResponse, IdeDirectoryQuery,
-    IdeDirectoryResponse, IdeEntry, IdeEntryType, IdeFileInput, IdeFileQuery, IdeFileResponse,
-    ImageInput, LogEntry, MarkAllReadResponse, MessageInput, ModelDiscoveryQuery,
+    CheckoutProjectInput, ConfigResponse, ContinueInput, CreateAgentProfileInput, CreatePrResponse,
+    CreateRunInput, CreateRunResponse, DeleteRunResponse, DeleteWorkflowResponse,
+    EditQueuedMessageResponse, EmptyRepoResponse, ForgeInfo, ForgeKind, GitCommitInput,
+    GitCommitResponse, GitPushResponse, GroupResponse, GroupVariant, HealthProject, HealthResponse,
+    IdeDirectoryQuery, IdeDirectoryResponse, IdeEntry, IdeEntryType, IdeFileInput, IdeFileQuery,
+    IdeFileResponse, ImageInput, LogEntry, MarkAllReadResponse, MessageInput, ModelDiscoveryQuery,
     ModelDiscoveryRunner, OpenAgentAccountFileInput, OpenAgentAccountFileResponse,
     OpenInCliResponse, OpenInInput, OpenProjectInRequest, OpenProjectInResponse, OpenTarget,
     OpenTargetsResponse, ParseWorkflowInput, ParsedWorkflow, PatchRunInput, PickVariantRequest,
@@ -49,17 +49,18 @@ use coducktor_contract::{
     ProjectSource, ProjectStatus, ProjectsResponse, ProviderConnectAlreadyConnected,
     ProviderConnectInput, ProviderConnectOpened, ProviderConnectResponse, ProviderConnectionState,
     ProviderEnabledInput, ProviderRetryInput, ProviderStatus, ProviderStatusQuery,
-    ProviderStatusResponse, QueuedMessage, ReclaimWorktreesResponse, RegisterProjectInput,
-    RegisterProjectResponse, RemoveAgentProfileResponse, RemoveProjectResponse,
-    RemoveQueuedMessageResponse, RemoveWorktreeResponse, RepoBranchRequest, RepoBranchResponse,
-    RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse, RunCommit, RunCommitsResponse,
-    RunEvent, RunEventsQuery, RunHistoryContext, RunHistoryEvent, RunHistoryPage, RunRecord,
-    Runner, RunnerModels, RunnerSelection, SaveWorkflowInput, SaveWorkflowResponse,
-    SelectAgentProfileInput, SetAgentConfigInput, SetConfigInput, SetWorkspaceConfigInput,
-    SetWorkspaceUiStateInput, StartTodoResponse, StatusEntry, TodoItem, UiState,
-    UpdateAgentProfileInput, UpdateProjectInput, UpdateProjectResponse, UserMcpListing,
-    WorkflowStepDef, WorkflowsResponse, WorkspaceConfigResponse, WorktreeDirEntry, WorktreeEntry,
-    WorktreeEntryType, WorktreeInfo, WorktreeRunStatus, WorktreesResponse,
+    ProviderStatusResponse, QueuedMessage, ReclaimWorktreesResponse, ReferenceStatuses,
+    RegisterProjectInput, RegisterProjectResponse, RemoveAgentProfileResponse,
+    RemoveProjectResponse, RemoveQueuedMessageResponse, RemoveWorktreeResponse, RepoBranchRequest,
+    RepoBranchResponse, RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse, RunCommit,
+    RunCommitsResponse, RunEvent, RunEventsQuery, RunHistoryContext, RunHistoryEvent,
+    RunHistoryPage, RunIndexEntry, RunRecord, Runner, RunnerModels, RunnerSelection,
+    RunsIndexResponse, SaveWorkflowInput, SaveWorkflowResponse, SelectAgentProfileInput,
+    SetAgentConfigInput, SetConfigInput, SetWorkspaceConfigInput, SetWorkspaceUiStateInput,
+    StartTodoResponse, StatusEntry, TodoItem, UiState, UpdateAgentProfileInput, UpdateProjectInput,
+    UpdateProjectResponse, UserMcpListing, WorkflowStepDef, WorkflowsResponse,
+    WorkspaceConfigResponse, WorktreeDirEntry, WorktreeEntry, WorktreeEntryType, WorktreeInfo,
+    WorktreeRunStatus, WorktreesResponse,
 };
 use coducktor_contract::{
     GithubChecksAvailable, GithubChecksData, GithubChecksUnavailable, GithubCommentsData,
@@ -96,7 +97,7 @@ use coducktor_core::workspace::ui_state::{
 };
 use coducktor_forge::{
     DraftPrInput, DraftPrOutcome, ForgeMergeInput, ForgeMergeResult, ForgePrDiffResult,
-    ForgePrMergeStateResult, GithubDriver, resolve_forge,
+    ForgePrMergeStateResult, GithubDriver, parse_remote, resolve_forge,
 };
 use serde::Deserialize;
 use serde::Serialize;
@@ -430,6 +431,10 @@ pub fn router_with_state(state: ServerState) -> Router {
             get(list_projects).post(register_project),
         )
         .route(
+            "/api/v1/projects/checkout",
+            axum::routing::post(checkout_project),
+        )
+        .route(
             "/api/v1/projects/{project_id}",
             axum::routing::patch(update_project).delete(remove_project),
         )
@@ -499,6 +504,7 @@ pub fn router_with_state(state: ServerState) -> Router {
             axum::routing::put(select_agent_profile),
         )
         .route("/api/v1/workspace/usage", get(get_workspace_usage))
+        .route("/api/v1/workspace/runs-index", get(workspace_runs_index))
         .route("/api/v1/workspace/events", get(workspace_events))
         .route("/api/v1/skills", get(list_skills))
         .route("/api/v1/p/{project}/skills", get(list_scoped_skills))
@@ -2099,6 +2105,132 @@ async fn register_project(
     };
     let saved = project.clone();
     if let Err(error) = merge_write_workspace_config(&path, &ProcessEnv, move |config| {
+        config.projects.push(saved);
+    }) {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string());
+    }
+    Json(RegisterProjectResponse {
+        project: project_entry(&project),
+        error: None,
+    })
+    .into_response()
+}
+
+fn checkout_url(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() || value.chars().count() > 512 || value.contains(['\0', '\n', '\r']) {
+        return None;
+    }
+    if value.split('/').count() == 2 && !value.contains("://") && !value.contains(':') {
+        let mut parts = value.split('/');
+        let owner = parts.next()?.trim();
+        let repo = parts.next()?.trim().trim_end_matches(".git");
+        if owner.is_empty() || repo.is_empty() || owner.contains(['.', '@']) {
+            return None;
+        }
+        return Some(format!("https://github.com/{owner}/{repo}.git"));
+    }
+    let parsed = parse_remote(value)?;
+    (parsed.host == "github.com").then(|| value.to_owned())
+}
+
+fn checkout_name(value: Option<&str>, url: &str) -> Option<String> {
+    let candidate = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            url.trim_end_matches('/')
+                .rsplit(['/', ':'])
+                .next()
+                .map(|value| value.trim_end_matches(".git").to_owned())
+        })?;
+    if candidate.chars().count() > 128 || candidate.contains(['\0', '/', '\\']) {
+        return None;
+    }
+    let slug = project_slug(&candidate);
+    (!slug.is_empty()).then_some(slug)
+}
+
+async fn checkout_project(
+    State(state): State<ServerState>,
+    input: Result<Json<CheckoutProjectInput>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Ok(Json(input)) = input else {
+        return error_response(StatusCode::BAD_REQUEST, "url must be a GitHub repository");
+    };
+    let Some(url) = checkout_url(&input.url) else {
+        return error_response(StatusCode::BAD_REQUEST, "url must be a GitHub repository");
+    };
+    if input
+        .checkout_id
+        .as_deref()
+        .is_some_and(|value| value.chars().count() > 128 || value.contains(['\0', '\n', '\r']))
+    {
+        return error_response(StatusCode::BAD_REQUEST, "invalid checkoutId");
+    }
+    let Some(name) = checkout_name(input.name.as_deref(), &url) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid checkout name");
+    };
+    let config_path = state.workspace_config_path();
+    let config = workspace_config(&state);
+    let projects_dir = expand_tilde(&config.projects_dir, &ProcessEnv);
+    if let Err(error) = fs::create_dir_all(&projects_dir) {
+        return error_response(
+            StatusCode::CONFLICT,
+            &format!("could not create projects directory: {error}"),
+        );
+    }
+    let target = projects_dir.join(&name);
+    if target.exists() {
+        return error_response(StatusCode::CONFLICT, "checkout target already exists");
+    }
+    let output = Command::new("git")
+        .args(["clone", "--depth", "1", &url])
+        .arg(&target)
+        .output();
+    let Ok(output) = output else {
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "git is not available");
+    };
+    if !output.status.success() {
+        let reason = String::from_utf8_lossy(&output.stderr);
+        let reason = reason.lines().next().unwrap_or("git clone failed");
+        let _ = fs::remove_dir_all(&target);
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, reason);
+    }
+    let Ok(root) = target.canonicalize() else {
+        let _ = fs::remove_dir_all(&target);
+        return error_response(StatusCode::CONFLICT, "checkout target is unavailable");
+    };
+    let existing_config = load_workspace_config(&config_path, &ProcessEnv);
+    if existing_config.projects.iter().any(|project| {
+        Path::new(&project.root)
+            .canonicalize()
+            .is_ok_and(|existing| existing == root)
+    }) {
+        let _ = fs::remove_dir_all(&target);
+        return error_response(StatusCode::CONFLICT, "project already registered");
+    }
+    let taken = existing_config
+        .projects
+        .iter()
+        .map(|project| project.id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let id = allocate_project_id(&name, &taken);
+    let now = now_iso8601();
+    let project = WorkspaceProject {
+        id,
+        root: root.to_string_lossy().into_owned(),
+        name,
+        added_at: now.clone(),
+        last_opened_at: now,
+        source: CoreProjectSource::Checkout,
+        max_parallel: None,
+        tags: None,
+        extra: Map::new(),
+    };
+    let saved = project.clone();
+    if let Err(error) = merge_write_workspace_config(&config_path, &ProcessEnv, move |config| {
         config.projects.push(saved);
     }) {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string());
@@ -5716,6 +5848,86 @@ async fn get_workspace_usage() -> Response {
     Json(coducktor_contract::WorkspaceUsageResponse { providers: vec![] }).into_response()
 }
 
+fn run_index_entry(project_id: &str, run: RunRecord) -> RunIndexEntry {
+    RunIndexEntry {
+        project_id: project_id.to_owned(),
+        id: run.id,
+        title: run.title,
+        title_summary: run.title_summary,
+        title_origin: run.title_origin,
+        status: run.status,
+        activity: run.activity,
+        created_at: run.created_at,
+        finished_at: run.finished_at,
+        seen_at: run.seen_at,
+        archived: run.archived,
+        auto_resume_at: run.auto_resume_at,
+        workflow: run.workflow,
+        branch: run.branch,
+        started_at: run.started_at,
+        pull_request_url: run.pull_request_url,
+        referenced_pull_request_url: run.referenced_pull_request_url,
+        pr_number: run.pr_number,
+        issue_number: run.issue_number,
+        referenced_issue_url: run.referenced_issue_url,
+        marker_refs: run.marker_refs,
+        cost_usd: run.cost_usd,
+        peak_rss_bytes: run.peak_rss_bytes,
+        peak_proc_count: run.peak_proc_count,
+        usage: None,
+        runner: run.runner,
+        model: run.model,
+        model_usage: None,
+        model_identity: run.model_identity,
+        reasoning_effort: None,
+    }
+}
+
+async fn workspace_runs_index(State(state): State<ServerState>) -> Response {
+    const PER_PROJECT_LIMIT: usize = 200;
+    let config = workspace_config(&state);
+    let boot_root = state
+        .config
+        .repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| state.config.repo_root.clone());
+    let mut runs = Vec::new();
+    let mut truncated = Vec::new();
+    for project in config.projects {
+        let root = PathBuf::from(&project.root);
+        if !root.is_dir() {
+            continue;
+        }
+        let mut recent = if root.canonicalize().ok().as_ref() == Some(&boot_root) {
+            state
+                .manager
+                .lock()
+                .map(|manager| manager.list_runs())
+                .unwrap_or_default()
+        } else {
+            RunManager::open(root.join(".ai").join("coducktor")).list_runs()
+        };
+        recent.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+        if recent.len() > PER_PROJECT_LIMIT {
+            truncated.push(project.id.clone());
+        }
+        runs.extend(
+            recent
+                .into_iter()
+                .take(PER_PROJECT_LIMIT)
+                .map(|run| run_index_entry(&project.id, run)),
+        );
+    }
+    runs.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+    Json(RunsIndexResponse {
+        runs,
+        reference_statuses: BTreeMap::<String, ReferenceStatuses>::new(),
+        per_project_limit: PER_PROJECT_LIMIT as u64,
+        truncated,
+    })
+    .into_response()
+}
+
 async fn list_runs(State(state): State<ServerState>) -> Response {
     let Ok(manager) = state.manager.lock() else {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run manager unavailable");
@@ -8766,6 +8978,36 @@ mod tests {
         )
         .await;
         assert_eq!(invalid_target.status(), StatusCode::BAD_REQUEST);
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test]
+    async fn workspace_index_and_checkout_routes_degrade_without_network_or_registry_state() {
+        let repo = test_repo();
+        let router = router_with_state(ServerState::with_manager_and_workspace_dir(
+            ServerConfig::new(&repo, "test"),
+            RunManager::open(repo.join(".ai").join("coducktor")),
+            repo.join("workspace"),
+        ));
+        let index = send(&router, Method::GET, "/api/v1/workspace/runs-index", None).await;
+        assert_eq!(index.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(index).await,
+            serde_json::json!({
+                "runs": [],
+                "referenceStatuses": {},
+                "perProjectLimit": 200,
+                "truncated": []
+            })
+        );
+        let invalid_checkout = send(
+            &router,
+            Method::POST,
+            "/api/v1/projects/checkout",
+            Some(serde_json::json!({ "url": "https://example.com/not-github" })),
+        )
+        .await;
+        assert_eq!(invalid_checkout.status(), StatusCode::BAD_REQUEST);
         fs::remove_dir_all(repo).expect("remove test repo");
     }
 
