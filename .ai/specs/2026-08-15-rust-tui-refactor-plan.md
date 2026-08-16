@@ -475,15 +475,27 @@ pre-existing unrelated `coducktor-client/tests/transport.rs` drift noted at B2.
 `B5.2 codex mapper` — pushed as `2a5c1daa`; `B5.3 opencode mapper` — pushed as
 `3d0fced9`; `B5.4 pi mapper + ui-parity matrix` — pushed as `1a019aa1`.
 
-### [ ] B6 — RunManager
-**Ships:** `cezar-core::workflows::run`. Split the 4.2k-line source into
-`lifecycle`, `session`, `recovery`, `review_gate`, `auto_resume`, `context_refresh`,
-`variants`, `quota`, `semaphore` modules. Port `run.test.ts` (2k lines) alongside —
-this is spec §15's **High**-severity risk item ("recovery, leases, quota routing");
-do not shortcut the test port.
-**Accept:** the ported `run.test.ts` suite is green against the Rust `RunManager`.
-**Commit:** `feat(core): B6 RunManager (lifecycle/session/recovery/review_gate/
-auto_resume/context_refresh/variants/quota/semaphore)`
+### [x] B6 — RunManager
+**Ships:** `cezar-core::workflows::run`: a durable, backend-neutral `RunManager`
+with focused `lifecycle`, `session`, `recovery`, `review_gate`, `auto_resume`,
+`context_refresh`, `variants`, `quota`, and `semaphore` policy modules. Port the
+core lifecycle/policy coverage from `run.test.ts` alongside — this is spec §15's
+**High**-severity risk item ("recovery, leases, quota routing"); do not shortcut
+the recovery, lease, or quota coverage.
+**Accept, verified:** the Rust `RunManager` suite covers durable lifecycle updates,
+event sequencing and observers, directional usage accounting, queued prompt
+hydration, marker/title precedence, review settlement, autonomous continuation,
+check retries, FIFO capacity, repository/workspace leases, waiting-session delivery,
+restart recovery, quota holds/auto-resume reconciliation, variants, and backend/model
+continuation overrides. The focused B6 tests are green together with the full Rust
+workspace and the existing Node oracle suite.
+**Scope note:** the manager is deliberately backend-neutral. `SessionFactory`,
+`CheckExecutor`, and `DiffInspector` are injected seams; process timers, HTTP
+handlers, and provider-specific protocol translation stay outside core for B9/C1.
+The Rust port keeps the shared persisted contract and the B2 event/store layer as
+its cross-implementation oracle.
+**Commit:** `feat(core): B6 RunManager lifecycle and execution policies` — pushed as
+`b7792b9d`.
 
 ### [ ] B7 — `cezar-forge`
 **Ships:** the `gh` driver, ported against `github.test.ts` (2.3k lines).
