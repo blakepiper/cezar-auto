@@ -1,0 +1,210 @@
+# Keymap reference
+
+Sourced directly from `crates/coducktor-tui/src/input/keymap.rs` (the global keymap)
+and each screen's `handle_key` (screen-local bindings). Regenerate this by hand
+whenever those change — there is no automated doc-gen for it yet.
+
+## Global keymap (`default-keymap.toml`)
+
+Works from anywhere in the app. Override any binding with a user keymap at
+`$DUCK_HOME/keymap.toml` (or `~/.coducktor/keymap.toml` if `DUCK_HOME` is unset) —
+user bindings are merged over these defaults, key by key.
+
+| Key | Action |
+|---|---|
+| `q` | Quit |
+| `t` | Jump to Tasks |
+| `g` | Jump to global (cross-project) Tasks |
+| `c` | New task |
+| `i` | Inbox |
+| `Ctrl+B` | Toggle sidebar |
+| `?` | Help overlay (context-filtered) |
+| `:` | Open the command line |
+| `Ctrl+O` | Navigate back |
+| `Ctrl+I` | Navigate forward |
+| `Ctrl+K` | Command palette |
+| `Ctrl+L` | Logs overlay (tails the supervised service's captured output) |
+
+Sidebar nav items without a global single-key binding today — reach them via mouse
+click, the command palette (`Ctrl+K`), or `:open <route>`: IDE, Git (repo), GitHub,
+Skills, Workflows, Settings.
+
+### Command line (`:`)
+
+| Command | Effect |
+|---|---|
+| `:open <route>` | Navigate to a route (e.g. `:open /tasks`) |
+| `:back` | Same as `Ctrl+O` |
+| `:forward` | Same as `Ctrl+I` |
+| `:theme <light\|dark\|lazyvim>` | Switch theme |
+| `:new` | Same as `c` |
+| `:help` | Same as `?` |
+| `:sidebar` | Toggle sidebar |
+| `:quit` | Same as `q` |
+| `:logs` | Open the logs overlay (same as `Ctrl+L`) |
+
+## Screen-local bindings
+
+Everything below only applies while that screen has focus, layered on top of the
+global keymap above. `j`/`k` (and usually `Down`/`Up`) move the selection in every
+list-shaped screen — that convention is consistent throughout rather than
+re-documented per row.
+
+### Tasks (`screens/tasks.rs`)
+
+| Key | Action |
+|---|---|
+| `j` / `k` | Move selection |
+| `t` | Toggle Active/Archived view |
+| `s` | Open the sort picker |
+| `x` | Toggle the hovered column's fold |
+| `[` / `]` | Scroll table columns |
+| `/` | Filter |
+| `a` | Archive selected |
+| `r` | Toggle read/unread |
+| `d` | Delete (with confirm) |
+| `p` | Open the task's PR |
+| `Enter` | Open the task thread |
+
+Sort picker: `j`/`k`/`Down`/`Up` to move, `Enter` to apply, `Esc` to cancel.
+
+### Global tasks (`screens/global_tasks.rs`)
+
+| Key | Action |
+|---|---|
+| `j` / `k` | Move selection |
+| `t` | Toggle Active/Archived view |
+| `/` | Filter |
+| `f` | Open the project-filter picker |
+| `[` / `]` | Scroll table columns |
+| `g` | Toggle grouping by tag |
+| `a` | Archive selected |
+| `r` | Toggle read/unread |
+| `d` | Delete (with confirm) |
+| `Enter` | Open the task thread |
+
+### New task (`screens/new_task.rs`)
+
+| Key | Action |
+|---|---|
+| `Tab` / `Shift+Tab` | Move between pill fields |
+| `j`/`Down`, `k`/`Up` | Move within a pill's options |
+| `Space` | Toggle Autonomous (when that pill is focused) |
+| `i` / `Enter` | Focus the composer |
+| `n` / `s` | Start the task |
+| `p` | Request a plan |
+| `y` / `Enter` | Accept the plan preview |
+| `n` / `Esc` | Dismiss the plan preview |
+
+### Task thread (`screens/thread/mod.rs`)
+
+| Key | Action |
+|---|---|
+| `i` | Focus the composer |
+| `j`/`Down`, `k`/`Up` | Scroll the transcript |
+| `G` | Jump to bottom (re-enables sticky-bottom) |
+| `f` | Finish the run |
+| `a` | Archive |
+| `[` / `]` | Step-rail / hit-map navigation |
+| `Esc` | Return focus to the transcript |
+| Ask card: `j`/`k`/`Down`/`Up` | Move between options |
+| Ask card: `Tab`/`Right`, `Shift+Tab`/`Left` | Move between questions |
+| Ask card: `Enter` | Toggle the focused option |
+| Review notes: printable keys | Type into the review note |
+| Review notes: `Enter` | Newline |
+
+### Task git tabs (`screens/task_git/mod.rs`) — Changes / Files / Commits
+
+| Key | Action |
+|---|---|
+| `[` / `]` | Switch tab |
+| `Tab` | Move focus between tree and diff |
+| `m` | Toggle unified/split diff mode |
+| `w` | Toggle whitespace |
+| `c` | Open the commit dialog |
+| `p` | Push |
+| `j`/`Down`, `k`/`Up` | Move selection (tree, diff scroll, files list, or commits list — whichever has focus) |
+| `Enter` | Open the selected entry / commit |
+
+### Repo git (`screens/repo_git.rs`)
+
+| Key | Action |
+|---|---|
+| `[` / `]` | Switch tab |
+| `m` | Toggle diff mode (Changes tab) |
+| `n` | New branch (Branches tab) |
+| `j`/`Down`, `k`/`Up` | Move selection |
+| `Enter` | Confirm the new-branch dialog |
+
+### Compare variants (`screens/compare.rs`)
+
+| Key | Action |
+|---|---|
+| `Tab`/`Right`, `Shift+Tab`/`Left` | Move between variants |
+| `j`/`Down`, `k`/`Up` | Scroll the diff |
+| `Enter` | Pick the selected variant |
+
+### IDE (`screens/ide/mod.rs`)
+
+| Key | Action |
+|---|---|
+| `s` | Save |
+| `e` | Open in `$EDITOR` |
+| `j`/`Down`, `k`/`Up` | Move the tree selection |
+| `Enter` / `Right` | Open the selected entry |
+| `h` / `u` / `Left` | Go up a directory |
+| `Tab` | Move focus to the editor |
+| `Esc` | Back |
+| `Ctrl+S` (editor) | Save |
+
+### GitHub (`screens/github/mod.rs`)
+
+| Key | Action |
+|---|---|
+| `Tab` | Switch list tab |
+| `j`/`Down`, `k`/`Up` | Move selection |
+| `c` | Switch detail tab |
+| `m` | Cycle merge method |
+| `r` | Hand this item to an agent |
+| `w` | Cycle workflow (in the hand-to-agent card) |
+| `s` | Open the skill picker |
+| `R` | Refresh |
+| `o` | Open externally (via the `open` crate) |
+| `Space` | Toggle a skill (in the skill picker) |
+| `Esc` | Back / close the focused panel |
+
+### Skills (`screens/skills.rs`)
+
+| Key | Action |
+|---|---|
+| `/` | Filter |
+| `j`/`Down`, `k`/`Up` | Move selection |
+| `Esc` | Close filter / back |
+
+### Inbox (`screens/inbox.rs`)
+
+| Key | Action |
+|---|---|
+| `j`/`Down`, `k`/`Up` | Move selection |
+| `Enter` | Start the todo's suggested task |
+| `x` / `Delete` | Dismiss |
+| `Esc` | Back |
+
+### Settings (`screens/settings/mod.rs`)
+
+| Key | Action |
+|---|---|
+| `Tab` / `Shift+Tab` | Switch section |
+| `j`/`Down`, `k`/`Up` | Move the focused row |
+| `Left` / `Right` | Cycle an option field |
+| `Enter` | Activate the focused row |
+| `d` | Delete the focused row (accounts, projects, etc.) |
+| `Ctrl+S` (agent-config editor) | Save the config file |
+| `Esc` | Back |
+
+## A stray finding, not fixed here
+
+`screens/tasks.rs`'s `o` key still shows `"diff view lands in A9"` — a placeholder
+notice left over from before A9 shipped diffs (task git tabs already cover this).
+Out of scope for A14 (this doc only touches `docs/` and install tooling); worth a
+one-line fix in a later pass.

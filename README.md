@@ -16,6 +16,7 @@ stay on your machine.
 [Development](#development)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+![Rust stable](https://img.shields.io/badge/Rust-stable-orange)
 ![Node 20+](https://img.shields.io/badge/Node-20%2B-339933)
 ![Zero config](https://img.shields.io/badge/config-zero-success)
 ![No database](https://img.shields.io/badge/database-none-success)
@@ -23,6 +24,11 @@ stay on your machine.
 </div>
 
 ---
+
+Coducktor's cockpit is a **terminal UI** — `duck` (or its long name, `coducktor`)
+is a single binary you run in a terminal, not a browser tab. It's a Rust
+rewrite in progress; see [`docs/tui/`](docs/tui/) for the keymap reference and
+terminal support matrix.
 
 ## Features
 
@@ -50,32 +56,43 @@ stay on your machine.
 
 ## Quick start
 
+Coducktor is source-first: clone and build, no hosted installer, no release
+tarballs. `git pull && ./install.sh` again is how you update.
+
 ### Prerequisites
 
-- Node.js 20 or newer
+- [Rust](https://rustup.rs) (stable) — `install.sh` checks for `rustup` and
+  tells you the one command to get it if it's missing. The toolchain version
+  itself is pinned by [`rust-toolchain.toml`](rust-toolchain.toml); rustup
+  reads that automatically.
 - Git for isolated worktrees
 - At least one logged-in agent CLI:
   [Claude Code](https://github.com/anthropics/claude-code),
   [Codex](https://github.com/openai/codex),
   [OpenCode](https://opencode.ai), or
   [pi](https://github.com/badlogic/pi-mono)
+- **Node.js 20 or newer — Phase A only.** The Rust TUI still runs the existing
+  Node service underneath for now ([spec §7.7](.ai/specs/2026-08-15-rust-tui-refactor.md#77-one-terminal-the-supervised-child-process-is-silent));
+  this requirement disappears once the port to Rust completes. `install.sh`
+  checks for it in the same isolated step.
 
-### Run from this checkout
-
-```bash
-npm install
-npm run dev
-```
-
-Open <http://localhost:4321>. Select a project, enter a task, choose a backend
-and model if desired, then start it.
-
-For a production-style local build:
+### Install and run
 
 ```bash
-npm run build
-npm run dev:server
+git clone https://github.com/blakepiper/coducktor.git
+cd coducktor
+./install.sh
+duck
 ```
+
+`install.sh` builds the release binary and installs it — as both `duck` and
+its long name `coducktor` — via `cargo install`. Either name launches the
+terminal cockpit. See [`docs/tui/keymap.md`](docs/tui/keymap.md) for
+navigation and [`docs/tui/terminals.md`](docs/tui/terminals.md) for terminal
+support.
+
+Prefer to run it in place without installing? `cargo run -p coducktor-tui`
+from the checkout does the same thing.
 
 ## How it works
 
@@ -92,7 +109,7 @@ npm run dev:server
   local state ◄──── live events ─────── review gate
       │
       ▼
-  browser cockpit
+  terminal cockpit
 ```
 
 Each task runs in its own worktree when Git is available. A workflow can contain
@@ -178,20 +195,35 @@ agent CLIs themselves.
 
 ## Development
 
+### The Rust TUI (`crates/`)
+
 ```bash
-npm run dev          # API server and Vite cockpit
+just build       # release build
+just test        # cargo test --workspace --all-targets
+just lint         # fmt --check + clippy -D warnings — same gate as CI
+just snapshots    # review pending insta UI-snapshot changes
+cargo run -p coducktor-tui   # run in place without installing
+```
+
+No `just`? Every recipe is a one-line `cargo` command — see the
+[`justfile`](justfile).
+
+### The Node service (`packages/`) — Phase A only
+
+The Rust TUI still drives the existing Node/TypeScript service underneath
+(see [Prerequisites](#prerequisites)). Working on that side directly still
+uses its own npm scripts:
+
+```bash
+npm run dev          # API server and Vite cockpit (browser, for comparison/debugging)
 npm run dev:server   # API server only
-npm run dev:web      # Vite cockpit only
 npm run build        # production server and cockpit build
 npm run typecheck    # all workspace typechecks
 npm test             # Vitest suite
-npm run test:unit    # fast core-module tests
-npm run test:package # packaged CLI checks
 ```
 
-The repository is a small TypeScript monorepo with separate workspaces for the
-server and CLI, typed HTTP contracts, the browser API client, and the React
-cockpit.
+This whole section — and the package tree it points at — goes away once the
+Rust port replaces the Node service.
 
 The app is intended as a personal fork. Publishing, release automation, and
 upstream contribution guidance are intentionally outside this README.

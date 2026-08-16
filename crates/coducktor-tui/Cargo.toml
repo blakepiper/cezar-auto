@@ -10,6 +10,13 @@ version.workspace = true
 name = "coducktor"
 path = "src/main.rs"
 
+# Same binary, short name (spec §2.2.1 decision 6: `duck` is the one short token
+# used everywhere — command, env prefix, marker prefix, branch prefix — rather than
+# a second competing abbreviation). `cargo install` lands both on PATH from one build.
+[[bin]]
+name = "duck"
+path = "src/main.rs"
+
 [dependencies]
 base64.workspace = true
 clap.workspace = true
