@@ -8,8 +8,11 @@ version.workspace = true
 
 [dependencies]
 axum.workspace = true
+async-stream.workspace = true
+base64.workspace = true
 coducktor-core = { path = "../coducktor-core" }
 coducktor-contract = { path = "../coducktor-contract" }
+futures-core.workspace = true
 http = "1"
 serde.workspace = true
 serde_json.workspace = true
@@ -20,6 +23,7 @@ tokio.workspace = true
 tower-http.workspace = true
 
 [dev-dependencies]
+futures-util.workspace = true
 tower = "0.5"
 
 [[bin]]

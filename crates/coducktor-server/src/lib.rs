@@ -8,6 +8,7 @@
 //! extend.  The entire crate is deleted at C2 when the TUI switches to an in-process engine.
 
 use std::collections::BTreeMap;
+use std::convert::Infallible;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::net::IpAddr;
@@ -20,12 +21,15 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use axum::body::Body;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::header::HeaderName;
-use axum::http::header::{ACCESS_CONTROL_ALLOW_ORIGIN, HOST, ORIGIN};
-use axum::http::{HeaderValue, Method, Request, StatusCode};
+use axum::http::header::{ACCESS_CONTROL_ALLOW_ORIGIN, CACHE_CONTROL, HOST, ORIGIN};
+use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode};
 use axum::middleware::{self, Next};
+use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use coducktor_contract::{
     AgentAccountDetailField, AgentAccountDetailsResponse, AgentAccountFile, AgentAccountSelection,
     AgentAccountStatusResponse, AgentConfigFile, AgentConfigFileContent, AgentConfigFormat,
@@ -46,7 +50,8 @@ use coducktor_contract::{
     ProviderStatus, ProviderStatusQuery, ProviderStatusResponse, ReclaimWorktreesResponse,
     RegisterProjectInput, RegisterProjectResponse, RemoveAgentProfileResponse,
     RemoveProjectResponse, RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoDiffStat,
-    RepoInfo, RepoResponse, RunRecord, Runner, RunnerModels, RunnerSelection, SaveWorkflowInput,
+    RepoInfo, RepoResponse, RunEvent, RunEventsQuery, RunHistoryContext, RunHistoryEvent,
+    RunHistoryPage, RunRecord, Runner, RunnerModels, RunnerSelection, SaveWorkflowInput,
     SaveWorkflowResponse, SelectAgentProfileInput, SetAgentConfigInput, SetConfigInput,
     SetWorkspaceConfigInput, SetWorkspaceUiStateInput, StartTodoResponse, StatusEntry, TodoItem,
     UiState, UpdateAgentProfileInput, UpdateProjectInput, UpdateProjectResponse, UserMcpListing,
@@ -63,8 +68,8 @@ use coducktor_core::skills::discover_skills;
 use coducktor_core::time::now_iso8601;
 use coducktor_core::workflows::load::load_workflows;
 use coducktor_core::workflows::run::{
-    ContinueOptions, EventInput, RunManager, StartRunInput as CoreStartRunInput,
-    review_gate_enabled,
+    ContinueOptions, EventInput, RunEventNotification, RunManager,
+    StartRunInput as CoreStartRunInput, review_gate_enabled,
 };
 use coducktor_core::workflows::types::{
     parse_workflow_file_doc, quick_task_workflow, skills_to_steps, steps_issue,
@@ -82,10 +87,12 @@ use coducktor_core::workspace::ui_state::{
 };
 use serde::Deserialize;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command as TokioCommand;
+use tokio::sync::broadcast;
 use tokio::time::timeout;
 
 #[derive(Debug, Clone)]
@@ -94,6 +101,32 @@ struct CachedModelCatalog {
     models: Vec<coducktor_contract::RunnerModelOption>,
     expires_at: Instant,
     failure_reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+enum LiveEvent {
+    Run(Box<RunRecord>),
+    RunEvent(RunEventNotification),
+    Deleted(String),
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PageCursor {
+    v: u8,
+    kind: String,
+    direction: String,
+    file_size: u64,
+    boundary_seq: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LiveCursor {
+    v: u8,
+    kind: String,
+    offset: u64,
+    boundary_seq: u64,
 }
 
 const HEALTH_PATH: &str = "/api/v1/health";
@@ -123,6 +156,7 @@ pub struct ServerState {
     manager: Arc<Mutex<RunManager>>,
     workspace_dir: Arc<PathBuf>,
     model_catalog: Arc<Mutex<Vec<CachedModelCatalog>>>,
+    live_events: Arc<broadcast::Sender<LiveEvent>>,
 }
 
 impl ServerState {
@@ -138,14 +172,24 @@ impl ServerState {
 
     pub fn with_manager_and_workspace_dir(
         config: ServerConfig,
-        manager: RunManager,
+        mut manager: RunManager,
         workspace_dir: impl Into<PathBuf>,
     ) -> Self {
+        let (live_events, _) = broadcast::channel(512);
+        let event_sender = live_events.clone();
+        manager.subscribe_events(move |notification| {
+            let _ = event_sender.send(LiveEvent::RunEvent(notification.clone()));
+        });
+        let run_sender = live_events.clone();
+        manager.subscribe_runs(move |run| {
+            let _ = run_sender.send(LiveEvent::Run(Box::new(run.clone())));
+        });
         Self {
             config: Arc::new(config),
             manager: Arc::new(Mutex::new(manager)),
             workspace_dir: Arc::new(workspace_dir.into()),
             model_catalog: Arc::new(Mutex::new(Vec::new())),
+            live_events: Arc::new(live_events),
         }
     }
 
@@ -167,6 +211,14 @@ impl ServerState {
 
     fn agent_accounts_path(&self) -> PathBuf {
         self.workspace_dir.join("agent-accounts.json")
+    }
+
+    fn subscribe_live_events(&self) -> broadcast::Receiver<LiveEvent> {
+        self.live_events.subscribe()
+    }
+
+    fn publish_deleted(&self, id: String) {
+        let _ = self.live_events.send(LiveEvent::Deleted(id));
     }
 }
 
@@ -211,6 +263,13 @@ pub fn router_with_state(state: ServerState) -> Router {
             "/api/v1/runs/{id}/auto-resume",
             axum::routing::delete(cancel_auto_resume),
         )
+        .route("/api/v1/runs/{id}/events", get(run_events))
+        .route("/api/v1/runs/{id}/history", get(run_history))
+        .route(
+            "/api/v1/runs/{id}/history-context",
+            get(run_history_context),
+        )
+        .route("/api/v1/events", get(project_events))
         // Project-scoped routes have the same default and boot-project aliases as the Node
         // service.  The scope guard below admits only `default` and this server's boot project.
         .route("/api/v1/p/{project}/runs", get(list_runs).post(create_run))
@@ -258,6 +317,19 @@ pub fn router_with_state(state: ServerState) -> Router {
             "/api/v1/p/{project}/runs/{id}/auto-resume",
             axum::routing::delete(cancel_auto_resume),
         )
+        .route(
+            "/api/v1/p/{project}/runs/{id}/events",
+            get(scoped_run_events),
+        )
+        .route(
+            "/api/v1/p/{project}/runs/{id}/history",
+            get(scoped_run_history),
+        )
+        .route(
+            "/api/v1/p/{project}/runs/{id}/history-context",
+            get(scoped_run_history_context),
+        )
+        .route("/api/v1/p/{project}/events", get(scoped_project_events))
         .route(
             "/api/v1/projects",
             get(list_projects).post(register_project),
@@ -313,6 +385,7 @@ pub fn router_with_state(state: ServerState) -> Router {
             axum::routing::put(select_agent_profile),
         )
         .route("/api/v1/workspace/usage", get(get_workspace_usage))
+        .route("/api/v1/workspace/events", get(workspace_events))
         .route("/api/v1/skills", get(list_skills))
         .route("/api/v1/p/{project}/skills", get(list_scoped_skills))
         .route("/api/v1/workflows", get(list_workflows).post(save_workflow))
@@ -5526,6 +5599,545 @@ async fn get_run(State(state): State<ServerState>, AxumPath(id): AxumPath<String
     }
 }
 
+fn run_events_path(state: &ServerState, id: &str) -> PathBuf {
+    repo_data_dir(state)
+        .join("runs")
+        .join(format!("{id}.ndjson"))
+}
+
+fn history_error(error: (StatusCode, String)) -> Response {
+    error_response(error.0, &error.1)
+}
+
+fn decode_cursor<T: DeserializeOwned>(cursor: &str) -> Result<T, (StatusCode, String)> {
+    if cursor.is_empty() || cursor.len() > 2_048 {
+        return Err((StatusCode::BAD_REQUEST, "invalid history cursor".to_owned()));
+    }
+    let bytes = URL_SAFE_NO_PAD
+        .decode(cursor)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid history cursor".to_owned()))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid history cursor".to_owned()))
+}
+
+fn encode_cursor<T: Serialize>(value: &T) -> String {
+    serde_json::to_vec(value).map_or_else(|_| String::new(), |bytes| URL_SAFE_NO_PAD.encode(bytes))
+}
+
+fn event_seq_u64(seq: f64) -> u64 {
+    if seq.is_finite() && seq >= 0.0 && seq <= u64::MAX as f64 {
+        seq as u64
+    } else {
+        0
+    }
+}
+
+fn history_event(event: RunEvent) -> RunHistoryEvent {
+    RunHistoryEvent {
+        seq: event.seq,
+        ts: event.ts,
+        step_id: event.step_id,
+        event_type: event.event_type,
+        extra: event.extra,
+    }
+}
+
+fn is_history_boundary(event: &RunEvent) -> bool {
+    matches!(event.event_type.as_str(), "user-message" | "turn.started")
+}
+
+fn read_history_page(
+    state: &ServerState,
+    id: &str,
+    cursor: Option<&str>,
+) -> Result<RunHistoryPage, (StatusCode, String)> {
+    let path = run_events_path(state, id);
+    let file_size = fs::metadata(&path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    let decoded = cursor.map(decode_cursor::<PageCursor>).transpose()?;
+    if let Some(decoded) = &decoded
+        && (decoded.v != 1
+            || decoded.kind != "page"
+            || !matches!(decoded.direction.as_str(), "older" | "newer"))
+    {
+        return Err((StatusCode::BAD_REQUEST, "invalid history cursor".to_owned()));
+    }
+    if decoded
+        .as_ref()
+        .is_some_and(|value| value.file_size > file_size)
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            "history cursor is no longer valid — reload the newest page".to_owned(),
+        ));
+    }
+
+    let events = {
+        let Ok(manager) = state.manager.lock() else {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "run manager unavailable".to_owned(),
+            ));
+        };
+        manager.read_events(id)
+    };
+    let mut units: Vec<usize> = events
+        .iter()
+        .enumerate()
+        .filter_map(|(index, event)| (!is_history_boundary(event)).then_some(index))
+        .collect();
+    if units.is_empty() {
+        units = (0..events.len()).collect();
+    }
+
+    let selected: Vec<usize> = match decoded.as_ref().map(|value| value.direction.as_str()) {
+        Some("older") => units
+            .iter()
+            .copied()
+            .filter(|index| {
+                events[*index].seq
+                    < decoded
+                        .as_ref()
+                        .map_or(0.0, |value| value.boundary_seq as f64)
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .take(coducktor_contract::RUN_HISTORY_PAGE_ITEMS as usize)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect(),
+        Some("newer") => units
+            .iter()
+            .copied()
+            .filter(|index| {
+                events[*index].seq
+                    > decoded
+                        .as_ref()
+                        .map_or(0.0, |value| value.boundary_seq as f64)
+            })
+            .take(coducktor_contract::RUN_HISTORY_PAGE_ITEMS as usize)
+            .collect(),
+        _ => units
+            .iter()
+            .copied()
+            .rev()
+            .take(coducktor_contract::RUN_HISTORY_PAGE_ITEMS as usize)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect(),
+    };
+
+    let (page_events, first_seq, last_seq, item_count) =
+        if let (Some(first), Some(last)) = (selected.first(), selected.last()) {
+            let mut start = *first;
+            if let Some(boundary) = events[..start].iter().rposition(is_history_boundary) {
+                start = boundary;
+            }
+            let page = events[start..=*last].to_vec();
+            (
+                page,
+                events[*first].seq,
+                events[*last].seq,
+                selected.len() as u64,
+            )
+        } else {
+            (Vec::new(), 0.0, 0.0, 0)
+        };
+    let has_older = selected.first().is_some_and(|first| {
+        units
+            .iter()
+            .any(|index| events[*index].seq < events[*first].seq)
+    });
+    let has_newer = selected.last().is_some_and(|last| {
+        units
+            .iter()
+            .any(|index| events[*index].seq > events[*last].seq)
+    });
+    let as_of_seq = events
+        .iter()
+        .map(|event| event_seq_u64(event.seq))
+        .max()
+        .unwrap_or(0);
+    let live_cursor = encode_cursor(&serde_json::json!({
+        "v": 1,
+        "kind": "live",
+        "offset": file_size,
+        "boundarySeq": as_of_seq,
+    }));
+    let older_cursor = has_older.then(|| {
+        encode_cursor(&PageCursor {
+            v: 1,
+            kind: "page".to_owned(),
+            direction: "older".to_owned(),
+            file_size,
+            boundary_seq: event_seq_u64(first_seq),
+        })
+    });
+    let newer_cursor = has_newer.then(|| {
+        encode_cursor(&PageCursor {
+            v: 1,
+            kind: "page".to_owned(),
+            direction: "newer".to_owned(),
+            file_size,
+            boundary_seq: event_seq_u64(last_seq),
+        })
+    });
+    Ok(RunHistoryPage {
+        events: page_events.into_iter().map(history_event).collect(),
+        item_count,
+        older_cursor,
+        newer_cursor,
+        live_cursor,
+        as_of_seq,
+        has_older,
+    })
+}
+
+fn read_history_context(
+    state: &ServerState,
+    id: &str,
+) -> Result<RunHistoryContext, (StatusCode, String)> {
+    let events = {
+        let Ok(manager) = state.manager.lock() else {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "run manager unavailable".to_owned(),
+            ));
+        };
+        manager.read_events(id)
+    };
+    let mut latest_plan = None;
+    let mut selected = BTreeMap::new();
+    for event in events.iter() {
+        if event.event_type == "plan.updated"
+            || (event.event_type == "tool-call"
+                && event.extra.get("tool").and_then(Value::as_str) == Some("TodoWrite"))
+        {
+            latest_plan = Some(event.clone());
+            continue;
+        }
+        if is_history_boundary(event)
+            || matches!(
+                event.event_type.as_str(),
+                "turn.completed" | "session.ended" | "session.error"
+            )
+        {
+            selected.insert(event_seq_u64(event.seq), event.clone());
+            continue;
+        }
+        if matches!(
+            event.event_type.as_str(),
+            "item.started" | "item.updated" | "item.completed"
+        ) && event
+            .extra
+            .get("item")
+            .and_then(Value::as_object)
+            .and_then(|item| item.get("kind"))
+            .and_then(Value::as_str)
+            == Some("tool")
+        {
+            selected.insert(event_seq_u64(event.seq), event.clone());
+        }
+    }
+    if let Some(event) = latest_plan {
+        selected.insert(event_seq_u64(event.seq), event);
+    }
+    Ok(RunHistoryContext {
+        context_events: selected.into_values().map(history_event).collect(),
+        as_of_seq: events
+            .iter()
+            .map(|event| event_seq_u64(event.seq))
+            .max()
+            .unwrap_or(0),
+    })
+}
+
+fn validate_live_cursor(
+    state: &ServerState,
+    id: &str,
+    cursor: &str,
+) -> Result<LiveCursor, (StatusCode, String)> {
+    let decoded: LiveCursor = decode_cursor(cursor)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid live cursor".to_owned()))?;
+    let size = fs::metadata(run_events_path(state, id))
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    if decoded.v != 1 || decoded.kind != "live" {
+        return Err((StatusCode::BAD_REQUEST, "invalid live cursor".to_owned()));
+    }
+    if decoded.offset > size {
+        return Err((
+            StatusCode::CONFLICT,
+            "history cursor is no longer valid — reload the newest page".to_owned(),
+        ));
+    }
+    Ok(decoded)
+}
+
+fn sse_json_event<T: Serialize>(name: &str, id: Option<String>, value: &T) -> Event {
+    let mut event = Event::default().event(name);
+    if let Some(id) = id {
+        event = event.id(id);
+    }
+    match event.json_data(value) {
+        Ok(event) => event,
+        Err(error) => Event::default().event("error").data(error.to_string()),
+    }
+}
+
+fn sse_response<S>(stream: S) -> Response
+where
+    S: futures_core::Stream<Item = Result<Event, Infallible>> + Send + 'static,
+{
+    let mut response = Sse::new(stream).into_response();
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("no-cache, no-transform"),
+    );
+    response.headers_mut().insert(
+        HeaderName::from_static("x-accel-buffering"),
+        HeaderValue::from_static("no"),
+    );
+    response
+}
+
+fn project_id(state: &ServerState) -> String {
+    state
+        .config
+        .repo_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("default")
+        .to_owned()
+}
+
+async fn run_history(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+    Query(query): Query<coducktor_contract::RunHistoryQuery>,
+) -> Response {
+    let exists = state
+        .manager
+        .lock()
+        .ok()
+        .and_then(|manager| manager.get_run(&id).map(|_| ()))
+        .is_some();
+    if !exists {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    }
+    match read_history_page(&state, &id, query.cursor.as_deref()) {
+        Ok(page) => Json(page).into_response(),
+        Err(error) => history_error(error),
+    }
+}
+
+async fn scoped_run_history(
+    State(state): State<ServerState>,
+    AxumPath((_project, id)): AxumPath<(String, String)>,
+    Query(query): Query<coducktor_contract::RunHistoryQuery>,
+) -> Response {
+    run_history(State(state), AxumPath(id), Query(query)).await
+}
+
+async fn run_history_context(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let exists = state
+        .manager
+        .lock()
+        .ok()
+        .and_then(|manager| manager.get_run(&id).map(|_| ()))
+        .is_some();
+    if !exists {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    }
+    match read_history_context(&state, &id) {
+        Ok(context) => Json(context).into_response(),
+        Err(error) => history_error(error),
+    }
+}
+
+async fn scoped_run_history_context(
+    State(state): State<ServerState>,
+    AxumPath((_project, id)): AxumPath<(String, String)>,
+) -> Response {
+    run_history_context(State(state), AxumPath(id)).await
+}
+
+async fn run_events_for(
+    state: ServerState,
+    id: String,
+    query: RunEventsQuery,
+    headers: HeaderMap,
+) -> Response {
+    // Subscribe before reading the durable transcript. Events appended between the replay read
+    // and stream construction remain buffered here and are deduplicated by `high_water`.
+    let mut receiver = state.subscribe_live_events();
+    let (replay, run) = {
+        let Ok(manager) = state.manager.lock() else {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run manager unavailable");
+        };
+        let Some(run) = manager.get_run(&id).cloned() else {
+            return error_response(StatusCode::NOT_FOUND, "not found");
+        };
+        (manager.read_events(&id), run)
+    };
+    if let Some(cursor) = query.cursor.as_deref()
+        && let Err(error) = validate_live_cursor(&state, &id, cursor)
+    {
+        return history_error(error);
+    }
+    if query
+        .after_seq
+        .is_some_and(|seq| !seq.is_finite() || seq < 0.0 || seq.fract() != 0.0)
+    {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "afterSeq must be a non-negative integer",
+        );
+    }
+    let last_event_id = headers
+        .get("last-event-id")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value >= 0.0);
+    let cursor_boundary = query.cursor.as_deref().and_then(|cursor| {
+        decode_cursor::<LiveCursor>(cursor)
+            .ok()
+            .map(|cursor| cursor.boundary_seq as f64)
+    });
+    let requested_after = [
+        query.after_seq.unwrap_or(0.0),
+        last_event_id.unwrap_or(0.0),
+        cursor_boundary.unwrap_or(0.0),
+    ]
+    .into_iter()
+    .fold(0.0, f64::max);
+    let stream = async_stream::stream! {
+        let mut high_water = requested_after;
+        for event in replay {
+            if event.seq <= high_water {
+                continue;
+            }
+            high_water = event.seq;
+            let name = if event.event_type.contains('.') { "ui-event" } else { "run-event" };
+            yield Ok::<Event, Infallible>(sse_json_event(name, Some(event.seq.to_string()), &event));
+        }
+        yield Ok::<Event, Infallible>(sse_json_event("run", None, &api_run(run)));
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
+        loop {
+            tokio::select! {
+                incoming = receiver.recv() => {
+                    match incoming {
+                        Ok(LiveEvent::RunEvent(notification)) if notification.run_id == id && notification.event.seq > high_water => {
+                            high_water = notification.event.seq;
+                            let name = if notification.event.event_type.contains('.') { "ui-event" } else { "run-event" };
+                            yield Ok::<Event, Infallible>(sse_json_event(name, Some(notification.event.seq.to_string()), &notification.event));
+                        }
+                        Ok(LiveEvent::Run(run)) if run.id == id => {
+                            yield Ok::<Event, Infallible>(sse_json_event("run", None, &api_run(*run)));
+                        }
+                        Ok(LiveEvent::Deleted(_)) => {}
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            yield Ok::<Event, Infallible>(Event::default().event("ping").data(""));
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                        _ => {}
+                    }
+                }
+                _ = heartbeat.tick() => {
+                    yield Ok::<Event, Infallible>(Event::default().event("ping").data(""));
+                }
+            }
+        }
+    };
+    sse_response(stream)
+}
+
+async fn run_events(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+    Query(query): Query<RunEventsQuery>,
+    headers: HeaderMap,
+) -> Response {
+    run_events_for(state, id, query, headers).await
+}
+
+async fn scoped_run_events(
+    State(state): State<ServerState>,
+    AxumPath((_project, id)): AxumPath<(String, String)>,
+    Query(query): Query<RunEventsQuery>,
+    headers: HeaderMap,
+) -> Response {
+    run_events_for(state, id, query, headers).await
+}
+
+async fn project_events_for(state: ServerState, workspace: bool) -> Response {
+    let mut receiver = state.subscribe_live_events();
+    let project = project_id(&state);
+    let stream = async_stream::stream! {
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
+        loop {
+            tokio::select! {
+                incoming = receiver.recv() => {
+                    match incoming {
+                        Ok(LiveEvent::Run(run)) => {
+                            if workspace {
+                                let mut payload = match serde_json::to_value(api_run(*run)) {
+                                    Ok(Value::Object(payload)) => payload,
+                                    _ => Map::new(),
+                                };
+                                payload.insert("project".to_owned(), Value::String(project.clone()));
+                                yield Ok::<Event, Infallible>(sse_json_event("run", None, &Value::Object(payload)));
+                            } else {
+                                yield Ok::<Event, Infallible>(sse_json_event("run", None, &api_run(*run)));
+                            }
+                        }
+                        Ok(LiveEvent::Deleted(id)) => {
+                            let payload = if workspace {
+                                serde_json::json!({ "id": id, "project": project })
+                            } else {
+                                serde_json::json!({ "id": id })
+                            };
+                            yield Ok::<Event, Infallible>(sse_json_event("run-deleted", None, &payload));
+                        }
+                        Ok(LiveEvent::RunEvent(_)) => {}
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            yield Ok::<Event, Infallible>(Event::default().event("ping").data(""));
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+                _ = heartbeat.tick() => {
+                    yield Ok::<Event, Infallible>(Event::default().event("ping").data(""));
+                }
+            }
+        }
+    };
+    sse_response(stream)
+}
+
+async fn project_events(State(state): State<ServerState>) -> Response {
+    project_events_for(state, false).await
+}
+
+async fn scoped_project_events(
+    State(state): State<ServerState>,
+    AxumPath(_project): AxumPath<String>,
+) -> Response {
+    project_events_for(state, false).await
+}
+
+async fn workspace_events(State(state): State<ServerState>) -> Response {
+    project_events_for(state, true).await
+}
+
 async fn create_run(
     State(state): State<ServerState>,
     Json(input): Json<CreateRunInput>,
@@ -5786,7 +6398,12 @@ async fn delete_run(State(state): State<ServerState>, AxumPath(id): AxumPath<Str
         return error_response(StatusCode::CONFLICT, "cannot delete an active run");
     }
     match manager.remove_run(&id) {
-        Ok(deleted) => Json(DeleteRunResponse { deleted }).into_response(),
+        Ok(deleted) => {
+            if deleted {
+                state.publish_deleted(id);
+            }
+            Json(DeleteRunResponse { deleted }).into_response()
+        }
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
     }
 }
@@ -6075,6 +6692,7 @@ mod tests {
     use axum::body::to_bytes;
     use axum::http::Request;
     use coducktor_core::workflows::run::{CreateRunInput as CoreCreateRunInput, RunManager};
+    use futures_util::StreamExt;
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
     use tower::ServiceExt;
@@ -6162,6 +6780,120 @@ mod tests {
         let parsed: HealthResponse = serde_json::from_slice(&body).expect("health JSON");
         assert_eq!(parsed.version, "test");
         assert_eq!(parsed.boot_project, "default");
+    }
+
+    #[tokio::test]
+    async fn history_replays_contract_events_and_sse_sets_stream_headers() {
+        let repo = test_repo();
+        let data_dir = repo.join(".ai").join("coducktor");
+        let mut manager = RunManager::open(&data_dir);
+        let run = manager
+            .create_run(CoreCreateRunInput {
+                title: "streamed".to_owned(),
+                workflow: "manual".to_owned(),
+                task: "history".to_owned(),
+                ..CoreCreateRunInput::default()
+            })
+            .expect("seed run");
+        manager
+            .append_event(
+                &run.id,
+                EventInput::new("turn.started").field("turnId", "turn-1"),
+            )
+            .expect("append boundary");
+        manager
+            .append_event(&run.id, EventInput::new("note").field("message", "hello"))
+            .expect("append note");
+        let state = ServerState::with_manager(ServerConfig::new(&repo, "test"), manager);
+        let state_for_live_test = state.clone();
+        let router = router_with_state(state);
+
+        let response = send(
+            &router,
+            Method::GET,
+            &format!("/api/v1/runs/{}/history", run.id),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let page: RunHistoryPage =
+            serde_json::from_value(json_body(response).await).expect("history page");
+        assert_eq!(page.item_count, 1);
+        assert_eq!(page.events.len(), 2);
+        assert_eq!(page.events[0].event_type, "turn.started");
+        assert_eq!(page.events[1].event_type, "note");
+        assert!(page.live_cursor.len() > 10);
+
+        let response = send(
+            &router,
+            Method::GET,
+            &format!("/api/v1/runs/{}/history?cursor=not-json", run.id),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let response = send(&router, Method::GET, "/api/v1/events", None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CACHE_CONTROL),
+            Some(&HeaderValue::from_static("no-cache, no-transform"))
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(HeaderName::from_static("x-accel-buffering")),
+            Some(&HeaderValue::from_static("no"))
+        );
+
+        let response = send(
+            &router,
+            Method::GET,
+            &format!("/api/v1/runs/{}/events?afterSeq=0", run.id),
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body().into_data_stream();
+        let first = tokio::time::timeout(Duration::from_secs(1), body.next())
+            .await
+            .expect("SSE first frame timeout")
+            .expect("SSE stream frame")
+            .expect("SSE body chunk");
+        let first = String::from_utf8_lossy(&first);
+        assert!(
+            first.contains("ui-event"),
+            "unexpected SSE frame: {first:?}"
+        );
+
+        let _second = tokio::time::timeout(Duration::from_secs(1), body.next())
+            .await
+            .expect("SSE replay timeout")
+            .expect("SSE replay frame")
+            .expect("SSE replay chunk");
+        let _run = tokio::time::timeout(Duration::from_secs(1), body.next())
+            .await
+            .expect("SSE run frame timeout")
+            .expect("SSE run frame")
+            .expect("SSE run chunk");
+        state_for_live_test
+            .manager
+            .lock()
+            .expect("live manager")
+            .append_event(&run.id, EventInput::new("note"))
+            .expect("append live note");
+        let live = tokio::time::timeout(Duration::from_secs(1), body.next())
+            .await
+            .expect("SSE live timeout")
+            .expect("SSE live frame")
+            .expect("SSE live chunk");
+        let live = String::from_utf8_lossy(&live);
+        assert!(
+            live.contains("event: run-event"),
+            "unexpected live frame: {live:?}"
+        );
+
+        fs::remove_dir_all(repo).expect("remove test repo");
     }
 
     #[tokio::test]

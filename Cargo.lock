@@ -775,9 +775,13 @@ dependencies = [
 name = "coducktor-server"
 version = "0.1.0"
 dependencies = [
+ "async-stream",
  "axum",
+ "base64",
  "coducktor-contract",
  "coducktor-core",
+ "futures-core",
+ "futures-util",
  "http",
  "serde",
  "serde_json",
