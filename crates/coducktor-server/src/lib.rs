@@ -17,7 +17,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::header::HeaderName;
 use axum::http::header::{ACCESS_CONTROL_ALLOW_ORIGIN, HOST, ORIGIN};
 use axum::http::{HeaderValue, Method, Request, StatusCode};
@@ -30,13 +30,14 @@ use coducktor_contract::{
     AgentConfigListing, AgentConfigScope, AgentConfigTracked, ApiRun, BackendCheck,
     BackendCheckName, Capabilities, ConfigResponse, ContinueInput, CreateRunInput,
     CreateRunResponse, DeleteRunResponse, DeleteWorkflowResponse, ForgeInfo, ForgeKind,
-    HealthProject, HealthResponse, MarkAllReadResponse, MessageInput, ParseWorkflowInput,
-    ParsedWorkflow, PatchRunInput, ProjectListEntry, ProjectSource, ProjectStatus,
-    ProjectsResponse, RegisterProjectInput, RegisterProjectResponse, RemoveProjectResponse,
-    RepoInfo, RunRecord, Runner, RunnerModels, RunnerSelection, SaveWorkflowInput,
-    SaveWorkflowResponse, SetAgentConfigInput, SetConfigInput, SetWorkspaceConfigInput,
-    SetWorkspaceUiStateInput, StartTodoResponse, TodoItem, UiState, UpdateProjectInput,
-    UpdateProjectResponse, UserMcpListing, WorkflowStepDef, WorkflowsResponse,
+    HealthProject, HealthResponse, IdeDirectoryQuery, IdeDirectoryResponse, IdeEntry, IdeEntryType,
+    IdeFileInput, IdeFileQuery, IdeFileResponse, MarkAllReadResponse, MessageInput,
+    ParseWorkflowInput, ParsedWorkflow, PatchRunInput, ProjectListEntry, ProjectSource,
+    ProjectStatus, ProjectsResponse, RegisterProjectInput, RegisterProjectResponse,
+    RemoveProjectResponse, RepoInfo, RunRecord, Runner, RunnerModels, RunnerSelection,
+    SaveWorkflowInput, SaveWorkflowResponse, SetAgentConfigInput, SetConfigInput,
+    SetWorkspaceConfigInput, SetWorkspaceUiStateInput, StartTodoResponse, TodoItem, UiState,
+    UpdateProjectInput, UpdateProjectResponse, UserMcpListing, WorkflowStepDef, WorkflowsResponse,
     WorkspaceConfigResponse,
 };
 use coducktor_core::config::load_config;
@@ -293,6 +294,16 @@ pub fn router_with_state(state: ServerState) -> Router {
         .route(
             "/api/v1/p/{project}/agent-config/{id}",
             get(get_scoped_agent_config).put(update_scoped_agent_config),
+        )
+        .route("/api/v1/ide/tree", get(list_ide_directory))
+        .route(
+            "/api/v1/p/{project}/ide/tree",
+            get(list_scoped_ide_directory),
+        )
+        .route("/api/v1/ide/file", get(read_ide_file).put(write_ide_file))
+        .route(
+            "/api/v1/p/{project}/ide/file",
+            get(read_scoped_ide_file).put(write_scoped_ide_file),
         )
         .fallback(not_found)
         .with_state(state.clone())
@@ -2073,6 +2084,286 @@ async fn update_scoped_agent_config(
     update_agent_config(State(state), AxumPath(id), Json(input)).await
 }
 
+const IDE_FILE_MAX_BYTES: usize = 1_000_000;
+const IDE_DIRECTORY_MAX_ENTRIES: usize = 2_000;
+
+fn ide_display_path(root: &Path, target: &Path) -> String {
+    target
+        .strip_prefix(root)
+        .ok()
+        .map(|relative| {
+            relative
+                .components()
+                .filter_map(|component| match component {
+                    std::path::Component::Normal(value) => Some(value.to_string_lossy()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .unwrap_or_default()
+}
+
+fn normalize_ide_path(root: &Path, path: &str) -> Result<PathBuf, (StatusCode, String)> {
+    if path.chars().count() > 4_096
+        || path.contains('\0')
+        || path.contains('\\')
+        || Path::new(path).is_absolute()
+    {
+        return Err((StatusCode::BAD_REQUEST, "invalid project path".to_owned()));
+    }
+    let mut target = root.to_path_buf();
+    for component in Path::new(path).components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(value) => target.push(value),
+            std::path::Component::ParentDir => {
+                if target == root || !target.pop() {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        "path is outside the project".to_owned(),
+                    ));
+                }
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                return Err((StatusCode::BAD_REQUEST, "invalid project path".to_owned()));
+            }
+        }
+    }
+    Ok(target)
+}
+
+fn resolve_ide_path(
+    root: &Path,
+    path: &str,
+    directory: bool,
+) -> Result<(PathBuf, PathBuf), (StatusCode, String)> {
+    let project_root = fs::canonicalize(root)
+        .map_err(|_| (StatusCode::NOT_FOUND, "project folder not found".to_owned()))?;
+    let lexical = normalize_ide_path(&project_root, path)?;
+    let target = fs::canonicalize(&lexical).map_err(|_| {
+        (
+            StatusCode::NOT_FOUND,
+            if directory {
+                "directory not found"
+            } else {
+                "file not found"
+            }
+            .to_owned(),
+        )
+    })?;
+    if !target.starts_with(&project_root) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "path is outside the project".to_owned(),
+        ));
+    }
+    if target != lexical {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "symbolic links are not editable".to_owned(),
+        ));
+    }
+    let metadata = fs::symlink_metadata(&target).map_err(|_| {
+        (
+            StatusCode::NOT_FOUND,
+            if directory {
+                "directory not found"
+            } else {
+                "file not found"
+            }
+            .to_owned(),
+        )
+    })?;
+    if (directory && !metadata.is_dir()) || (!directory && !metadata.is_file()) {
+        return Err((
+            StatusCode::NOT_FOUND,
+            if directory {
+                "directory not found"
+            } else {
+                "file not found"
+            }
+            .to_owned(),
+        ));
+    }
+    Ok((project_root, target))
+}
+
+fn ide_list_directory(
+    root: &Path,
+    path: &str,
+) -> Result<IdeDirectoryResponse, (StatusCode, String)> {
+    let (project_root, target) = resolve_ide_path(root, path, true)?;
+    let entries = fs::read_dir(&target).map_err(|_| {
+        (
+            StatusCode::NOT_FOUND,
+            "directory is not readable".to_owned(),
+        )
+    })?;
+    let mut candidates = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|_| {
+            (
+                StatusCode::NOT_FOUND,
+                "directory is not readable".to_owned(),
+            )
+        })?;
+        let name = entry.file_name();
+        if name == ".git" {
+            continue;
+        }
+        let file_type = entry.file_type().map_err(|_| {
+            (
+                StatusCode::NOT_FOUND,
+                "directory is not readable".to_owned(),
+            )
+        })?;
+        if file_type.is_dir() || file_type.is_file() {
+            candidates.push((
+                name.to_string_lossy().into_owned(),
+                entry.path(),
+                file_type.is_dir(),
+            ));
+        }
+    }
+    candidates.sort_by(|left, right| right.2.cmp(&left.2).then_with(|| left.0.cmp(&right.0)));
+    let truncated = candidates.len() > IDE_DIRECTORY_MAX_ENTRIES;
+    let mut output = Vec::new();
+    for (name, entry_path, is_directory) in candidates.into_iter().take(IDE_DIRECTORY_MAX_ENTRIES) {
+        let path = ide_display_path(&project_root, &entry_path);
+        if is_directory {
+            output.push(IdeEntry {
+                name,
+                path,
+                entry_type: IdeEntryType::Dir,
+                size: None,
+            });
+        } else if let Ok(metadata) = fs::metadata(&entry_path)
+            && metadata.is_file()
+        {
+            output.push(IdeEntry {
+                name,
+                path,
+                entry_type: IdeEntryType::File,
+                size: Some(metadata.len()),
+            });
+        }
+    }
+    Ok(IdeDirectoryResponse {
+        path: if path.is_empty() {
+            String::new()
+        } else {
+            ide_display_path(&project_root, &target)
+        },
+        entries: output,
+        truncated,
+    })
+}
+
+fn ide_read_file(root: &Path, path: &str) -> Result<IdeFileResponse, (StatusCode, String)> {
+    if path.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "path is required".to_owned()));
+    }
+    let (project_root, target) = resolve_ide_path(root, path, false)?;
+    let metadata =
+        fs::metadata(&target).map_err(|_| (StatusCode::NOT_FOUND, "file not found".to_owned()))?;
+    if metadata.len() > IDE_FILE_MAX_BYTES as u64 {
+        return Err((StatusCode::CONFLICT, "file is too large to edit".to_owned()));
+    }
+    let bytes = fs::read(&target)
+        .map_err(|_| (StatusCode::NOT_FOUND, "file is not readable".to_owned()))?;
+    if bytes.contains(&0) {
+        return Err((
+            StatusCode::CONFLICT,
+            "binary files cannot be edited".to_owned(),
+        ));
+    }
+    let content = String::from_utf8(bytes.clone()).map_err(|_| {
+        (
+            StatusCode::CONFLICT,
+            "binary files cannot be edited".to_owned(),
+        )
+    })?;
+    Ok(IdeFileResponse {
+        path: ide_display_path(&project_root, &target),
+        content,
+        size: bytes.len() as u64,
+    })
+}
+
+fn ide_write_file(
+    root: &Path,
+    input: IdeFileInput,
+) -> Result<IdeFileResponse, (StatusCode, String)> {
+    if input.path.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "path is required".to_owned()));
+    }
+    if input.content.len() > IDE_FILE_MAX_BYTES {
+        return Err((StatusCode::CONFLICT, "file is too large to edit".to_owned()));
+    }
+    let (_, target) = resolve_ide_path(root, &input.path, false)?;
+    fs::write(&target, input.content.as_bytes())
+        .map_err(|error| (StatusCode::CONFLICT, error.to_string()))?;
+    ide_read_file(root, &input.path)
+}
+
+async fn list_ide_directory(
+    State(state): State<ServerState>,
+    Query(query): Query<IdeDirectoryQuery>,
+) -> Response {
+    match ide_list_directory(
+        &state.config.repo_root,
+        query.path.as_deref().unwrap_or_default(),
+    ) {
+        Ok(body) => Json(body).into_response(),
+        Err((status, error)) => error_response(status, &error),
+    }
+}
+
+async fn list_scoped_ide_directory(
+    State(state): State<ServerState>,
+    AxumPath(_project): AxumPath<String>,
+    Query(query): Query<IdeDirectoryQuery>,
+) -> Response {
+    list_ide_directory(State(state), Query(query)).await
+}
+
+async fn read_ide_file(
+    State(state): State<ServerState>,
+    Query(query): Query<IdeFileQuery>,
+) -> Response {
+    match ide_read_file(&state.config.repo_root, &query.path) {
+        Ok(body) => Json(body).into_response(),
+        Err((status, error)) => error_response(status, &error),
+    }
+}
+
+async fn read_scoped_ide_file(
+    State(state): State<ServerState>,
+    AxumPath(_project): AxumPath<String>,
+    Query(query): Query<IdeFileQuery>,
+) -> Response {
+    read_ide_file(State(state), Query(query)).await
+}
+
+async fn write_ide_file(
+    State(state): State<ServerState>,
+    Json(input): Json<IdeFileInput>,
+) -> Response {
+    match ide_write_file(&state.config.repo_root, input) {
+        Ok(body) => Json(body).into_response(),
+        Err((status, error)) => error_response(status, &error),
+    }
+}
+
+async fn write_scoped_ide_file(
+    State(state): State<ServerState>,
+    AxumPath(_project): AxumPath<String>,
+    Json(input): Json<IdeFileInput>,
+) -> Response {
+    write_ide_file(State(state), Json(input)).await
+}
+
 async fn get_ui_state(State(state): State<ServerState>) -> Response {
     Json(Value::Object(read_repo_ui_state(&state))).into_response()
 }
@@ -3487,6 +3778,90 @@ mod tests {
 
         let unknown = send(&router, Method::GET, "/api/v1/agent-config/nope", None).await;
         assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test]
+    async fn ide_routes_list_read_write_and_reject_escape_paths() {
+        let repo = test_repo();
+        fs::create_dir_all(repo.join("src")).expect("source directory");
+        fs::create_dir_all(repo.join(".git")).expect("git directory");
+        fs::write(repo.join("src/index.ts"), "export const answer = 42\n").expect("source file");
+        fs::write(repo.join("secret.txt"), "secret").expect("secret file");
+        let manager = RunManager::open(repo.join(".ai").join("coducktor"));
+        let router = router_with_state(ServerState::with_manager(
+            ServerConfig::new(&repo, "test"),
+            manager,
+        ));
+        let boot = repo
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("test repo name");
+
+        let tree = send(&router, Method::GET, "/api/v1/ide/tree", None).await;
+        assert_eq!(tree.status(), StatusCode::OK);
+        let tree_body = json_body(tree).await;
+        assert_eq!(tree_body["path"], "");
+        assert!(
+            tree_body["entries"]
+                .as_array()
+                .is_some_and(|entries| entries.iter().any(|entry| {
+                    entry["name"] == "src" && entry["path"] == "src" && entry["type"] == "dir"
+                }))
+        );
+        assert!(
+            !tree_body["entries"]
+                .as_array()
+                .is_some_and(|entries| entries.iter().any(|entry| entry["name"] == ".git"))
+        );
+
+        let read = send(
+            &router,
+            Method::GET,
+            &format!("/api/v1/p/{boot}/ide/file?path=src%2Findex.ts"),
+            None,
+        )
+        .await;
+        assert_eq!(read.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(read).await["content"],
+            "export const answer = 42\n"
+        );
+
+        let write = send(
+            &router,
+            Method::PUT,
+            "/api/v1/ide/file",
+            Some(serde_json::json!({
+                "path": "src/index.ts",
+                "content": "export const answer = 43\n"
+            })),
+        )
+        .await;
+        assert_eq!(write.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(write).await["content"],
+            "export const answer = 43\n"
+        );
+
+        let traversal = send(
+            &router,
+            Method::GET,
+            "/api/v1/ide/file?path=..%2Fsecret.txt",
+            None,
+        )
+        .await;
+        assert_eq!(traversal.status(), StatusCode::BAD_REQUEST);
+
+        fs::write(repo.join("binary.bin"), [0_u8, 1, 2, 3]).expect("binary file");
+        let binary = send(
+            &router,
+            Method::GET,
+            "/api/v1/ide/file?path=binary.bin",
+            None,
+        )
+        .await;
+        assert_eq!(binary.status(), StatusCode::CONFLICT);
         fs::remove_dir_all(repo).expect("remove test repo");
     }
 
