@@ -33,6 +33,16 @@ pub enum RepoGitAction {
     NewBranch,
 }
 
+/// An IDE (`screens/ide`) screen control — routed by `apply_hit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdeAction {
+    SelectEntry(usize),
+    GoUp,
+    SwitchFocus,
+    Save,
+    OpenInEditor,
+}
+
 /// A compare-variants (`screens/compare`) screen control — routed by `apply_hit`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompareAction {
@@ -101,6 +111,8 @@ pub enum HitAction {
     ThreadScreen(ThreadAction),
     /// A task-git screen control — routed by the screen.
     TaskGitScreen(TaskGitAction),
+    /// An IDE screen control — routed by the screen.
+    IdeScreen(IdeAction),
     /// A repo-git screen control — routed by the screen.
     RepoGitScreen(RepoGitAction),
     /// A compare-variants screen control — routed by the screen.

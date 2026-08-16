@@ -164,6 +164,9 @@ pub enum Route {
         id: String,
         tab: TaskGitTab,
     },
+    Ide {
+        project: String,
+    },
     RepoGit {
         project: String,
         tab: RepoGitTab,
@@ -216,6 +219,7 @@ impl Route {
                     project,
                     group_id: (*parts.get(3)?).to_owned(),
                 }),
+                Some("ide") => Some(Self::Ide { project }),
                 Some("git" | "repo-git") => {
                     let tab = parts
                         .get(3)
@@ -246,6 +250,7 @@ impl Route {
             Self::TaskGit { project, id, tab } => {
                 format!("/p/{project}/tasks/{id}/{}", tab.path_segment())
             }
+            Self::Ide { project } => format!("/p/{project}/ide"),
             Self::RepoGit { project, tab } => {
                 format!("/p/{project}/repo-git/{}", tab.path_segment())
             }
@@ -263,6 +268,7 @@ impl Route {
             Self::NewTask { .. } => "NEW TASK",
             Self::Thread { .. } => "TASK THREAD",
             Self::TaskGit { .. } => "TASK GIT",
+            Self::Ide { .. } => "IDE",
             Self::RepoGit { .. } => "REPO GIT",
             Self::Compare { .. } => "COMPARE",
             Self::Placeholder { nav, .. } => nav.uppercase_title(),
@@ -275,6 +281,7 @@ impl Route {
             | Self::NewTask { project }
             | Self::Thread { project, .. }
             | Self::TaskGit { project, .. }
+            | Self::Ide { project }
             | Self::RepoGit { project, .. }
             | Self::Compare { project, .. }
             | Self::Placeholder { project, .. } => Some(project),
@@ -595,6 +602,32 @@ pub enum PendingAction {
         group_id: String,
         run_id: String,
     },
+    /// The IDE's explorer (`GET /ide/tree`) at a project-relative directory (`None` = root).
+    LoadIdeDirectory {
+        project: String,
+        path: Option<String>,
+    },
+    /// The IDE's file read (`GET /ide/file`) — replaces the draft, cleared dirty.
+    LoadIdeFile {
+        project: String,
+        path: String,
+    },
+    /// The IDE's save (`PUT /ide/file`) — the editor's `Ctrl+S` round-trip.
+    SaveIdeFile {
+        project: String,
+        path: String,
+    },
+    /// The IDE's `Ctrl+E` escape hatch: resolve the absolute path and hand the file to
+    /// `$EDITOR` (main.rs suspends the terminal, spawns, resumes).
+    OpenIdeInEditor {
+        project: String,
+        path: String,
+    },
+    /// Unsaved-changes guard resolutions (spec §8.8): the user confirmed discarding the
+    /// IDE draft, now perform the deferred navigation.
+    IdeDiscardThenNavigate(Box<Route>),
+    IdeDiscardThenBack,
+    IdeDiscardThenForward,
     Quit,
 }
 
@@ -678,7 +711,11 @@ pub struct App {
     pub task_git_ui: crate::screens::task_git::TaskGitUi,
     pub repo_git_ui: crate::screens::repo_git::RepoGitUi,
     pub compare_ui: crate::screens::compare::CompareUi,
+    pub ide_ui: crate::screens::ide::IdeUi,
     pub pending: Vec<PendingAction>,
+    /// The absolute path main.rs should hand to `$EDITOR` (set by the `OpenIdeInEditor`
+    /// handler; consumed by the run loop, which owns the terminal).
+    pub editor_handoff: Option<String>,
     pub filter_mode: bool,
     pub sort_picker_index: usize,
 }
@@ -730,7 +767,9 @@ impl App {
             task_git_ui: crate::screens::task_git::TaskGitUi::default(),
             repo_git_ui: crate::screens::repo_git::RepoGitUi::default(),
             compare_ui: crate::screens::compare::CompareUi::default(),
+            ide_ui: crate::screens::ide::IdeUi::default(),
             pending: Vec::new(),
+            editor_handoff: None,
             filter_mode: false,
             sort_picker_index: 0,
         }
@@ -799,6 +838,53 @@ impl App {
 
     pub fn take_pending(&mut self) -> Vec<PendingAction> {
         std::mem::take(&mut self.pending)
+    }
+
+    /// Navigate, guarding the IDE's unsaved draft (spec §8.8): leaving a dirty file asks
+    /// first, and the confirm's action resolves into the deferred `history.navigate` in
+    /// main.rs. Every path that can move the app away from `Route::Ide` routes through this
+    /// or `request_back`/`request_forward`.
+    pub fn request_navigate(&mut self, route: Route) {
+        if self.ide_ui.dirty && !matches!(route, Route::Ide { .. }) {
+            self.confirm = Some(ConfirmRequest {
+                text: "Discard unsaved changes and leave the IDE?".to_owned(),
+                action: PendingAction::IdeDiscardThenNavigate(Box::new(route)),
+            });
+        } else {
+            self.history.navigate(route);
+        }
+    }
+
+    /// Back, guarding the IDE's unsaved draft like `request_navigate`.
+    pub fn request_back(&mut self) {
+        if self.ide_ui.dirty && !self.history.back.is_empty() {
+            self.confirm = Some(ConfirmRequest {
+                text: "Discard unsaved changes and leave the IDE?".to_owned(),
+                action: PendingAction::IdeDiscardThenBack,
+            });
+        } else {
+            self.history.back();
+        }
+    }
+
+    /// Forward, guarding the IDE's unsaved draft like `request_navigate`.
+    pub fn request_forward(&mut self) {
+        if self.ide_ui.dirty && !self.history.forward.is_empty() {
+            self.confirm = Some(ConfirmRequest {
+                text: "Discard unsaved changes and leave the IDE?".to_owned(),
+                action: PendingAction::IdeDiscardThenForward,
+            });
+        } else {
+            self.history.forward();
+        }
+    }
+
+    pub fn set_editor_handoff(&mut self, path: String) {
+        self.editor_handoff = Some(path);
+    }
+
+    pub fn take_editor_handoff(&mut self) -> Option<String> {
+        self.editor_handoff.take()
     }
 
     pub fn task_view(&self) -> TaskView {
@@ -1214,6 +1300,10 @@ impl App {
                 crate::screens::task_git::render(frame, area, self);
                 return;
             }
+            Route::Ide { .. } => {
+                crate::screens::ide::render(frame, area, self);
+                return;
+            }
             Route::RepoGit { .. } => {
                 crate::screens::repo_git::render(frame, area, self);
                 return;
@@ -1515,6 +1605,7 @@ impl App {
             Route::NewTask { .. } if crate::screens::new_task::handle_key(self, key) => return,
             Route::Thread { .. } if crate::screens::thread::handle_key(self, key) => return,
             Route::TaskGit { .. } if crate::screens::task_git::handle_key(self, key) => return,
+            Route::Ide { .. } if crate::screens::ide::handle_key(self, key) => return,
             Route::RepoGit { .. } if crate::screens::repo_git::handle_key(self, key) => return,
             Route::Compare { .. } if crate::screens::compare::handle_key(self, key) => return,
             _ => {}
@@ -1543,10 +1634,23 @@ impl App {
             KeyCode::Char('y') | KeyCode::Enter => {
                 let action = confirm.action.clone();
                 self.confirm = None;
-                if action == PendingAction::Quit {
-                    self.quit = true;
-                } else {
-                    self.pending.push(action);
+                match action {
+                    // Quit and the IDE-discard resolutions are app-local state changes,
+                    // resolved here; everything else waits for main's engine.
+                    PendingAction::Quit => self.quit = true,
+                    PendingAction::IdeDiscardThenNavigate(route) => {
+                        self.ide_ui.discard();
+                        self.history.navigate(*route);
+                    }
+                    PendingAction::IdeDiscardThenBack => {
+                        self.ide_ui.discard();
+                        self.history.back();
+                    }
+                    PendingAction::IdeDiscardThenForward => {
+                        self.ide_ui.discard();
+                        self.history.forward();
+                    }
+                    other => self.pending.push(other),
                 }
             }
             KeyCode::Char('n') | KeyCode::Esc => self.confirm = None,
@@ -1603,7 +1707,7 @@ impl App {
             Some("open") => {
                 if let Some(path) = parts.next() {
                     match Route::parse(path, self.default_project.as_str()) {
-                        Some(route) => self.history.navigate(route),
+                        Some(route) => self.request_navigate(route),
                         None => self.notice = Some(format!("unknown route: {path}")),
                     }
                 } else {
@@ -1611,10 +1715,10 @@ impl App {
                 }
             }
             Some("back") => {
-                self.history.back();
+                self.request_back();
             }
             Some("forward") => {
-                self.history.forward();
+                self.request_forward();
             }
             Some("theme") => {
                 if let Some(name) = parts.next().and_then(ThemeName::parse) {
@@ -1637,7 +1741,7 @@ impl App {
             ActionId::Quit => self.request_quit(),
             ActionId::Tasks => self.navigate(NavItem::Tasks),
             ActionId::GlobalTasks => {
-                self.history.navigate(Route::GlobalTasks);
+                self.request_navigate(Route::GlobalTasks);
                 self.pending.push(PendingAction::RefreshIndex);
             }
             ActionId::NewTask => self.navigate(NavItem::NewTask),
@@ -1651,10 +1755,10 @@ impl App {
             ActionId::ToggleSidebar => self.toggle_sidebar(),
             ActionId::Help => self.help_open = true,
             ActionId::Back => {
-                self.history.back();
+                self.request_back();
             }
             ActionId::Forward => {
-                self.history.forward();
+                self.request_forward();
             }
             ActionId::Command => {
                 self.mode = InputMode::Command;
@@ -1668,7 +1772,7 @@ impl App {
         match action {
             HitAction::Tasks => self.navigate(NavItem::Tasks),
             HitAction::GlobalTasks => {
-                self.history.navigate(Route::GlobalTasks);
+                self.request_navigate(Route::GlobalTasks);
                 self.pending.push(PendingAction::RefreshIndex);
             }
             HitAction::NewTask => self.navigate(NavItem::NewTask),
@@ -1690,10 +1794,10 @@ impl App {
             }
             HitAction::SidebarEdge => self.sidebar_dragging = true,
             HitAction::Back => {
-                self.history.back();
+                self.request_back();
             }
             HitAction::Forward => {
-                self.history.forward();
+                self.request_forward();
             }
             HitAction::Quit => self.request_quit(),
             HitAction::MarkAllRead => {
@@ -1756,6 +1860,11 @@ impl App {
                     crate::screens::task_git::apply_hit(self, action);
                 }
             }
+            HitAction::IdeScreen(action) => {
+                if matches!(self.route(), Route::Ide { .. }) {
+                    crate::screens::ide::apply_hit(self, action);
+                }
+            }
             HitAction::RepoGitScreen(action) => {
                 if matches!(self.route(), Route::RepoGit { .. }) {
                     crate::screens::repo_git::apply_hit(self, action);
@@ -1777,13 +1886,13 @@ impl App {
         let project = self.current_project().to_owned();
         match nav {
             NavItem::Tasks => {
-                self.history.navigate(Route::Tasks {
+                self.request_navigate(Route::Tasks {
                     project: project.clone(),
                 });
                 self.pending.push(PendingAction::RefreshTasks { project });
             }
             NavItem::NewTask => {
-                self.history.navigate(Route::NewTask {
+                self.request_navigate(Route::NewTask {
                     project: project.clone(),
                 });
                 self.pending.push(PendingAction::RefreshNewTask { project });
@@ -1791,15 +1900,24 @@ impl App {
                 self.new_task_ui.composer_focused = true;
                 self.new_task_ui.composer.focus();
             }
+            NavItem::Ide => {
+                self.request_navigate(Route::Ide {
+                    project: project.clone(),
+                });
+                self.pending.push(PendingAction::LoadIdeDirectory {
+                    project,
+                    path: None,
+                });
+            }
             NavItem::RepoGit => {
-                self.history.navigate(Route::RepoGit {
+                self.request_navigate(Route::RepoGit {
                     project: project.clone(),
                     tab: RepoGitTab::Changes,
                 });
                 self.pending.push(PendingAction::LoadRepoGit { project });
             }
             _ => {
-                self.history.navigate(Route::Placeholder { project, nav });
+                self.request_navigate(Route::Placeholder { project, nav });
             }
         }
         self.notice = None;
@@ -1810,6 +1928,7 @@ impl App {
             || (nav == NavItem::Tasks
                 && matches!(self.route(), Route::Tasks { .. } | Route::Thread { .. }))
             || (nav == NavItem::NewTask && matches!(self.route(), Route::NewTask { .. }))
+            || (nav == NavItem::Ide && matches!(self.route(), Route::Ide { .. }))
             || (nav == NavItem::RepoGit && matches!(self.route(), Route::RepoGit { .. }))
     }
 
@@ -1822,7 +1941,12 @@ impl App {
     }
 
     fn request_quit(&mut self) {
-        if self.running_count() > 0 {
+        if self.ide_ui.dirty {
+            self.confirm = Some(ConfirmRequest {
+                text: "Unsaved changes in the IDE will be lost. Quit anyway?".to_owned(),
+                action: PendingAction::Quit,
+            });
+        } else if self.running_count() > 0 {
             self.confirm = Some(ConfirmRequest {
                 text: "Live tasks are still running. Quit anyway?".to_owned(),
                 action: PendingAction::Quit,

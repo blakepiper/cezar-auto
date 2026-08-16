@@ -5,13 +5,14 @@ use coducktor_contract::{
     CancelResponse, ChangesPayload, ConfigResponse, ContinueInput, ContinueResponse,
     CreatePrResponse, CreateRunInput, CreateRunResponse, DeleteRunResponse,
     EditQueuedMessageResponse, FinishResponse, GitCommitInput, GitCommitResponse, GitPushResponse,
-    GithubData, GroupResponse, HealthResponse, MarkAllReadResponse, MessageInput, MessageResponse,
-    OpenInCliResponse, OpenInInput, PatchRunInput, PickVariantRequest, PickVariantResponse,
-    PlanResponse, ProjectsResponse, ProviderStatusResponse, QueuedMessagePatchInput,
-    RemoveQueuedMessageResponse, RepoBranchRequest, RepoBranchResponse, RepoCommitPayload,
-    RepoResponse, RunCommitsResponse, RunEvent, RunHistoryContext, RunHistoryPage, Runner,
-    RunnerModelCatalogResponse, RunsIndexResponse, SetConfigInput, Skill, UiState,
-    WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUsageResponse, WorktreeEntry,
+    GithubData, GroupResponse, HealthResponse, IdeDirectoryResponse, IdeFileInput, IdeFileResponse,
+    MarkAllReadResponse, MessageInput, MessageResponse, OpenInCliResponse, OpenInInput,
+    PatchRunInput, PickVariantRequest, PickVariantResponse, PlanResponse, ProjectsResponse,
+    ProviderStatusResponse, QueuedMessagePatchInput, RemoveQueuedMessageResponse,
+    RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoResponse, RunCommitsResponse,
+    RunEvent, RunHistoryContext, RunHistoryPage, Runner, RunnerModelCatalogResponse,
+    RunsIndexResponse, SetConfigInput, Skill, UiState, WorkflowsResponse, WorkspaceConfigResponse,
+    WorkspaceUsageResponse, WorktreeEntry,
 };
 use futures_core::Stream;
 use futures_util::StreamExt;
@@ -585,6 +586,47 @@ impl HttpEngine {
             scope,
             &format!("/groups/{}/pick", encode_path_segment(group_id)),
             Some(input),
+        )
+        .await
+    }
+
+    /// One IDE directory listing. `path = None` means the project root; the server rejects
+    /// anything outside it, and never follows symlinks (spec §8.8, A10).
+    pub async fn ide_tree(
+        &self,
+        scope: &Scope,
+        path: Option<&str>,
+    ) -> Result<IdeDirectoryResponse, EngineError> {
+        let route = format!("/ide/tree{}", query(&[("path", path)]));
+        self.get_json(scope, &route).await
+    }
+
+    /// One IDE file's UTF-8 content. The server answers 409 for files over its 1 MB cap and
+    /// for binary content — those map to `EngineError::Conflict` with the server's reason.
+    pub async fn ide_file(
+        &self,
+        scope: &Scope,
+        path: &str,
+    ) -> Result<IdeFileResponse, EngineError> {
+        let route = format!("/ide/file{}", query(&[("path", Some(path))]));
+        self.get_json(scope, &route).await
+    }
+
+    /// Save one IDE file — the editor's `Ctrl+S` round-trip through `PUT /ide/file`.
+    pub async fn ide_save(
+        &self,
+        scope: &Scope,
+        path: &str,
+        content: &str,
+    ) -> Result<IdeFileResponse, EngineError> {
+        self.send_json(
+            Method::PUT,
+            scope,
+            "/ide/file",
+            Some(&IdeFileInput {
+                path: path.to_owned(),
+                content: content.to_owned(),
+            }),
         )
         .await
     }

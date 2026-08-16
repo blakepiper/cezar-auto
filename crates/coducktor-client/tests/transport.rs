@@ -168,6 +168,88 @@ async fn run_mutations_hit_the_versioned_routes() {
 }
 
 #[tokio::test]
+async fn ide_directory_file_and_save_round_trip_through_the_versioned_routes() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/p/shop/ide/tree"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "path": "",
+            "entries": [
+                {"name": "src", "path": "src", "type": "dir"},
+                {"name": "README.md", "path": "README.md", "type": "file", "size": 42}
+            ],
+            "truncated": false
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/p/shop/ide/file"))
+        .and(query_param("path", "src/lib.rs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "path": "src/lib.rs",
+            "content": "fn main() {}\n",
+            "size": 13
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/api/v1/p/shop/ide/file"))
+        .and(|request: &wiremock::Request| {
+            // serde_json's `Value` map serializes keys sorted, so compare JSON semantics,
+            // not byte order.
+            serde_json::from_slice::<serde_json::Value>(&request.body)
+                .map(|body| {
+                    body == json!({
+                        "path": "src/lib.rs",
+                        "content": "fn main() { println!(\"hi\"); }\n",
+                    })
+                })
+                .unwrap_or(false)
+        })
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "path": "src/lib.rs",
+            "content": "fn main() { println!(\"hi\"); }\n",
+            "size": 35
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/p/shop/ide/file"))
+        .and(query_param("path", "huge.bin"))
+        .respond_with(
+            ResponseTemplate::new(409).set_body_json(json!({"error":"file is too large to edit"})),
+        )
+        .mount(&server)
+        .await;
+
+    let engine = HttpEngine::new(server.uri()).unwrap();
+    let scope = Scope::Project("shop".into());
+    let tree = engine.ide_tree(&scope, None).await.unwrap();
+    assert_eq!(tree.entries.len(), 2);
+    assert_eq!(tree.entries[0].name, "src");
+    assert!(!tree.truncated);
+
+    let file = engine.ide_file(&scope, "src/lib.rs").await.unwrap();
+    assert_eq!(file.content, "fn main() {}\n");
+    assert_eq!(file.size, 13);
+
+    // The A10 accept criterion's edit-and-save round-trip: the PUT carries the draft bytes
+    // verbatim and the engine returns the stored file's metadata.
+    let saved = engine
+        .ide_save(&scope, "src/lib.rs", "fn main() { println!(\"hi\"); }\n")
+        .await
+        .unwrap();
+    assert_eq!(saved.size, 35);
+
+    assert_eq!(
+        engine.ide_file(&scope, "huge.bin").await,
+        Err(EngineError::Conflict {
+            reason: "file is too large to edit".into()
+        })
+    );
+}
+
+#[tokio::test]
 async fn runs_index_is_workspace_level() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

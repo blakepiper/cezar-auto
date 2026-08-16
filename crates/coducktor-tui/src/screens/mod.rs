@@ -1,5 +1,6 @@
 pub mod compare;
 pub mod global_tasks;
+pub mod ide;
 pub mod new_task;
 pub mod repo_git;
 pub mod runs_util;

@@ -1,5 +1,6 @@
 use std::env;
 use std::io;
+use std::io::Write;
 use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -616,6 +617,73 @@ async fn execute_pending(engine: &HttpEngine, app: &mut App) {
                 }
                 refresh_tasks(engine, app, &project).await;
             }
+            PendingAction::LoadIdeDirectory { project, path } => {
+                let scope = Scope::Project(project.clone());
+                // The listed directory IS the screen's current directory — the sidebar entry
+                // point queues a root listing, GoUp/Enter queue a subdirectory, and the state
+                // must converge on the same path the header renders.
+                app.ide_ui.directory_path = path.clone().unwrap_or_default();
+                match engine.ide_tree(&scope, path.as_deref()).await {
+                    Ok(directory) => {
+                        app.ide_ui.entries = Some(directory);
+                        app.ide_ui.tree_selected = 0;
+                    }
+                    Err(error) => app.notice = Some(format!("load directory failed: {error}")),
+                }
+            }
+            PendingAction::LoadIdeFile { project, path } => {
+                let scope = Scope::Project(project.clone());
+                match engine.ide_file(&scope, &path).await {
+                    Ok(file) => {
+                        // The draft survives a reload only when it is still pristine — a
+                        // reload while dirty would silently eat the user's edits.
+                        if app.ide_ui.dirty {
+                            app.notice = Some("unsaved changes kept — reload skipped".to_owned());
+                        } else {
+                            app.ide_ui.editor.set_text(&file.content);
+                            app.ide_ui.file_size = file.size;
+                            app.ide_ui.file_error = None;
+                        }
+                    }
+                    Err(error) => {
+                        app.ide_ui.file_error = Some(error.to_string());
+                    }
+                }
+            }
+            PendingAction::SaveIdeFile { project, path } => {
+                let scope = Scope::Project(project.clone());
+                let content = app.ide_ui.editor.text.clone();
+                match engine.ide_save(&scope, &path, &content).await {
+                    Ok(file) => {
+                        app.ide_ui.dirty = false;
+                        app.ide_ui.file_size = file.size;
+                        app.notice = Some(format!("saved {path}"));
+                    }
+                    Err(error) => app.notice = Some(format!("save failed: {error}")),
+                }
+            }
+            PendingAction::OpenIdeInEditor { project, path } => {
+                let absolute = app
+                    .project_registry
+                    .iter()
+                    .find(|entry| entry.id == project)
+                    .map(|entry| {
+                        if path.is_empty() {
+                            entry.root.clone()
+                        } else {
+                            format!("{}/{}", entry.root.trim_end_matches('/'), path)
+                        }
+                    });
+                match absolute {
+                    Some(absolute) => app.set_editor_handoff(absolute),
+                    None => {
+                        app.notice = Some("project root unknown — cannot open in editor".to_owned())
+                    }
+                }
+            }
+            PendingAction::IdeDiscardThenNavigate(_) => unreachable!("resolved in app.rs"),
+            PendingAction::IdeDiscardThenBack => unreachable!("resolved in app.rs"),
+            PendingAction::IdeDiscardThenForward => unreachable!("resolved in app.rs"),
             PendingAction::Quit => {}
         }
     }
@@ -829,6 +897,21 @@ async fn run(
                 execute_pending(&engine, app).await;
             }
         }
+        // The IDE's `Ctrl+E` escape hatch (spec §8.8): main owns the terminal, so the
+        // suspend → $EDITOR → resume dance lives here, not in the screen or the engine.
+        if let Some(path) = app.take_editor_handoff() {
+            run_editor_handoff(terminal, &path)?;
+            // Whatever the editor wrote to disk wins; reload it over the TUI draft.
+            if let Some(file_path) = app.ide_ui.file_path.clone() {
+                let project = app.ide_ui.project.clone();
+                app.ide_ui.dirty = false;
+                app.notice = Some(format!("reloaded {file_path} after $EDITOR"));
+                app.pending.push(PendingAction::LoadIdeFile {
+                    project,
+                    path: file_path,
+                });
+            }
+        }
         terminal.draw(|frame| app.render(frame))?;
 
         let remaining = FRAME_BUDGET.saturating_sub(frame_started.elapsed());
@@ -848,6 +931,41 @@ fn current_epoch_seconds() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Suspend the TUI (raw mode + alternate screen off), run `$VISUAL`/`$EDITOR`/`vi` on the
+/// file in the real terminal, then re-enter raw mode and the alternate screen. The
+/// supervised `cezar serve` child keeps its piped stdout throughout, so nothing foreign
+/// reaches the terminal (one-terminal rule, §7.7).
+fn run_editor_handoff(terminal: &mut AppTerminal, path: &str) -> io::Result<()> {
+    use crossterm::cursor;
+    use crossterm::event::EnableMouseCapture;
+    use crossterm::execute;
+    use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
+
+    terminal.flush()?;
+    crossterm::terminal::disable_raw_mode()?;
+    execute!(io::stdout(), LeaveAlternateScreen, cursor::Show)?;
+
+    let editor = env::var("VISUAL")
+        .or_else(|_| env::var("EDITOR"))
+        .unwrap_or_else(|_| "vi".to_owned());
+    let result = std::process::Command::new(&editor).arg(path).status();
+
+    crossterm::terminal::enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        cursor::Hide
+    )?;
+    stdout.flush()?;
+    terminal.clear()?;
+
+    result
+        .map(|_| ())
+        .map_err(|error| io::Error::other(format!("failed to run {editor}: {error}")))
 }
 
 #[cfg(test)]

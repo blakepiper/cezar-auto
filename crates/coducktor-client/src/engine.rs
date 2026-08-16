@@ -4,13 +4,14 @@ use coducktor_contract::{
     CancelResponse, ChangesPayload, ConfigResponse, ContinueInput, ContinueResponse,
     CreatePrResponse, CreateRunInput, CreateRunResponse, DeleteRunResponse,
     EditQueuedMessageResponse, FinishResponse, GitCommitInput, GitCommitResponse, GitPushResponse,
-    GithubData, GroupResponse, HealthResponse, MarkAllReadResponse, MessageInput, MessageResponse,
-    OpenInCliResponse, OpenInInput, PatchRunInput, PickVariantRequest, PickVariantResponse,
-    PlanResponse, ProjectsResponse, ProviderStatusResponse, QueuedMessagePatchInput,
-    RemoveQueuedMessageResponse, RepoBranchRequest, RepoBranchResponse, RepoCommitPayload,
-    RepoResponse, RunCommitsResponse, RunHistoryContext, RunHistoryPage, Runner,
-    RunnerModelCatalogResponse, RunsIndexResponse, SetConfigInput, Skill, UiState,
-    WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUsageResponse, WorktreeEntry,
+    GithubData, GroupResponse, HealthResponse, IdeDirectoryResponse, IdeFileResponse,
+    MarkAllReadResponse, MessageInput, MessageResponse, OpenInCliResponse, OpenInInput,
+    PatchRunInput, PickVariantRequest, PickVariantResponse, PlanResponse, ProjectsResponse,
+    ProviderStatusResponse, QueuedMessagePatchInput, RemoveQueuedMessageResponse,
+    RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoResponse, RunCommitsResponse,
+    RunHistoryContext, RunHistoryPage, Runner, RunnerModelCatalogResponse, RunsIndexResponse,
+    SetConfigInput, Skill, UiState, WorkflowsResponse, WorkspaceConfigResponse,
+    WorkspaceUsageResponse, WorktreeEntry,
 };
 use futures_core::stream::BoxStream;
 use serde_json::Value;
@@ -188,6 +189,23 @@ pub trait Engine: Send + Sync {
         group_id: &str,
         input: &PickVariantRequest,
     ) -> Result<PickVariantResponse, EngineError>;
+
+    // ---- IDE: project file browser + editor (spec §8.8, A10) ----------------------------
+    /// `GET /ide/tree` — one directory listing at the given project-relative path (`None` = root).
+    async fn ide_tree(
+        &self,
+        scope: &Scope,
+        path: Option<&str>,
+    ) -> Result<IdeDirectoryResponse, EngineError>;
+    /// `GET /ide/file` — one file's content, capped at 1 MB by the server.
+    async fn ide_file(&self, scope: &Scope, path: &str) -> Result<IdeFileResponse, EngineError>;
+    /// `PUT /ide/file` — save `content` to `path`, returning the stored file's metadata.
+    async fn ide_save(
+        &self,
+        scope: &Scope,
+        path: &str,
+        content: &str,
+    ) -> Result<IdeFileResponse, EngineError>;
     async fn cancel_auto_resume(
         &self,
         scope: &Scope,
@@ -510,6 +528,27 @@ impl Engine for HttpEngine {
         input: &PickVariantRequest,
     ) -> Result<PickVariantResponse, EngineError> {
         HttpEngine::pick_variant(self, scope, group_id, input).await
+    }
+
+    async fn ide_tree(
+        &self,
+        scope: &Scope,
+        path: Option<&str>,
+    ) -> Result<IdeDirectoryResponse, EngineError> {
+        HttpEngine::ide_tree(self, scope, path).await
+    }
+
+    async fn ide_file(&self, scope: &Scope, path: &str) -> Result<IdeFileResponse, EngineError> {
+        HttpEngine::ide_file(self, scope, path).await
+    }
+
+    async fn ide_save(
+        &self,
+        scope: &Scope,
+        path: &str,
+        content: &str,
+    ) -> Result<IdeFileResponse, EngineError> {
+        HttpEngine::ide_save(self, scope, path, content).await
     }
 
     async fn cancel_auto_resume(
