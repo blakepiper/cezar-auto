@@ -322,13 +322,28 @@ entirely if there's nothing to fix — this step can be a no-op check.)
 — no-op: verified as A15's final gate (rg clean, `npm test`/`test:unit`/`build`
 green on `5414fce6`), nothing crept back; no commit.
 
-### [ ] B1 — File layer
+### [x] B1 — File layer
 **Ships:** `cezar-core::paths`, `config`, `workspace::{config, ui_state, migrations,
 agent_accounts}`. Port the migration framework first — riskiest to get wrong,
 easiest to test in isolation.
 **Accept:** cross-implementation read/write test (write with Node, read with Rust,
 and vice versa) passes — start this test here and keep it through cutover (spec §14).
 **Commit:** `feat(core): B1 paths, config, workspace, migrations`
+— shipped as `crates/coducktor-core` (named per this repo's established `coducktor-*`
+convention, not the plan's literal pre-rename `cezar-core` spelling). Every module cites
+its `packages/cezar/src/` source file; `workspace::config`/`agent_accounts` use a
+value-level `zod` compat helper module for per-key `.catch()`/`.passthrough()` salvage
+(derive-based serde can't fail one field without failing the whole struct). Also fixed a
+real Rust/Node divergence found in the process: `coducktor-tui` was reading `DUCK_HOME`
+only, while `packages/cezar` reads `CEZ_HOME` — the two processes could silently resolve
+different home dirs. `paths::coducktor_home_dir` now honors `DUCK_HOME` first, falling
+back to `CEZ_HOME` until B12 deletes the Node tree; `coducktor-tui`'s keymap/service-log
+paths now go through it instead of their own inline env lookups.
+**Accept, verified:** `crates/coducktor-core/tests/cross_impl.rs` shells out to the real
+`packages/cezar` source via `tsx` (no build step) for all four directions — Node writes
+workspace config/agent-accounts, Rust reads; Rust writes, Node reads — and passes. 55
+tests total (51 unit + 4 cross-impl), `cargo clippy --workspace --all-targets -D
+warnings` clean, `cargo fmt --check` clean.
 
 ### [ ] B2 — Runs store
 **Ships:** `cezar-core::runs::store` — `runs.json`, NDJSON log, atomic writes,
