@@ -188,13 +188,13 @@ accept → archive) driven entirely from the TUI in an E2E pty test.
 > as labels only (their screens are A9/A10). None of these affect the Accept
 > criterion's lifecycle; revisit if a later step needs them.
 
-### [ ] A9 — Diff engine + task git + repo git + compare
+### [x] A9 — Diff engine + task git + repo git + compare
 **Ships:** diff widget (unified/split, syntect, intra-line, collapsed context,
 per-file fold), file trees, commit lists, commit dialog, branch actions, variant
 compare.
 **Accept:** a worktree diff renders identically in content to `GET /runs/:id/diff`;
 split mode degrades below 140 columns.
-**Commit:** `feat(tui): A9 diffs, task/repo git, compare`
+**Commit:** `feat(tui): A9 diffs, task/repo git, compare` — pushed as `6a96d5fe`.
 
 ### [ ] A10 — IDE
 **Ships:** explorer, editor, save, dirty guard, `$EDITOR` handoff.
