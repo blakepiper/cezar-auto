@@ -28,17 +28,18 @@ use axum::{Json, Router};
 use coducktor_contract::{
     AgentConfigFile, AgentConfigFileContent, AgentConfigFormat, AgentConfigKind,
     AgentConfigListing, AgentConfigScope, AgentConfigTracked, ApiRun, BackendCheck,
-    BackendCheckName, Capabilities, ConfigResponse, ContinueInput, CreateRunInput,
-    CreateRunResponse, DeleteRunResponse, DeleteWorkflowResponse, ForgeInfo, ForgeKind,
-    HealthProject, HealthResponse, IdeDirectoryQuery, IdeDirectoryResponse, IdeEntry, IdeEntryType,
-    IdeFileInput, IdeFileQuery, IdeFileResponse, MarkAllReadResponse, MessageInput,
-    ParseWorkflowInput, ParsedWorkflow, PatchRunInput, ProjectListEntry, ProjectSource,
-    ProjectStatus, ProjectsResponse, RegisterProjectInput, RegisterProjectResponse,
-    RemoveProjectResponse, RepoInfo, RunRecord, Runner, RunnerModels, RunnerSelection,
-    SaveWorkflowInput, SaveWorkflowResponse, SetAgentConfigInput, SetConfigInput,
-    SetWorkspaceConfigInput, SetWorkspaceUiStateInput, StartTodoResponse, TodoItem, UiState,
-    UpdateProjectInput, UpdateProjectResponse, UserMcpListing, WorkflowStepDef, WorkflowsResponse,
-    WorkspaceConfigResponse,
+    BackendCheckName, Capabilities, ChangedFile, ChangedFileStatus, ChangesPayload, ConfigResponse,
+    ContinueInput, CreateRunInput, CreateRunResponse, DeleteRunResponse, DeleteWorkflowResponse,
+    EmptyRepoResponse, ForgeInfo, ForgeKind, HealthProject, HealthResponse, IdeDirectoryQuery,
+    IdeDirectoryResponse, IdeEntry, IdeEntryType, IdeFileInput, IdeFileQuery, IdeFileResponse,
+    LogEntry, MarkAllReadResponse, MessageInput, ParseWorkflowInput, ParsedWorkflow, PatchRunInput,
+    PresentRepoResponse, ProjectListEntry, ProjectSource, ProjectStatus, ProjectsResponse,
+    RegisterProjectInput, RegisterProjectResponse, RemoveProjectResponse, RepoBranchRequest,
+    RepoBranchResponse, RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse, RunRecord, Runner,
+    RunnerModels, RunnerSelection, SaveWorkflowInput, SaveWorkflowResponse, SetAgentConfigInput,
+    SetConfigInput, SetWorkspaceConfigInput, SetWorkspaceUiStateInput, StartTodoResponse,
+    StatusEntry, TodoItem, UiState, UpdateProjectInput, UpdateProjectResponse, UserMcpListing,
+    WorkflowStepDef, WorkflowsResponse, WorkspaceConfigResponse,
 };
 use coducktor_core::config::load_config;
 use coducktor_core::handoff::followups_enabled;
@@ -304,6 +305,28 @@ pub fn router_with_state(state: ServerState) -> Router {
         .route(
             "/api/v1/p/{project}/ide/file",
             get(read_scoped_ide_file).put(write_scoped_ide_file),
+        )
+        .route("/api/v1/repo", get(get_repo))
+        .route("/api/v1/p/{project}/repo", get(get_scoped_repo))
+        .route("/api/v1/repo/diff", get(get_repo_diff))
+        .route("/api/v1/p/{project}/repo/diff", get(get_scoped_repo_diff))
+        .route("/api/v1/repo/commit/{sha}", get(get_repo_commit))
+        .route(
+            "/api/v1/p/{project}/repo/commit/{sha}",
+            get(get_scoped_repo_commit),
+        )
+        .route("/api/v1/repo/changes", get(get_repo_changes))
+        .route(
+            "/api/v1/p/{project}/repo/changes",
+            get(get_scoped_repo_changes),
+        )
+        .route(
+            "/api/v1/repo/branch",
+            axum::routing::post(create_repo_branch),
+        )
+        .route(
+            "/api/v1/p/{project}/repo/branch",
+            axum::routing::post(create_scoped_repo_branch),
         )
         .fallback(not_found)
         .with_state(state.clone())
@@ -2364,6 +2387,460 @@ async fn write_scoped_ide_file(
     write_ide_file(State(state), Json(input)).await
 }
 
+fn git_capture(root: &Path, args: &[&str]) -> Result<String, String> {
+    let output = Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        let error = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        Err(if error.is_empty() {
+            "git command failed".to_owned()
+        } else {
+            error
+        })
+    }
+}
+
+fn git_capture_owned(root: &Path, args: &[String]) -> Result<String, String> {
+    let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    git_capture(root, &refs)
+}
+
+fn repo_info_at(root: &Path) -> Option<RepoInfo> {
+    let repo_root = git_capture(root, &["rev-parse", "--show-toplevel"])
+        .ok()?
+        .trim()
+        .to_owned();
+    let branch = git_capture(
+        Path::new(&repo_root),
+        &["rev-parse", "--abbrev-ref", "HEAD"],
+    )
+    .ok()
+    .map(|value| value.trim().to_owned())
+    .filter(|value| !value.is_empty())
+    .unwrap_or_else(|| "HEAD".to_owned());
+    let remote = git_capture(Path::new(&repo_root), &["remote", "get-url", "origin"])
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            let name = git_capture(Path::new(&repo_root), &["remote"])
+                .ok()?
+                .lines()
+                .map(str::trim)
+                .find(|value| !value.is_empty())
+                .map(ToOwned::to_owned)?;
+            git_capture(Path::new(&repo_root), &["remote", "get-url", name.as_str()])
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+        });
+    Some(RepoInfo {
+        root: repo_root,
+        branch,
+        remote,
+    })
+}
+
+fn repo_status(root: &Path) -> Vec<StatusEntry> {
+    git_capture(root, &["status", "--porcelain"])
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| StatusEntry {
+            status: line.get(..2).unwrap_or(line).trim().to_owned(),
+            path: line.get(3..).unwrap_or_default().to_owned(),
+        })
+        .collect()
+}
+
+fn repo_log(root: &Path) -> Vec<LogEntry> {
+    git_capture(
+        root,
+        &["log", "-20", "--pretty=format:%h%x1f%s%x1f%an%x1f%cr"],
+    )
+    .unwrap_or_default()
+    .lines()
+    .filter_map(|line| {
+        let mut fields = line.split('\x1f');
+        Some(LogEntry {
+            hash: fields.next()?.to_owned(),
+            subject: fields.next()?.to_owned(),
+            author: fields.next()?.to_owned(),
+            when: fields.next()?.to_owned(),
+        })
+    })
+    .collect()
+}
+
+fn repo_branches(root: &Path) -> Vec<String> {
+    let mut branches = std::collections::BTreeSet::new();
+    for args in [
+        &["branch", "--list", "--format=%(refname:short)"][..],
+        &["branch", "-r", "--list", "--format=%(refname:short)"][..],
+    ] {
+        for name in git_capture(root, args)
+            .unwrap_or_default()
+            .lines()
+            .map(str::trim)
+        {
+            if name.is_empty() || name.contains("HEAD") {
+                continue;
+            }
+            let name = name.strip_prefix("origin/").unwrap_or(name);
+            if !name.starts_with("cez/") && !name.starts_with("duck/") {
+                branches.insert(name.to_owned());
+            }
+        }
+    }
+    branches.into_iter().collect()
+}
+
+fn cap_git_text(text: String, cap: usize) -> String {
+    let Some((end, _)) = text.char_indices().nth(cap) else {
+        return text;
+    };
+    format!("{}\n… (diff truncated)", &text[..end])
+}
+
+fn diff_revision_args(revisions: &[String], suffix: &[String]) -> Vec<String> {
+    let mut args = vec![
+        "diff".to_owned(),
+        "--no-color".to_owned(),
+        "--find-renames".to_owned(),
+        "--find-copies".to_owned(),
+    ];
+    args.extend(revisions.iter().cloned());
+    args.extend(suffix.iter().cloned());
+    args
+}
+
+fn changed_file_status(value: &str) -> ChangedFileStatus {
+    match value.chars().next().unwrap_or('M') {
+        'A' => ChangedFileStatus::Added,
+        'D' => ChangedFileStatus::Deleted,
+        'R' => ChangedFileStatus::Renamed,
+        'C' => ChangedFileStatus::Copied,
+        _ => ChangedFileStatus::Modified,
+    }
+}
+
+fn collect_git_changes(root: &Path, revisions: &[String]) -> Result<ChangesPayload, String> {
+    let names = git_capture_owned(
+        root,
+        &diff_revision_args(revisions, &["--name-status".to_owned()]),
+    )?;
+    let numstats = git_capture_owned(
+        root,
+        &diff_revision_args(revisions, &["--numstat".to_owned()]),
+    )?;
+    let mut counts = std::collections::HashMap::new();
+    for line in numstats.lines() {
+        let mut fields = line.split('\t');
+        let adds = fields.next().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+        let dels = fields.next().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+        let path = fields.collect::<Vec<_>>().join("\t");
+        if !path.is_empty() {
+            let path = if let Some((_, new)) = path.rsplit_once(" => ") {
+                new.to_owned()
+            } else {
+                path
+            };
+            counts.insert(path, (adds, dels, adds.is_nan() || dels.is_nan()));
+        }
+    }
+    let mut files = Vec::new();
+    for line in names.lines().filter(|line| !line.is_empty()) {
+        let fields = line.split('\t').collect::<Vec<_>>();
+        if fields.len() < 2 {
+            continue;
+        }
+        let status = changed_file_status(fields[0]);
+        let (path, old_path) = if matches!(
+            status,
+            ChangedFileStatus::Renamed | ChangedFileStatus::Copied
+        ) && fields.len() >= 3
+        {
+            (fields[2].to_owned(), Some(fields[1].to_owned()))
+        } else {
+            (fields[1].to_owned(), None)
+        };
+        let (adds, dels, binary) = counts
+            .get(&path)
+            .copied()
+            .map_or((0.0, 0.0, false), |(adds, dels, binary)| {
+                (adds, dels, binary)
+            });
+        let patch_args = diff_revision_args(
+            revisions,
+            &[
+                "--patch".to_owned(),
+                "--unified=20".to_owned(),
+                "--".to_owned(),
+                path.clone(),
+            ],
+        );
+        let patch = git_capture_owned(root, &patch_args).unwrap_or_default();
+        let binary = binary || patch.contains("Binary files");
+        files.push(ChangedFile {
+            path,
+            old_path,
+            status,
+            adds,
+            dels,
+            binary,
+            image: None,
+            patch: cap_git_text(patch, 200_000),
+        });
+    }
+    let adds = files.iter().map(|file| file.adds).sum();
+    let dels = files.iter().map(|file| file.dels).sum();
+    Ok(ChangesPayload {
+        stat: RepoDiffStat {
+            adds,
+            dels,
+            files: files.len() as f64,
+        },
+        files,
+        repointed_head: None,
+    })
+}
+
+fn valid_commit_hash(value: &str) -> bool {
+    (4..=40).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn repo_commit_payload(root: &Path, sha: &str) -> Result<RepoCommitPayload, String> {
+    if !valid_commit_hash(sha) {
+        return Err("not a commit hash".to_owned());
+    }
+    let metadata = git_capture(
+        root,
+        &["show", "-s", "--format=%H%x1f%s%x1f%an%x1f%cr", sha],
+    )?;
+    let mut fields = metadata.trim().split('\x1f');
+    let full_sha = fields.next().unwrap_or(sha).to_owned();
+    let subject = fields.next().unwrap_or_default().to_owned();
+    let author = fields.next().unwrap_or_default().to_owned();
+    let when = fields.next().unwrap_or_default().to_owned();
+    let parents = git_capture(root, &["rev-list", "--parents", "-n", "1", sha])?;
+    let changes = if let Some(parent) = parents.split_whitespace().nth(1) {
+        collect_git_changes(root, &[parent.to_owned(), sha.to_owned()])?
+    } else {
+        ChangesPayload {
+            files: Vec::new(),
+            stat: RepoDiffStat {
+                adds: 0.0,
+                dels: 0.0,
+                files: 0.0,
+            },
+            repointed_head: None,
+        }
+    };
+    Ok(RepoCommitPayload {
+        sha: full_sha,
+        subject,
+        author,
+        when,
+        files: changes.files,
+        stat: changes.stat,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct RepoCommitQuery {
+    structured: Option<String>,
+}
+
+async fn get_repo(State(state): State<ServerState>) -> Response {
+    let Some(info) = repo_info_at(&state.config.repo_root) else {
+        return Json(RepoResponse::Empty(EmptyRepoResponse {
+            info: None,
+            status: Vec::new(),
+            log: Vec::new(),
+            branches: Vec::new(),
+            base_branch: None,
+        }))
+        .into_response();
+    };
+    let config = load_config(
+        Path::new(&info.root),
+        &workspace_config(&state).agent_defaults,
+    );
+    Json(RepoResponse::Present(PresentRepoResponse {
+        info: info.clone(),
+        status: repo_status(Path::new(&info.root)),
+        log: repo_log(Path::new(&info.root)),
+        branches: repo_branches(Path::new(&info.root)),
+        base_branch: config.base_branch,
+    }))
+    .into_response()
+}
+
+async fn get_scoped_repo(
+    State(state): State<ServerState>,
+    AxumPath(_project): AxumPath<String>,
+) -> Response {
+    get_repo(State(state)).await
+}
+
+async fn get_repo_diff(State(state): State<ServerState>) -> Response {
+    let Some(info) = repo_info_at(&state.config.repo_root) else {
+        return (StatusCode::OK, "not a git repository").into_response();
+    };
+    match git_capture(Path::new(&info.root), &["diff", "HEAD"]) {
+        Ok(diff) => (StatusCode::OK, cap_git_text(diff, 400_000)).into_response(),
+        Err(error) => (StatusCode::CONFLICT, error).into_response(),
+    }
+}
+
+async fn get_scoped_repo_diff(
+    State(state): State<ServerState>,
+    AxumPath(_project): AxumPath<String>,
+) -> Response {
+    get_repo_diff(State(state)).await
+}
+
+async fn get_repo_commit(
+    State(state): State<ServerState>,
+    AxumPath(sha): AxumPath<String>,
+    Query(query): Query<RepoCommitQuery>,
+) -> Response {
+    let Some(info) = repo_info_at(&state.config.repo_root) else {
+        return if query.structured.as_deref() == Some("1") {
+            error_response(StatusCode::CONFLICT, "not a git repository")
+        } else {
+            (StatusCode::OK, "not a git repository").into_response()
+        };
+    };
+    let root = Path::new(&info.root);
+    if query.structured.as_deref() == Some("1") {
+        return match repo_commit_payload(root, &sha) {
+            Ok(payload) => Json(payload).into_response(),
+            Err(error) => error_response(StatusCode::CONFLICT, &error),
+        };
+    }
+    if !valid_commit_hash(&sha) {
+        return (StatusCode::OK, "(not a commit hash)").into_response();
+    }
+    match git_capture(root, &["show", "--stat", "--patch", "--no-color", &sha]) {
+        Ok(output) => (StatusCode::OK, cap_git_text(output, 200_000)).into_response(),
+        Err(error) => (StatusCode::OK, format!("(git show failed: {error})")).into_response(),
+    }
+}
+
+async fn get_scoped_repo_commit(
+    State(state): State<ServerState>,
+    AxumPath((_project, sha)): AxumPath<(String, String)>,
+    Query(query): Query<RepoCommitQuery>,
+) -> Response {
+    get_repo_commit(State(state), AxumPath(sha), Query(query)).await
+}
+
+async fn get_repo_changes(State(state): State<ServerState>) -> Response {
+    let Some(info) = repo_info_at(&state.config.repo_root) else {
+        return error_response(StatusCode::CONFLICT, "not a git repository");
+    };
+    match collect_git_changes(Path::new(&info.root), &["HEAD".to_owned()]) {
+        Ok(payload) => Json(payload).into_response(),
+        Err(error) => error_response(StatusCode::CONFLICT, &error),
+    }
+}
+
+async fn get_scoped_repo_changes(
+    State(state): State<ServerState>,
+    AxumPath(_project): AxumPath<String>,
+) -> Response {
+    get_repo_changes(State(state)).await
+}
+
+async fn create_repo_branch(
+    State(state): State<ServerState>,
+    Json(input): Json<RepoBranchRequest>,
+) -> Response {
+    let Some(info) = repo_info_at(&state.config.repo_root) else {
+        return error_response(StatusCode::CONFLICT, "not a git repository");
+    };
+    let name = input.name.trim();
+    if name.is_empty() || name.len() > 200 || !coducktor_core::git::refs::is_safe_git_ref(name) {
+        return error_response(
+            StatusCode::CONFLICT,
+            &format!("invalid branch name: {name}"),
+        );
+    }
+    let root = Path::new(&info.root);
+    if git_capture(root, &["check-ref-format", "--branch", name]).is_err() {
+        return error_response(
+            StatusCode::CONFLICT,
+            &format!("invalid branch name: {name}"),
+        );
+    }
+    let exists = git_capture(
+        root,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{name}"),
+        ],
+    )
+    .is_ok();
+    let args = if exists {
+        vec!["checkout".to_owned(), name.to_owned()]
+    } else if let Some(from) = input
+        .from
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if !coducktor_core::git::refs::is_safe_git_ref(from)
+            || git_capture(
+                root,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("{from}^{{commit}}"),
+                ],
+            )
+            .is_err()
+        {
+            return error_response(
+                StatusCode::CONFLICT,
+                &format!("unknown start point: {from}"),
+            );
+        }
+        vec![
+            "checkout".to_owned(),
+            "-b".to_owned(),
+            name.to_owned(),
+            from.to_owned(),
+        ]
+    } else {
+        vec!["checkout".to_owned(), "-b".to_owned(), name.to_owned()]
+    };
+    if let Err(error) = git_capture_owned(root, &args) {
+        return error_response(StatusCode::CONFLICT, &error);
+    }
+    Json(RepoBranchResponse {
+        branch: name.to_owned(),
+        created: !exists,
+    })
+    .into_response()
+}
+
+async fn create_scoped_repo_branch(
+    State(state): State<ServerState>,
+    AxumPath(_project): AxumPath<String>,
+    Json(input): Json<RepoBranchRequest>,
+) -> Response {
+    create_repo_branch(State(state), Json(input)).await
+}
+
 async fn get_ui_state(State(state): State<ServerState>) -> Response {
     Json(Value::Object(read_repo_ui_state(&state))).into_response()
 }
@@ -3862,6 +4339,85 @@ mod tests {
         )
         .await;
         assert_eq!(binary.status(), StatusCode::CONFLICT);
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test]
+    async fn repo_routes_report_changes_commit_and_branch_actions() {
+        let repo = test_repo();
+        let run_git = |args: &[&str]| {
+            let status = Command::new("git")
+                .current_dir(&repo)
+                .args(args)
+                .status()
+                .expect("git command");
+            assert!(status.success(), "git command failed: {args:?}");
+        };
+        run_git(&["init", "-q"]);
+        run_git(&["config", "user.email", "test@example.com"]);
+        run_git(&["config", "user.name", "Test User"]);
+        fs::write(repo.join("README.md"), "before\n").expect("readme");
+        run_git(&["add", "README.md"]);
+        run_git(&["commit", "-qm", "initial"]);
+        fs::write(repo.join("README.md"), "after\n").expect("changed readme");
+        let head = git_capture(&repo, &["rev-parse", "HEAD"])
+            .expect("head")
+            .trim()
+            .to_owned();
+        let manager = RunManager::open(repo.join(".ai").join("coducktor"));
+        let router = router_with_state(ServerState::with_manager(
+            ServerConfig::new(&repo, "test"),
+            manager,
+        ));
+
+        let repo_response = send(&router, Method::GET, "/api/v1/repo", None).await;
+        assert_eq!(repo_response.status(), StatusCode::OK);
+        let repo_body = json_body(repo_response).await;
+        assert!(repo_body["info"]["root"].is_string());
+        assert_eq!(repo_body["status"][0]["path"], "README.md");
+
+        let diff = send(&router, Method::GET, "/api/v1/repo/diff", None).await;
+        assert_eq!(diff.status(), StatusCode::OK);
+        assert!(
+            String::from_utf8(response_body(diff).await)
+                .expect("diff text")
+                .contains("+after")
+        );
+
+        let changes = send(&router, Method::GET, "/api/v1/repo/changes", None).await;
+        assert_eq!(changes.status(), StatusCode::OK);
+        let changes_body = json_body(changes).await;
+        assert_eq!(changes_body["files"][0]["path"], "README.md");
+        assert_eq!(changes_body["files"][0]["status"], "modified");
+
+        let commit = send(
+            &router,
+            Method::GET,
+            &format!("/api/v1/repo/commit/{head}?structured=1"),
+            None,
+        )
+        .await;
+        assert_eq!(commit.status(), StatusCode::OK);
+        assert_eq!(json_body(commit).await["subject"], "initial");
+
+        let branch = send(
+            &router,
+            Method::POST,
+            "/api/v1/p/default/repo/branch",
+            Some(serde_json::json!({ "name": "feature" })),
+        )
+        .await;
+        assert_eq!(branch.status(), StatusCode::OK);
+        assert_eq!(json_body(branch).await["created"], true);
+
+        let invalid = send(
+            &router,
+            Method::POST,
+            "/api/v1/repo/branch",
+            Some(serde_json::json!({ "name": "--upload-pack=bad" })),
+        )
+        .await;
+        assert_eq!(invalid.status(), StatusCode::CONFLICT);
         fs::remove_dir_all(repo).expect("remove test repo");
     }
 
