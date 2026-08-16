@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
 use axum::extract::{Path as AxumPath, State};
@@ -25,15 +26,18 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use coducktor_contract::{
-    ApiRun, BackendCheck, BackendCheckName, Capabilities, ConfigResponse, ContinueInput,
-    CreateRunInput, CreateRunResponse, DeleteRunResponse, DeleteWorkflowResponse, ForgeInfo,
-    ForgeKind, HealthProject, HealthResponse, MarkAllReadResponse, MessageInput,
-    ParseWorkflowInput, ParsedWorkflow, PatchRunInput, ProjectListEntry, ProjectSource,
-    ProjectStatus, ProjectsResponse, RegisterProjectInput, RegisterProjectResponse,
-    RemoveProjectResponse, RepoInfo, RunRecord, RunnerModels, RunnerSelection, SaveWorkflowInput,
-    SaveWorkflowResponse, SetConfigInput, SetWorkspaceConfigInput, SetWorkspaceUiStateInput,
-    StartTodoResponse, TodoItem, UiState, UpdateProjectInput, UpdateProjectResponse,
-    WorkflowStepDef, WorkflowsResponse, WorkspaceConfigResponse,
+    AgentConfigFile, AgentConfigFileContent, AgentConfigFormat, AgentConfigKind,
+    AgentConfigListing, AgentConfigScope, AgentConfigTracked, ApiRun, BackendCheck,
+    BackendCheckName, Capabilities, ConfigResponse, ContinueInput, CreateRunInput,
+    CreateRunResponse, DeleteRunResponse, DeleteWorkflowResponse, ForgeInfo, ForgeKind,
+    HealthProject, HealthResponse, MarkAllReadResponse, MessageInput, ParseWorkflowInput,
+    ParsedWorkflow, PatchRunInput, ProjectListEntry, ProjectSource, ProjectStatus,
+    ProjectsResponse, RegisterProjectInput, RegisterProjectResponse, RemoveProjectResponse,
+    RepoInfo, RunRecord, Runner, RunnerModels, RunnerSelection, SaveWorkflowInput,
+    SaveWorkflowResponse, SetAgentConfigInput, SetConfigInput, SetWorkspaceConfigInput,
+    SetWorkspaceUiStateInput, StartTodoResponse, TodoItem, UiState, UpdateProjectInput,
+    UpdateProjectResponse, UserMcpListing, WorkflowStepDef, WorkflowsResponse,
+    WorkspaceConfigResponse,
 };
 use coducktor_core::config::load_config;
 use coducktor_core::handoff::followups_enabled;
@@ -57,6 +61,7 @@ use coducktor_core::workspace::ui_state::{
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 
 const HEALTH_PATH: &str = "/api/v1/health";
 const SEC_FETCH_SITE: HeaderName = HeaderName::from_static("sec-fetch-site");
@@ -276,6 +281,19 @@ pub fn router_with_state(state: ServerState) -> Router {
             "/api/v1/p/{project}/config",
             get(get_scoped_config).put(update_scoped_config),
         )
+        .route("/api/v1/agent-config", get(list_agent_config))
+        .route(
+            "/api/v1/p/{project}/agent-config",
+            get(list_scoped_agent_config),
+        )
+        .route(
+            "/api/v1/agent-config/{id}",
+            get(get_agent_config).put(update_agent_config),
+        )
+        .route(
+            "/api/v1/p/{project}/agent-config/{id}",
+            get(get_scoped_agent_config).put(update_scoped_agent_config),
+        )
         .fallback(not_found)
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state, request_origin_guard))
@@ -481,6 +499,476 @@ fn parse_set_config_input(input: Value) -> Result<(SetConfigInput, Map<String, V
 
 fn config_patch_value_is_null(object: &Map<String, Value>, key: &str) -> bool {
     object.get(key).is_some_and(Value::is_null)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AgentConfigPath {
+    ClaudeUserSettings,
+    ClaudeProjectSettings,
+    ClaudeLocalSettings,
+    ClaudeProjectMcp,
+    ClaudeUserMemory,
+    ClaudeProjectMemory,
+    ClaudeLocalMemory,
+    CodexUserConfig,
+    CodexProjectConfig,
+    CodexUserMemory,
+    OpenCodeUserConfig,
+    OpenCodeProjectConfig,
+    OpenCodeUserMemory,
+    ProjectAgents,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AgentConfigDefinition {
+    id: &'static str,
+    runners: &'static [Runner],
+    kind: AgentConfigKind,
+    scope: AgentConfigScope,
+    label: &'static str,
+    format: AgentConfigFormat,
+    tracked: AgentConfigTracked,
+    seeded: bool,
+    holds_mcp: bool,
+    path: AgentConfigPath,
+    docs_url: &'static str,
+}
+
+const CLAUDE_RUNNER: &[Runner] = &[Runner::Claude];
+const CODEX_RUNNER: &[Runner] = &[Runner::Codex];
+const OPENCODE_RUNNER: &[Runner] = &[Runner::OpenCode];
+const CODEX_OPENCODE_RUNNERS: &[Runner] = &[Runner::Codex, Runner::OpenCode];
+
+const AGENT_CONFIG_DEFINITIONS: &[AgentConfigDefinition] = &[
+    AgentConfigDefinition {
+        id: "claude.user.settings",
+        runners: CLAUDE_RUNNER,
+        kind: AgentConfigKind::Settings,
+        scope: AgentConfigScope::User,
+        label: "~/.claude/settings.json",
+        format: AgentConfigFormat::Json,
+        tracked: AgentConfigTracked::OutsideRepo,
+        seeded: false,
+        holds_mcp: false,
+        path: AgentConfigPath::ClaudeUserSettings,
+        docs_url: "https://code.claude.com/docs/en/settings",
+    },
+    AgentConfigDefinition {
+        id: "claude.project.settings",
+        runners: CLAUDE_RUNNER,
+        kind: AgentConfigKind::Settings,
+        scope: AgentConfigScope::Project,
+        label: ".claude/settings.json",
+        format: AgentConfigFormat::Json,
+        tracked: AgentConfigTracked::Tracked,
+        seeded: false,
+        holds_mcp: false,
+        path: AgentConfigPath::ClaudeProjectSettings,
+        docs_url: "https://code.claude.com/docs/en/settings",
+    },
+    AgentConfigDefinition {
+        id: "claude.local.settings",
+        runners: CLAUDE_RUNNER,
+        kind: AgentConfigKind::Settings,
+        scope: AgentConfigScope::Local,
+        label: ".claude/settings.local.json",
+        format: AgentConfigFormat::Json,
+        tracked: AgentConfigTracked::Gitignored,
+        seeded: true,
+        holds_mcp: false,
+        path: AgentConfigPath::ClaudeLocalSettings,
+        docs_url: "https://code.claude.com/docs/en/settings",
+    },
+    AgentConfigDefinition {
+        id: "claude.project.mcp",
+        runners: CLAUDE_RUNNER,
+        kind: AgentConfigKind::Mcp,
+        scope: AgentConfigScope::Project,
+        label: ".mcp.json",
+        format: AgentConfigFormat::Json,
+        tracked: AgentConfigTracked::Tracked,
+        seeded: false,
+        holds_mcp: true,
+        path: AgentConfigPath::ClaudeProjectMcp,
+        docs_url: "https://code.claude.com/docs/en/mcp",
+    },
+    AgentConfigDefinition {
+        id: "claude.user.memory",
+        runners: CLAUDE_RUNNER,
+        kind: AgentConfigKind::Memory,
+        scope: AgentConfigScope::User,
+        label: "~/.claude/CLAUDE.md",
+        format: AgentConfigFormat::Markdown,
+        tracked: AgentConfigTracked::OutsideRepo,
+        seeded: false,
+        holds_mcp: false,
+        path: AgentConfigPath::ClaudeUserMemory,
+        docs_url: "https://code.claude.com/docs/en/memory",
+    },
+    AgentConfigDefinition {
+        id: "claude.project.memory",
+        runners: CLAUDE_RUNNER,
+        kind: AgentConfigKind::Memory,
+        scope: AgentConfigScope::Project,
+        label: "CLAUDE.md",
+        format: AgentConfigFormat::Markdown,
+        tracked: AgentConfigTracked::Tracked,
+        seeded: false,
+        holds_mcp: false,
+        path: AgentConfigPath::ClaudeProjectMemory,
+        docs_url: "https://code.claude.com/docs/en/memory",
+    },
+    AgentConfigDefinition {
+        id: "claude.local.memory",
+        runners: CLAUDE_RUNNER,
+        kind: AgentConfigKind::Memory,
+        scope: AgentConfigScope::Local,
+        label: "CLAUDE.local.md",
+        format: AgentConfigFormat::Markdown,
+        tracked: AgentConfigTracked::Gitignored,
+        seeded: true,
+        holds_mcp: false,
+        path: AgentConfigPath::ClaudeLocalMemory,
+        docs_url: "https://code.claude.com/docs/en/memory",
+    },
+    AgentConfigDefinition {
+        id: "codex.user.config",
+        runners: CODEX_RUNNER,
+        kind: AgentConfigKind::Settings,
+        scope: AgentConfigScope::User,
+        label: "~/.codex/config.toml",
+        format: AgentConfigFormat::Toml,
+        tracked: AgentConfigTracked::OutsideRepo,
+        seeded: false,
+        holds_mcp: true,
+        path: AgentConfigPath::CodexUserConfig,
+        docs_url: "https://developers.openai.com/codex/config-reference",
+    },
+    AgentConfigDefinition {
+        id: "codex.project.config",
+        runners: CODEX_RUNNER,
+        kind: AgentConfigKind::Settings,
+        scope: AgentConfigScope::Project,
+        label: ".codex/config.toml",
+        format: AgentConfigFormat::Toml,
+        tracked: AgentConfigTracked::Tracked,
+        seeded: false,
+        holds_mcp: true,
+        path: AgentConfigPath::CodexProjectConfig,
+        docs_url: "https://developers.openai.com/codex/config-reference",
+    },
+    AgentConfigDefinition {
+        id: "codex.user.memory",
+        runners: CODEX_RUNNER,
+        kind: AgentConfigKind::Memory,
+        scope: AgentConfigScope::User,
+        label: "~/.codex/AGENTS.md",
+        format: AgentConfigFormat::Markdown,
+        tracked: AgentConfigTracked::OutsideRepo,
+        seeded: false,
+        holds_mcp: false,
+        path: AgentConfigPath::CodexUserMemory,
+        docs_url: "https://developers.openai.com/codex/guides/agents-md",
+    },
+    AgentConfigDefinition {
+        id: "opencode.user.config",
+        runners: OPENCODE_RUNNER,
+        kind: AgentConfigKind::Settings,
+        scope: AgentConfigScope::User,
+        label: "~/.config/opencode/opencode.json",
+        format: AgentConfigFormat::JsonC,
+        tracked: AgentConfigTracked::OutsideRepo,
+        seeded: false,
+        holds_mcp: true,
+        path: AgentConfigPath::OpenCodeUserConfig,
+        docs_url: "https://opencode.ai/docs/config/",
+    },
+    AgentConfigDefinition {
+        id: "opencode.project.config",
+        runners: OPENCODE_RUNNER,
+        kind: AgentConfigKind::Settings,
+        scope: AgentConfigScope::Project,
+        label: "opencode.json",
+        format: AgentConfigFormat::JsonC,
+        tracked: AgentConfigTracked::Tracked,
+        seeded: false,
+        holds_mcp: true,
+        path: AgentConfigPath::OpenCodeProjectConfig,
+        docs_url: "https://opencode.ai/docs/config/",
+    },
+    AgentConfigDefinition {
+        id: "opencode.user.memory",
+        runners: OPENCODE_RUNNER,
+        kind: AgentConfigKind::Memory,
+        scope: AgentConfigScope::User,
+        label: "~/.config/opencode/AGENTS.md",
+        format: AgentConfigFormat::Markdown,
+        tracked: AgentConfigTracked::OutsideRepo,
+        seeded: false,
+        holds_mcp: false,
+        path: AgentConfigPath::OpenCodeUserMemory,
+        docs_url: "https://opencode.ai/docs/rules/",
+    },
+    AgentConfigDefinition {
+        id: "project.agents",
+        runners: CODEX_OPENCODE_RUNNERS,
+        kind: AgentConfigKind::Memory,
+        scope: AgentConfigScope::Project,
+        label: "AGENTS.md",
+        format: AgentConfigFormat::Markdown,
+        tracked: AgentConfigTracked::Tracked,
+        seeded: false,
+        holds_mcp: false,
+        path: AgentConfigPath::ProjectAgents,
+        docs_url: "https://opencode.ai/docs/rules/",
+    },
+];
+
+fn agent_config_definition(id: &str) -> Option<&'static AgentConfigDefinition> {
+    AGENT_CONFIG_DEFINITIONS
+        .iter()
+        .find(|definition| definition.id == id)
+}
+
+fn resolve_agent_config_path(definition: &AgentConfigDefinition, repo_root: &Path) -> PathBuf {
+    let homes = coducktor_core::paths::agent_home_paths(&ProcessEnv);
+    match definition.path {
+        AgentConfigPath::ClaudeUserSettings => homes.claude.join("settings.json"),
+        AgentConfigPath::ClaudeProjectSettings => repo_root.join(".claude/settings.json"),
+        AgentConfigPath::ClaudeLocalSettings => repo_root.join(".claude/settings.local.json"),
+        AgentConfigPath::ClaudeProjectMcp => repo_root.join(".mcp.json"),
+        AgentConfigPath::ClaudeUserMemory => homes.claude.join("CLAUDE.md"),
+        AgentConfigPath::ClaudeProjectMemory => repo_root.join("CLAUDE.md"),
+        AgentConfigPath::ClaudeLocalMemory => repo_root.join("CLAUDE.local.md"),
+        AgentConfigPath::CodexUserConfig => homes.codex.join("config.toml"),
+        AgentConfigPath::CodexProjectConfig => repo_root.join(".codex/config.toml"),
+        AgentConfigPath::CodexUserMemory => homes.codex.join("AGENTS.md"),
+        AgentConfigPath::OpenCodeUserConfig => homes.opencode_config.join("opencode.json"),
+        AgentConfigPath::OpenCodeProjectConfig => repo_root.join("opencode.json"),
+        AgentConfigPath::OpenCodeUserMemory => homes.opencode_config.join("AGENTS.md"),
+        AgentConfigPath::ProjectAgents => repo_root.join("AGENTS.md"),
+    }
+}
+
+fn config_hash(content: &[u8]) -> String {
+    let digest = Sha256::digest(content);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn agent_config_content(
+    definition: &AgentConfigDefinition,
+    repo_root: &Path,
+) -> Result<AgentConfigFileContent, String> {
+    let path = resolve_agent_config_path(definition, repo_root);
+    match fs::read(&path) {
+        Ok(bytes) => {
+            let content = String::from_utf8(bytes.clone()).map_err(|error| error.to_string())?;
+            Ok(AgentConfigFileContent {
+                id: definition.id.to_owned(),
+                path: path.to_string_lossy().into_owned(),
+                exists: true,
+                content,
+                version: Some(config_hash(&bytes)),
+            })
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(AgentConfigFileContent {
+            id: definition.id.to_owned(),
+            path: path.to_string_lossy().into_owned(),
+            exists: false,
+            content: String::new(),
+            version: None,
+        }),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn jsonc_without_comments(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut output = String::with_capacity(input.len());
+    let mut index = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            if byte >= 0x80
+                && let Some(character) = input[index..].chars().next()
+            {
+                output.push(character);
+                index += character.len_utf8();
+                continue;
+            }
+            output.push(byte as char);
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'"' {
+            in_string = true;
+            output.push('"');
+            index += 1;
+            continue;
+        }
+        if byte == b'/' && bytes.get(index + 1) == Some(&b'/') {
+            index += 2;
+            while index < bytes.len() && bytes[index] != b'\n' {
+                index += 1;
+            }
+            if index < bytes.len() {
+                output.push('\n');
+                index += 1;
+            }
+            continue;
+        }
+        if byte == b'/' && bytes.get(index + 1) == Some(&b'*') {
+            output.push(' ');
+            output.push(' ');
+            index += 2;
+            while index < bytes.len()
+                && !(bytes[index] == b'*' && bytes.get(index + 1) == Some(&b'/'))
+            {
+                output.push(if bytes[index] == b'\n' { '\n' } else { ' ' });
+                index += 1;
+            }
+            if index < bytes.len() {
+                output.push(' ');
+                output.push(' ');
+                index += 2;
+            }
+            continue;
+        }
+        if byte >= 0x80
+            && let Some(character) = input[index..].chars().next()
+        {
+            output.push(character);
+            index += character.len_utf8();
+            continue;
+        }
+        output.push(byte as char);
+        index += 1;
+    }
+    output
+}
+
+fn validate_agent_config(content: &str, format: AgentConfigFormat) -> Result<(), String> {
+    if content.trim().is_empty() || matches!(format, AgentConfigFormat::Markdown) {
+        return Ok(());
+    }
+    match format {
+        AgentConfigFormat::Json => serde_json::from_str::<Value>(content)
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+        AgentConfigFormat::JsonC => serde_json::from_str::<Value>(&jsonc_without_comments(content))
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+        AgentConfigFormat::Toml => toml::from_str::<toml::Value>(content)
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+        AgentConfigFormat::Markdown => Ok(()),
+    }
+}
+
+fn claude_state_path() -> PathBuf {
+    let homes = coducktor_core::paths::agent_home_paths(&ProcessEnv);
+    let default_home = coducktor_core::paths::real_home_dir(&ProcessEnv).join(".claude");
+    if std::env::var("CLAUDE_CONFIG_DIR")
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+        || homes.claude != default_home
+    {
+        homes.claude.join(".claude.json")
+    } else {
+        homes.claude.parent().map_or_else(
+            || PathBuf::from(".claude.json"),
+            |parent| parent.join(".claude.json"),
+        )
+    }
+}
+
+fn user_mcp_listing() -> UserMcpListing {
+    let path = claude_state_path();
+    let path_string = path.to_string_lossy().into_owned();
+    let Ok(metadata) = fs::metadata(&path) else {
+        return UserMcpListing {
+            path: path_string,
+            servers: Vec::new(),
+            readable: true,
+        };
+    };
+    if metadata.len() > 2 * 1024 * 1024 {
+        return UserMcpListing {
+            path: path_string,
+            servers: Vec::new(),
+            readable: false,
+        };
+    }
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return UserMcpListing {
+            path: path_string,
+            servers: Vec::new(),
+            readable: false,
+        };
+    };
+    let servers = serde_json::from_str::<Value>(&raw)
+        .ok()
+        .and_then(|value| value.get("mcpServers").cloned())
+        .and_then(|value| value.as_object().cloned())
+        .map(|servers| servers.into_iter().map(|(name, _)| name).collect())
+        .unwrap_or_default();
+    UserMcpListing {
+        path: path_string,
+        servers,
+        readable: true,
+    }
+}
+
+fn agent_config_listing(repo_root: &Path) -> AgentConfigListing {
+    let files = AGENT_CONFIG_DEFINITIONS
+        .iter()
+        .map(|definition| {
+            let path = resolve_agent_config_path(definition, repo_root);
+            let metadata = fs::metadata(&path).ok();
+            let (exists, size, version) = match metadata {
+                Some(metadata) => {
+                    let version = fs::read(&path).ok().map(|bytes| config_hash(&bytes));
+                    (true, metadata.len() as f64, version)
+                }
+                None => (false, 0.0, None),
+            };
+            AgentConfigFile {
+                id: definition.id.to_owned(),
+                runners: definition.runners.to_vec(),
+                kind: definition.kind,
+                scope: definition.scope,
+                label: definition.label.to_owned(),
+                path: path.to_string_lossy().into_owned(),
+                format: definition.format,
+                tracked: definition.tracked,
+                seeded: definition.seeded,
+                holds_mcp: definition.holds_mcp,
+                precedence: "Vendor-documented precedence; coducktor writes the file verbatim."
+                    .to_owned(),
+                hot_reload: None,
+                docs_url: definition.docs_url.to_owned(),
+                exists,
+                size,
+                version,
+                writable: true,
+                read_only_reason: None,
+            }
+        })
+        .collect();
+    AgentConfigListing {
+        editable: true,
+        files,
+        user_mcp: Some(user_mcp_listing()),
+    }
 }
 
 fn workflow_slug(value: &str) -> String {
@@ -1444,6 +1932,145 @@ async fn update_scoped_config(
     Json(input): Json<Value>,
 ) -> Response {
     update_config(State(state), Json(input)).await
+}
+
+async fn list_agent_config(State(state): State<ServerState>) -> Response {
+    Json(agent_config_listing(&state.config.repo_root)).into_response()
+}
+
+async fn list_scoped_agent_config(
+    State(state): State<ServerState>,
+    AxumPath(_project): AxumPath<String>,
+) -> Response {
+    list_agent_config(State(state)).await
+}
+
+async fn get_agent_config(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let Some(definition) = agent_config_definition(&id) else {
+        return error_response(StatusCode::NOT_FOUND, "unknown config file");
+    };
+    match agent_config_content(definition, &state.config.repo_root) {
+        Ok(content) => Json(content).into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error),
+    }
+}
+
+async fn get_scoped_agent_config(
+    State(state): State<ServerState>,
+    AxumPath((_project, id)): AxumPath<(String, String)>,
+) -> Response {
+    get_agent_config(State(state), AxumPath(id)).await
+}
+
+fn parse_agent_config_input(input: Value) -> Result<SetAgentConfigInput, String> {
+    let Some(object) = input.as_object() else {
+        return Err("invalid agent config body".to_owned());
+    };
+    if !object.contains_key("content") || !object.contains_key("version") {
+        return Err("content and version are required".to_owned());
+    }
+    let parsed =
+        serde_json::from_value::<SetAgentConfigInput>(input).map_err(|error| error.to_string())?;
+    if parsed.content.chars().count() > 2_000_000 {
+        return Err("content must be at most 2000000 characters".to_owned());
+    }
+    Ok(parsed)
+}
+
+fn write_agent_config(
+    definition: &AgentConfigDefinition,
+    repo_root: &Path,
+    input: SetAgentConfigInput,
+) -> Result<AgentConfigFileContent, (StatusCode, String)> {
+    if let Err(error) = validate_agent_config(&input.content, definition.format) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("Invalid {:?}: {error}", definition.format).to_lowercase(),
+        ));
+    }
+    let path = resolve_agent_config_path(definition, repo_root);
+    let current = match fs::read(&path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err((StatusCode::INTERNAL_SERVER_ERROR, error.to_string())),
+    };
+    if input.content.trim().is_empty()
+        && current
+            .as_ref()
+            .is_some_and(|bytes| !String::from_utf8_lossy(bytes).trim().is_empty())
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "refusing to overwrite a non-empty config file with empty content — delete the file manually if you mean to remove it"
+                .to_owned(),
+        ));
+    }
+    let current_version = current.as_deref().map(config_hash);
+    if current_version != input.version {
+        return Err((
+            StatusCode::CONFLICT,
+            if current_version.is_none() {
+                "the file no longer exists on disk — reload before saving".to_owned()
+            } else {
+                "the file changed on disk since you opened it — reload before saving".to_owned()
+            },
+        ));
+    }
+    let target = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+    if let Some(parent) = target.parent()
+        && let Err(error) = fs::create_dir_all(parent)
+    {
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, error.to_string()));
+    }
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let temporary = PathBuf::from(format!(
+        "{}.duck-tmp-{}-{nonce}",
+        target.display(),
+        std::process::id()
+    ));
+    if let Err(error) = fs::write(&temporary, input.content.as_bytes()) {
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, error.to_string()));
+    }
+    if let Err(error) = fs::rename(&temporary, &target) {
+        let _ = fs::remove_file(&temporary);
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, error.to_string()));
+    }
+    match agent_config_content(definition, repo_root) {
+        Ok(content) => Ok(content),
+        Err(error) => Err((StatusCode::INTERNAL_SERVER_ERROR, error)),
+    }
+}
+
+async fn update_agent_config(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+    Json(input): Json<Value>,
+) -> Response {
+    let Some(definition) = agent_config_definition(&id) else {
+        return error_response(StatusCode::NOT_FOUND, "unknown config file");
+    };
+    let input = match parse_agent_config_input(input) {
+        Ok(input) => input,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, &error),
+    };
+    match write_agent_config(definition, &state.config.repo_root, input) {
+        Ok(content) => Json(content).into_response(),
+        Err((status, error)) => error_response(status, &error),
+    }
+}
+
+async fn update_scoped_agent_config(
+    State(state): State<ServerState>,
+    AxumPath((_project, id)): AxumPath<(String, String)>,
+    Json(input): Json<Value>,
+) -> Response {
+    update_agent_config(State(state), AxumPath(id), Json(input)).await
 }
 
 async fn get_ui_state(State(state): State<ServerState>) -> Response {
@@ -2781,6 +3408,85 @@ mod tests {
         )
         .await;
         assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test]
+    async fn agent_config_routes_use_catalog_ids_and_stale_write_tokens() {
+        let repo = test_repo();
+        let data_dir = repo.join(".ai").join("coducktor");
+        let manager = RunManager::open(&data_dir);
+        let router = router_with_state(ServerState::with_manager(
+            ServerConfig::new(&repo, "test"),
+            manager,
+        ));
+        let boot = repo
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("test repo name");
+
+        let listing = send(&router, Method::GET, "/api/v1/agent-config", None).await;
+        assert_eq!(listing.status(), StatusCode::OK);
+        let listing_body = json_body(listing).await;
+        assert_eq!(listing_body["editable"], true);
+        assert_eq!(listing_body["files"].as_array().map(Vec::len), Some(14));
+        assert!(listing_body["userMcp"].is_object());
+
+        let absent = send(
+            &router,
+            Method::GET,
+            "/api/v1/agent-config/claude.project.settings",
+            None,
+        )
+        .await;
+        assert_eq!(absent.status(), StatusCode::OK);
+        assert_eq!(json_body(absent).await["version"], Value::Null);
+
+        let created = send(
+            &router,
+            Method::PUT,
+            "/api/v1/agent-config/claude.project.settings",
+            Some(serde_json::json!({ "content": "{\"a\":1}", "version": null })),
+        )
+        .await;
+        assert_eq!(created.status(), StatusCode::OK);
+        let created_body = json_body(created).await;
+        let version = created_body["version"].as_str().expect("version");
+        assert_eq!(
+            fs::read_to_string(repo.join(".claude/settings.json")).expect("created config"),
+            "{\"a\":1}"
+        );
+
+        let scoped = send(
+            &router,
+            Method::GET,
+            &format!("/api/v1/p/{boot}/agent-config/claude.project.settings"),
+            None,
+        )
+        .await;
+        assert_eq!(scoped.status(), StatusCode::OK);
+        assert_eq!(json_body(scoped).await["version"], version);
+
+        let stale = send(
+            &router,
+            Method::PUT,
+            "/api/v1/agent-config/claude.project.settings",
+            Some(serde_json::json!({ "content": "{\"a\":2}", "version": null })),
+        )
+        .await;
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+
+        let invalid = send(
+            &router,
+            Method::PUT,
+            "/api/v1/agent-config/claude.project.settings",
+            Some(serde_json::json!({ "content": "{bad", "version": version })),
+        )
+        .await;
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+
+        let unknown = send(&router, Method::GET, "/api/v1/agent-config/nope", None).await;
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
         fs::remove_dir_all(repo).expect("remove test repo");
     }
 

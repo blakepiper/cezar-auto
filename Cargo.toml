@@ -61,3 +61,4 @@ url = "2.5"
 regex = "1"
 # Workflow YAML (Phase B). Maintained fork of `serde_yaml` (spec §6.2).
 serde_yaml_ng = "0.10"
+sha2 = "0.10"

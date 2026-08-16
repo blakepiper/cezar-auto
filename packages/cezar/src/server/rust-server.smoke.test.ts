@@ -155,5 +155,23 @@ describe('Rust server HTTP harness', () => {
     const scopedConfig = await request('/api/v1/p/default/config');
     expect(scopedConfig.status).toBe(200);
     expect(((await scopedConfig.json()) as { defaultModels: { claude: string } }).defaultModels.claude).toBe('opus');
+
+    const catalog = await request('/api/v1/agent-config');
+    expect(catalog.status).toBe(200);
+    const catalogBody = (await catalog.json()) as { files: unknown[]; editable: boolean; userMcp: unknown };
+    expect(catalogBody.editable).toBe(true);
+    expect(catalogBody.files.length).toBe(14);
+    expect(catalogBody.userMcp).not.toBeNull();
+
+    const absent = await request('/api/v1/agent-config/claude.project.settings');
+    expect(absent.status).toBe(200);
+    expect(((await absent.json()) as { exists: boolean }).exists).toBe(false);
+
+    const configFile = await request('/api/v1/agent-config/claude.project.settings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: '{"smoke":true}', version: null }),
+    });
+    expect(configFile.status).toBe(200);
   });
 });
