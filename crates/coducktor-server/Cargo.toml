@@ -7,9 +7,10 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-axum.workspace = true
+axum = { workspace = true, features = ["ws"] }
 async-stream.workspace = true
 base64.workspace = true
+bytes.workspace = true
 coducktor-core = { path = "../coducktor-core" }
 coducktor-contract = { path = "../coducktor-contract" }
 coducktor-forge = { path = "../coducktor-forge" }
@@ -25,7 +26,9 @@ tower-http.workspace = true
 
 [dev-dependencies]
 futures-util.workspace = true
+tokio-tungstenite.workspace = true
 tower = "0.5"
+url.workspace = true
 
 [[bin]]
 name = "coducktor-server"

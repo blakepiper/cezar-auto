@@ -19,6 +19,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
+use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::header::HeaderName;
 use axum::http::header::{ACCESS_CONTROL_ALLOW_ORIGIN, CACHE_CONTROL, HOST, ORIGIN};
@@ -30,6 +31,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use bytes::Bytes;
 use coducktor_contract::{
     AgentAccountDetailField, AgentAccountDetailsResponse, AgentAccountFile, AgentAccountSelection,
     AgentAccountStatusResponse, AgentConfigFile, AgentConfigFileContent, AgentConfigFormat,
@@ -146,6 +148,21 @@ struct LiveCursor {
 const HEALTH_PATH: &str = "/api/v1/health";
 const SEC_FETCH_SITE: HeaderName = HeaderName::from_static("sec-fetch-site");
 
+/// The one upgrade path (ws.ts `WS_PATH`). Workspace-level like `/api/v1/events` — never
+/// mirrored under `/api/v1/p/{project}` (topics carry workspace data).
+const WS_PATH: &str = "/api/v1/ws";
+/// Heartbeat cadence (ws.ts `HEARTBEAT_MS`): reaps silently-dead clients and gives every client
+/// a liveness beat it can watch for its own reconnect logic.
+const WS_HEARTBEAT: Duration = Duration::from_secs(30);
+/// Client frames are tiny control messages; anything bigger is not this protocol (ws.ts
+/// `MAX_PAYLOAD_BYTES`).
+const WS_MAX_MESSAGE_BYTES: usize = 4_096;
+/// ws.ts `clientFrameSchema`'s `topic` bound.
+const WS_MAX_TOPIC_LEN: usize = 128;
+/// The re-read cadence for the `health` topic while it has at least one subscriber (server.ts's
+/// `HEALTH_TTL_MS`-driven publisher): re-read on this cadence, broadcast only when it changed.
+const WS_HEALTH_TTL: Duration = Duration::from_secs(5);
+
 /// Configuration shared by the route families.
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -162,6 +179,84 @@ impl ServerConfig {
     }
 }
 
+/// The `health` topic's demand-driven publisher (ws.ts `registerTopic('health', …)`): the
+/// re-read timer runs only while at least one WS connection holds the topic (0→1 starts it,
+/// 1→0 stops it), so an idle workspace with no cockpit attached costs no timer.
+struct WsHealthTopic {
+    sender: broadcast::Sender<Value>,
+    subscribers: Mutex<usize>,
+    task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl WsHealthTopic {
+    fn new() -> Arc<Self> {
+        let (sender, _) = broadcast::channel(16);
+        Arc::new(Self {
+            sender,
+            subscribers: Mutex::new(0),
+            task: Mutex::new(None),
+        })
+    }
+
+    /// A connection subscribed: starts the publisher on 0→1, and returns a receiver for future
+    /// changes plus an immediate fresh snapshot (ws.ts sends the snapshot on subscribe,
+    /// independent of the publisher's own cadence, so a (re)connecting cockpit never waits out
+    /// an interval to render).
+    fn subscribe(self: &Arc<Self>, state: &ServerState) -> (broadcast::Receiver<Value>, Value) {
+        let receiver = self.sender.subscribe();
+        let snapshot = health_topic_snapshot(state);
+        let Ok(mut count) = self.subscribers.lock() else {
+            return (receiver, snapshot);
+        };
+        *count += 1;
+        if *count == 1 {
+            let topic = Arc::clone(self);
+            let state = state.clone();
+            let handle = tokio::spawn(async move {
+                let mut last: Option<Value> = None;
+                let mut interval = tokio::time::interval(WS_HEALTH_TTL);
+                interval.tick().await; // the immediate first tick — subscribe() already sent one
+                loop {
+                    interval.tick().await;
+                    let payload = health_topic_snapshot(&state);
+                    if last.as_ref() != Some(&payload) {
+                        last = Some(payload.clone());
+                        let _ = topic.sender.send(payload);
+                    }
+                }
+            });
+            if let Ok(mut task) = self.task.lock() {
+                *task = Some(handle);
+            } else {
+                handle.abort();
+            }
+        }
+        (receiver, snapshot)
+    }
+
+    /// A connection dropped the topic (unsubscribe frame or disconnect): stops the publisher on
+    /// 1→0.
+    fn unsubscribe(&self) {
+        let Ok(mut count) = self.subscribers.lock() else {
+            return;
+        };
+        if *count == 0 {
+            return;
+        }
+        *count -= 1;
+        if *count == 0
+            && let Ok(mut task) = self.task.lock()
+            && let Some(handle) = task.take()
+        {
+            handle.abort();
+        }
+    }
+}
+
+fn health_topic_snapshot(state: &ServerState) -> Value {
+    serde_json::to_value(health_payload(state.config())).unwrap_or(Value::Null)
+}
+
 /// Immutable state for the B9 transport shell. Mutable route-family state is added behind
 /// this `Arc` as each family lands; handlers never keep state in global statics.
 #[derive(Clone)]
@@ -171,6 +266,7 @@ pub struct ServerState {
     workspace_dir: Arc<PathBuf>,
     model_catalog: Arc<Mutex<Vec<CachedModelCatalog>>>,
     live_events: Arc<broadcast::Sender<LiveEvent>>,
+    ws_health: Arc<WsHealthTopic>,
 }
 
 impl ServerState {
@@ -204,6 +300,7 @@ impl ServerState {
             workspace_dir: Arc::new(workspace_dir.into()),
             model_catalog: Arc::new(Mutex::new(Vec::new())),
             live_events: Arc::new(live_events),
+            ws_health: WsHealthTopic::new(),
         }
     }
 
@@ -247,6 +344,7 @@ pub fn router(config: ServerConfig) -> Router {
 pub fn router_with_state(state: ServerState) -> Router {
     Router::new()
         .route(HEALTH_PATH, get(health))
+        .route(WS_PATH, get(ws_upgrade))
         .route("/api/v1/runs", get(list_runs).post(create_run))
         .route(
             "/api/v1/runs/archive-finished",
@@ -7197,6 +7295,227 @@ async fn workspace_events(State(state): State<ServerState>) -> Response {
     project_events_for(state, true).await
 }
 
+/// The WS-specific upgrade guard (ws.ts/server.ts `verifyWsUpgrade`), checked once at handshake
+/// time since the WS transport has no per-message origin to re-check afterward. `None` rejects
+/// the handshake (403). `Some(trusted)` admits it: `trusted` is provably the cockpit itself (a
+/// same-authority Origin, a no-Origin native client, or a dev proxy the browser vouches for via
+/// `Sec-Fetch-Site`); an admitted-but-`false` connection was let in only by the loopback-origin
+/// fallback for a browser that ships no `Sec-Fetch` metadata — indistinguishable at the
+/// handshake from a foreign local page — and may subscribe only to `loopbackReadable` topics.
+fn verify_ws_upgrade(headers: &HeaderMap) -> Option<bool> {
+    let host = headers.get(HOST).and_then(|value| value.to_str().ok())?;
+    let host_name = hostname(host)?;
+    if !is_loopback_host(host_name) {
+        return None;
+    }
+    let Some(origin_header) = headers.get(ORIGIN) else {
+        return Some(true); // non-browser client — no Origin to spoof
+    };
+    let Ok(origin) = origin_header.to_str() else {
+        return None; // present but unparseable — do not admit on the strength of a garbled origin
+    };
+    let origin_authority = authority(origin)?;
+    let origin_host = hostname(origin_authority)?;
+    if origin_authority == host {
+        return Some(true); // the cockpit itself
+    }
+    // The dev-proxy fallback. An explicit `cross-site`/`same-site` is an attacker page on
+    // another local port and is refused even though both ends are loopback; anything else needs
+    // loopback on both ends to get in at all.
+    let fetch_site = headers
+        .get(SEC_FETCH_SITE)
+        .and_then(|value| value.to_str().ok());
+    if fetch_site.is_some_and(|value| value != "same-origin") {
+        return None;
+    }
+    if !is_loopback_host(origin_host) || !is_loopback_host(host_name) {
+        return None;
+    }
+    Some(fetch_site == Some("same-origin"))
+}
+
+/// Whether an admitted-but-untrusted connection may subscribe to `topic` (ws.ts
+/// `TopicOptions.loopbackReadable`). `health` is the CORS-open discovery payload — the only
+/// topic registered today — so it is readable at any trust level; a future topic carrying
+/// run/repo/PR content would default to `false` here.
+fn ws_topic_loopback_readable(topic: &str) -> bool {
+    topic == "health"
+}
+
+async fn ws_upgrade(
+    ws: WebSocketUpgrade,
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(trusted) = verify_ws_upgrade(&headers) else {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "forbidden: WebSocket upgrade rejected",
+        );
+    };
+    ws.max_message_size(WS_MAX_MESSAGE_BYTES)
+        .on_upgrade(move |socket| handle_ws_socket(socket, state, trusted))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum WsServerFrame<'a> {
+    Event {
+        topic: &'a str,
+        data: Value,
+    },
+    Error {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        topic: Option<&'a str>,
+        error: &'a str,
+    },
+    Ping,
+}
+
+async fn ws_send(socket: &mut WebSocket, frame: &WsServerFrame<'_>) -> bool {
+    let text = serde_json::to_string(frame).unwrap_or_else(|_| "{}".to_owned());
+    socket.send(WsMessage::text(text)).await.is_ok()
+}
+
+/// One connection's subscribe/unsubscribe frame (ws.ts `clientFrameSchema`). A malformed frame
+/// gets an `error` frame back, not a disconnect — one buggy caller must not tear down its tab's
+/// other subscriptions.
+async fn handle_ws_client_frame(
+    socket: &mut WebSocket,
+    health_rx: &mut Option<broadcast::Receiver<Value>>,
+    state: &ServerState,
+    trusted: bool,
+    text: &str,
+) -> bool {
+    let Ok(frame) = serde_json::from_str::<Value>(text) else {
+        return ws_send(
+            socket,
+            &WsServerFrame::Error {
+                topic: None,
+                error: "malformed frame: not JSON",
+            },
+        )
+        .await;
+    };
+    let kind = frame.get("type").and_then(Value::as_str);
+    let topic = frame
+        .get("topic")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.chars().count() <= WS_MAX_TOPIC_LEN);
+    let (Some(kind @ ("subscribe" | "unsubscribe")), Some(topic)) = (kind, topic) else {
+        return ws_send(
+            socket,
+            &WsServerFrame::Error {
+                topic: None,
+                error: "malformed frame: expected {type: subscribe|unsubscribe, topic}",
+            },
+        )
+        .await;
+    };
+    if topic != "health" {
+        return ws_send(
+            socket,
+            &WsServerFrame::Error {
+                topic: Some(topic),
+                error: "unknown topic",
+            },
+        )
+        .await;
+    }
+    if kind == "subscribe" {
+        if health_rx.is_some() {
+            return true; // idempotent — a re-sent frame must not double anything
+        }
+        if !ws_topic_loopback_readable(topic) && !trusted {
+            return ws_send(
+                socket,
+                &WsServerFrame::Error {
+                    topic: Some(topic),
+                    error: "forbidden topic",
+                },
+            )
+            .await;
+        }
+        let (receiver, snapshot) = state.ws_health.subscribe(state);
+        *health_rx = Some(receiver);
+        ws_send(
+            socket,
+            &WsServerFrame::Event {
+                topic: "health",
+                data: snapshot,
+            },
+        )
+        .await
+    } else {
+        if health_rx.take().is_some() {
+            state.ws_health.unsubscribe();
+        }
+        true
+    }
+}
+
+async fn handle_ws_socket(mut socket: WebSocket, state: ServerState, trusted: bool) {
+    let mut health_rx: Option<broadcast::Receiver<Value>> = None;
+    let mut heartbeat = tokio::time::interval(WS_HEARTBEAT);
+    heartbeat.tick().await; // consume the immediate first tick
+    let mut awaiting_pong = false;
+    loop {
+        tokio::select! {
+            incoming = socket.recv() => {
+                match incoming {
+                    Some(Ok(WsMessage::Text(text))) => {
+                        if !handle_ws_client_frame(&mut socket, &mut health_rx, &state, trusted, text.as_str()).await {
+                            break;
+                        }
+                    }
+                    Some(Ok(WsMessage::Pong(_))) => {
+                        awaiting_pong = false;
+                    }
+                    Some(Ok(WsMessage::Close(_))) => break,
+                    Some(Ok(_)) => {}
+                    Some(Err(_)) | None => break,
+                }
+            }
+            health_event = async {
+                match &mut health_rx {
+                    Some(receiver) => receiver.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match health_event {
+                    Ok(data) => {
+                        if !ws_send(&mut socket, &WsServerFrame::Event { topic: "health", data }).await {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        // The next tick's send carries the same latest data; nothing to replay.
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        health_rx = None;
+                    }
+                }
+            }
+            _ = heartbeat.tick() => {
+                if awaiting_pong {
+                    // Missed the previous beat's pong — the peer is gone. Reap.
+                    break;
+                }
+                awaiting_pong = true;
+                if socket.send(WsMessage::Ping(Bytes::new())).await.is_err() {
+                    break;
+                }
+                if !ws_send(&mut socket, &WsServerFrame::Ping).await {
+                    break;
+                }
+            }
+        }
+    }
+    if health_rx.is_some() {
+        state.ws_health.unsubscribe();
+    }
+}
+
 const GITHUB_UNAVAILABLE_REASON: &str = "GitHub is unavailable for this repository";
 
 #[derive(Debug, Default, Deserialize)]
@@ -8530,9 +8849,11 @@ mod tests {
     use axum::body::to_bytes;
     use axum::http::Request;
     use coducktor_core::workflows::run::{CreateRunInput as CoreCreateRunInput, RunManager};
-    use futures_util::StreamExt;
+    use futures_util::{SinkExt, StreamExt};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
+    use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
     use tower::ServiceExt;
 
     static TEST_REPO_ID: AtomicU64 = AtomicU64::new(0);
@@ -10382,6 +10703,354 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
         assert_eq!(json_body(response).await["error"], "run already started");
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    // ---- verify_ws_upgrade (ws.ts `verifyWsUpgrade`) ---------------------------------------
+
+    fn ws_headers(pairs: &[(HeaderName, &str)]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for (name, value) in pairs {
+            headers.insert(
+                name.clone(),
+                HeaderValue::from_str(value).expect("header value"),
+            );
+        }
+        headers
+    }
+
+    #[test]
+    fn ws_upgrade_rejects_a_non_loopback_host() {
+        let headers = ws_headers(&[(HOST, "example.com")]);
+        assert_eq!(verify_ws_upgrade(&headers), None);
+    }
+
+    #[test]
+    fn ws_upgrade_rejects_a_missing_host() {
+        assert_eq!(verify_ws_upgrade(&HeaderMap::new()), None);
+    }
+
+    #[test]
+    fn ws_upgrade_admits_a_loopback_client_with_no_origin_as_trusted() {
+        // A native client (or a non-browser Rust `WsTopicBus`) sends no Origin at all — nothing
+        // to spoof.
+        let headers = ws_headers(&[(HOST, "127.0.0.1:4321")]);
+        assert_eq!(verify_ws_upgrade(&headers), Some(true));
+    }
+
+    #[test]
+    fn ws_upgrade_admits_a_same_authority_origin_as_trusted() {
+        let headers = ws_headers(&[(HOST, "127.0.0.1:4321"), (ORIGIN, "http://127.0.0.1:4321")]);
+        assert_eq!(verify_ws_upgrade(&headers), Some(true));
+    }
+
+    #[test]
+    fn ws_upgrade_rejects_a_cross_site_dev_proxy_fallback() {
+        let headers = ws_headers(&[
+            (HOST, "127.0.0.1:4321"),
+            (ORIGIN, "http://127.0.0.1:5555"),
+            (SEC_FETCH_SITE, "cross-site"),
+        ]);
+        assert_eq!(verify_ws_upgrade(&headers), None);
+    }
+
+    #[test]
+    fn ws_upgrade_admits_a_dev_proxy_vouched_same_origin_as_trusted() {
+        let headers = ws_headers(&[
+            (HOST, "127.0.0.1:4321"),
+            (ORIGIN, "http://127.0.0.1:5555"),
+            (SEC_FETCH_SITE, "same-origin"),
+        ]);
+        assert_eq!(verify_ws_upgrade(&headers), Some(true));
+    }
+
+    #[test]
+    fn ws_upgrade_admits_no_fetch_site_metadata_as_untrusted() {
+        // Safari/Firefox ship no Sec-Fetch-Site — indistinguishable from a foreign local page,
+        // so admitted but not trusted.
+        let headers = ws_headers(&[(HOST, "127.0.0.1:4321"), (ORIGIN, "http://127.0.0.1:5555")]);
+        assert_eq!(verify_ws_upgrade(&headers), Some(false));
+    }
+
+    #[test]
+    fn ws_upgrade_rejects_a_non_loopback_origin_even_with_a_loopback_host() {
+        let headers = ws_headers(&[(HOST, "127.0.0.1:4321"), (ORIGIN, "http://example.com")]);
+        assert_eq!(verify_ws_upgrade(&headers), None);
+    }
+
+    #[test]
+    fn ws_upgrade_rejects_an_opaque_origin() {
+        let headers = ws_headers(&[(HOST, "127.0.0.1:4321"), (ORIGIN, "null")]);
+        assert_eq!(verify_ws_upgrade(&headers), None);
+    }
+
+    // ---- the live socket (ws.ts's `createSocketHub`, exercised over a real transport since
+    // the contract under test is transport behavior) -----------------------------------------
+
+    type TestSocket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+
+    async fn ws_test_server() -> (ServerState, std::net::SocketAddr, std::path::PathBuf) {
+        let repo = test_repo();
+        let state = ServerState::new(ServerConfig::new(&repo, "test"));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let router = router_with_state(state.clone());
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        (state, addr, repo)
+    }
+
+    async fn ws_connect(addr: std::net::SocketAddr) -> TestSocket {
+        let (socket, response) = connect_async(format!("ws://{addr}/api/v1/ws"))
+            .await
+            .expect("ws handshake");
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+        socket
+    }
+
+    async fn ws_send_json(socket: &mut TestSocket, frame: Value) {
+        socket
+            .send(TungsteniteMessage::text(frame.to_string()))
+            .await
+            .expect("send ws frame");
+    }
+
+    /// The next `event`/`error` frame, transparently answering protocol pings the way a real
+    /// client does (ws.ts's heartbeat relies on this).
+    async fn ws_next_json(socket: &mut TestSocket) -> Value {
+        loop {
+            match socket
+                .next()
+                .await
+                .expect("ws stream open")
+                .expect("ws message")
+            {
+                TungsteniteMessage::Text(text) => {
+                    let frame: Value = serde_json::from_str(&text).expect("json frame");
+                    if frame["type"] == "ping" {
+                        continue; // the app-level liveness beat — not what these tests assert on
+                    }
+                    return frame;
+                }
+                TungsteniteMessage::Ping(payload) => {
+                    socket
+                        .send(TungsteniteMessage::Pong(payload))
+                        .await
+                        .expect("pong reply");
+                }
+                _ => {}
+            }
+        }
+    }
+
+    async fn wait_until(mut condition: impl FnMut() -> bool) {
+        for _ in 0..200 {
+            if condition() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("condition did not become true within the poll budget");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ws_subscribe_health_gets_an_immediate_snapshot() {
+        let (_state, addr, repo) = ws_test_server().await;
+        let mut socket = ws_connect(addr).await;
+
+        ws_send_json(
+            &mut socket,
+            serde_json::json!({"type": "subscribe", "topic": "health"}),
+        )
+        .await;
+        let frame = ws_next_json(&mut socket).await;
+        assert_eq!(frame["type"], "event");
+        assert_eq!(frame["topic"], "health");
+        assert_eq!(frame["data"]["version"], "test");
+
+        socket.close(None).await.ok();
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ws_unknown_topic_gets_an_error_and_the_connection_survives() {
+        let (_state, addr, repo) = ws_test_server().await;
+        let mut socket = ws_connect(addr).await;
+
+        ws_send_json(
+            &mut socket,
+            serde_json::json!({"type": "subscribe", "topic": "no-such-topic"}),
+        )
+        .await;
+        let frame = ws_next_json(&mut socket).await;
+        assert_eq!(frame["type"], "error");
+        assert_eq!(frame["topic"], "no-such-topic");
+        assert_eq!(frame["error"], "unknown topic");
+
+        // one buggy frame must not tear down the socket — a real subscribe still works after.
+        ws_send_json(
+            &mut socket,
+            serde_json::json!({"type": "subscribe", "topic": "health"}),
+        )
+        .await;
+        let frame = ws_next_json(&mut socket).await;
+        assert_eq!(frame["type"], "event");
+
+        socket.close(None).await.ok();
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ws_malformed_frame_gets_an_error_not_a_disconnect() {
+        let (_state, addr, repo) = ws_test_server().await;
+        let mut socket = ws_connect(addr).await;
+
+        socket
+            .send(TungsteniteMessage::text("not json"))
+            .await
+            .expect("send malformed frame");
+        let frame = ws_next_json(&mut socket).await;
+        assert_eq!(frame["type"], "error");
+        assert_eq!(frame["error"], "malformed frame: not JSON");
+        assert!(frame.get("topic").is_none());
+
+        socket
+            .send(TungsteniteMessage::text(
+                serde_json::json!({"type": "subscribe"}).to_string(),
+            ))
+            .await
+            .expect("send frame missing topic");
+        let frame = ws_next_json(&mut socket).await;
+        assert_eq!(frame["type"], "error");
+        assert_eq!(
+            frame["error"],
+            "malformed frame: expected {type: subscribe|unsubscribe, topic}"
+        );
+
+        socket.close(None).await.ok();
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ws_health_publisher_starts_on_first_subscriber_and_stops_when_the_last_leaves() {
+        let (state, addr, repo) = ws_test_server().await;
+        let mut socket = ws_connect(addr).await;
+
+        assert_eq!(*state.ws_health.subscribers.lock().unwrap(), 0);
+        assert!(state.ws_health.task.lock().unwrap().is_none());
+
+        ws_send_json(
+            &mut socket,
+            serde_json::json!({"type": "subscribe", "topic": "health"}),
+        )
+        .await;
+        let _snapshot = ws_next_json(&mut socket).await;
+        assert_eq!(*state.ws_health.subscribers.lock().unwrap(), 1);
+        assert!(state.ws_health.task.lock().unwrap().is_some());
+
+        // An unsubscribe frame is the polite release path.
+        ws_send_json(
+            &mut socket,
+            serde_json::json!({"type": "unsubscribe", "topic": "health"}),
+        )
+        .await;
+        wait_until(|| *state.ws_health.subscribers.lock().unwrap() == 0).await;
+        assert!(state.ws_health.task.lock().unwrap().is_none());
+
+        socket.close(None).await.ok();
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ws_disconnect_without_unsubscribing_still_releases_the_topic() {
+        let (state, addr, repo) = ws_test_server().await;
+        let mut socket = ws_connect(addr).await;
+
+        ws_send_json(
+            &mut socket,
+            serde_json::json!({"type": "subscribe", "topic": "health"}),
+        )
+        .await;
+        let _snapshot = ws_next_json(&mut socket).await;
+        assert_eq!(*state.ws_health.subscribers.lock().unwrap(), 1);
+
+        // A dying connection (not a polite unsubscribe frame) must still release its topics so
+        // the publisher stops — this is the one thing a per-connection cleanup path must not
+        // get wrong.
+        socket.close(None).await.ok();
+        drop(socket);
+
+        wait_until(|| *state.ws_health.subscribers.lock().unwrap() == 0).await;
+        assert!(state.ws_health.task.lock().unwrap().is_none());
+
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ws_two_subscribers_share_one_publisher() {
+        let (state, addr, repo) = ws_test_server().await;
+        let mut first = ws_connect(addr).await;
+        let mut second = ws_connect(addr).await;
+
+        ws_send_json(
+            &mut first,
+            serde_json::json!({"type": "subscribe", "topic": "health"}),
+        )
+        .await;
+        let _ = ws_next_json(&mut first).await;
+        assert_eq!(*state.ws_health.subscribers.lock().unwrap(), 1);
+
+        ws_send_json(
+            &mut second,
+            serde_json::json!({"type": "subscribe", "topic": "health"}),
+        )
+        .await;
+        let _ = ws_next_json(&mut second).await;
+        assert_eq!(*state.ws_health.subscribers.lock().unwrap(), 2);
+
+        first.close(None).await.ok();
+        drop(first);
+        wait_until(|| *state.ws_health.subscribers.lock().unwrap() == 1).await;
+        assert!(
+            state.ws_health.task.lock().unwrap().is_some(),
+            "the publisher must keep running for the remaining subscriber"
+        );
+
+        second.close(None).await.ok();
+        drop(second);
+        wait_until(|| *state.ws_health.subscribers.lock().unwrap() == 0).await;
+        assert!(state.ws_health.task.lock().unwrap().is_none());
+
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ws_rejects_a_forged_non_loopback_host_before_upgrading() {
+        let (_state, addr, repo) = ws_test_server().await;
+        let request = Request::builder()
+            .uri(format!("ws://{addr}/api/v1/ws"))
+            .header(HOST, "attacker.example.com")
+            .header("Connection", "Upgrade")
+            .header("Upgrade", "websocket")
+            .header("Sec-WebSocket-Version", "13")
+            .header(
+                "Sec-WebSocket-Key",
+                tokio_tungstenite::tungstenite::handshake::client::generate_key(),
+            )
+            .body(())
+            .expect("forged upgrade request");
+        let error = connect_async(request)
+            .await
+            .expect_err("rejected handshake");
+        let message = error.to_string();
+        assert!(
+            message.contains("403") || message.contains("Forbidden"),
+            "expected a 403 rejection, got: {message}"
+        );
+
         fs::remove_dir_all(repo).expect("remove test repo");
     }
 }
