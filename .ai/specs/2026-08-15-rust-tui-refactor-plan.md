@@ -196,11 +196,11 @@ compare.
 split mode degrades below 140 columns.
 **Commit:** `feat(tui): A9 diffs, task/repo git, compare` — pushed as `6a96d5fe`.
 
-### [ ] A10 — IDE
+### [x] A10 — IDE
 **Ships:** explorer, editor, save, dirty guard, `$EDITOR` handoff.
 **Accept:** edit-and-save round-trips through `PUT /ide/file`; 1 MB cap and
 symlink/`.git` exclusions respected and explained in the UI.
-**Commit:** `feat(tui): A10 IDE`
+**Commit:** `feat(tui): A10 IDE` — pushed as `6c999b46`.
 
 ### [ ] A11 — GitHub, Skills, Inbox, Workflows
 **Ships:** the four remaining content screens (Automations stays deleted, decision
