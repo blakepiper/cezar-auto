@@ -571,7 +571,7 @@ describe('session git API routes', () => {
     g(repoRoot, 'add', '-A');
     g(repoRoot, 'commit', '-m', 'root base');
     repoBaseSha = g(repoRoot, 'rev-parse', 'HEAD').trim();
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     app = createApp({
       repoRoot,
       store,
@@ -929,13 +929,13 @@ describe('repo git API routes (R5 Step 1.3 — main working tree)', () => {
   beforeEach(() => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-repoapi-'));
     initRepo(repoRoot);
-    // The RunStore lives inside the repo (.ai/cezar) — ignore it so it never
+    // The RunStore lives inside the repo (.ai/coducktor) — ignore it so it never
     // shows up in /api/v1/repo/changes.
     writeFileSync(join(repoRoot, '.gitignore'), '.ai/\n');
     writeFileSync(join(repoRoot, 'base.txt'), 'base\n');
     g(repoRoot, 'add', '-A');
     g(repoRoot, 'commit', '-m', 'base');
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     app = createApp({
       repoRoot,
       store,

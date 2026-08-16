@@ -22,7 +22,6 @@ import { createApp, type ServerDeps } from './server.ts';
 describe('agent profiles API', () => {
   const saved = {
     home: process.env.CEZ_HOME,
-    remote: process.env.CEZ_REMOTE,
     dryRun: process.env.CEZ_DRY_RUN,
   };
   let home: string;
@@ -33,10 +32,9 @@ describe('agent profiles API', () => {
     home = mkdtempSync(join(realpathSync(tmpdir()), 'cez-profiles-home-'));
     repoRoot = mkdtempSync(join(realpathSync(tmpdir()), 'cez-profiles-repo-'));
     process.env.CEZ_HOME = home;
-    delete process.env.CEZ_REMOTE;
     // Deterministic on any machine: no real agent CLIs are probed.
     process.env.CEZ_DRY_RUN = '1';
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     clearProjectProbeCache();
   });
 
@@ -45,7 +43,6 @@ describe('agent profiles API', () => {
     for (const dir of [home, repoRoot]) rmSync(dir, { recursive: true, force: true });
     for (const [key, value] of [
       ['CEZ_HOME', saved.home],
-      ['CEZ_REMOTE', saved.remote],
       ['CEZ_DRY_RUN', saved.dryRun],
     ] as const) {
       if (value === undefined) delete process.env[key];
@@ -711,38 +708,6 @@ describe('agent profiles API', () => {
     });
   });
 
-  describe('hosted mode (CEZ_REMOTE)', () => {
-    beforeEach(() => {
-      process.env.CEZ_REMOTE = '1';
-    });
-
-    it('withholds the listing — the absolute paths are the host disclosure', async () => {
-      const body = await list();
-      expect(body).toMatchObject({ editable: false, profiles: [] });
-    });
-
-    it('refuses the identity read — an email is host state a hosted client is not trusted with', async () => {
-      const res = await apiRequest(makeApp(), '/api/v1/workspace/agent-profiles/default:claude/details');
-      expect(res.status).toBe(409);
-    });
-
-    it('409s every mutator and persists nothing', async () => {
-      for (const [method, path, payload] of [
-        ['POST', '/api/v1/workspace/agent-profiles', { provider: 'claude', configDir: '/tmp/x' }],
-        ['PATCH', '/api/v1/workspace/agent-profiles/work', { label: 'x' }],
-        ['DELETE', '/api/v1/workspace/agent-profiles/work', undefined],
-        ['PUT', '/api/v1/workspace/agent-profiles/selection',
-          { projectId: 'default', provider: 'claude', profileId: null }],
-        ['POST', '/api/v1/workspace/agent-profiles/default:claude/open', { file: 'folder' }],
-      ] as const) {
-        const { status, body } = await send(method, path, payload);
-        expect(status, `${method} ${path}`).toBe(409);
-        expect(body.error).toContain('hosted mode');
-      }
-      expect((await loadAgentAccounts()).accounts).toEqual([]);
-    });
-  });
-
   /**
    * The machine-wide default account (spec 2026-07-29-agent-profiles): `projectId: null` on the
    * selection route, so a second login is set up once instead of per checkout.
@@ -856,31 +821,6 @@ describe('agent profiles API', () => {
       // Opened a terminal for the logout it actually found — not "already connected".
       expect(await res.json()).toMatchObject({ opened: true });
       expect(spawns).toBeGreaterThan(warmed);
-    });
-
-    it('refuses a named account in hosted mode BEFORE resolving it', async () => {
-      // Every sibling route gates first. Resolving first would read the store, build a command
-      // carrying the account's absolute path — which both the success body and the hosted 409 echo —
-      // and answer `unknown account: <id>` for a wrong id, an enumeration oracle for ids the hosted
-      // listing deliberately withholds.
-      const { body: created } = await send('POST', '/api/v1/workspace/agent-profiles', {
-        provider: 'claude',
-        configDir: claudeDir('claude-klaudiusz'),
-      });
-      process.env.CEZ_REMOTE = '1';
-      for (const profileId of [created.profile.id, 'no-such-account']) {
-        const res = await apiRequest(makeApp(), '/api/v1/providers/connect', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ provider: 'claude', profileId }),
-        });
-        expect(res.status).toBe(409);
-        const answer = (await res.json()) as { error: string; command?: string };
-        // No host path, and the same words whether or not the id exists.
-        expect(answer.command).toBeUndefined();
-        expect(answer.error).toContain('managed from the machine that owns the checkout');
-        expect(JSON.stringify(answer)).not.toContain(home);
-      }
     });
   });
 });

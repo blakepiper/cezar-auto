@@ -51,7 +51,7 @@ export function CompareVariantsRoute() {
   const { groupId } = useParams<{ groupId: string }>()
   const group = useGroup(groupId)
   const health = useHealth()
-  const metricVisibility = usageMetricVisibility(health.data)
+  const metricVisibility = usageMetricVisibility()
   const queryClient = useQueryClient()
 
   // Freshness without polling (the sync doctrine): the group endpoint is not on the SSE stream,

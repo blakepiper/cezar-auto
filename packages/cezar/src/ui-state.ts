@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import type { UiState } from '@open-mercato/cezar-contract';
 
 /**
- * `.ai/cezar/ui-state.json` — small GUI preferences the cockpit persists (files, not a DB).
+ * `.ai/coducktor/ui-state.json` — small GUI preferences the cockpit persists (files, not a DB).
  * The server owns the schema and the writes (`PUT /api/ui-state` in `src/server/server.ts`);
  * this is the shared read path, so the CLI can honour a preference the cockpit set (#391's
  * `dismissedSkillsBanner`) without a second notion of where the file lives.
@@ -12,7 +12,7 @@ import type { UiState } from '@open-mercato/cezar-contract';
  * `{}` — an absent preference, never a throw, never a blocked startup.
  */
 export function uiStatePath(repoRoot: string): string {
-  return join(repoRoot, '.ai/cezar', 'ui-state.json');
+  return join(repoRoot, '.ai/coducktor', 'ui-state.json');
 }
 
 /**

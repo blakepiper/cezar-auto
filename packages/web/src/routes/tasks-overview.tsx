@@ -919,7 +919,7 @@ function BranchChip({ branch }: { branch: string }) {
 export function TasksOverviewRoute() {
   const runs = useRuns()
   const health = useHealth()
-  const metricVisibility = usageMetricVisibility(health.data)
+  const metricVisibility = usageMetricVisibility()
   const [view, setView] = useListView()
   const queryClient = useQueryClient()
   const archive = useMutation({

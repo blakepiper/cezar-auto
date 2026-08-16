@@ -21,7 +21,7 @@ describe('PATCH /api/v1/runs/:id', () => {
 
   beforeEach(() => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-patch-'));
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     app = createApp({
       repoRoot,
       store,

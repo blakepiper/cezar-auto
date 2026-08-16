@@ -29,7 +29,7 @@ describe('the worktrees API', () => {
 
   beforeEach(async () => {
     // `keep` now falls back to the workspace default, so pin CEZ_HOME at an
-    // empty temp dir — the suite must never read the developer's real ~/.cezar.
+    // empty temp dir — the suite must never read the developer's real ~/.coducktor.
     cezHome = mkdtempSync(join(tmpdir(), 'cez-wtapi-home-'));
     process.env.CEZ_HOME = cezHome;
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-wtapi-'));
@@ -37,8 +37,8 @@ describe('the worktrees API', () => {
     writeFileSync(join(repoRoot, 'base.txt'), 'base\n');
     await run('git', ['add', '-A'], { cwd: repoRoot });
     await run('git', [...GIT_ID, 'commit', '-q', '-m', 'base'], { cwd: repoRoot });
-    mkdirSync(join(repoRoot, '.ai/cezar'), { recursive: true });
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    mkdirSync(join(repoRoot, '.ai/coducktor'), { recursive: true });
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     app = createApp({ repoRoot, store, manager: {} as RunManager, version: '0.0.0-test' });
   });
 
@@ -94,13 +94,13 @@ describe('the worktrees API', () => {
     expect(byRun[runningId]!.reclaimable).toBe(false); // live work
 
     // Shape + real du sizes on this (POSIX) host.
-    expect(byRun[doneId]!.branch).toMatch(/^cez\//);
+    expect(byRun[doneId]!.branch).toMatch(/^duck\//);
     expect(typeof byRun[doneId]!.sizeBytes).toBe('number');
     expect(body.totalBytes).not.toBeNull();
   });
 
   it('reflects the configured keep-limit', async () => {
-    writeFileSync(join(repoRoot, '.ai/cezar/config.json'), JSON.stringify({ worktreeRetention: 2 }), 'utf8');
+    writeFileSync(join(repoRoot, '.ai/coducktor/config.json'), JSON.stringify({ worktreeRetention: 2 }), 'utf8');
     expect((await getWorktrees()).keep).toBe(2);
   });
 
@@ -112,12 +112,12 @@ describe('the worktrees API', () => {
     );
     expect((await getWorktrees()).keep).toBe(4);
     // A repo that sets its own still wins — the workspace value only seeds.
-    writeFileSync(join(repoRoot, '.ai/cezar/config.json'), JSON.stringify({ worktreeRetention: 2 }), 'utf8');
+    writeFileSync(join(repoRoot, '.ai/coducktor/config.json'), JSON.stringify({ worktreeRetention: 2 }), 'utf8');
     expect((await getWorktrees()).keep).toBe(2);
   });
 
   it('POST /reclaim reclaims down to the limit and returns the reclaimed ids', async () => {
-    writeFileSync(join(repoRoot, '.ai/cezar/config.json'), JSON.stringify({ worktreeRetention: 1 }), 'utf8');
+    writeFileSync(join(repoRoot, '.ai/coducktor/config.json'), JSON.stringify({ worktreeRetention: 1 }), 'utf8');
     const oldId = await seed('44444444-4444-4444-8444-444444444444', 'done', '2026-07-01T00:00:00Z');
     await seed('55555555-5555-4555-8555-555555555555', 'done', '2026-07-09T00:00:00Z');
 

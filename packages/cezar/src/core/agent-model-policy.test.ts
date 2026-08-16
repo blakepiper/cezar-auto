@@ -24,15 +24,15 @@ describe('agentModelsLocked', () => {
     const repoRoot = mkdtempSync(join(tmpdir(), 'cez-model-policy-'));
     const home = mkdtempSync(join(tmpdir(), 'cez-model-policy-home-'));
     roots.push(repoRoot, home);
-    mkdirSync(join(repoRoot, '.ai', 'cezar'), { recursive: true });
+    mkdirSync(join(repoRoot, '.ai', 'coducktor'), { recursive: true });
 
-    writeFileSync(join(repoRoot, '.ai', 'cezar', 'config.json'), '{"modelsLocked":true}\n');
+    writeFileSync(join(repoRoot, '.ai', 'coducktor', 'config.json'), '{"modelsLocked":true}\n');
     expect(agentModelsLocked(repoRoot, { CEZ_HOME: home })).toBe(true);
 
-    writeFileSync(join(repoRoot, '.ai', 'cezar', 'config.json'), '{"modelsLocked":false}\n');
+    writeFileSync(join(repoRoot, '.ai', 'coducktor', 'config.json'), '{"modelsLocked":false}\n');
     expect(agentModelsLocked(repoRoot, { CEZ_HOME: home })).toBe(false);
 
-    writeFileSync(join(repoRoot, '.ai', 'cezar', 'config.json'), '{broken');
+    writeFileSync(join(repoRoot, '.ai', 'coducktor', 'config.json'), '{broken');
     expect(agentModelsLocked(repoRoot, { CEZ_HOME: home })).toBe(false);
   });
 

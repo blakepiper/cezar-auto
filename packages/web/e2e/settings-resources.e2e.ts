@@ -13,13 +13,13 @@ import { AgentBrowser, readTestEnv } from './agent-browser'
  * the empty state) with the keep-limit footer.
  *
  * Reachability: fully reachable — the section needs no forge and no agent CLI. It mutates one
- * store, `.ai/cezar/config.json`, saved in beforeAll and restored byte-for-byte in afterAll.
+ * store, `.ai/coducktor/config.json`, saved in beforeAll and restored byte-for-byte in afterAll.
  */
 
 const artifactsDir = resolve(import.meta.dirname, '../../../.ai/qa/artifacts_e2e')
 const sessionId = `e2e-settings-resources-${process.pid}`
 const DESKTOP = { width: 1440, height: 900 }
-const dataDir = resolve(import.meta.dirname, '../../../.ai/cezar')
+const dataDir = resolve(import.meta.dirname, '../../../.ai/coducktor')
 const configFile = resolve(dataDir, 'config.json')
 
 let browser: AgentBrowser

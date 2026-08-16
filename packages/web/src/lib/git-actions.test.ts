@@ -7,11 +7,11 @@ import { gitActionPolicy, type GitActionState } from './git-actions'
 /**
  * The git action policy, pinned row by row. The toolbar renders whatever this function
  * returns, so these tables ARE the toolbar's behavior spec: every disabled entry must carry
- * its human reason, hosted mode must HIDE the terminal handoff (not disable it), and the
- * Create PR → View PR flip must follow the PR URL exactly.
+ * its human reason, the terminal handoff is always offered (the hosted mode that hid it is
+ * retired, A15), and the Create PR → View PR flip must follow the PR URL exactly.
  */
 
-/** A healthy local-mode baseline: worktree + changes + github forge + remote + session. */
+/** A healthy baseline: worktree + changes + github forge + remote + session. */
 const base: GitActionState = {
   status: 'review',
   hasWorktree: true,
@@ -19,7 +19,6 @@ const base: GitActionState = {
   changedFiles: 3,
   remote: 'git@github.com:acme/demo.git',
   forge: { kind: 'github', available: true },
-  localHandoff: true,
   hasSession: true,
 }
 
@@ -141,12 +140,8 @@ describe('gitActionPolicy — create PR', () => {
   })
 })
 
-describe('gitActionPolicy — terminal handoff (localHandoff gate)', () => {
-  it('hosted mode hides the entry entirely — an empty menu, not a disabled row', () => {
-    expect(gitActionPolicy(withState({ localHandoff: false })).menu).toEqual([])
-  })
-
-  it('local mode with a parked session offers it', () => {
+describe('gitActionPolicy — terminal handoff', () => {
+  it('a parked session offers it in the menu', () => {
     expect(gitActionPolicy(base).menu).toEqual([
       { id: 'open-terminal', label: 'Open in terminal', enabled: true },
     ])

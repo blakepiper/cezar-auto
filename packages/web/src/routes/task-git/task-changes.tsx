@@ -92,8 +92,7 @@ function ChangesView({ run }: { run: ApiRun }) {
       onError(error)
     },
   })
-  // Diff pane "open in default app" (#365, local mode only) — the mutation itself is safe to
-  // wire unconditionally; only its trigger (the `onOpenInApp` prop below) is capability-gated.
+  // Diff pane "open in default app" — the mutation itself is safe to wire unconditionally.
   const openImage = useMutation({
     mutationFn: (path: string) => openRunFileInApp(run.id, path),
     onError,
@@ -109,7 +108,6 @@ function ChangesView({ run }: { run: ApiRun }) {
     changedFiles: changes.data?.stat.files,
     remote: repo.data?.info?.remote,
     forge: health.data?.forge ?? null,
-    localHandoff: health.data?.capabilities.localHandoff ?? false,
     hasSession: lastSessionId(run) !== undefined,
     prUrl: run.pullRequestUrl,
   })
@@ -202,9 +200,7 @@ function ChangesView({ run }: { run: ApiRun }) {
             wrap={effectiveWrap}
             loadFileText={(path) => loadWorktreeText(run.id, path)}
             imageSrc={(path) => runFileRawUrl(run.id, path)}
-            onOpenInApp={
-              health.data?.capabilities.localHandoff ? (path) => openImage.mutate(path) : undefined
-            }
+            onOpenInApp={(path) => openImage.mutate(path)}
             className="min-w-0 flex-1"
           />
         </div>

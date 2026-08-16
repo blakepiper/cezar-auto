@@ -35,7 +35,6 @@ import {
 import { todosPath } from '../todos.ts';
 import type { AgentEvent, ContentBlock } from '../core/agent-runner.ts';
 import { discoverSkills, type Skill } from '../skills.ts';
-import { materializeSkillDir } from '../skills-remote.ts';
 import { seedAgentConfigLocalLayer } from '../agent-config/seed.ts';
 import { readAgentModelProvider } from '../agent-config/models.ts';
 import { loadConfig, resolveWorktreeRetention } from '../config.ts';
@@ -75,28 +74,28 @@ async function configuredModelProvider(
 export const IDLE_TIMEOUT_MS = 15 * 60_000;
 /**
  * Task-completion marker from the agent contract (HANDOFF_INSTRUCTIONS): a
- * turn whose text ends with `CEZ:DONE` means "goal achieved, nothing to ask" —
+ * turn whose text ends with `DUCK:DONE` means "goal achieved, nothing to ask" —
  * the session is closed right away instead of parking at `waiting` (#347).
  * Detection runs on the accumulated turn text so delta-streaming backends
  * (codex, opencode) can't split the marker across text events.
  */
-const DONE_MARKER_RE = /CEZ:DONE\s*$/;
+const DONE_MARKER_RE = /(?:CEZ|DUCK):DONE\s*$/;
 /**
  * Still-working marker from the agent contract (spec
  * 2026-07-18-subagent-monitoring-status, #490): a turn whose text ends with
- * `CEZ:MONITORING` means "I ended this turn but I'm still working on my own
+ * `DUCK:MONITORING` means "I ended this turn but I'm still working on my own
  * downstream work (a sub-agent / a command I'm monitoring), not waiting on the
  * user" — cezar parks it as `running`/`activity:'monitoring'` instead of
- * `waiting`, so the cockpit shows a non-attention state. `CEZ:DONE` wins if both
- * appear. Detected on accumulated turn text (like `CEZ:DONE`) so delta-streaming
+ * `waiting`, so the cockpit shows a non-attention state. `DUCK:DONE` wins if both
+ * appear. Detected on accumulated turn text (like `DUCK:DONE`) so delta-streaming
  * backends can't split the marker across text events.
  */
-const MONITORING_MARKER_RE = /CEZ:MONITORING\s*$/;
+const MONITORING_MARKER_RE = /(?:CEZ|DUCK):MONITORING\s*$/;
 /**
  * Preserve boundaries between complete assistant text blocks while a turn is
  * accumulated for marker parsing. The runners join these same v1 blocks with
  * newlines in `AgentRunResult`; matching that contract here prevents a
- * trailing `CEZ:TITLE=` block from absorbing later commentary (#623).
+ * trailing `DUCK:TITLE=` block from absorbing later commentary (#623).
  */
 export function appendTurnText(current: string, next: string): string {
   if (!current) return next;
@@ -107,12 +106,12 @@ export function appendTurnText(current: string, next: string): string {
  *  protocol noise. Delta backends may split the marker across events — then
  *  it stays visible; detection above is unaffected. */
 function stripDoneMarker(text: string): string {
-  return text.replace(/\s*CEZ:DONE\s*$/, '');
+  return text.replace(/\s*(?:CEZ|DUCK):DONE\s*$/, '');
 }
-/** Strip a trailing `CEZ:MONITORING` marker from one text event (see
+/** Strip a trailing `DUCK:MONITORING` marker from one text event (see
  *  `stripDoneMarker`; same delta-backend caveat). */
 function stripMonitoringMarker(text: string): string {
-  return text.replace(/\s*CEZ:MONITORING\s*$/, '');
+  return text.replace(/\s*(?:CEZ|DUCK):MONITORING\s*$/, '');
 }
 /** Emit the v2 `ask.requested` event for a parsed marker (the cockpit renders
  *  it as an ask card, #473). Returns the minted request id. */
@@ -125,12 +124,12 @@ function emitAskRequested(sink: UiEventSink, ask: AskRequest): string {
  * become an ask card. Never include the raw payload in this diagnostic. */
 function askMarkerRejection(result: AskMarkerParseResult): string | undefined {
   if (result.kind === 'invalid-json') {
-    return 'structured question ignored — CEZ:ASK payload is not valid JSON';
+    return 'structured question ignored — DUCK:ASK payload is not valid JSON';
   }
   if (result.kind !== 'invalid-structure') return undefined;
   const issue = result.issues[0];
   const location = issue?.path.length ? ` at ${issue.path.join('.')}` : '';
-  return `structured question ignored — CEZ:ASK payload failed validation${location}${issue ? `: ${issue.message}` : ''}`;
+  return `structured question ignored — DUCK:ASK payload failed validation${location}${issue ? `: ${issue.message}` : ''}`;
 }
 /** Periodic "cezar autosave" commit in the task worktree (spec 006). */
 export const AUTOSAVE_INTERVAL_MS = 90_000;
@@ -228,7 +227,7 @@ const MAX_CONTEXT_REFRESHES = 32;
 const AUTONOMOUS_NUDGE =
   'Continue working autonomously until the task is fully complete. Do not ask me for confirmation or clarification — make reasonable assumptions and proceed. When everything is done, end the session with your done signal.';
 const MONITORING_WAKE_NUDGE =
-  'Re-check the downstream work you were monitoring. Continue toward the task goal; emit CEZ:MONITORING again only if it is still pending.';
+  'Re-check the downstream work you were monitoring. Continue toward the task goal; emit DUCK:MONITORING again only if it is still pending.';
 
 function planCompletedCount(entries: readonly PlanEntry[]): number {
   return entries.filter((entry) => entry.status === 'completed').length;
@@ -452,7 +451,7 @@ export function agentDirectories(runsDir: string, env: Record<string, string>): 
  * transcript already used, plus the absolute path that lets the agent
  * operate on the file itself — save it, `cp` it, attach it to a GitHub
  * issue/PR (#357). `path` is only ever an absolute path under
- * `.ai/cezar/runs/<runId>-images/` (see `RunManager.persistImage`).
+ * `.ai/coducktor/runs/<runId>-images/` (see `RunManager.persistImage`).
  */
 /** Inverse of `persistImage`'s extension mapping (#472) — a persisted attachment
  *  is re-encoded from disk at dequeue and needs its media type back. */
@@ -598,7 +597,7 @@ export class RunManager {
    */
   private repoRootTail: Promise<void> = Promise.resolve();
 
-  /** `.ai/cezar` — where the per-task handoff files and todos.json live. */
+  /** `.ai/coducktor` — where the per-task handoff files and todos.json live. */
   private readonly dataDir: string;
 
   /** Runs currently being paused by the memory guard — dedupes the ~2 s samples so one breach
@@ -633,7 +632,7 @@ export class RunManager {
     private readonly repoRoot: string,
     options: { semaphore?: WorkspaceSemaphore; quotaCoordinator?: QuotaCoordinator } = {},
   ) {
-    this.dataDir = join(repoRoot, '.ai/cezar');
+    this.dataDir = join(repoRoot, '.ai/coducktor');
     this.semaphore = options.semaphore ?? new WorkspaceSemaphore();
     this.quotaCoordinator = options.quotaCoordinator;
     // Minimal test/dry-run coordinators from the dispatch integration expose
@@ -771,7 +770,7 @@ export class RunManager {
    *   2. the run's composer override, but only for steps on the run's own runner;
    *   3. the project's stored selection, and failing that the discovered default.
    *
-   * Read fresh every time. `~/.cezar/config.json` is shared by every cezar process on this
+   * Read fresh every time. `~/.coducktor/config.json` is shared by every cezar process on this
    * machine, so a cached snapshot is a staleness bug, and one small JSON read is free next to
    * spawning a CLI. Never throws: an unreadable home degrades to the default profile, which is
    * exactly the behaviour that predates profiles.
@@ -1783,7 +1782,7 @@ export class RunManager {
         });
         attachments.push({ name, url, path });
       } catch {
-        // Degrade, never fail the boot (AGENTS.md): the user deleted `.ai/cezar/`
+        // Degrade, never fail the boot (AGENTS.md): the user deleted `.ai/coducktor/`
         // or the file is unreadable — start with the text and say which image went.
         this.store.appendEvent(runId, {
           type: 'note',
@@ -2373,8 +2372,8 @@ export class RunManager {
           return;
         }
         const done = sessionOpen && DONE_MARKER_RE.test(turnText.trimEnd());
-        // `CEZ:ASK` → the user is genuinely blocked; wins over `CEZ:MONITORING`
-        // (a pending question is always attention), loses to `CEZ:DONE` (#473).
+        // `DUCK:ASK` → the user is genuinely blocked; wins over `DUCK:MONITORING`
+        // (a pending question is always attention), loses to `DUCK:DONE` (#473).
         const askResult = sessionOpen && !done ? parseAskMarkerResult(turnText) : undefined;
         const ask = askResult?.kind === 'valid' ? askResult.request : null;
         const askRejection = askResult ? askMarkerRejection(askResult) : undefined;
@@ -2407,8 +2406,8 @@ export class RunManager {
               return true;
             })();
           if (!autoContinued) {
-            // `CEZ:ASK` → park `waiting` (attention) AND surface the structured
-            // question as an ask card (#473). `CEZ:MONITORING` → non-attention
+            // `DUCK:ASK` → park `waiting` (attention) AND surface the structured
+            // question as an ask card (#473). `DUCK:MONITORING` → non-attention
             // `running`/`activity:'monitoring'` (#490). Both share the waiting
             // lifecycle (free the slot, keep the idle timer); the autonomous
             // nudge above still wins over either.
@@ -2703,7 +2702,7 @@ export class RunManager {
     emit({ type: 'lifecycle', message: `run started — workflow "${workflow.name}" (runner: ${taskBackend})` });
 
     // Worktree per task (spec 006): the agent works on its own branch in
-    // `.ai/cezar/worktrees/<id>`, never in the user's working tree. A Git task
+    // `.ai/coducktor/worktrees/<id>`, never in the user's working tree. A Git task
     // that requests isolation fails closed if the worktree cannot be
     // established; only explicit opt-out and non-Git modes run in place.
     const repo = await getRepoInfo(this.repoRoot);
@@ -3151,25 +3150,11 @@ export class RunManager {
         // numeric task such as "432" still gives the model enough context to
         // describe the work — and therefore derive a useful title (#432).
         systemPrompt = skillSystemPrompt(skill);
-        // Directory team skills (SKILL.md + references/) get materialized
-        // into <cwd>/.claude/skills/<name>/ — the run's worktree when there
-        // is one — so claude sees the companion files on disk; the shared
-        // info/exclude keeps them out of git (and out of autosave commits).
-        if (skill.source === 'team' && skill.team?.dir) {
-          const seeded = await materializeSkillDir(state.cwd, skill).catch(() => false);
-          if (seeded) {
-            emit({
-              type: 'note',
-              stepId: step.id,
-              message: `team skill "${skill.name}" materialized to .claude/skills/${skill.name}/`,
-            });
-          }
-        }
       } else {
         emit({
           type: 'note',
           stepId: step.id,
-          message: `skill "${step.skill}" not found in .ai/cezar/skills, .ai/skills or the team skills repo — running with the plain prompt`,
+          message: `skill "${step.skill}" not found in .ai/coducktor/skills or .ai/skills — running with the plain prompt`,
         });
       }
     }
@@ -3260,8 +3245,8 @@ export class RunManager {
           return;
         }
         const done = interactive && sessionOpen && DONE_MARKER_RE.test(turnText.trimEnd());
-        // `CEZ:ASK` → the user is blocked; wins over `CEZ:MONITORING`, loses to
-        // `CEZ:DONE` (#473).
+        // `DUCK:ASK` → the user is blocked; wins over `DUCK:MONITORING`, loses to
+        // `DUCK:DONE` (#473).
         const askResult = interactive && sessionOpen && !done ? parseAskMarkerResult(turnText) : undefined;
         const ask = askResult?.kind === 'valid' ? askResult.request : null;
         const askRejection = askResult ? askMarkerRejection(askResult) : undefined;
@@ -3284,9 +3269,9 @@ export class RunManager {
         const waiting = interactive && sessionOpen;
         if (waiting) {
           // Turn over, session open. Either the ball is in the user's court
-          // (`waiting`) — optionally with a structured `CEZ:ASK` question the
+          // (`waiting`) — optionally with a structured `DUCK:ASK` question the
           // cockpit renders as an ask card (#473) — or the agent declared it is
-          // still working on its own downstream work with `CEZ:MONITORING`, which
+          // still working on its own downstream work with `DUCK:MONITORING`, which
           // parks as `running`/`activity:'monitoring'`, a non-attention state,
           // instead of raising "needs you" (#490). Lifecycle is identical: the
           // run frees its slot and keeps the idle timer.
@@ -3722,7 +3707,7 @@ export class RunManager {
       this.applyTurnMarkers(runId, run, turnText);
       // Titles are the namer's job (task auto-naming spec) — turn text is
       // deliberately NEVER a title source; see maybeRefreshTitle below. The
-      // one exception is an explicit CEZ:TITLE declaration (applied above).
+      // one exception is an explicit DUCK:TITLE declaration (applied above).
       if (run.worktreePath && existsSync(run.worktreePath)) {
         // `taskBranch` + `runStartedAt` are what keep this number *this task's* (#751): a
         // review/QA run repoints the worktree onto the branch under review, and without the
@@ -3743,9 +3728,9 @@ export class RunManager {
 
   /**
    * In-band declarations from the finished turn (spec
-   * 2026-07-18-task-ref-markers): the main thread's own `CEZ:PR=` /
-   * `CEZ:ISSUE=` / `CEZ:TITLE=` lines, parsed from the accumulated turn text
-   * like `CEZ:DONE` — never from tool output. Declared numbers overwrite the
+   * 2026-07-18-task-ref-markers): the main thread's own `DUCK:PR=` /
+   * `DUCK:ISSUE=` / `DUCK:TITLE=` lines, parsed from the accumulated turn text
+   * like `DUCK:DONE` — never from tool output. Declared numbers overwrite the
    * regex/namer display tier (the store re-resolves the referenced-PR chip);
    * a declared title takes `titleOrigin: 'marker'`, which beats the namer but
    * never a user rename, and silences the live refresh below.
@@ -3771,7 +3756,7 @@ export class RunManager {
    * Live title refresh (task auto-naming spec, step 3): re-run the namer with
    * the turn's context. Skips: toggle off (`liveTitleUpdates` config over
    * `CEZ_TITLE_UPDATES` env, default ON), user-owned title, marker-owned title
-   * (the agent declares via `CEZ:TITLE` — the token-saving fast path), dry-run
+   * (the agent declares via `DUCK:TITLE` — the token-saving fast path), dry-run
    * mocks (canned answers add nothing), empty turn text, unchanged namer inputs.
    */
   private async maybeRefreshTitle(runId: string, turnText: string): Promise<void> {
@@ -3847,7 +3832,7 @@ export class RunManager {
   /**
    * Agent screenshot (an image block inside a tool result) or a user-pasted
    * attachment: the base64 data never enters the NDJSON event log — it lands
-   * as a file under `.ai/cezar/runs/<id>-images/` and the transcript event
+   * as a file under `.ai/coducktor/runs/<id>-images/` and the transcript event
    * carries only the name + serving URL. `namePrefix` distinguishes the two
    * origins on disk (`screenshot-<n>.<ext>` for agent tool screenshots,
    * `pasted-<n>.<ext>` for user-pasted attachments, #357) and the absolute
@@ -4099,12 +4084,10 @@ export function makeRunTitle(task: string, workflow: WorkflowDef): string {
  * For an on-disk skill we also hand the agent the ABSOLUTE directory of the
  * installed copy. A run executes in an isolated worktree that has no local
  * `.agents/skills` (gitignored, absent in a fresh checkout), so without this
- * the agent cannot read the skill's companion files (`references/*.md`) — or,
- * worse, reads a stale copy materialized from the team-repo cache. The path
- * resolves against the MAIN project root (`discoverSkills(repoRoot)`), i.e. the
- * current `npx skills`-installed copy, so a worktree agent and the main
- * checkout read the exact same, up-to-date files. Team skills are omitted here:
- * they are materialized into the worktree separately (see the call site).
+ * the agent cannot read the skill's companion files (`references/*.md`). The
+ * path resolves against the MAIN project root (`discoverSkills(repoRoot)`),
+ * i.e. the current installed copy, so a worktree agent and the main checkout
+ * read the exact same, up-to-date files.
  */
 export function skillSystemPrompt(
   skill: Pick<Skill, 'name' | 'description' | 'body'> & Partial<Pick<Skill, 'path' | 'source'>>,
@@ -4113,7 +4096,7 @@ export function skillSystemPrompt(
     `Selected skill: /${skill.name}`,
     ...(skill.description ? [`Description: ${skill.description}`] : []),
   ];
-  if (skill.source && skill.source !== 'team' && skill.path) {
+  if (skill.source && skill.path) {
     const dir = dirname(skill.path);
     lines.push(
       '',

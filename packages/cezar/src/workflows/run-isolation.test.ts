@@ -54,7 +54,7 @@ afterEach(() => {
 describe('RunManager repository-root isolation', () => {
   it('fails closed without executing a workflow step when worktree creation fails', async () => {
     const root = fixtureRepo();
-    const store = RunStore.open(join(root, '.ai/cezar'));
+    const store = RunStore.open(join(root, '.ai/coducktor'));
     const manager = new RunManager(store, root);
     const workflow: WorkflowDef = {
       name: 'must-not-run-in-root',
@@ -77,7 +77,7 @@ describe('RunManager repository-root isolation', () => {
 
   it('serializes parallel runs that explicitly opt out of worktrees', async () => {
     const root = fixtureRepo();
-    const store = RunStore.open(join(root, '.ai/cezar'));
+    const store = RunStore.open(join(root, '.ai/coducktor'));
     const manager = new RunManager(store, root);
     const workflow: WorkflowDef = {
       name: 'root-lock-check',
@@ -109,7 +109,7 @@ describe('RunManager repository-root isolation', () => {
     process.env.CEZ_DISABLE_REPO_LOCK = '1';
     try {
       const root = fixtureRepo();
-      const store = RunStore.open(join(root, '.ai/cezar'));
+      const store = RunStore.open(join(root, '.ai/coducktor'));
       const manager = new RunManager(store, root);
       const workflow: WorkflowDef = {
         name: 'root-lock-bypass-check',

@@ -12,7 +12,7 @@ import { connectedProviderAuth } from './provider-auth.testkit.ts';
 
 /**
  * `POST /api/v1/runs` `systemPrompt` (R2 2.3) — the programmatic per-run
- * override (bookmarklets, scripts; deliberately no composer-UI control).
+ * override (external scripts; deliberately no composer-UI control).
  * Validation contract: trimmed, blank degrades to absent, 20k cap.
  */
 describe('POST /api/v1/runs systemPrompt', () => {
@@ -24,7 +24,7 @@ describe('POST /api/v1/runs systemPrompt', () => {
 
   beforeEach(() => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-startrun-'));
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     captured = undefined;
     // #471: these assertions are about systemPrompt, so pin the inbox on and
     // let the dedicated suite below own the gate's behavior.
@@ -113,7 +113,7 @@ describe('POST /api/v1/runs systemPrompt', () => {
 
   it('rejects a model override from repository lock config but still accepts a runner choice', async () => {
     writeFileSync(
-      join(repoRoot, '.ai', 'cezar', 'config.json'),
+      join(repoRoot, '.ai', 'coducktor', 'config.json'),
       JSON.stringify({ modelsLocked: true }),
       'utf8',
     );
@@ -145,7 +145,7 @@ describe('POST /api/v1/runs generateFollowups — the CEZ_FOLLOWUPS ceiling (#47
 
   beforeEach(() => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-startrun-followups-'));
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     captured = undefined;
     const manager = {
       startRun: (_workflow: WorkflowDef, input: StartRunInput) => {

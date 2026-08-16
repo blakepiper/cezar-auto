@@ -77,13 +77,7 @@ pub enum ForgeKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Capabilities {
-    pub local_handoff: bool,
     pub followups: bool,
-    pub single_project: bool,
-    pub automations: bool,
-    pub token_metrics: bool,
-    pub token_usage_metrics: bool,
-    pub cost_metrics: bool,
 }
 
 /// A health response from `packages/contract/src/health.ts::HealthResponse`.

@@ -49,12 +49,12 @@ describe('composeSystemPrompt', () => {
 });
 
 describe('handoff contract markers', () => {
-  it('teaches the CEZ:ASK structured-question marker with its schema (#473)', () => {
-    expect(HANDOFF_ONLY_INSTRUCTIONS).toContain('CEZ:ASK');
+  it('teaches the DUCK:ASK structured-question marker with its schema (#473)', () => {
+    expect(HANDOFF_ONLY_INSTRUCTIONS).toContain('DUCK:ASK');
     expect(HANDOFF_ONLY_INSTRUCTIONS).toContain('"questions"');
     expect(HANDOFF_ONLY_INSTRUCTIONS).toContain('"multiSelect"');
     // It rides in the combined contract every agent step receives.
-    expect(HANDOFF_INSTRUCTIONS).toContain('CEZ:ASK');
+    expect(HANDOFF_INSTRUCTIONS).toContain('DUCK:ASK');
   });
 });
 
@@ -138,7 +138,7 @@ describe('systemPrompt end-to-end (dry run)', () => {
     writeFileSync(join(repoRoot, 'a.txt'), 'one\n');
     await run('git', ['add', '-A'], { cwd: repoRoot });
     await run('git', [...GIT_ID, 'commit', '-q', '-m', 'base'], { cwd: repoRoot });
-    mkdirSync(join(repoRoot, '.ai/cezar'), { recursive: true });
+    mkdirSync(join(repoRoot, '.ai/coducktor'), { recursive: true });
     mkdirSync(join(repoRoot, '.ai/skills/om-auto-review-pr'), { recursive: true });
     writeFileSync(
       join(repoRoot, '.ai/skills/om-auto-review-pr/SKILL.md'),
@@ -146,11 +146,11 @@ describe('systemPrompt end-to-end (dry run)', () => {
       'utf8',
     );
     writeFileSync(
-      join(repoRoot, '.ai/cezar', 'config.json'),
+      join(repoRoot, '.ai/coducktor', 'config.json'),
       JSON.stringify({ systemPrompt: CONFIG_PROMPT }),
       'utf8',
     );
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     // Cap 1 (workspace-level since step 2.5) serializes the suite's runs.
     manager = new RunManager(store, repoRoot, {
       semaphore: new WorkspaceSemaphore({ initial: { maxParallel: 1 } }),
@@ -324,7 +324,7 @@ describe('systemPrompt end-to-end (dry run)', () => {
     const textEvents = store.readEvents(id).filter((e) => e.type === 'text');
     expect(textEvents.length).toBeGreaterThan(0);
     for (const event of textEvents) {
-      expect(String(event.text)).not.toMatch(/^CEZ:(?:PR|ISSUE|TITLE)=/m);
+      expect(String(event.text)).not.toMatch(/^(?:CEZ|DUCK):(?:PR|ISSUE|TITLE)=/m);
     }
   }, 30_000);
 
@@ -400,7 +400,7 @@ describe('systemPrompt end-to-end (dry run)', () => {
   // guard would stop every run from producing inbox entries with the whole suite still green.
   // This suite explicitly enables the global inbox in beforeAll (#471).
   it('on an inbox-enabled server the agent gets the run own inbox, never an inherited one', async () => {
-    const todosFile = join(repoRoot, '.ai/cezar/todos.json');
+    const todosFile = join(repoRoot, '.ai/coducktor/todos.json');
     rmSync(todosFile, { force: true });
     rmSync(inheritedTodos, { force: true });
     await runToEnd({ task: 'do the thing with follow-ups' });
@@ -410,7 +410,7 @@ describe('systemPrompt end-to-end (dry run)', () => {
   }, 30_000);
 
   it('explicit opt-out keeps handoff behavior but removes inbox prompt and environment', async () => {
-    const todosFile = join(repoRoot, '.ai/cezar/todos.json');
+    const todosFile = join(repoRoot, '.ai/coducktor/todos.json');
     rmSync(todosFile, { force: true });
     rmSync(inheritedTodos, { force: true });
     const id = await runToEnd({ task: 'do the thing quietly', generateFollowups: false });
@@ -422,7 +422,7 @@ describe('systemPrompt end-to-end (dry run)', () => {
     // The opt-out must survive an inherited CEZ_TODOS_FILE (nested cezar):
     // omitting the key instead of shadowing it leaks into the parent's inbox.
     expect(existsSync(inheritedTodos)).toBe(false);
-    expect(readFileSync(join(repoRoot, '.ai/cezar/runs', `${id}.handoff.md`), 'utf8')).toContain(
+    expect(readFileSync(join(repoRoot, '.ai/coducktor/runs', `${id}.handoff.md`), 'utf8')).toContain(
       'mock: implemented the change',
     );
 
@@ -477,13 +477,13 @@ describe('the global follow-up gate (dry run)', () => {
     writeFileSync(join(repoRoot, 'a.txt'), 'one\n');
     await run('git', ['add', '-A'], { cwd: repoRoot });
     await run('git', [...GIT_ID, 'commit', '-q', '-m', 'base'], { cwd: repoRoot });
-    mkdirSync(join(repoRoot, '.ai/cezar'), { recursive: true });
+    mkdirSync(join(repoRoot, '.ai/coducktor'), { recursive: true });
     writeFileSync(
-      join(repoRoot, '.ai/cezar', 'config.json'),
+      join(repoRoot, '.ai/coducktor', 'config.json'),
       JSON.stringify({ systemPrompt: CONFIG_PROMPT }),
       'utf8',
     );
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     // Cap 1 (workspace-level since step 2.5) serializes the suite's runs.
     manager = new RunManager(store, repoRoot, {
       semaphore: new WorkspaceSemaphore({ initial: { maxParallel: 1 } }),
@@ -525,7 +525,7 @@ describe('the global follow-up gate (dry run)', () => {
   };
 
   it('without CEZ_FOLLOWUPS the agent is never told about the inbox', async () => {
-    const todosFile = join(repoRoot, '.ai/cezar/todos.json');
+    const todosFile = join(repoRoot, '.ai/coducktor/todos.json');
     rmSync(todosFile, { force: true });
     rmSync(inheritedTodos, { force: true });
 
@@ -543,20 +543,20 @@ describe('the global follow-up gate (dry run)', () => {
   it('keeps the per-task handoff journal — #471 turns off the inbox, not the notes', async () => {
     const id = await runToEnd({ task: 'do the thing mock:done' });
     expect(capturedSystemPrompt()).toContain('CEZ_HANDOFF_FILE');
-    expect(capturedSystemPrompt()).toContain('CEZ:DONE');
+    expect(capturedSystemPrompt()).toContain('DUCK:DONE');
     // The still-working marker rides in the same handoff contract (#490).
-    expect(capturedSystemPrompt()).toContain('CEZ:MONITORING');
+    expect(capturedSystemPrompt()).toContain('DUCK:MONITORING');
     // The task-reference markers too (spec 2026-07-18-task-ref-markers).
-    expect(capturedSystemPrompt()).toContain('CEZ:PR=<number>');
-    expect(capturedSystemPrompt()).toContain('CEZ:ISSUE=<number>');
-    expect(capturedSystemPrompt()).toContain('CEZ:TITLE=');
-    expect(readFileSync(join(repoRoot, '.ai/cezar/runs', `${id}.handoff.md`), 'utf8')).toContain(
+    expect(capturedSystemPrompt()).toContain('DUCK:PR=<number>');
+    expect(capturedSystemPrompt()).toContain('DUCK:ISSUE=<number>');
+    expect(capturedSystemPrompt()).toContain('DUCK:TITLE=');
+    expect(readFileSync(join(repoRoot, '.ai/coducktor/runs', `${id}.handoff.md`), 'utf8')).toContain(
       'mock: implemented the change',
     );
   }, 30_000);
 
   it('a client asking for follow-ups cannot override the gate', async () => {
-    const todosFile = join(repoRoot, '.ai/cezar/todos.json');
+    const todosFile = join(repoRoot, '.ai/coducktor/todos.json');
     rmSync(todosFile, { force: true });
     const id = await runToEnd({ task: 'do the thing mock:done', generateFollowups: true });
     expect(capturedSystemPrompt()).not.toContain('CEZ_TODOS_FILE');
@@ -565,7 +565,7 @@ describe('the global follow-up gate (dry run)', () => {
   }, 30_000);
 
   it('turning the flag on restores the inbox for a new run', async () => {
-    const todosFile = join(repoRoot, '.ai/cezar/todos.json');
+    const todosFile = join(repoRoot, '.ai/coducktor/todos.json');
     rmSync(todosFile, { force: true });
     process.env.CEZ_FOLLOWUPS = '1';
     try {

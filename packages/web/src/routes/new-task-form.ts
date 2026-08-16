@@ -282,7 +282,7 @@ export function resolveSource(
 /**
  * The exact `POST /api/runs` body the composer sends:
  *  - a skill runs as a one-step inline chain (spec 008's API — the same shape the inbox and
- *    the bookmarklet auto-start use): `steps: [{ id: 'task', name, skill, prompt: '{{task}}' }]`;
+ *    the retired deep-link auto-start use): `steps: [{ id: 'task', name, skill, prompt: '{{task}}' }]`;
  *  - the baseline and a skill run as one-step inline chains; a workflow goes by name;
  *  - an explicit/sticky `runner` always rides the request; an untouched runner is omitted only
  *    when it equals the active project's known default (unknown defaults and connected fallbacks

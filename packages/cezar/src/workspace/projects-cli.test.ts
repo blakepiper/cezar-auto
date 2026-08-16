@@ -11,7 +11,7 @@ import { runProjectsCommand, type ProjectsCommandIo } from './projects-cli.ts';
  * `cezar projects` (spec 2026-07-20-multi-project-workspace, step 5.2): the
  * offline registry CLI. Every test pins `CEZ_HOME` to a temp dir — these cases
  * register and remove projects for real, and must never touch the developer's
- * own `~/.cezar`.
+ * own `~/.coducktor`.
  */
 describe('cezar projects CLI', () => {
   const originalHome = process.env.CEZ_HOME;
@@ -132,7 +132,7 @@ describe('cezar projects CLI', () => {
     });
 
     it('refuses a task worktree and $HOME, exactly like boot registration', async () => {
-      const worktree = makeDir('host', '.ai', 'cezar', 'worktrees', 'abc12345');
+      const worktree = makeDir('host', '.ai', 'coducktor', 'worktrees', 'abc12345');
       expect(await run('add', worktree)).toBe(1);
       expect(await run('add', homedir())).toBe(1);
       expect(io.err.join('\n')).toContain('refusing to register');
@@ -160,86 +160,10 @@ describe('cezar projects CLI', () => {
     });
   });
 
-  describe('single-project mode', () => {
-    it('refuses add before path validation and leaves the registry unchanged', async () => {
-      const existing = await registerProject(makeRepo('existing'));
-
-      expect(
-        await runProjectsCommand(['add', join(repos, 'does-not-exist')], {
-          defaultRoot: repos,
-          env: { CEZ_SINGLE_PROJECT: '1' },
-          io,
-        }),
-      ).toBe(1);
-      expect(io.err).toEqual(['single-project mode is enabled; adding projects is disabled']);
-      expect((await loadWorkspaceConfig()).projects.map((project) => project.id)).toEqual([existing.id]);
-    });
-
-    it.each(['remove', 'rm'])(
-      'refuses %s before argument validation and leaves the registry unchanged',
-      async (subcommand) => {
-        const existing = await registerProject(makeRepo('existing'));
-
-        expect(
-          await runProjectsCommand([subcommand], {
-            defaultRoot: repos,
-            env: { CEZ_SINGLE_PROJECT: '1' },
-            io,
-          }),
-        ).toBe(1);
-        expect(io.err).toEqual(['single-project mode is enabled; removing projects is disabled']);
-        expect((await loadWorkspaceConfig()).projects.map((project) => project.id)).toEqual([existing.id]);
-      },
-    );
-
-    it('preserves list behavior and requires the exact value 1 to refuse mutations', async () => {
-      const existing = await registerProject(makeRepo('existing'));
-
-      expect(
-        await runProjectsCommand(['list'], {
-          defaultRoot: repos,
-          bootProjectId: existing.id,
-          env: { CEZ_SINGLE_PROJECT: '1' },
-          io,
-        }),
-      ).toBe(0);
-      expect(io.out.join('\n')).toContain('existing');
-
-      io.out.length = 0;
-      expect(
-        await runProjectsCommand(['add', makeRepo('allowed')], {
-          defaultRoot: repos,
-          env: { CEZ_SINGLE_PROJECT: 'true' },
-          io,
-        }),
-      ).toBe(0);
-      expect((await loadWorkspaceConfig()).projects.map((project) => project.id)).toEqual(['existing', 'allowed']);
-    });
-
-    it('does not expose the registry when boot project identity is unavailable', async () => {
-      await registerProject(makeRepo('hidden'));
-
-      expect(
-        await runProjectsCommand(['list'], {
-          defaultRoot: repos,
-          env: { CEZ_SINGLE_PROJECT: '1' },
-          io,
-        }),
-      ).toBe(0);
-      expect(io.out.join('\n')).toContain('no projects registered yet');
-      expect(io.out.join('\n')).not.toContain('hidden');
-    });
-  });
-
   it('exits 1 with the usage block on an unknown subcommand', async () => {
     expect(await run('frobnicate')).toBe(1);
     expect(io.err.join('\n')).toContain('unknown projects subcommand: frobnicate');
     expect(io.err.join('\n')).toContain('cezar projects [list]');
-  });
-
-  it('documents the single-project mutation restriction in usage output', async () => {
-    expect(await run('frobnicate')).toBe(1);
-    expect(io.err.join('\n')).toContain('add/remove/tag are unavailable when CEZ_SINGLE_PROJECT=1');
   });
 
   /** The terminal twin of Settings -> Projects' Tags cell. */

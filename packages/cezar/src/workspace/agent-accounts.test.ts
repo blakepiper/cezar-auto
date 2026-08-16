@@ -23,7 +23,7 @@ import {
 } from './agent-accounts.ts';
 
 /**
- * `~/.cezar/agent-accounts.json` (spec 2026-07-29-agent-profiles).
+ * `~/.coducktor/agent-accounts.json` (spec 2026-07-29-agent-profiles).
  *
  * The first describe block is the reason this file exists at all: accounts used to live in
  * `config.json`, where surviving a cezar downgrade depended on a `.passthrough()` in the other
@@ -237,7 +237,7 @@ describe('agent accounts store', () => {
       expect(store.selections['/c']).toEqual({});
     });
 
-    it('writes at mode 0600, like every other file in ~/.cezar', async () => {
+    it('writes at mode 0600, like every other file in ~/.coducktor', async () => {
       await mergeWriteAgentAccounts((store) => {
         store.accounts.push(account('work'));
       });

@@ -4,8 +4,8 @@
  * fallback ("AskUserQuestion isn't available…"). See the spec
  * `.ai/specs/2026-07-18-askuser-across-runners.md`.
  *
- * The agent emits this as a `CEZ:ASK <compact-json>` control marker (a sibling
- * of `CEZ:DONE` / `CEZ:MONITORING`), parsed on the assembled turn text in
+ * The agent emits this as a `DUCK:ASK <compact-json>` control marker (a sibling
+ * of `DUCK:DONE` / `DUCK:MONITORING`), parsed on the assembled turn text in
  * `src/workflows/run.ts` — uniform across claude, codex and opencode with no
  * per-backend mapper work. The shape is modeled 1:1 on Claude Code's built-in
  * `AskUserQuestion` (1–4 questions, 2–4 options each, `header` ≤12 chars,
@@ -82,17 +82,22 @@ export function parseAskRequest(value: unknown): AskRequest | null {
 }
 
 /**
- * The AskUser control marker: a trailing `CEZ:ASK <compact-json>` line (a
- * sibling of `CEZ:DONE` / `CEZ:MONITORING`). Detected on the *assembled* turn
+ * The AskUser control marker: a trailing `DUCK:ASK <compact-json>` line (a
+ * sibling of `DUCK:DONE` / `DUCK:MONITORING`). Detected on the *assembled* turn
  * text so delta-streaming backends can't split it — uniform across all three
  * backends. The JSON is greedily captured from the first `{` after the keyword
  * to the last `}` at end-of-text.
+ *
+ * The `CEZ:` spelling is accepted permanently too (dual-read shim, spec
+ * §2.2.2): sessions whose instructions were composed before the rename and
+ * skills the user has not rewritten still emit it. Everything cezar EMITS uses
+ * `DUCK:ASK` only.
  */
-export const ASK_MARKER_RE = /CEZ:ASK[ \t]+(\{[\s\S]*\})\s*$/;
+export const ASK_MARKER_RE = /(?:CEZ|DUCK):ASK[ \t]+(\{[\s\S]*\})\s*$/;
 
 /** Looser than `ASK_MARKER_RE` so diagnostics can distinguish a malformed
  * trailing marker from ordinary assistant prose. */
-const ASK_MARKER_CANDIDATE_RE = /CEZ:ASK[ \t]+([\s\S]*)$/;
+const ASK_MARKER_CANDIDATE_RE = /(?:CEZ|DUCK):ASK[ \t]+([\s\S]*)$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -181,7 +186,8 @@ export function parseAskMarkerResult(turnText: string): AskMarkerParseResult {
 }
 
 /**
- * Extract and validate a trailing `CEZ:ASK <json>` marker from assembled turn
+ * Extract and validate a trailing `DUCK:ASK <json>` marker (or its legacy `CEZ:ASK`
+ * twin) from assembled turn
  * text. Returns a strict or safely normalized `AskRequest`, or `null` when
  * there is no marker or its payload remains invalid (caller degrades to plain
  * text — the prose fallback is never made worse).
@@ -192,17 +198,18 @@ export function parseAskMarker(turnText: string): AskRequest | null {
 }
 
 /**
- * Strip a trailing `CEZ:ASK <json>` marker from one text event so transcripts
+ * Strip a trailing `DUCK:ASK <json>` marker (or its legacy `CEZ:ASK` twin) from
+ * one text event so transcripts
  * stay free of protocol noise — but ONLY when the payload actually validates.
  * An invalid payload never becomes an ask card (`parseAskMarker` → `null`), so
  * stripping it would delete the agent's question from the transcript with
  * nothing to replace it; it stays visible as raw text instead — degraded but
  * answerable (the prose fallback is never made worse). Delta backends may split
  * the marker across events — then it stays visible; detection on the assembled
- * turn text is unaffected (same best-effort caveat as the `CEZ:DONE` /
- * `CEZ:MONITORING` strippers).
+ * turn text is unaffected (same best-effort caveat as the `DUCK:DONE` /
+ * `DUCK:MONITORING` strippers).
  */
 export function stripAskMarker(text: string): string {
   if (parseAskMarker(text) === null) return text;
-  return text.replace(/\s*CEZ:ASK[ \t]+\{[\s\S]*\}\s*$/, '');
+  return text.replace(/\s*(?:CEZ|DUCK):ASK[ \t]+\{[\s\S]*\}\s*$/, '');
 }

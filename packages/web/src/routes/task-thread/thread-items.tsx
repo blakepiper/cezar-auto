@@ -235,7 +235,7 @@ export function NoteLine({ note }: { note: ThreadNote }) {
         note.tone === 'danger'
           ? 'text-danger'
           : note.tone === 'warning'
-            ? 'text-amber-600 dark:text-amber-400'
+            ? 'text-pending-strong'
             : 'text-soft-foreground',
       )}
     >

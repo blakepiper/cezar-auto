@@ -34,7 +34,7 @@ const RECENT_LIMIT = 10
 
 /**
  * Read + write of the per-project collapse map (`lib/sidebar-collapse.ts`), which lives in
- * localStorage rather than `~/.cezar/ui-state.json`.
+ * localStorage rather than `~/.coducktor/ui-state.json`.
  *
  * Seeded once from storage at mount, so the first paint already carries the user's answer — no
  * request to wait for, and no flash of the active-project default. React state is the live copy
@@ -68,20 +68,14 @@ export function ProjectGroups({
   projects,
   bootProjectId,
   inboxAvailable = false,
-  automationsAvailable = false,
   inboxCount = null,
-  skillsUpdateAvailable = false,
 }: {
   projects: ProjectListEntry[]
   /** The project a flat, unprefixed URL resolves to — so the boot project is the one that
    *  auto-expands before the user has navigated into any `/p/<id>` scope. */
   bootProjectId: string
   inboxAvailable?: boolean
-  /** `capabilities.automations` (#801) — workspace-wide, unlike the per-project forge gate:
-   *  the opt-in is one env var on the one server that serves every group. */
-  automationsAvailable?: boolean
   inboxCount?: number | null
-  skillsUpdateAvailable?: boolean
 }) {
   const { pathname } = useLocation()
   // The shell renders outside the routes, so there is no `ProjectScopeProvider` above it — the
@@ -107,7 +101,7 @@ export function ProjectGroups({
   const currentRunId = runMatch?.params.id ?? runExact?.params.id ?? null
   const now = useNow(30_000)
   const health = useHealth()
-  const metricVisibility = usageMetricVisibility(health.data)
+  const metricVisibility = usageMetricVisibility()
 
   // Most-recently-opened first, per the spec. Sorted here rather than trusted from the wire so
   // the order is a property of the sidebar, not of whichever route last touched the registry.
@@ -131,9 +125,7 @@ export function ProjectGroups({
           currentRunId={currentRunId}
           now={now}
           inboxAvailable={inboxAvailable}
-          automationsAvailable={automationsAvailable}
           inboxCount={inboxCount}
-          skillsUpdateAvailable={skillsUpdateAvailable}
           showTokens={metricVisibility.tokens}
           showCost={metricVisibility.cost}
         />
@@ -153,9 +145,7 @@ function ProjectGroup({
   currentRunId,
   now,
   inboxAvailable,
-  automationsAvailable,
   inboxCount,
-  skillsUpdateAvailable,
   showTokens,
   showCost,
 }: {
@@ -172,9 +162,7 @@ function ProjectGroup({
   currentRunId: string | null
   now: number
   inboxAvailable: boolean
-  automationsAvailable: boolean
   inboxCount: number | null
-  skillsUpdateAvailable: boolean
   showTokens: boolean
   showCost: boolean
 }) {
@@ -302,7 +290,6 @@ function ProjectGroup({
             {visibleNavItems({
               forge: project.forge === 'github',
               inbox: inboxAvailable,
-              automations: automationsAvailable,
             }).map((item) => {
               // Only the active group can own the current URL: the flat route map is
               // project-agnostic, so `/git` lights Git in exactly one project — the scoped one.
@@ -332,12 +319,6 @@ function ProjectGroup({
                       className="ml-auto rounded-full bg-violet px-1.5 py-px text-[10.5px] font-semibold text-violet-foreground"
                     >
                       {inboxCount}
-                    </span>
-                  ) : null}
-                  {item.badge === 'skills-update' && active && skillsUpdateAvailable ? (
-                    <span data-slot="nav-update-marker" className="ml-auto flex items-center">
-                      <span className="size-1.5 rounded-full bg-violet" aria-hidden="true" />
-                      <span className="sr-only">Skills update available</span>
                     </span>
                   ) : null}
                 </Link>

@@ -111,7 +111,6 @@ function stubFetch({
   truncated = [] as string[],
   indexStatus = 200,
   archiveStatus = 200,
-  costMetrics = true,
   refStatus,
   indexStatuses,
 }: {
@@ -120,7 +119,6 @@ function stubFetch({
   truncated?: string[]
   indexStatus?: number
   archiveStatus?: number
-  costMetrics?: boolean
   /** Per-project chip status, as the forge would answer it. Absent = the forge is unreachable,
    *  which is the only honest default here: no `gh`, no statuses, neutral chips. */
   refStatus?: Record<string, { prs?: Record<number, string>; issues?: Record<number, string> }>
@@ -143,8 +141,7 @@ function stubFetch({
         body: init.body === undefined ? undefined : JSON.parse(String(init.body)),
       })
       if (path === '/api/v1/health') {
-        // Only the slice `usageMetricVisibility` reads — the host's cost/token gate.
-        return jsonResponse({ capabilities: { costMetrics, tokenUsageMetrics: true } })
+        return jsonResponse({ capabilities: { followups: true } })
       }
       if (path === '/api/v1/projects') {
         return jsonResponse({ projects, bootProject: 'api', projectsDir: '/repos' })
@@ -836,15 +833,6 @@ describe('global tasks page', () => {
       expect(document.querySelector('[data-usage="cpu"]')!.getAttribute('data-usage-kind')).toBe(
         'none',
       )
-    })
-
-    it('drops the Cost column when the host hides cost metrics', async () => {
-      stubFetch({ costMetrics: false, runs: [{ ...RUNS[0]!, costUsd: 0.31 }] })
-      renderPage()
-      await screen.findByText('Add checkout endpoint')
-
-      expect(screen.queryByText('Cost')).toBeNull()
-      expect(screen.queryByText('$0.31')).toBeNull()
     })
   })
 

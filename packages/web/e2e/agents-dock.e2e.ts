@@ -61,8 +61,8 @@ let baseUrl: string
 
 beforeAll(async () => {
   dataRoot = mkdtempSync(join(tmpdir(), 'cezar-e2e-agents-'))
-  mkdirSync(join(dataRoot, '.ai/cezar/runs'), { recursive: true })
-  writeFileSync(join(dataRoot, '.ai/cezar/runs.json'), JSON.stringify([RUN], null, 2), 'utf8')
+  mkdirSync(join(dataRoot, '.ai/coducktor/runs'), { recursive: true })
+  writeFileSync(join(dataRoot, '.ai/coducktor/runs.json'), JSON.stringify([RUN], null, 2), 'utf8')
   // Derive a long attributed child stream from the real `mock:subagents` recording. The
   // source fixture stays verbatim; this test adds scale without pretending the runner emitted
   // data it cannot currently attribute (notably images, whose persisted v1 line has no parent).
@@ -103,7 +103,7 @@ beforeAll(async () => {
       }),
     )
     .join('\n')
-  writeFileSync(join(dataRoot, '.ai/cezar/runs', `${RUN_ID}.ndjson`), `${scaled}\n`, 'utf8')
+  writeFileSync(join(dataRoot, '.ai/coducktor/runs', `${RUN_ID}.ndjson`), `${scaled}\n`, 'utf8')
 
   const port = await freePort()
   baseUrl = `http://localhost:${port}`

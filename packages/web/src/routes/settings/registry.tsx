@@ -1,31 +1,26 @@
 import {
   BellIcon,
-  BookmarkIcon,
   BotIcon,
   FileCogIcon,
   FolderGit2Icon,
   FoldersIcon,
   GaugeIcon,
   IdCardIcon,
-  PackageCheckIcon,
   KeyboardIcon,
   NotebookPenIcon,
   PaletteIcon,
 } from 'lucide-react'
 import type { ComponentType, SVGProps } from 'react'
 
-import type { Capabilities } from '@open-mercato/cezar-api-client'
 import { CenteredState } from '@/components/centered-state'
 import { AccountsSection } from './accounts-section'
 import { AgentConfigSection } from './agent-config-section'
 import { AgentsSection } from './agents-section'
 import { AppearanceSection } from './appearance'
-import { BookmarkletsSection } from './bookmarklets-section'
 import { NotificationsSection } from './notifications-section'
 import { ProjectsSection } from './projects-section'
 import { PromptTemplatesSection } from './prompt-templates-section'
 import { ResourcesSection } from './resources-section'
-import { SkillsSection } from './skills-section'
 import { WorktreesSection } from './worktrees-section'
 
 /**
@@ -37,15 +32,20 @@ import { WorktreesSection } from './worktrees-section'
  * its `scope`, and that single field decides everything downstream — which URL the section
  * lives at (`/p/<id>/settings/<id>` vs `/settings/global/<id>`), which nav lists it, and which
  * store it writes. The rule of thumb: does the setting describe THIS REPO (agents, worktrees,
- * bookmarklets, prompt templates) or the person/machine (appearance, notifications, host
- * resources, the project registry)?
+ * prompt templates) or the person/machine (appearance, notifications, host resources, the
+ * project registry)?
  *
  * `hidden` sections are declared but not routed and not listed: keyboard remains a later
  * phase; MCP now lives inside Agent config as a per-agent subsection.
+ *
+ * The hosted-mode deep-link surface and the Skills-update section are retired (A15,
+ * decisions 5/7 — spec §16a.1 "Settings loses
+ * two more sections"): there is no deep-link surface left to configure, and skills are a pure local
+ * reader now with nothing to check for updates. Final list: project — Agents, Agent config,
+ * Worktrees, Prompt templates; global — Accounts, Appearance, Notifications, Resources, Projects.
  */
 
 export type SettingsSectionId =
-  | 'bookmarklets'
   | 'appearance'
   | 'accounts'
   | 'agents'
@@ -56,7 +56,6 @@ export type SettingsSectionId =
   | 'notifications'
   | 'prompt-templates'
   | 'keyboard'
-  | 'skills'
 
 /** Which settings area a section belongs to — and therefore which store it writes. */
 export type SettingsScope = 'project' | 'global'
@@ -116,14 +115,6 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     scope: 'project',
   },
   {
-    id: 'bookmarklets',
-    title: 'Bookmarklets',
-    description: 'Launch skills from a GitHub PR or issue.',
-    icon: BookmarkIcon,
-    component: BookmarkletsSection,
-    scope: 'project',
-  },
-  {
     id: 'prompt-templates',
     title: 'Prompt templates',
     description: 'Reusable snippets for follow-up instructions.',
@@ -154,14 +145,6 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description: 'Provider usage, parallel tasks and per-task memory limit, across every project.',
     icon: GaugeIcon,
     component: ResourcesSection,
-    scope: 'global',
-  },
-  {
-    id: 'skills',
-    title: 'Skills',
-    description: 'Updates for skills installed on this machine.',
-    icon: PackageCheckIcon,
-    component: SkillsSection,
     scope: 'global',
   },
   {
@@ -196,14 +179,6 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
  * entirely, and so does everything belonging to the OTHER scope. The two areas are rendered by
  * the same shell, so this filter is the only thing keeping them apart.
  */
-export function visibleSettingsSections(
-  scope: SettingsScope,
-  capabilities?: Pick<Capabilities, 'singleProject'>,
-): SettingsSection[] {
-  return SETTINGS_SECTIONS.filter(
-    (section) =>
-      !section.hidden &&
-      section.scope === scope &&
-      !(capabilities?.singleProject === true && section.id === 'projects'),
-  )
+export function visibleSettingsSections(scope: SettingsScope): SettingsSection[] {
+  return SETTINGS_SECTIONS.filter((section) => !section.hidden && section.scope === scope)
 }

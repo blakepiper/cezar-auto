@@ -5,7 +5,6 @@ import { mergeProviderStatusResponse } from '@/lib/provider-status'
 
 import {
   ApiError,
-  browseFs,
   checkoutProject,
   connectProvider,
   continueRun,
@@ -23,7 +22,6 @@ import {
   getGithubRefStatus,
   getGroup,
   getHealth,
-  getLaunchKey,
   getOpenTargets,
   getProviderStatus,
   getProjectRuns,
@@ -43,19 +41,13 @@ import {
   getRunHandoff,
   getRuns,
   getRunsIndex,
-  getImportableSkills,
-  getImportableSkillsWhenReady,
   getSkills,
-  getSkillsWhenReady,
   getTodos,
   getUiState,
   getWorkflows,
   getWorkspaceConfig,
   getWorkspaceUsage,
   getWorkspaceUiState,
-  getSkillsUpdate,
-  checkSkillsUpdate,
-  applySkillsUpdate,
   getWorktrees,
   editQueuedMessage,
   markRunSeen,
@@ -147,20 +139,6 @@ export const queryKeys = {
   get skills() {
     return [queryScope(), 'skills'] as const
   },
-  get skillsReady() {
-    return [queryScope(), 'skills', 'ready'] as const
-  },
-  /** Children of `skills`: the "Import skills" panel's opt-in catalog. Sharing the `skills`
-   *  prefix means a refresh that invalidates the catalog re-reads the importable list too. */
-  get importableSkills() {
-    return [queryScope(), 'skills', 'importable'] as const
-  },
-  get importableSkillsReady() {
-    return [queryScope(), 'skills', 'importable', 'ready'] as const
-  },
-  get launchKey() {
-    return [queryScope(), 'launch-key'] as const
-  },
   get repo() {
     return [queryScope(), 'repo'] as const
   },
@@ -229,11 +207,11 @@ export const workspaceQueryKeys = {
   /** The cross-project task index behind ⌘K. Workspace-led for the same reason the registry is:
    *  it answers for every project at once, so no scope owns it. */
   runsIndex: ['workspace', 'runs-index'] as const,
-  /** `~/.cezar/ui-state.json` via `GET/PUT /api/workspace/ui-state` (step 2.7) — cross-project
+  /** `~/.coducktor/ui-state.json` via `GET/PUT /api/workspace/ui-state` (step 2.7) — cross-project
    *  GUI prefs, e.g. the sidebar's per-project collapse map (step 3.3), and — since step 3.5 —
    *  appearance + notifications, which describe the user rather than a repo. */
   uiState: ['workspace', 'ui-state'] as const,
-  /** `~/.cezar/config.json`'s settings slice via `GET/PUT /api/workspace/config` (step 2.7):
+  /** `~/.coducktor/config.json`'s settings slice via `GET/PUT /api/workspace/config` (step 2.7):
    *  the global Resources knobs and the checkout root. */
   config: ['workspace', 'config'] as const,
   usage: ['workspace', 'usage'] as const,
@@ -247,13 +225,6 @@ export const workspaceQueryKeys = {
   /** One account's auth state — a child of `agentProfiles`, so removing an account drops it too. */
   agentAccountStatus: (routeId: string) =>
     ['workspace', 'agent-profiles', 'status', routeId] as const,
-  skillsUpdate: (projectId: string) => ['workspace', 'skills-update', projectId] as const,
-  /** One directory listing from `GET /api/fs/browse` (step 4.2's folder picker). Keyed by the
-   *  browsed path — `null` is the browse root, whose absolute location only the server knows.
-   *  Not scope-led: there is one filesystem behind the workspace, not one per project. */
-  fsBrowseRoot: ['workspace', 'fs-browse'] as const,
-  fsBrowse: (path: string | null, showHidden = false) =>
-    [...workspaceQueryKeys.fsBrowseRoot, path, showHidden] as const,
 }
 
 /**
@@ -361,20 +332,6 @@ export function useProjects() {
   return useQuery({
     queryKey: workspaceQueryKeys.projects,
     queryFn: ({ signal }) => getProjects({ signal }),
-  })
-}
-
-/** One directory listing for the add-project folder picker (step 4.2). `path: null` asks for
- *  the browse root. Retries are off: the interesting failures here are the deliberate 400/404s
- *  (outside the root, no such directory) — re-asking cannot change those answers, and the
- *  dialog shows the server's own words instead. */
-export function useFsBrowse(path: string | null, showHidden = false) {
-  return useQuery({
-    // `showHidden` is part of the key: the two listings of one directory are different answers,
-    // and sharing a cache entry would show whichever caller asked first.
-    queryKey: workspaceQueryKeys.fsBrowse(path, showHidden),
-    queryFn: ({ signal }) => browseFs(path ?? undefined, { signal, showHidden }),
-    retry: false,
   })
 }
 
@@ -698,10 +655,10 @@ export function useCheckoutProject() {
  * not any one view. Subscribing per `useHealth` consumer instead would tie that global signal to
  * ~15 component lifecycles — the topic would flap `subscribe`/`unsubscribe` on every mount,
  * unmount and StrictMode remount, and would drop entirely for any instant no consumer happened
- * to be mounted. One root-level subscription keeps local cockpits live continuously, so they are
- * always notified when health changes; remote cockpits stay on authenticated HTTP because browser
- * WebSocket cannot carry proxy credentials explicitly. The `useHealth` readers below just read
- * the cache either transport fills.
+ * to be mounted. One root-level subscription keeps the local cockpit live continuously, so it is
+ * always notified when health changes (A15 retired the hosted/remote deployment whose
+ * authenticated HTTP-only transport could not use a browser WebSocket). The `useHealth` readers
+ * below just read the cache the topic fills.
  *
  * The cache key is read inside the callback (`queryKeys.health` is a scope-aware getter), so a
  * project switch routes each pushed snapshot to the active scope's cache without re-subscribing.
@@ -712,15 +669,12 @@ export function useHealthSubscription(): void {
     let releaseTopic: (() => void) | undefined
 
     const syncTransport = (): void => {
-      const health = queryClient.getQueryData<HealthResponse>(queryKeys.health)
-      const local = health?.capabilities?.localHandoff === true
-      if (local && releaseTopic === undefined) {
+      // A15 (decision 7) retired the hosted/remote-deployment mode: every cockpit is local now,
+      // so the WebSocket health channel is always the right transport.
+      if (releaseTopic === undefined) {
         releaseTopic = subscribeTopic('health', (data) => {
           queryClient.setQueryData(queryKeys.health, data as HealthResponse)
         })
-      } else if (!local && releaseTopic !== undefined) {
-        releaseTopic()
-        releaseTopic = undefined
       }
     }
 
@@ -967,70 +921,16 @@ export function useWorkflows() {
 
 /** `enabled` gates the fetch for surfaces that need skills only once interacted with — the
  *  composer's `/` autocomplete fetches on first trigger, never on every thread visit. (The
- *  palette gets the same laziness structurally: its content mounts only while open.) */
+ *  palette gets the same laziness structurally: its content mounts only while open.)
+ *
+ *  A single query now — the cold-cache follow-up this used to run existed only to wait out a
+ *  background team-skill clone (spec 005), which is retired (A15, decision 7). Local discovery
+ *  has no warm-up phase. */
 export function useSkills(enabled = true) {
-  const queryClient = useQueryClient()
-  const skillsKey = queryKeys.skills
-  const skillsScope = skillsKey[0]
-  const skills = useQuery({
-    queryKey: skillsKey,
+  return useQuery({
+    queryKey: queryKeys.skills,
     queryFn: ({ signal }) => getSkills({ signal }),
     enabled,
-  })
-  const ready = useQuery({
-    queryKey: queryKeys.skillsReady,
-    queryFn: ({ signal }) => getSkillsWhenReady({ signal }),
-    enabled: enabled && skills.isSuccess,
-    staleTime: Infinity,
-    retry: false,
-  })
-
-  useEffect(() => {
-    // Treat the follow-up as best-effort. The fast catalog remains authoritative
-    // if an older server/proxy answers this additive request unexpectedly.
-    if (Array.isArray(ready.data)) queryClient.setQueryData([skillsScope, 'skills'], ready.data)
-  }, [queryClient, ready.data, skillsScope])
-
-  return skills
-}
-
-/** The opt-in catalog for the "Import skills" panel — the default (vendor) repo's full skill
- *  list, regardless of import state. Same fast-then-`wait=1` convergence as `useSkills`: the
- *  panel renders whatever the cache holds immediately, then the cold-clone wait fills it in. */
-export function useImportableSkills(enabled = true) {
-  const queryClient = useQueryClient()
-  const importableKey = queryKeys.importableSkills
-  const scope = importableKey[0]
-  const importable = useQuery({
-    queryKey: importableKey,
-    queryFn: ({ signal }) => getImportableSkills({ signal }),
-    enabled,
-  })
-  const ready = useQuery({
-    queryKey: queryKeys.importableSkillsReady,
-    queryFn: ({ signal }) => getImportableSkillsWhenReady({ signal }),
-    enabled: enabled && importable.isSuccess,
-    staleTime: Infinity,
-    retry: false,
-  })
-
-  useEffect(() => {
-    // Best-effort, like useSkills: seed the fast list from the converged one.
-    if (Array.isArray(ready.data)) queryClient.setQueryData([scope, 'skills', 'importable'], ready.data)
-  }, [queryClient, ready.data, scope])
-
-  return importable
-}
-
-/** The bookmarklet auto-start secret (spec 011). Mounted ONLY by the Settings → Skills
- *  bookmarklet panel, which bakes it into the generated `javascript:` links exactly like the
- *  legacy generator did. The key never renders as text and never goes back into a URL bar. */
-export function useLaunchKey() {
-  return useQuery({
-    queryKey: queryKeys.launchKey,
-    queryFn: ({ signal }) => getLaunchKey({ signal }),
-    // The key is stable for the server's lifetime — refetching it buys nothing.
-    staleTime: Infinity,
   })
 }
 
@@ -1120,7 +1020,7 @@ export function usePutAgentConfigFile(id: string) {
   })
 }
 
-/** The cross-project GUI state (`~/.cezar/ui-state.json`). Read once and cached — the sidebar
+/** The cross-project GUI state (`~/.coducktor/ui-state.json`). Read once and cached — the sidebar
  *  applies its own writes optimistically and PUTs behind a debounce, so nothing polls this. */
 export function useWorkspaceUiState() {
   return useQuery({
@@ -1129,7 +1029,7 @@ export function useWorkspaceUiState() {
   })
 }
 
-/** The global settings slice of `~/.cezar/config.json` — Settings → Resources (step 3.5) and
+/** The global settings slice of `~/.coducktor/config.json` — Settings → Resources (step 3.5) and
  *  the Projects pane's checkout root (step 4.4). Not scope-led: one workspace, one answer. */
 export function useWorkspaceConfig() {
   return useQuery({
@@ -1159,40 +1059,6 @@ export function useAgentProfiles() {
     queryKey: workspaceQueryKeys.agentProfiles,
     queryFn: ({ signal }) => getAgentProfiles({ signal }),
   })
-}
-
-export function useSkillsUpdate(projectId: string, enabled = true) {
-  return useQuery({
-    queryKey: workspaceQueryKeys.skillsUpdate(projectId),
-    queryFn: ({ signal }) => getSkillsUpdate(projectId, { signal }),
-    enabled,
-    // GET deliberately answers the current snapshot and starts a stale check in the
-    // background. Retry only while that snapshot is transient so an initial `idle`
-    // response converges. Checks may legitimately take tens of seconds, so a one-minute cadence
-    // avoids repeatedly challenging authenticated remote sessions while still converging after
-    // a long-running operation. The initial mount remains the session's one automatic check.
-    refetchInterval: (query) => {
-      const status = query.state.data?.status
-      return status === undefined || status === 'idle' || status === 'checking' || status === 'updating'
-        ? 60_000
-        : false
-    },
-  })
-}
-
-export function useCheckSkillsUpdate(projectId: string) {
-  const queryClient = useQueryClient()
-  const key = workspaceQueryKeys.skillsUpdate(projectId)
-  return useMutation({
-    mutationFn: () => checkSkillsUpdate(projectId),
-    onSuccess: (state) => queryClient.setQueryData(key, state),
-  })
-}
-
-export function useApplySkillsUpdate(projectId: string) {
-  const queryClient = useQueryClient()
-  const key = workspaceQueryKeys.skillsUpdate(projectId)
-  return useMutation({ mutationFn: () => applySkillsUpdate(projectId), onSuccess: (state) => queryClient.setQueryData(key, state) })
 }
 
 /** Rename a run (#389): `PATCH /api/runs/:id`. Invalidates `runs.*` so the list and the detail

@@ -15,7 +15,7 @@ export type RunStatus = 'queued' | 'running' | 'waiting' | 'review' | 'done' | '
 /**
  * A sub-state of `running` (spec 2026-07-18-subagent-monitoring-status, #490):
  * the agent ended its turn still working on its own downstream work (a sub-agent
- * or a monitored command) and declared it with the `CEZ:MONITORING` marker — so
+ * or a monitored command) and declared it with the `DUCK:MONITORING` marker — so
  * the cockpit shows a non-attention "monitoring" label instead of "needs you".
  * Only ever set while `status === 'running'`; cleared on resume/terminal.
  */
@@ -247,12 +247,12 @@ export const runRecordSchema = z.object({
    *  after a restart. Any prompt, namer, or marker write clears this flag. */
   referencedIssueNumberSeeded: z.boolean().optional(),
   /** Who owns the display title: `user` (PATCH rename — never auto-overwritten),
-   *  `marker` (agent-declared via `CEZ:TITLE`, spec 2026-07-18-task-ref-markers —
+   *  `marker` (agent-declared via `DUCK:TITLE`, spec 2026-07-18-task-ref-markers —
    *  beats the namer, silences live refresh) or `auto` (namer-owned — a later
    *  namer result may replace it). Missing on old runs = legacy behavior (auto
    *  fills only an unset titleSummary). Precedence: user > marker > auto. */
   titleOrigin: z.enum(['user', 'auto', 'marker']).optional(),
-  /** References the agent itself declared via `CEZ:PR=` / `CEZ:ISSUE=` markers
+  /** References the agent itself declared via `DUCK:PR=` / `DUCK:ISSUE=` markers
    *  (spec 2026-07-18-task-ref-markers). Presence of a kind makes it
    *  authoritative: the namer may no longer write that kind, and a declared PR
    *  owns the referenced tier's resolution. */
@@ -857,7 +857,7 @@ export class RunStore extends EventEmitter {
     const seq = this.nextSeq(runId);
     // Scrub credentials before the event touches disk or the live wire (#427):
     // tool-result output is persisted verbatim and served back over the API, so
-    // a secret in an agent's command output would otherwise land in `.ai/cezar/`.
+    // a secret in an agent's command output would otherwise land in `.ai/coducktor/`.
     const full: RunEvent = this.redact({ ...event, seq, ts: new Date().toISOString() });
     // Sync append keeps event order without a write queue; local NDJSON
     // appends at agent-event rates are effectively free.

@@ -73,7 +73,7 @@ beforeAll(async () => {
   // The thread view needs a run. Prefer whatever the shared env already holds (newest live
   // record); only when the list is empty does this spec start one dry run — and then settles it
   // via /finish, so the shared env is never left holding an open session another spec would
-  // trip over. The run lands in `.ai/cezar/` (gitignored runtime state), same class of shared-env
+  // trip over. The run lands in `.ai/coducktor/` (gitignored runtime state), same class of shared-env
   // write as the smoke spec's todos.json.
   const runs = await api<RunRecord[]>('/api/v1/runs')
   const existing = [...runs]

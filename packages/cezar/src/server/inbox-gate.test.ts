@@ -30,17 +30,15 @@ describe('inbox gate (#471)', () => {
   let dataDir: string;
   let store: RunStore;
   const savedFollowups = process.env.CEZ_FOLLOWUPS;
-  const savedRemote = process.env.CEZ_REMOTE;
 
   beforeEach(() => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-inbox-'));
-    dataDir = join(repoRoot, '.ai/cezar');
+    dataDir = join(repoRoot, '.ai/coducktor');
     store = RunStore.open(dataDir);
     mkdirSync(dataDir, { recursive: true });
     // A pre-existing entry: the gate must hide it, never delete it.
     writeFileSync(join(dataDir, 'todos.json'), JSON.stringify([TODO]), 'utf8');
     delete process.env.CEZ_FOLLOWUPS;
-    delete process.env.CEZ_REMOTE;
   });
 
   afterEach(() => {
@@ -48,8 +46,6 @@ describe('inbox gate (#471)', () => {
     rmSync(repoRoot, { recursive: true, force: true });
     if (savedFollowups === undefined) delete process.env.CEZ_FOLLOWUPS;
     else process.env.CEZ_FOLLOWUPS = savedFollowups;
-    if (savedRemote === undefined) delete process.env.CEZ_REMOTE;
-    else process.env.CEZ_REMOTE = savedRemote;
   });
 
   const app = (over: Partial<ServerDeps> = {}) =>

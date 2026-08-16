@@ -162,7 +162,7 @@ describe('reduceThread — v1-only fallback (pre-v2 transcripts)', () => {
     expect(turns.flatMap((turn) => turn.items)).toEqual([])
   })
 
-  // Verbatim shapes from a real pre-R2 transcript (.ai/cezar/runs/2d012907….ndjson), trimmed.
+  // Verbatim shapes from a real pre-R2 transcript (.ai/coducktor/runs/2d012907….ndjson), trimmed.
   const v1Only: RunEvent[] = [
     line(1, 'lifecycle', { message: 'run started — workflow "quick-task" (runner: claude)' }),
     line(2, 'note', { message: 'worktree ready — branch cez/2d012907 (base main)' }),

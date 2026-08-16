@@ -2,7 +2,7 @@
  * The "no skills yet" copy shared by every empty state that tells a user where to drop skill
  * files — the Skills tab (`routes/skills.tsx`) and the workflow builder's skill palette
  * (`routes/workflows/workflows.tsx`). #374 (follow-up to #342): both used to mention only
- * `.ai/skills/`, while discovery also scans `.ai/cezar/skills/`, `.agents/skills/` (+ its
+ * `.ai/skills/`, while discovery also scans `.ai/coducktor/skills/`, `.agents/skills/` (+ its
  * per-agent mirrors, e.g. `.claude/skills/`), the global `~/.agents/skills` /
  * `~/.claude/skills`, and the team skills repo (`src/skills.ts`). One shared list, so the two
  * SURFACES render the same copy.
@@ -18,7 +18,7 @@
  *  minus the per-agent mirrors (`.claude/skills` & co.), which the copy folds into one "agent
  *  mirrors like …" mention rather than listing five times. Pinned by
  *  `test/unit/skill-dirs.test.ts`; keep the two in step. */
-const SKILL_PROJECT_DIRS = ['.ai/cezar/skills/', '.ai/skills/', '.agents/skills/'] as const
+const SKILL_PROJECT_DIRS = ['.ai/coducktor/skills/', '.ai/skills/', '.agents/skills/'] as const
 
 function Path({ children }: { children: string }) {
   return <span className="font-mono">{children}</span>
@@ -38,25 +38,23 @@ function ProjectDirList() {
   )
 }
 
-/** Full copy — the Skills tab's empty list (room for the frontmatter aside + a Refresh hint). */
+/** Full copy — the Skills tab's empty list (room for the frontmatter aside). */
 export function SkillEmptyHint() {
   return (
     <>
       No skills yet. Drop Markdown files into <ProjectDirList /> (agent mirrors like{' '}
       <Path>.claude/skills/</Path> work too) — optional frontmatter: <Path>name</Path>,{' '}
-      <Path>description</Path>. Global (<Path>~/.agents/skills</Path>) and team-repo skills
-      appear here too — try Refresh.
+      <Path>description</Path>. Skills in the global <Path>~/.agents/skills</Path> directory
+      appear here too.
     </>
   )
 }
 
-/** Compact copy — the workflow builder's skill palette, where space is tighter and there is no
- *  Refresh action on the surface itself. */
+/** Compact copy — the workflow builder's skill palette, where space is tighter. */
 export function SkillEmptyHintCompact() {
   return (
     <>
-      No skills yet — drop Markdown files into <ProjectDirList /> (or a global/team-repo skill
-      source).
+      No skills yet — drop Markdown files into <ProjectDirList /> (or a global skill source).
     </>
   )
 }

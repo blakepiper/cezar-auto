@@ -67,7 +67,7 @@ describe('RunManager directional usage accounting', () => {
 
   beforeEach(() => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-usage-accounting-'));
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     manager = new RunManager(store, repoRoot, {
       semaphore: new WorkspaceSemaphore({ initial: { maxParallel: 0 } }),
     });
@@ -170,14 +170,14 @@ describe('RunManager directional usage accounting', () => {
     store.flush();
 
     internal.beginUsageInvocation(run.id, state, 'work');
-    expect(RunStore.open(join(repoRoot, '.ai/cezar')).getRun(run.id)?.steps[0]).toMatchObject({
+    expect(RunStore.open(join(repoRoot, '.ai/coducktor')).getRun(run.id)?.steps[0]).toMatchObject({
       usageInvocationsStarted: 1,
     });
 
     const persistedAtSink: StepState[] = [];
     const sink = {
       handle: (_event: UiEvent) => {
-        const persisted = RunStore.open(join(repoRoot, '.ai/cezar')).getRun(run.id)?.steps[0];
+        const persisted = RunStore.open(join(repoRoot, '.ai/coducktor')).getRun(run.id)?.steps[0];
         if (persisted) persistedAtSink.push(persisted);
       },
     };
@@ -227,7 +227,7 @@ describe('RunManager directional usage accounting', () => {
 
 it('parallel variants ignore a worktree opt-out and retain isolated mode', () => {
   const repoRoot = mkdtempSync(join(tmpdir(), 'cez-variant-isolation-'));
-  const store = RunStore.open(join(repoRoot, '.ai/cezar'));
+  const store = RunStore.open(join(repoRoot, '.ai/coducktor'));
   try {
     const manager = new RunManager(store, repoRoot, {
       semaphore: new WorkspaceSemaphore({ initial: { maxParallel: 0 } }),
@@ -277,7 +277,7 @@ describe('RunManager.recordTurnEnd', () => {
     writeFileSync(join(repoRoot, 'a.txt'), 'one\ntwo\nthree\n');
     await run('git', ['add', '-A'], { cwd: repoRoot });
     await run('git', [...GIT_ID, 'commit', '-q', '-m', 'base'], { cwd: repoRoot });
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     manager = new RunManager(store, repoRoot);
   });
 
@@ -438,7 +438,7 @@ describe('RunManager.continueRun override', () => {
 
   beforeEach(() => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-continue-'));
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     manager = new RunManager(store, repoRoot);
     // No live agent — we only assert the synchronous persistence continueRun does before it
     // hands off to the (stubbed) continuation.
@@ -601,7 +601,7 @@ describe('RunManager.settleSuccess — optional review gate', () => {
     writeFileSync(join(repoRoot, 'a.txt'), 'one\ntwo\nthree\n');
     await run('git', ['add', '-A'], { cwd: repoRoot });
     await run('git', [...GIT_ID, 'commit', '-q', '-m', 'base'], { cwd: repoRoot });
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     manager = new RunManager(store, repoRoot);
   });
 
@@ -617,7 +617,7 @@ describe('RunManager.settleSuccess — optional review gate', () => {
   afterEach(() => {
     delete process.env.CEZ_REVIEW_GATE;
     // Reset the config file each test so config.reviewGate never leaks across cases.
-    rmSync(join(repoRoot, '.ai/cezar', 'config.json'), { force: true });
+    rmSync(join(repoRoot, '.ai/coducktor', 'config.json'), { force: true });
   });
 
   /** A fresh run + worktree holding a real diff (edit + new file) vs main. */
@@ -701,7 +701,7 @@ describe('a chain of 2 selected skills runs BOTH steps, in order (#410)', () => 
     writeFileSync(join(repoRoot, 'a.txt'), 'one\n');
     await run('git', ['add', '-A'], { cwd: repoRoot });
     await run('git', [...GIT_ID, 'commit', '-q', '-m', 'base'], { cwd: repoRoot });
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     manager = new RunManager(store, repoRoot);
   });
 
@@ -790,7 +790,7 @@ describe('a single agent step plus a check step gets NO chain note (#410)', () =
     writeFileSync(join(repoRoot, 'a.txt'), 'one\n');
     await run('git', ['add', '-A'], { cwd: repoRoot });
     await run('git', [...GIT_ID, 'commit', '-q', '-m', 'base'], { cwd: repoRoot });
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     manager = new RunManager(store, repoRoot);
   });
 
@@ -858,7 +858,7 @@ describe('intelligent context refresh', () => {
     writeFileSync(join(repoRoot, 'a.txt'), 'one\n');
     await run('git', ['add', '-A'], { cwd: repoRoot });
     await run('git', [...GIT_ID, 'commit', '-q', '-m', 'base'], { cwd: repoRoot });
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     manager = new RunManager(store, repoRoot, {
       semaphore: new WorkspaceSemaphore({ initial: { intelligentContextRefresh: true } }),
     });
@@ -934,7 +934,7 @@ describe('CEZ:MONITORING parks as running/monitoring, not waiting (#490)', () =>
     writeFileSync(join(repoRoot, 'a.txt'), 'one\n');
     await run('git', ['add', '-A'], { cwd: repoRoot });
     await run('git', [...GIT_ID, 'commit', '-q', '-m', 'base'], { cwd: repoRoot });
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     manager = new RunManager(store, repoRoot);
     currentId = undefined;
   });
@@ -1014,12 +1014,12 @@ describe('CEZ:MONITORING parks as running/monitoring, not waiting (#490)', () =>
     const record = manager.startRun(SINGLE_STEP, { task: 'mock:monitoring keep going', worktree: false });
     currentId = record.id;
     await waitFor(record.id, () => {
-      const path = join(repoRoot, '.ai/cezar/runs', `${record.id}.ndjson`);
+      const path = join(repoRoot, '.ai/coducktor/runs', `${record.id}.ndjson`);
       if (!existsSync(path)) return false;
       const ndjson = readFileSync(path, 'utf8');
       return ndjson.includes('automatic monitoring wake-up (1/40)');
     });
-    const events = readFileSync(join(repoRoot, '.ai/cezar/runs', `${record.id}.ndjson`), 'utf8')
+    const events = readFileSync(join(repoRoot, '.ai/coducktor/runs', `${record.id}.ndjson`), 'utf8')
       .trim().split('\n').map((line) => JSON.parse(line) as { type: string; message?: string });
     expect(events.some((event) => event.type === 'note' && event.message?.includes('(1/40)'))).toBe(true);
     expect(events.some((event) => event.type === 'user-message')).toBe(false);
@@ -1038,7 +1038,7 @@ describe('CEZ:MONITORING parks as running/monitoring, not waiting (#490)', () =>
     await waitFor(record.id, (r) => r?.activity === 'monitoring');
     // v1 `text` events are stripped server-side (like CEZ:DONE); v2 message items carry
     // the raw text and the thread reducer strips it on display (thread-state.test.ts).
-    const ndjson = readFileSync(join(repoRoot, '.ai/cezar/runs', `${record.id}.ndjson`), 'utf8');
+    const ndjson = readFileSync(join(repoRoot, '.ai/coducktor/runs', `${record.id}.ndjson`), 'utf8');
     const v1Text = ndjson
       .trim()
       .split('\n')
@@ -1087,7 +1087,7 @@ describe('CEZ:ASK parks as waiting and emits ask.requested (#473)', () => {
     writeFileSync(join(repoRoot, 'a.txt'), 'one\n');
     await run('git', ['add', '-A'], { cwd: repoRoot });
     await run('git', [...GIT_ID, 'commit', '-q', '-m', 'base'], { cwd: repoRoot });
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     manager = new RunManager(store, repoRoot);
     currentId = undefined;
   });
@@ -1111,7 +1111,7 @@ describe('CEZ:ASK parks as waiting and emits ask.requested (#473)', () => {
   };
 
   const readEvents = (id: string): Array<Record<string, unknown>> =>
-    readFileSync(join(repoRoot, '.ai/cezar/runs', `${id}.ndjson`), 'utf8')
+    readFileSync(join(repoRoot, '.ai/coducktor/runs', `${id}.ndjson`), 'utf8')
       .trim()
       .split('\n')
       .map((l) => JSON.parse(l));
@@ -1211,11 +1211,11 @@ describe('RunManager.persistImage without a session (#472)', () => {
   ) => { name: string; url: string; path: string } | null;
   const persist = (id: string, prefix?: string) =>
     (manager as unknown as { persistImage: PersistFn }).persistImage(id, 'image/png', PNG, prefix);
-  const imagesDir = (id: string) => join(repoRoot, '.ai/cezar', 'runs', `${id}-images`);
+  const imagesDir = (id: string) => join(repoRoot, '.ai/coducktor', 'runs', `${id}-images`);
 
   beforeEach(() => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-persist-'));
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     manager = new RunManager(store, repoRoot);
   });
 
@@ -1296,11 +1296,11 @@ describe('RunManager queued-stack mutators (#472)', () => {
   };
   const dequeue = (id: string) =>
     (manager as unknown as { pendingJobs: Map<string, unknown> }).pendingJobs.delete(id);
-  const imagesDir = (id: string) => join(repoRoot, '.ai/cezar', 'runs', `${id}-images`);
+  const imagesDir = (id: string) => join(repoRoot, '.ai/coducktor', 'runs', `${id}-images`);
 
   beforeEach(() => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-stack-'));
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     manager = new RunManager(store, repoRoot);
   });
 
@@ -1610,7 +1610,7 @@ describe('RunManager.hydrateQueuedInput (#472)', () => {
 
   beforeEach(() => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-hydrate-'));
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     manager = new RunManager(store, repoRoot);
   });
 
@@ -1656,7 +1656,7 @@ describe('RunManager.hydrateQueuedInput (#472)', () => {
 
   it('re-encodes stacked attachments from disk into stackedImages', () => {
     const r = store.createRun({ title: 't', workflow: 'w', task: 'look at this', steps: [] });
-    const dir = join(repoRoot, '.ai/cezar', 'runs', `${r.id}-images`);
+    const dir = join(repoRoot, '.ai/coducktor', 'runs', `${r.id}-images`);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'pasted-1.png'), 'the-bytes');
     stack(r.id, { text: 'see the mock', images: [`/api/v1/runs/${r.id}/images/pasted-1.png`] });
@@ -1671,7 +1671,7 @@ describe('RunManager.hydrateQueuedInput (#472)', () => {
 
   it('re-encodes initial task images from disk after a queued-run restart (#612)', () => {
     const r = store.createRun({ title: 't', workflow: 'w', task: 'look at this', steps: [] });
-    const dir = join(repoRoot, '.ai/cezar', 'runs', `${r.id}-images`);
+    const dir = join(repoRoot, '.ai/coducktor', 'runs', `${r.id}-images`);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'pasted-1.png'), 'the-task-bytes');
     store.updateRun(r.id, { taskImages: [`/api/v1/runs/${r.id}/images/pasted-1.png`] });
@@ -1726,10 +1726,10 @@ describe('queued stacking reaches the backend (#472)', () => {
     writeFileSync(join(repoRoot, 'a.txt'), 'one\n');
     await run('git', ['add', '-A'], { cwd: repoRoot });
     await run('git', [...GIT_ID, 'commit', '-q', '-m', 'base'], { cwd: repoRoot });
-    mkdirSync(join(repoRoot, '.ai/cezar'), { recursive: true });
+    mkdirSync(join(repoRoot, '.ai/coducktor'), { recursive: true });
     // One slot, so the second run demonstrably waits in the queue.
-    writeFileSync(join(repoRoot, '.ai/cezar', 'config.json'), JSON.stringify({ maxParallel: 1 }));
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    writeFileSync(join(repoRoot, '.ai/coducktor', 'config.json'), JSON.stringify({ maxParallel: 1 }));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     manager = new RunManager(store, repoRoot);
   });
 
@@ -1798,7 +1798,7 @@ describe('recover() carries the queued stack exactly once (#472)', () => {
 
   beforeEach(() => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-recover-'));
-    store = RunStore.open(join(repoRoot, '.ai/cezar'), { keepLive: true });
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'), { keepLive: true });
   });
 
   afterEach(() => {
@@ -1853,7 +1853,7 @@ describe('native Codex requestUserInput parks and resumes the run (#565)', () =>
     writeFileSync(join(repoRoot, 'a.txt'), 'one\n');
     await run('git', ['add', '-A'], { cwd: repoRoot });
     await run('git', [...GIT_ID, 'commit', '-q', '-m', 'base'], { cwd: repoRoot });
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     manager = new RunManager(store, repoRoot);
   });
 
@@ -1879,7 +1879,7 @@ describe('native Codex requestUserInput parks and resumes the run (#565)', () =>
     });
     runId = record.id;
     await waitFor(() => store.getRun(record.id)?.status === 'waiting');
-    const eventsPath = join(repoRoot, '.ai/cezar/runs', `${record.id}.ndjson`);
+    const eventsPath = join(repoRoot, '.ai/coducktor/runs', `${record.id}.ndjson`);
     expect(readFileSync(eventsPath, 'utf8')).toContain('"type":"ask.requested"');
     expect(manager.sendMessage(record.id, [{ type: 'text', text: 'Library: Vitest' }])).toBe(true);
     await waitFor(() => readFileSync(eventsPath, 'utf8').includes('"type":"turn-end"'));
@@ -1921,12 +1921,12 @@ describe('registry /skill expansion survives a continuation (#811)', () => {
     writeFileSync(join(repoRoot, 'a.txt'), 'one\n');
     await run('git', ['add', '-A'], { cwd: repoRoot });
     await run('git', [...GIT_ID, 'commit', '-q', '-m', 'base'], { cwd: repoRoot });
-    mkdirSync(join(repoRoot, '.ai/cezar/skills'), { recursive: true });
+    mkdirSync(join(repoRoot, '.ai/coducktor/skills'), { recursive: true });
     writeFileSync(
-      join(repoRoot, '.ai/cezar/skills/demo-review.md'),
+      join(repoRoot, '.ai/coducktor/skills/demo-review.md'),
       '---\nname: demo-review\ndescription: Review a diff.\n---\n\nRun the demo review playbook.\n',
     );
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     manager = new RunManager(store, repoRoot);
     runId = undefined;
   });
@@ -1940,7 +1940,7 @@ describe('registry /skill expansion survives a continuation (#811)', () => {
   });
 
   const eventsOf = (id: string) =>
-    readFileSync(join(repoRoot, '.ai/cezar/runs', `${id}.ndjson`), 'utf8')
+    readFileSync(join(repoRoot, '.ai/coducktor/runs', `${id}.ndjson`), 'utf8')
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line) as { type: string; text?: string; stepId?: string });

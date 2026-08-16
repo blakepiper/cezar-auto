@@ -66,26 +66,22 @@ describe('POST /api/v1/runs/:id/open-in — agent CLI resume vs fresh launch', (
   let repoRoot: string;
   let home: string;
   let store: RunStore;
-  const savedRemote = process.env.CEZ_REMOTE;
   const savedHome = process.env.CEZ_HOME;
 
   beforeEach(() => {
     repoRoot = mkdtempSync(join(realpathSync(tmpdir()), 'cez-open-in-cli-'));
     // The account resolution behind the handoff (spec 2026-07-29-agent-profiles) reads
-    // `~/.cezar/agent-accounts.json`, so this suite must own one — without `CEZ_HOME` it would read the
+    // `~/.coducktor/agent-accounts.json`, so this suite must own one — without `CEZ_HOME` it would read the
     // developer's real workspace and its answers would depend on who ran it.
     home = mkdtempSync(join(realpathSync(tmpdir()), 'cez-open-in-cli-home-'));
     process.env.CEZ_HOME = home;
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
-    delete process.env.CEZ_REMOTE;
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     mockOpenInTerminal.mockClear();
   });
 
   afterEach(() => {
     store.flush();
     for (const dir of [repoRoot, home]) rmSync(dir, { recursive: true, force: true });
-    if (savedRemote === undefined) delete process.env.CEZ_REMOTE;
-    else process.env.CEZ_REMOTE = savedRemote;
     if (savedHome === undefined) delete process.env.CEZ_HOME;
     else process.env.CEZ_HOME = savedHome;
   });
@@ -183,15 +179,6 @@ describe('POST /api/v1/runs/:id/open-in — agent CLI resume vs fresh launch', (
       expect(((await res.json()) as { command: string }).command).toBe('claude --resume sess-1');
     },
   );
-
-  it('hosted mode (CEZ_REMOTE=1) 409s before any session lookup, CLI or not', async () => {
-    process.env.CEZ_REMOTE = '1';
-    const run = makeRun('claude', 'sess-1');
-    const res = await openIn(run.id, 'cli:claude');
-    expect(res.status).toBe(409);
-    expect(((await res.json()) as { error: string }).error).toContain('hosted mode');
-    expect(mockOpenInTerminal).not.toHaveBeenCalled();
-  });
 
   it('blocks a disabled CLI target before launching a fresh agent terminal', async () => {
     const run = makeRun('claude');

@@ -221,9 +221,10 @@ function useIndexedRunMutation<V extends { task: GlobalTask }>({
 
 export function GlobalTasksRoute() {
   const projects = useProjects()
-  // The same host gate the per-project table honours: `CEZ_HIDE_COST` and friends turn these
-  // columns off everywhere, and a cross-project view is not an exception.
-  const metrics = usageMetricVisibility(useHealth().data)
+  // The same host gate the per-project table honours: the retired spend-hiding flags and
+  // their `capabilities.*` mirrors used to turn these columns off everywhere, and a
+  // cross-project view was not an exception.
+  const metrics = usageMetricVisibility()
   // Always enabled here — unlike the ⌘K palette, which parks it in a single-project workspace:
   // this page IS the index, so there is nothing else for it to fall back to. The interval is this
   // page's alone (see `useRunsIndex`), and it is now a BACKSTOP rather than the mechanism: any

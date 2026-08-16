@@ -61,13 +61,8 @@ export type AppShellProps = {
   /** Unread done-items count for the Tasks badge (#unread-done-items). Null/0 renders no badge;
    *  the container derives it from the run list via `unreadDoneCount`. */
   unreadCount?: number | null
-  /** A quiet, accessible marker on Skills when a checked update remains actionable. */
-  skillsUpdateAvailable?: boolean
   /** cezar version for the footer chip. Null until Step 3.1 reads it from `/api/health`. */
   version?: string | null
-  /** The npm registry's newer version, when the server's update check found one (#368). The
-   *  chip grows a pulsing pending dot + tooltip; absent or equal to `version`, it stays plain. */
-  latestVersion?: string | null
   /** Step 3.3's grouped task quick-list. */
   taskQuickList?: ReactNode
   /** Step 4.2's Tools dropdown trigger. */
@@ -79,13 +74,6 @@ export type AppShellProps = {
   /** Inbox gating (#471): `false` drops the Inbox nav item and its badge — the global inbox is
    *  opt-in via `CEZ_FOLLOWUPS=1`. Defaults to shown for the same reason as `forgeAvailable`. */
   inboxAvailable?: boolean
-  /** Automations gating (#801): `false` drops the Automations nav item — GitHub automations are
-   *  opt-in via `CEZ_AUTOMATIONS=1`. Defaults to shown for the same reason as `forgeAvailable`;
-   *  the container passes the health payload's truth. */
-  automationsAvailable?: boolean
-  /** Single-project capability gating: hides workspace-expansion affordances. Defaults off so
-   *  standalone and older callers preserve the multi-project shell. */
-  singleProject?: boolean
   /** Known project target for project-local sidebar links. The container supplies the active
    *  project, or the boot project during the brief legacy-path redirect at startup. */
   projectId?: string | null
@@ -145,15 +133,11 @@ export function AppShell({
   repo = null,
   inboxCount = null,
   unreadCount = null,
-  skillsUpdateAvailable = false,
   version = null,
-  latestVersion = null,
   taskQuickList,
   toolsMenu,
   forgeAvailable = true,
   inboxAvailable = true,
-  automationsAvailable = true,
-  singleProject = false,
   projectId = null,
   banner,
   projectGroups,
@@ -213,18 +197,15 @@ export function AppShell({
 
   const nav = {
     activeTo,
-    items: visibleNavItems({ forge: forgeAvailable, inbox: inboxAvailable, automations: automationsAvailable }),
+    items: visibleNavItems({ forge: forgeAvailable, inbox: inboxAvailable }),
     repo,
     // The badge belongs to the Inbox item — with the item gone there is nothing to badge.
     inboxCount: inboxAvailable ? inboxCount : null,
     unreadCount,
-    skillsUpdateAvailable,
     version,
-    latestVersion,
     taskQuickList,
     toolsMenu,
     projectGroups,
-    singleProject,
     projectId,
   }
 
@@ -276,13 +257,10 @@ type NavProps = {
   repo: RepoChip | null
   inboxCount: number | null
   unreadCount: number | null
-  skillsUpdateAvailable: boolean
   version: string | null
-  latestVersion: string | null
   taskQuickList?: ReactNode
   toolsMenu?: ReactNode
   projectGroups?: ReactNode
-  singleProject: boolean
   projectId: string | null
 }
 
@@ -460,13 +438,10 @@ function SidebarContent({
   repo,
   inboxCount,
   unreadCount,
-  skillsUpdateAvailable,
   version,
-  latestVersion,
   taskQuickList,
   toolsMenu,
   projectGroups,
-  singleProject,
   projectId,
   onNavigate,
   headerAction,
@@ -508,8 +483,8 @@ function SidebarContent({
       <div className="flex gap-1.5 px-2.5 pt-1 pb-2">
         <Button asChild variant="contrast" className="relative min-w-0 flex-1 justify-center">
           {/* A Router Link since R4 Step 1.1: the React /new composer is real, so deliberate
-              New task affordances stay inside the SPA. Full document loads of /new (the
-              bookmarklet contract) land on the shell like any route (static-ui.ts) — the
+              New task affordances stay inside the SPA. Full document loads of /new (the retired
+              deep-link contract) land on the shell like any route (static-ui.ts) — the
               React composer has owned auto-start parity since R4 Step 1.3. */}
           <Link to={scopeTo(projectId, '/new')} onClick={onNavigate}>
             <PlusIcon className="size-[15px]" aria-hidden="true" />
@@ -525,7 +500,7 @@ function SidebarContent({
             </kbd>
           </Link>
         </Button>
-        {singleProject ? null : <AddProjectMenu />}
+        <AddProjectMenu />
       </div>
 
       {projectGroups ? (
@@ -594,15 +569,6 @@ function SidebarContent({
                       {unreadCount}
                     </span>
                   ) : null}
-                  {item.badge === 'skills-update' && skillsUpdateAvailable ? (
-                    <span
-                      data-slot="nav-update-marker"
-                      className="ml-auto flex items-center"
-                    >
-                      <span className="size-1.5 rounded-full bg-violet" aria-hidden="true" />
-                      <span className="sr-only">Skills update available</span>
-                    </span>
-                  ) : null}
                 </Link>
               )
             })}
@@ -632,7 +598,7 @@ function SidebarContent({
           <div data-slot="tools-menu" className="shrink-0">
             {toolsMenu}
           </div>
-          {version ? <VersionChip version={version} latestVersion={latestVersion} /> : null}
+          {version ? <VersionChip version={version} /> : null}
           <GlobalSettingsLink onNavigate={onNavigate} className="ml-auto" />
           <ThemeToggle />
         </div>
@@ -796,9 +762,8 @@ function CommandPaletteHint() {
 }
 
 /**
- * The footer's `v{version}` chip. When the server's npm-registry check found something newer
- * (`latestVersion`, #368), the chip grows a pulsing pending-tone dot and names the version in
- * its tooltip — an affordance, not an alert: updating is optional, so the chrome stays quiet.
+ * The footer's `v{version}` chip. No update-available affordance any more (A15, Tier 1): there
+ * is no npm registry to check against (decision 4), so `latestVersion` never populated.
  *
  * The chip is the controls row's ONE elastic item, and that is load-bearing. Every other control
  * there is `shrink-0` (the icon buttons inherit it from the button base class), so whatever a
@@ -806,19 +771,15 @@ function CommandPaletteHint() {
  * chip was `shrink-0` too, there was nowhere for it to come from: a nightly version (#876's
  * dist-tag, some 173px of it) shoved the gear and the theme toggle clean outside the sidebar
  * rather than clipping anything. Truncating from the tail keeps the half that carries meaning,
- * the semver, and the `title` keeps the whole string — which is why the tooltip is now there
- * even with no update to announce.
+ * the semver, and the `title` keeps the whole string.
  */
-function VersionChip({ version, latestVersion }: { version: string; latestVersion: string | null }) {
-  const updateAvailable = Boolean(latestVersion && latestVersion !== version)
+function VersionChip({ version }: { version: string }) {
   return (
     <span
       data-slot="version-chip"
-      data-update-available={updateAvailable ? 'true' : undefined}
-      title={updateAvailable ? `v${version} — update available: v${latestVersion}` : `v${version}`}
+      title={`v${version}`}
       className="flex min-w-0 items-center gap-1 rounded-full border border-border px-1.5 py-px font-mono text-[10px] font-medium text-soft-foreground"
     >
-      {updateAvailable ? <StatusDot tone="pending" pulse className="size-[5px] shrink-0" /> : null}
       <span className="truncate">v{version}</span>
     </span>
   )

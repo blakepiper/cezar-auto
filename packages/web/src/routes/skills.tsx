@@ -1,30 +1,28 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeftIcon, DownloadIcon, RefreshCwIcon, SparklesIcon, TriangleAlertIcon, ZapIcon } from 'lucide-react'
+import { SparklesIcon, TriangleAlertIcon } from 'lucide-react'
 import { useState } from 'react'
 import { useSearchParams } from 'react-router'
 
 import { Link } from '@/lib/project-router'
 
-import { refreshSkills } from '@/api/client'
-import { queryKeys, useImportableSkills, useProjects, useSkills, useWorkflows } from '@/api/queries'
-import { useProjectScope } from '@/api/project-scope-context'
+import { useSkills, useWorkflows } from '@/api/queries'
 import type { Skill } from '@open-mercato/cezar-api-client'
 import { CenteredState } from '@/components/centered-state'
-import { ImportSkillsPanel } from '@/components/skills-import-panel'
 import { SkillDetailBody, SkillSourceTag } from '@/components/skill-detail'
 import { SkillEmptyHint } from '@/components/skill-empty-hint'
 import { Input } from '@/components/ui/input'
-import { toast } from '@/components/ui/toaster'
 import { filterSkills, isProjectSkill, orderSkills, skillUsedBy } from '@/lib/skills'
 import { cn } from '@/lib/utils'
-import { BookmarkletPanel } from './settings/bookmarklets-section'
 
 /**
- * `/skills` — the skills catalog as its own top-level surface (was `/settings/skills`, moved
- * out of the Settings shell so it stops carrying the settings sub-nav): catalog + detail +
- * Refresh + the bookmarklet panel. `/settings/skills` now redirects here (routes.tsx) so pasted
- * links keep working. Skills are playbooks agents follow, not a knob — so this is a page, not a
- * settings section.
+ * `/skills` — the skills catalog as its own top-level surface: catalog + detail. `/settings/skills`
+ * redirects here (routes.tsx) so pasted links keep working. Skills are playbooks agents follow,
+ * not a knob — so this is a page, not a settings section.
+ *
+ * A pure local-discovery reader (A15, decision 7 — spec §16a.1): remote team skills, the import
+ * panel and the Refresh button are retired along with `skills-remote.ts`/`skills-update.ts`.
+ * `~/.agents/skills/` is already a supported discovery location and needs no clone, cache or
+ * network. The retired hosted-mode "Run from GitHub" deep-link panel is retired with that
+ * whole surface (decision 5) — the GitHub tab's "Hand this to the agent" card replaces it.
  *
  * The two standing feedback items stay built in:
  *  - #377 project-first and bold: the list renders through `orderSkills`/`filterSkills`, the
@@ -33,13 +31,7 @@ import { BookmarkletPanel } from './settings/bookmarklets-section'
  *    keyed React elements inside one persistent scroll container — a refresh re-renders rows
  *    in place instead of rebuilding the pane, so neither the selection nor the scroll
  *    position can be lost (the legacy innerHTML rebuild lost both).
- *
- * The pinned "Run from GitHub" entry (spec 011 — must not drown under a long team catalog)
- * opens the bookmarklet panel via the legacy `__bm` sentinel in the same query param.
  */
-
-const BOOKMARKLETS = '__bm'
-const IMPORT = '__import'
 
 export function SkillsRoute() {
   return (
@@ -57,23 +49,8 @@ export function SkillsRoute() {
 function SkillsCatalog() {
   const skillsQuery = useSkills()
   const workflowsQuery = useWorkflows()
-  const importableQuery = useImportableSkills()
   const [searchParams] = useSearchParams()
   const [query, setQuery] = useState('')
-  const queryClient = useQueryClient()
-  const projects = useProjects()
-  const scope = useProjectScope()
-  const updateProjectId = scope.projectId ?? projects.data?.bootProject ?? ''
-
-  const refresh = useMutation({
-    mutationFn: () => refreshSkills(),
-    onSuccess: (catalog) => {
-      // The POST answers the merged catalog — seed the shared query instead of refetching.
-      queryClient.setQueryData(queryKeys.skills, catalog)
-      toast('Team skills refreshed.')
-    },
-    onError: (error) => toast(error.message, { tone: 'danger' }),
-  })
 
   if (skillsQuery.isError) {
     return (
@@ -88,19 +65,11 @@ function SkillsCatalog() {
   }
 
   const skills = orderSkills(skillsQuery.data ?? [])
-  // Only offer the import surface when a default (vendor) repo actually has skills to import —
-  // a repo with its own configured `skillsRepos` gates nothing, so the endpoint answers empty.
-  const canImport = (importableQuery.data?.length ?? 0) > 0
   const param = searchParams.get('skill')
-  // Explicit choice if it still exists, else the first skill, else the bookmarklet panel —
-  // the legacy fallback rule. A vanished selection degrades, it never crashes. The two pinned
-  // panels (import, bookmarklets) are sentinels, not catalog names.
+  // Explicit choice if it still exists, else the first skill — a vanished selection degrades,
+  // it never crashes.
   const selection =
-    param === BOOKMARKLETS || param === IMPORT
-      ? param
-      : param !== null && skills.some((skill) => skill.name === param)
-        ? param
-        : (skills[0]?.name ?? (canImport ? IMPORT : BOOKMARKLETS))
+    param !== null && skills.some((skill) => skill.name === param) ? param : (skills[0]?.name ?? null)
   const selected = skills.find((skill) => skill.name === selection) ?? null
   const shown = filterSkills(skills, query)
 
@@ -127,20 +96,6 @@ function SkillsCatalog() {
             onChange={(event) => setQuery(event.target.value)}
             className="h-8 text-[13px]"
           />
-          <button
-            type="button"
-            data-slot="skills-refresh"
-            title="git fetch the team skills repos"
-            disabled={refresh.isPending}
-            onClick={() => refresh.mutate()}
-            className="flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-55"
-          >
-            <RefreshCwIcon
-              aria-hidden="true"
-              className={cn('size-3', refresh.isPending && 'motion-safe:animate-spin')}
-            />
-            Refresh
-          </button>
         </div>
 
         <ul data-slot="skill-rows" className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
@@ -154,52 +109,6 @@ function SkillsCatalog() {
             </li>
           )}
         </ul>
-
-        {/* Always visible below the scrollable rows — the pinned panels. */}
-        <div className="shrink-0 border-t border-border p-2">
-          {canImport ? (
-            <Link
-              to={`/skills?skill=${IMPORT}`}
-              data-slot="import-skills-row"
-              aria-current={selection === IMPORT ? 'page' : undefined}
-              className={cn(
-                'mb-1 flex flex-col gap-0.5 rounded-md px-2.5 py-2 transition-colors hover:bg-muted',
-                selection === IMPORT && 'bg-muted',
-              )}
-            >
-              <span className="flex min-w-0 items-center gap-2">
-                <DownloadIcon aria-hidden="true" className="size-3.5 shrink-0 text-primary" />
-                <span className="min-w-0 truncate text-[13px] font-medium">Manage skills</span>
-                <span className="ml-auto shrink-0 rounded-full border border-border px-2 py-px font-mono text-[10.5px] text-soft-foreground">
-                  open-mercato
-                </span>
-              </span>
-              <span className="pl-[22px] text-xs text-soft-foreground">
-                Choose which open-mercato skills appear in your catalog.
-              </span>
-            </Link>
-          ) : null}
-          <Link
-            to={`/skills?skill=${BOOKMARKLETS}`}
-            data-slot="bookmarklets-row"
-            aria-current={selection === BOOKMARKLETS ? 'page' : undefined}
-            className={cn(
-              'flex flex-col gap-0.5 rounded-md px-2.5 py-2 transition-colors hover:bg-muted',
-              selection === BOOKMARKLETS && 'bg-muted',
-            )}
-          >
-            <span className="flex min-w-0 items-center gap-2">
-              <ZapIcon aria-hidden="true" className="size-3.5 shrink-0 text-primary" />
-              <span className="min-w-0 truncate text-[13px] font-medium">Run from GitHub</span>
-              <span className="ml-auto shrink-0 rounded-full border border-border px-2 py-px font-mono text-[10.5px] text-soft-foreground">
-                bookmarklets
-              </span>
-            </span>
-            <span className="pl-[22px] text-xs text-soft-foreground">
-              One-click skill launch from any GitHub PR or issue.
-            </span>
-          </Link>
-        </div>
       </section>
 
       {/* Detail pane. Hidden below md until the URL carries a selection. */}
@@ -213,15 +122,10 @@ function SkillsCatalog() {
             data-slot="skills-back"
             className="mb-3 inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground md:hidden"
           >
-            <ArrowLeftIcon aria-hidden="true" className="size-3.5" />
             Back to the list
           </Link>
 
-          {selection === IMPORT ? (
-            <ImportSkillsPanel projectId={updateProjectId} />
-          ) : selection === BOOKMARKLETS ? (
-            <BookmarkletPanel skills={skills} />
-          ) : selected ? (
+          {selected ? (
             <SkillDetailBody
               skill={selected}
               usedBy={skillUsedBy(workflowsQuery.data?.workflows ?? [], selected.name)}

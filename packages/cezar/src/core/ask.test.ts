@@ -135,6 +135,11 @@ describe('parseAskMarker', () => {
     expect(parseAskMarker(turn)).toEqual(valid);
   });
 
+  it('accepts the DUCK:ASK spelling cezar now emits (dual-read shim, spec §2.2.2)', () => {
+    const turn = `Here are the options.\nDUCK:ASK ${askJson}`;
+    expect(parseAskMarker(turn)).toEqual(valid);
+  });
+
   it('tolerates trailing whitespace/newlines after the JSON', () => {
     expect(parseAskMarker(`text\nCEZ:ASK ${askJson}\n  \n`)).toEqual(valid);
   });
@@ -223,6 +228,10 @@ describe('parseAskMarkerResult diagnostics', () => {
 describe('stripAskMarker', () => {
   it('removes a trailing CEZ:ASK marker for display', () => {
     expect(stripAskMarker(`Pick one.\nCEZ:ASK ${askJson}`)).toBe('Pick one.');
+  });
+
+  it('removes a trailing DUCK:ASK marker too (the spelling cezar now emits)', () => {
+    expect(stripAskMarker(`Pick one.\nDUCK:ASK ${askJson}`)).toBe('Pick one.');
   });
 
   it('leaves text without a marker untouched', () => {

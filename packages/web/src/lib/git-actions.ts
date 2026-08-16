@@ -26,9 +26,6 @@ export interface GitActionState {
    *  The DTO rather than a local copy: `available` is OPTIONAL there (absent until the
    *  availability probe warms), and re-declaring it here is what hid that. */
   forge: ForgeInfo | null
-  /** `/api/health` `capabilities.localHandoff`. False (or unknown) = hosted mode: local-
-   *  machine actions are HIDDEN entirely, never shown disabled. */
-  localHandoff: boolean
   /** Whether any step recorded an agent session — the terminal handoff resumes it. */
   hasSession: boolean
   /** The run's PR, once known — flips Create PR into View PR. */
@@ -109,9 +106,8 @@ function createPrAction(state: GitActionState): GitAction {
  * The policy. Slots:
  *  - primary: **View PR** once a PR URL is known, otherwise **Commit** (the workhorse).
  *  - secondary: **Push**, then **Create PR** while there is no PR yet.
- *  - menu: **Open in terminal** (the open-in-cli session handoff) — present ONLY in local
- *    mode; hosted mode (`localHandoff: false`) hides it entirely, per the deployment-modes
- *    doctrine (hidden, not disabled — there is no "my machine" to explain a disable with).
+ *  - menu: **Open in terminal** (the open-in-cli session handoff) — always offered; the
+ *    hosted-mode deployment whose actions were hidden behind a local-handoff gate is retired (A15).
  */
 export function gitActionPolicy(state: GitActionState): GitActionBar {
   const primary: GitAction = state.prUrl
@@ -123,26 +119,24 @@ export function gitActionPolicy(state: GitActionState): GitActionBar {
     : [pushAction(state), createPrAction(state)]
 
   const menu: GitAction[] = []
-  if (state.localHandoff) {
-    // Same gate as the header's Terminal button (run-actions.ts): the engine must have let
-    // go of the session, and there must be one to resume.
-    const terminal: GitAction = !state.hasSession
+  // Same gate as the header's Terminal button (run-actions.ts): the engine must have let
+  // go of the session, and there must be one to resume.
+  const terminal: GitAction = !state.hasSession
+    ? {
+        id: 'open-terminal',
+        label: 'Open in terminal',
+        enabled: false,
+        reason: 'Terminal unavailable — no agent session to resume',
+      }
+    : isActive(state.status)
       ? {
           id: 'open-terminal',
           label: 'Open in terminal',
           enabled: false,
-          reason: 'Terminal unavailable — no agent session to resume',
+          reason: 'Terminal unavailable — the session is still active in the engine',
         }
-      : isActive(state.status)
-        ? {
-            id: 'open-terminal',
-            label: 'Open in terminal',
-            enabled: false,
-            reason: 'Terminal unavailable — the session is still active in the engine',
-          }
-        : { id: 'open-terminal', label: 'Open in terminal', enabled: true }
-    menu.push(terminal)
-  }
+      : { id: 'open-terminal', label: 'Open in terminal', enabled: true }
+  menu.push(terminal)
 
   return { primary, secondary, menu }
 }

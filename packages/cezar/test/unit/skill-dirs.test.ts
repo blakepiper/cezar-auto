@@ -17,7 +17,7 @@ test('the project skill dirs the hint promises are the ones discovery actually s
     SKILL_DIRS.map((d) => d.dir),
     [
       // Named individually by the hint (`SKILL_PROJECT_DIRS`, same order).
-      '.ai/cezar/skills',
+      '.ai/coducktor/skills',
       '.ai/skills',
       '.agents/skills',
       // Per-agent mirrors of `.agents/skills` — the hint folds these into its

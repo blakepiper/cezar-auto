@@ -32,8 +32,8 @@ describe('the github checks API', () => {
 
   beforeEach(() => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-ghchecks-'));
-    mkdirSync(join(repoRoot, '.ai/cezar'), { recursive: true });
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    mkdirSync(join(repoRoot, '.ai/coducktor'), { recursive: true });
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     app = createApp({ repoRoot, store, manager: {} as RunManager, version: '0.0.0-test' });
   });
 

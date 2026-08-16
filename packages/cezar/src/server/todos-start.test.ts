@@ -43,7 +43,7 @@ describe('POST /api/v1/todos/:id/start', () => {
     // rather than inherited from whatever the dev box exports.
     process.env.CEZ_FOLLOWUPS = '1';
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-todos-start-'));
-    dataDir = join(repoRoot, '.ai/cezar');
+    dataDir = join(repoRoot, '.ai/coducktor');
     store = RunStore.open(dataDir);
     captured = undefined;
     const manager = {
@@ -245,7 +245,7 @@ describe('POST /api/v1/todos/:id/start', () => {
 
   it('rejects a model override while locked but still permits choosing the runner', async () => {
     writeFileSync(
-      join(repoRoot, '.ai', 'cezar', 'config.json'),
+      join(repoRoot, '.ai', 'coducktor', 'config.json'),
       JSON.stringify({ modelsLocked: true }),
       'utf8',
     );

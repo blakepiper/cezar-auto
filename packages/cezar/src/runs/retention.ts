@@ -1,7 +1,7 @@
 // Count-based worktree retention (#483). A busy cockpit leaves one full repo
-// checkout per finished task under `.ai/cezar/worktrees/<runId>`; nothing bounds
+// checkout per finished task under `.ai/coducktor/worktrees/<runId>`; nothing bounds
 // the total, so disk saturates. This module decides *which* finished worktrees
-// to reclaim (directory only — the `cez/<id8>` branch is kept, so the work stays
+// to reclaim (directory only — the `duck/<id8>` branch is kept, so the work stays
 // recoverable) and the thin I/O enforcer that performs the reclaim. The selector
 // is pure and unit-testable; the enforcer never throws (helper discipline).
 import { existsSync } from 'node:fs';
@@ -58,7 +58,7 @@ export interface RematerializeStore {
 /**
  * If retention (#483) reclaimed this run's worktree — branch kept, directory
  * gone, `worktreeReclaimedAt` stamped — re-materialize the directory (via the
- * idempotent `createWorktree`, which reattaches the surviving `cez/<id8>`
+ * idempotent `createWorktree`, which reattaches the surviving `duck/<id8>`
  * branch) and CLEAR the stamp. Called on the resume/continue path so a resumed
  * run regains its isolated tree and becomes eligible for retention again;
  * without it the run would keep a directory on disk while staying invisible to

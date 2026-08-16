@@ -1,6 +1,4 @@
 import { join } from 'node:path';
-import { AutomationStore } from '../automations/store.ts';
-import { reconcileAutomationReceipts } from '../automations/task-template.ts';
 import { DEFAULT_WORKTREE_RETENTION, resolveWorktreeRetention } from '../config.ts';
 import { pruneOrphans } from '../git-worktree.ts';
 import { reclaimWorktrees } from '../runs/retention.ts';
@@ -8,13 +6,12 @@ import { RunStore } from '../runs/store.ts';
 import { WorkspaceSemaphore } from '../workspace/semaphore.ts';
 import type { QuotaCoordinator } from '../core/quota/coordinator.ts';
 import { RunManager } from '../workflows/run.ts';
-import { ensureLaunchKey } from './launch-key.ts';
 import { getRepoInfo } from './git.ts';
 
 /**
  * Per-project server context (spec 2026-07-20-multi-project-workspace,
- * "Project contexts" + "Boot flow"): one `{store, manager, dataDir,
- * launchKey}` bundle per registered project, built lazily on first access.
+ * "Project contexts" + "Boot flow"): one `{store, manager, dataDir}` bundle
+ * per registered project, built lazily on first access.
  *
  * Building a context mirrors what `serveCommand` does for the boot project
  * today — `RunStore.open(dataDir, { keepLive: true })`, `new RunManager`,
@@ -32,18 +29,15 @@ export interface ProjectContext {
   id: string;
   /** Realpath'd repo root the registry holds for this project. */
   root: string;
-  /** `<root>/.ai/cezar` — all of this project's on-disk state. */
+  /** `<root>/.ai/coducktor` — all of this project's on-disk state. */
   dataDir: string;
   store: RunStore;
   manager: RunManager;
-  automationStore: AutomationStore;
-  /** Bookmarklet auto-start secret (spec 011), ensured at context build. */
-  launchKey: string;
 }
 
 /** Minimal registry shape the context map needs — matches
  *  `workspace/projects.ts` `ProjectListEntry` structurally, but injected so
- *  tests stay hermetic (no `~/.cezar` reads). */
+ *  tests stay hermetic (no `~/.coducktor` reads). */
 export interface ProjectContextSource {
   id: string;
   root: string;
@@ -54,10 +48,6 @@ export interface ProjectContextSource {
 export interface ProjectContextDeps {
   /** Registry lookup — the workspace `listProjects()` in production. */
   listProjects: () => Promise<readonly ProjectContextSource[]>;
-  /** Resolve the one automation store owned by this project. Production
-   *  injects the workspace automation coordinator's cached store so API
-   *  mutations and scheduler reads share the same in-memory state. */
-  automationStore?: (projectId: string, root: string) => AutomationStore;
   /** Workspace-wide parallel-cap semaphore (spec 2026-07-20, step 2.5). Boot
    *  passes the ONE instance it already gave the boot manager, so every
    *  project's RunManager counts against the same `resources.maxParallel`.
@@ -208,20 +198,16 @@ export class ProjectContexts {
     if (!project) throw new ProjectContextError('unknown-project', projectId);
     if (project.status === 'missing') throw new ProjectContextError('missing-root', projectId);
 
-    const dataDir = join(project.root, '.ai/cezar');
+    const dataDir = join(project.root, '.ai/coducktor');
     // keepLive + recover() (#367), same as serveCommand: runs that were live
     // when this project's context last existed are re-queued or resumed.
     const store = RunStore.open(dataDir, { keepLive: true });
-    const automationStore = this.deps.automationStore?.(project.id, project.root)
-      ?? AutomationStore.open(dataDir);
-    reconcileAutomationReceipts(automationStore, store);
     this.notifyStoreCreated(store);
     const manager = new RunManager(store, project.root, {
       semaphore: this.semaphore,
       quotaCoordinator: this.deps.quotaCoordinator,
     });
     try {
-      const launchKey = ensureLaunchKey(dataDir);
       // Startup reconcile (spec 006) + count-based retention (#483) — the same
       // best-effort sweeps serveCommand runs for the boot project, gated on the
       // root actually being a git repo.
@@ -235,7 +221,7 @@ export class ProjectContexts {
         await reclaimWorktrees(project.root, store, keep).catch(() => [] as string[]);
       }
       await manager.recover();
-      return { id: project.id, root: project.root, dataDir, store, manager, automationStore, launchKey };
+      return { id: project.id, root: project.root, dataDir, store, manager };
     } catch (err) {
       // A failed build must not leak the half-built context's subscriptions.
       teardown({ store, manager });

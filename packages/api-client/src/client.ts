@@ -20,7 +20,7 @@ import type { SuccessStatusCode } from 'hono/utils/http-status'
  * ```
  *
  * Only the versioned surface (`/api/v1/*`) is typed. The legacy `/api/*` paths stay frozen for
- * the bookmarklets and scripts that already call them (BACKWARD_COMPATIBILITY.md §2) and are
+ * the saved deep links and scripts that already call them (BACKWARD_COMPATIBILITY.md §2) and are
  * deliberately not part of what a new consumer is invited to build on.
  */
 export interface CezarClientOptions {

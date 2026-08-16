@@ -11,7 +11,7 @@ import { AgentBrowser, readTestEnv } from './agent-browser'
  *
  * Reachability: fully reachable — the section needs no forge and no agent CLI; the base-branch
  * picker only needs the dry-run repo to be a git checkout (asserted, not assumed). The suite
- * mutates exactly one store, `.ai/cezar/config.json`, saved in beforeAll and restored byte-for-
+ * mutates exactly one store, `.ai/coducktor/config.json`, saved in beforeAll and restored byte-for-
  * byte in afterAll (`loadConfig` reads on demand and never caches, so the restore is complete).
  */
 
@@ -21,7 +21,7 @@ const sessionId = `e2e-settings-agents-${process.pid}`
 const DESKTOP = { width: 1440, height: 900 }
 
 // Where `src/index.ts` puts the data dir, for the server booted from this worktree.
-const dataDir = resolve(import.meta.dirname, '../../../.ai/cezar')
+const dataDir = resolve(import.meta.dirname, '../../../.ai/coducktor')
 const configFile = resolve(dataDir, 'config.json')
 
 let browser: AgentBrowser

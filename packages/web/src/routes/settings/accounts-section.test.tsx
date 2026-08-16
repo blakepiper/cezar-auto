@@ -133,14 +133,6 @@ function serve(
           { id: 'cli:claude', label: 'Claude CLI', icon: 'claude' },
         ] })
       }
-      if (url.startsWith('/api/v1/fs/browse') && method === 'GET') {
-        return json({
-          path: '/home/u',
-          parent: null,
-          dirs: [{ name: '.claude-second', path: '/home/u/.claude-second', isRepo: false }],
-          truncated: false,
-        })
-      }
       if (url === '/api/v1/projects' && method === 'GET') {
         return json({ projects: [], bootProject: 'boot', projectsDir: '~/cezar/projects' })
       }
@@ -841,42 +833,6 @@ describe('the add-account dialog', () => {
     fireEvent.change(dirField(), { target: { value: '   ' } })
     expect(confirmButton().disabled).toBe(true)
     expect(requests.some((r) => r.method === 'POST')).toBe(false)
-  })
-
-  it('asks the browser for HIDDEN folders — otherwise it lists no candidate at all', async () => {
-    serve({ editable: true, profileCapableProviders: ['claude', 'codex'],
-      defaults: {},
-      selections: {}, profiles: DEFAULTS })
-    renderAccounts()
-    await openDialog()
-
-    // Collapsed by default: typing is the fast path, and no browse request has been made yet.
-    expect(requests.some((r) => r.url.startsWith('/api/v1/fs/browse'))).toBe(false)
-    fireEvent.click(screen.getByRole('button', { name: 'Browse…' }))
-
-    await waitFor(() => expect(requests.some((r) => r.url.startsWith('/api/v1/fs/browse'))).toBe(true))
-    expect(requests.find((r) => r.url.startsWith('/api/v1/fs/browse'))?.url).toContain('showHidden=1')
-    // …and the dotfolder the server returned is actually offered.
-    expect(await screen.findByText('.claude-second')).not.toBeNull()
-  })
-
-  it('browsing FILLS the folder field rather than replacing it as a hidden selection', async () => {
-    serve({ editable: true, profileCapableProviders: ['claude', 'codex'],
-      defaults: {},
-      selections: {}, profiles: DEFAULTS })
-    renderAccounts()
-    await openDialog()
-    fireEvent.click(screen.getByRole('button', { name: 'Browse…' }))
-
-    fireEvent.click(await screen.findByText('.claude-second'))
-    // The user can see, and still edit, exactly what will be submitted.
-    await waitFor(() => expect(dirField().value).toBe('/home/u/.claude-second'))
-
-    fireEvent.click(confirmButton())
-    await waitFor(() => expect(requests.some((r) => r.method === 'POST')).toBe(true))
-    expect(requests.find((r) => r.method === 'POST')?.body).toMatchObject({
-      configDir: '/home/u/.claude-second',
-    })
   })
 
   it('opens on the agent whose own Add button was clicked', async () => {

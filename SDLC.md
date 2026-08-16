@@ -49,14 +49,14 @@ Priority is how urgent the work is; risk is how dangerous the change is to ship.
 
 When no priority label is set, infer one:
 
-- `priority-extreme` — the published CLI is broken for users (`npx cezar` fails), data loss in `.ai/cezar/`, or an active security incident.
+- `priority-extreme` — the published CLI is broken for users (`npx cezar` fails), data loss in `.ai/coducktor/`, or an active security incident.
 - `priority-high` — security hardening or a release-blocking regression.
 - `priority-medium` — ordinary bug fixes and net-new features (also the default reading of unset).
 - `priority-low` — cosmetic, docs-only, dependency bumps, follow-up cleanup.
 
 When no risk label is set, infer one:
 
-- `risk-high` — the runner seam (`packages/cezar/src/core/agent-runner.ts`), worktree/branch handling, the `.ai/cezar/` state file formats, the HTTP API surface, or broad cross-cutting edits.
+- `risk-high` — the runner seam (`packages/cezar/src/core/agent-runner.ts`), worktree/branch handling, the `.ai/coducktor/` state file formats, the HTTP API surface, or broad cross-cutting edits.
 - `risk-medium` — an ordinary single-area change (also the default reading of unset).
 - `risk-low` — docs-only, typo, or isolated cosmetic changes.
 

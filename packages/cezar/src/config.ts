@@ -6,21 +6,13 @@ import { RUNNER_IDS } from './core/agent-runner.ts';
 import type { RunnerSelection } from './core/runner-selection.ts';
 
 /**
- * Optional advanced config at `.ai/cezar/config.json`. Zero-config rule:
+ * Optional advanced config at `.ai/coducktor/config.json`. Zero-config rule:
  * a missing file behaves exactly like the default below, an unreadable or
- * invalid file degrades to the default too (never blocks startup). Team skill
- * repositories are opt-in; an explicit `skillsRepos` can add one.
+ * invalid file degrades to the default too (never blocks startup).
+ *
+ * Remote team skill repos are retired (A15, decision 7 — spec §16a Tier 2):
+ * skills are discovered locally only, see `skills.ts`.
  */
-const skillsRepoSchema = z.object({
-  /** `owner/name` (GitHub shorthand), a full git URL, or a local/file:// path. */
-  repo: z.string().min(1),
-  ref: z.string().min(1).default('main'),
-});
-
-export type SkillsRepoSource = z.infer<typeof skillsRepoSchema>;
-
-/** No remote skill source is contacted unless the repo explicitly configures one. */
-export const DEFAULT_SKILLS_REPOS: SkillsRepoSource[] = [];
 
 /** Last-resort retention when neither the repo nor the workspace says anything. */
 export const DEFAULT_WORKTREE_RETENTION = 10;
@@ -32,7 +24,6 @@ const worktreeRetentionSchema = z.number().int().min(0).max(1000);
 const runnerSelectionSchema = z.union([z.enum(RUNNER_IDS), z.literal('auto')]);
 
 const configSchema = z.object({
-  skillsRepos: z.array(skillsRepoSchema).default(DEFAULT_SKILLS_REPOS),
   /** How many tasks may run at once (spec 006). Non-git dirs always run 1. */
   maxParallel: z.number().int().min(1).max(16).default(2),
   /**
@@ -144,17 +135,17 @@ function withMachineDefaults(raw: unknown, machine: WorkspaceConfig['agentDefaul
 }
 
 /**
- * Read `.ai/cezar/config.json` on demand — never cached, never throws.
+ * Read `.ai/coducktor/config.json` on demand — never cached, never throws.
  *
  * Also reads the machine-wide defaults, which is one more small JSON read and deliberately not
- * cached for the same reason this one is not: `~/.cezar/` is shared by every cezar process on the
+ * cached for the same reason this one is not: `~/.coducktor/` is shared by every cezar process on the
  * machine, so a snapshot is a staleness bug.
  */
 export async function loadConfig(repoRoot: string): Promise<CezConfig> {
   const machine = (await loadWorkspaceConfig()).agentDefaults;
   let raw: string;
   try {
-    raw = await readFile(join(repoRoot, '.ai/cezar', 'config.json'), 'utf8');
+    raw = await readFile(join(repoRoot, '.ai/coducktor', 'config.json'), 'utf8');
   } catch {
     return configSchema.parse(withMachineDefaults({}, machine));
   }
@@ -179,7 +170,7 @@ export async function loadConfig(repoRoot: string): Promise<CezConfig> {
 async function ownWorktreeRetention(repoRoot: string): Promise<number | undefined> {
   let raw: string;
   try {
-    raw = await readFile(join(repoRoot, '.ai/cezar', 'config.json'), 'utf8');
+    raw = await readFile(join(repoRoot, '.ai/coducktor', 'config.json'), 'utf8');
   } catch {
     return undefined; // no file — nothing set
   }
@@ -192,43 +183,6 @@ async function ownWorktreeRetention(repoRoot: string): Promise<number | undefine
     return field.success ? field.data : undefined;
   } catch {
     return undefined; // malformed JSON — same as unset
-  }
-}
-
-/**
- * The default skills repos that are *opt-in per skill* (the "import skills"
- * flow): the set of repo identifiers a user must explicitly import from before
- * their skills join the catalog. This is exactly `DEFAULT_SKILLS_REPOS` when the
- * repo has NOT configured its own `skillsRepos` — empty by default so startup
- * never contacts a remote source — and empty once a repo takes control by
- * setting `skillsRepos` (then everything it lists auto-loads, unchanged).
- *
- * `loadConfig` cannot answer this: the schema's `.default(DEFAULT_SKILLS_REPOS)`
- * materializes the key, so a parsed config can't tell "the user chose these" from
- * "the user said nothing". So we probe the raw file for the key's presence — the
- * same reason `ownWorktreeRetention` below reads the raw JSON.
- */
-export async function gatedSkillsRepos(repoRoot: string): Promise<Set<string>> {
-  const none = new Set<string>();
-  let raw: string;
-  try {
-    raw = await readFile(join(repoRoot, '.ai/cezar', 'config.json'), 'utf8');
-  } catch {
-    // No file — the defaults are in effect, so they are the opt-in set.
-    return new Set(DEFAULT_SKILLS_REPOS.map((r) => r.repo));
-  }
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') {
-      return new Set(DEFAULT_SKILLS_REPOS.map((r) => r.repo));
-    }
-    // The user took control of the source list — nothing is gated; a value the
-    // schema would refuse degrades to the default too (same as `loadConfig`).
-    if ((parsed as Record<string, unknown>).skillsRepos !== undefined) return none;
-    return new Set(DEFAULT_SKILLS_REPOS.map((r) => r.repo));
-  } catch {
-    // Malformed JSON degrades to the default (which loadConfig also does).
-    return new Set(DEFAULT_SKILLS_REPOS.map((r) => r.repo));
   }
 }
 

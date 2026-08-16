@@ -249,12 +249,12 @@ describe('workspace projects', () => {
     });
 
     it('suppresses a cezar task worktree root', async () => {
-      const worktree = makeDir('host-repo', '.ai', 'cezar', 'worktrees', 'abc12345');
+      const worktree = makeDir('host-repo', '.ai', 'coducktor', 'worktrees', 'abc12345');
       expect(await shouldRegisterProject(worktree)).toBe(false);
     });
 
     it('suppresses a repo nested deeper inside a task worktree', async () => {
-      const nested = join(repos, 'host', '.ai', 'cezar', 'worktrees', 'run-1', 'sub', 'repo');
+      const nested = join(repos, 'host', '.ai', 'coducktor', 'worktrees', 'run-1', 'sub', 'repo');
       // Path need not exist — normalizeRoot degrades to resolve(); the guard
       // must still recognize the worktree marker on the raw spelling.
       expect(await shouldRegisterProject(nested)).toBe(false);

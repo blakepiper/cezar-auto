@@ -19,7 +19,7 @@ import type { ConcreteReasoningEffort } from '@open-mercato/cezar-contract';
 /**
  * The user-selectable runners (what config/GUI expose), in display order — the SINGLE source of
  * truth for the set. Every runtime enumeration derives from this tuple (zod schemas, the
- * server-install "at least one agent CLI" gate, the CLI-handoff registry) rather than repeating
+ * "at least one agent CLI" install gate, the CLI-handoff registry) rather than repeating
  * the literals, so adding runner #5 is a one-line change here and typecheck finds the rest.
  */
 export const RUNNER_IDS = ['claude', 'codex', 'opencode', 'pi'] as const;

@@ -7,11 +7,11 @@ import { defaultWorkspaceConfig, loadWorkspaceConfig } from './config.ts';
 import { runMigrations, WORKSPACE_MIGRATIONS, type WorkspaceMigration } from './migrations.ts';
 
 /**
- * Workspace migration framework + migration 001 under test (spec
- * 2026-07-20-multi-project-workspace, step 1.4): idempotent re-runs, additive
- * imports that never overwrite globally-set keys, per-step `schemaVersion`
- * persistence, and the non-blocking degradation rule (an unwritable home logs
- * one warning, never throws).
+ * Workspace migration framework + migrations 001/002 under test (spec
+ * 2026-07-20-multi-project-workspace, step 1.4; A15 rename decision 6):
+ * idempotent re-runs, additive imports that never overwrite globally-set keys,
+ * per-step `schemaVersion` persistence, and the non-blocking degradation rule
+ * (an unwritable home logs one warning, never throws).
  */
 describe('workspace migrations', () => {
   const originalHome = process.env.CEZ_HOME;
@@ -34,8 +34,8 @@ describe('workspace migrations', () => {
   });
 
   const writeRepoFile = (name: string, value: unknown) => {
-    mkdirSync(join(repoRoot, '.ai/cezar'), { recursive: true });
-    writeFileSync(join(repoRoot, '.ai/cezar', name), JSON.stringify(value), 'utf8');
+    mkdirSync(join(repoRoot, '.ai/coducktor'), { recursive: true });
+    writeFileSync(join(repoRoot, '.ai/coducktor', name), JSON.stringify(value), 'utf8');
   };
 
   const rawGlobalConfig = () =>
@@ -43,11 +43,11 @@ describe('workspace migrations', () => {
   const rawGlobalUiState = () =>
     JSON.parse(readFileSync(workspaceUiStatePath(), 'utf8')) as Record<string, unknown>;
 
-  it('fresh home: creates config.json with defaults and schemaVersion 1', async () => {
+  it('fresh home: creates config.json with defaults and schemaVersion 2', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await runMigrations({ bootRepoRoot: null });
     const config = await loadWorkspaceConfig();
-    expect(config).toEqual({ ...defaultWorkspaceConfig(), schemaVersion: 1 });
+    expect(config).toEqual({ ...defaultWorkspaceConfig(), schemaVersion: 2 });
     expect(statSync(workspaceConfigPath()).mode & 0o777).toBe(0o600);
     // nothing to import → the global ui-state file is not created
     expect(existsSync(workspaceUiStatePath())).toBe(false);
@@ -61,13 +61,13 @@ describe('workspace migrations', () => {
       notifications: { enabled: false },
       githubView: 'prs', // project-scoped — must NOT go global
     });
-    const repoConfigBefore = readFileSync(join(repoRoot, '.ai/cezar/config.json'), 'utf8');
-    const repoUiBefore = readFileSync(join(repoRoot, '.ai/cezar/ui-state.json'), 'utf8');
+    const repoConfigBefore = readFileSync(join(repoRoot, '.ai/coducktor/config.json'), 'utf8');
+    const repoUiBefore = readFileSync(join(repoRoot, '.ai/coducktor/ui-state.json'), 'utf8');
 
     await runMigrations({ bootRepoRoot: repoRoot });
 
     const config = await loadWorkspaceConfig();
-    expect(config.schemaVersion).toBe(1);
+    expect(config.schemaVersion).toBe(2);
     expect(config.resources.maxParallel).toBe(5);
     expect(config.resources.memoryLimitMb).toBe(1024);
     expect(rawGlobalUiState()).toEqual({
@@ -76,8 +76,8 @@ describe('workspace migrations', () => {
     });
     expect(statSync(workspaceUiStatePath()).mode & 0o777).toBe(0o600);
     // additive: per-repo files are byte-identical
-    expect(readFileSync(join(repoRoot, '.ai/cezar/config.json'), 'utf8')).toBe(repoConfigBefore);
-    expect(readFileSync(join(repoRoot, '.ai/cezar/ui-state.json'), 'utf8')).toBe(repoUiBefore);
+    expect(readFileSync(join(repoRoot, '.ai/coducktor/config.json'), 'utf8')).toBe(repoConfigBefore);
+    expect(readFileSync(join(repoRoot, '.ai/coducktor/ui-state.json'), 'utf8')).toBe(repoUiBefore);
   });
 
   it('never overwrites keys already set globally (crash-interrupted re-run safety)', async () => {
@@ -119,7 +119,7 @@ describe('workspace migrations', () => {
     await runMigrations({ bootRepoRoot: repoRoot });
 
     const config = await loadWorkspaceConfig();
-    expect(config.schemaVersion).toBe(1);
+    expect(config.schemaVersion).toBe(2);
     expect(config.resources.maxParallel).toBe(5);
     expect(rawGlobalUiState().appearance).toEqual({ accent: 'violet' });
   });
@@ -185,11 +185,13 @@ describe('workspace migrations', () => {
     expect(existsSync(workspaceConfigPath())).toBe(false);
   });
 
-  it('stays at schemaVersion 1 — a purely additive key needs no migration', () => {
-    // Agent profiles (spec 2026-07-29) added `agentProfiles` and `projects[].agentProfile`, both
-    // optional with an absent value that means exactly today's behaviour. There is nothing to
-    // move, so there is nothing to migrate; this pins that so a no-op migration is not added
-    // reflexively the next time a key lands here.
-    expect(WORKSPACE_MIGRATIONS.map((m) => m.to)).toEqual([1]);
+  it('the migration list is [1, 2] — a purely additive key still needs no migration', () => {
+    // Migration 001 = the multi-project-workspace import; 002 = the coducktor
+    // state-dir rename (A15 decision 6), a real on-disk move. Agent profiles
+    // (spec 2026-07-29) added `agentProfiles` and `projects[].agentProfile`, both
+    // optional with an absent value that means exactly today's behaviour. There
+    // is nothing to move, so there is nothing to migrate; this pins that so a
+    // no-op migration is not added reflexively the next time a key lands here.
+    expect(WORKSPACE_MIGRATIONS.map((m) => m.to)).toEqual([1, 2]);
   });
 });

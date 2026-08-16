@@ -39,37 +39,15 @@ export const forgeInfoSchema = z.object({
 });
 export type ForgeInfo = z.infer<typeof forgeInfoSchema>;
 
-/** Server-side feature switches the cockpit reads once at boot. */
+/**
+ * Server-side feature switches the cockpit reads once at boot. Everything this used to carry
+ * besides `followups` — the retired hosted-mode, single-project, automations and spend-hiding
+ * switches — is retired (A15, decisions 5/7/8): there is no hosted deployment, no
+ * constrained single-repo mode, no automations subsystem, and spend always renders. See spec
+ * §16a and `BACKWARD_COMPATIBILITY.md`.
+ */
 export const capabilitiesSchema = z.object({
-  localHandoff: z.boolean(),
   followups: z.boolean(),
-  singleProject: z.boolean(),
-  /**
-   * `true` means `CEZ_AUTOMATIONS=1` opted this server into GitHub automations (#801). Off — the
-   * default — the whole feature is absent: no `Automations` nav item anywhere it is rendered, the
-   * `/api/v1/…/automations*` family answers `409`, and the workspace scheduler never polls GitHub.
-   *
-   * REQUIRED for the same reason as `tokenMetrics` below: this server always sends it.
-   */
-  automations: z.boolean(),
-  /**
-   * `false` means `CEZ_HIDE_TOKEN_METRICS=1` asks the browser to omit token counts and monetary
-   * cost (#481). The telemetry itself still rides in run/event payloads — this is presentation
-   * only.
-   *
-   * REQUIRED, because this server always sends it (`capabilities.ts` computes it from the env on
-   * every read) and this contract describes THIS server's wire. The DTO it replaces declared it
-   * optional so a newer cockpit could read an OLDER server, which is version skew a contract
-   * versioned in lockstep with the server cannot model. That tolerance lives where it belongs, in
-   * `web/src/lib/token-metrics.ts`, whose `!== false` read still treats an absent field as
-   * visible.
-   */
-  tokenMetrics: z.boolean(),
-  /** Current token-count presentation policy. Required on current servers;
-   * older payload tolerance belongs in the browser resolver. */
-  tokenUsageMetrics: z.boolean(),
-  /** Current backend-reported-cost presentation policy. */
-  costMetrics: z.boolean(),
 });
 export type Capabilities = z.infer<typeof capabilitiesSchema>;
 
@@ -80,7 +58,6 @@ export type Capabilities = z.infer<typeof capabilitiesSchema>;
  */
 export const healthResponseSchema = z.object({
   version: z.string(),
-  latestVersion: z.string().optional(),
   repoRoot: z.string(),
   repo: repoInfoSchema.nullable(),
   checks: z.array(backendCheckSchema),

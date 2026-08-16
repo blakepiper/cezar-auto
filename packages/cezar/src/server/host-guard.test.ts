@@ -7,21 +7,18 @@ import type { RunManager } from '../workflows/run.ts';
 import { createApp, type ServerDeps } from './server.ts';
 
 /**
- * DNS-rebinding guard: in local mode (loopback bind, no `CEZ_REMOTE`) every
- * legitimate caller addresses the cockpit as `localhost` / `127.x` / `[::1]`,
- * so a request whose Host header names anything else can only be a browser
- * that was rebound to 127.0.0.1 by an attacker-controlled DNS name — its
- * requests are same-origin to the attacker's page, and the Host header is the
- * one tell left. The guard turns those into a 403 before any route runs.
- *
- * Hosted mode (`CEZ_REMOTE=1` or a non-loopback bind) is exempt: the operator
- * deliberately exposed the server behind a hostname or proxy this code cannot
- * enumerate. A missing Host header fails closed in local mode; real HTTP/1.1
- * clients always send one, while the in-process test harness must add it.
+ * DNS-rebinding guard: in local mode (loopback bind) every legitimate caller
+ * addresses the cockpit as `localhost` / `127.x` / `[::1]`, so a request whose
+ * Host header names anything else can only be a browser that was rebound to
+ * 127.0.0.1 by an attacker-controlled DNS name — its requests are same-origin
+ * to the attacker's page, and the Host header is the one tell left. The guard
+ * turns those into a 403 before any route runs. A missing Host header fails
+ * closed; real HTTP/1.1 clients always send one, while the in-process test
+ * harness must add it. Local is the only deployment mode now (A15, decision 5
+ * retires hosted mode), so there is no exemption to stand down for.
  */
 describe('host-header guard (DNS rebinding)', () => {
   const savedHome = process.env.CEZ_HOME;
-  const savedRemote = process.env.CEZ_REMOTE;
   let home: string;
   let repoRoot: string;
   let store: RunStore;
@@ -30,9 +27,8 @@ describe('host-header guard (DNS rebinding)', () => {
     home = mkdtempSync(join(realpathSync(tmpdir()), 'cez-hostguard-home-'));
     repoRoot = mkdtempSync(join(realpathSync(tmpdir()), 'cez-hostguard-repo-'));
     process.env.CEZ_HOME = home;
-    delete process.env.CEZ_REMOTE;
-    mkdirSync(join(repoRoot, '.ai/cezar'), { recursive: true });
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    mkdirSync(join(repoRoot, '.ai/coducktor'), { recursive: true });
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
   });
 
   afterEach(() => {
@@ -40,15 +36,13 @@ describe('host-header guard (DNS rebinding)', () => {
     for (const dir of [home, repoRoot]) rmSync(dir, { recursive: true, force: true });
     if (savedHome === undefined) delete process.env.CEZ_HOME;
     else process.env.CEZ_HOME = savedHome;
-    if (savedRemote === undefined) delete process.env.CEZ_REMOTE;
-    else process.env.CEZ_REMOTE = savedRemote;
   });
 
   const makeApp = (over: Partial<ServerDeps> = {}) =>
     createApp({ repoRoot, store, manager: {} as RunManager, version: '0.0.0-test', ...over });
 
-  const request = (host: string | null, path = '/api/v1/health', over: Partial<ServerDeps> = {}) =>
-    makeApp(over).request(path, host === null ? {} : { headers: { host } });
+  const request = (host: string | null, path = '/api/v1/health') =>
+    makeApp().request(path, host === null ? {} : { headers: { host } });
 
   it.each(['localhost', 'localhost:4321', '127.0.0.1', '127.0.0.1:4321', '[::1]', '[::1]:4321'])(
     'allows the loopback spelling %s',
@@ -83,16 +77,5 @@ describe('host-header guard (DNS rebinding)', () => {
       body: JSON.stringify({ root: repoRoot }),
     });
     expect(res.status).toBe(403);
-  });
-
-  it('is exempt in hosted mode (CEZ_REMOTE=1) — the operator fronts it with their own hostname', async () => {
-    process.env.CEZ_REMOTE = '1';
-    const res = await request('cockpit.example.com');
-    expect(res.status).toBe(200);
-  });
-
-  it('is exempt for a non-loopback bind host — deliberately exposed', async () => {
-    const res = await request('cockpit.example.com', '/api/v1/health', { bindHost: '0.0.0.0' });
-    expect(res.status).toBe(200);
   });
 });

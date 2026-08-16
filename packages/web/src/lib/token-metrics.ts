@@ -1,28 +1,16 @@
-import type { HealthResponse } from '@open-mercato/cezar-api-client'
-
 export interface UsageMetricVisibility {
   tokens: boolean
   cost: boolean
 }
 
 /**
- * The one browser-side interpretation of the token/cost presentation capabilities.
- *
- * Missing health (still loading) and an older server without the additive fields both preserve
- * the historical visible default. The two new fields win independently; the legacy master is
- * only their fallback during version skew.
+ * Token counts and cost always render (A15, decision 8 — Tier 3's spend-hiding flags and their
+ * `capabilities.*` mirrors are retired: hiding
+ * spend only ever made sense for someone looking at a shared/demo instance that no longer
+ * exists). Kept as a function, not inlined at each call site, so the ~6 call sites that used to
+ * read this from `/api/health` don't each need their own edit — this is the one place that used
+ * to interpret the capability, and it still is.
  */
-export function usageMetricVisibility(
-  // `Partial`, deliberately: the CONTRACT declares `tokenMetrics` required because this server
-  // always sends it, so the absent case cannot be spelled with `Capabilities` itself. This helper
-  // is the one place that tolerates version skew — a newer cockpit reading an older server — so
-  // it is where the looser shape belongs.
-  health: { capabilities?: Partial<HealthResponse['capabilities']> } | undefined,
-): UsageMetricVisibility {
-  const capabilities = health?.capabilities
-  const legacy = capabilities?.tokenMetrics !== false
-  return {
-    tokens: capabilities?.tokenUsageMetrics ?? legacy,
-    cost: capabilities?.costMetrics ?? legacy,
-  }
+export function usageMetricVisibility(): UsageMetricVisibility {
+  return { tokens: true, cost: true }
 }

@@ -4,8 +4,8 @@ import { workspaceUiStatePath } from '../paths.ts';
 import { atomicWriteJsonSync } from './config.ts';
 
 /**
- * `~/.cezar/ui-state.json` — global GUI state, the workspace twin of the
- * per-repo `.ai/cezar/ui-state.json` (spec 2026-07-20-multi-project-workspace,
+ * `~/.coducktor/ui-state.json` — global GUI state, the workspace twin of the
+ * per-repo `.ai/coducktor/ui-state.json` (spec 2026-07-20-multi-project-workspace,
  * Data Model). Same split as `src/ui-state.ts`: this module owns the tolerant
  * read and the atomic write; the schema and key cap live at the route boundary
  * (`GET/PUT /api/workspace/ui-state`, step 2.7). The state is an opaque
@@ -15,7 +15,7 @@ import { atomicWriteJsonSync } from './config.ts';
  * collapse, the last visited location) stay in that browser's localStorage.
  */
 
-/** Read `~/.cezar/ui-state.json` on demand — never cached, never throws.
+/** Read `~/.coducktor/ui-state.json` on demand — never cached, never throws.
  *  Missing, unreadable, malformed, or non-object all degrade to `{}`.
  *
  *  Typed by the CONTRACT (`WorkspaceUiState`) for the same reason as its per-repo twin in
@@ -36,7 +36,7 @@ export async function readWorkspaceUiState(
 }
 
 /**
- * Read-modify-write for `~/.cezar/ui-state.json`, written with the same atomic
+ * Read-modify-write for `~/.coducktor/ui-state.json`, written with the same atomic
  * per-writer tmp+rename `0600` pattern (dir `0700`) as
  * `mergeWriteWorkspaceConfig` (`atomicWriteJsonSync` — one shared writer, so
  * the unique-tmp rule cannot drift between the two files). A missing or

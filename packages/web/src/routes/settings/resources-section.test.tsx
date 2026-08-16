@@ -11,7 +11,7 @@ import { AppRoutes } from '@/routes'
 
 /**
  * Global settings → Resources (step 3.5): `maxParallel` and `memoryLimitMb` moved out of the
- * per-repo config into `~/.cezar/config.json` (spec §"Resource governance" — they protect the
+ * per-repo config into `~/.coducktor/config.json` (spec §"Resource governance" — they protect the
  * host, not a repo). What this pins is the store: every read and write goes to
  * `/api/v1/workspace/config`, and the per-repo `/api/v1/config` is never touched from here — a
  * regression there would silently re-introduce a value the engine no longer reads.
@@ -29,10 +29,7 @@ function serve(
   requests = []
   const state: WorkspaceConfigResponse = {
     agentDefaults: {},
-    browseRoot: '~/',
     projectsDir: '~/cezar/projects',
-    skillsAutoUpdate: null,
-    effectiveSkillsAutoUpdate: true,
     composerDefaults: {
       autonomous: null,
       worktree: null,

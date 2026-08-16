@@ -140,7 +140,7 @@ const WORKFLOWS: WorkflowsResponse = {
 const SKILLS: Skill[] = [
   { name: 'g-review', description: 'global review', body: '', path: '/g/g-review.md', source: 'global' },
   { name: 'om-fix', description: 'project fixer', body: '', path: '/p/om-fix.md', source: 'ai' },
-  { name: 'team-x', description: 'team skill', body: '', path: '/t/team-x.md', source: 'team' },
+  { name: 'team-x', description: 'team skill', body: '', path: '/t/team-x.md', source: 'agents' },
 ]
 
 const PROVIDERS_CONNECTED: ProviderStatusResponse = {
@@ -230,9 +230,9 @@ function stubFetch(
           steps: [],
         })
       }
-      // The tab reads `capabilities.automations` (#801). The catch-all below answers `{}`, which
-      // is not a health payload at all — a reader would crash on it rather than degrade — so the
-      // default here is a real one, with automations off exactly as a default server reports.
+      // The catch-all below answers `{}`, which is not a health payload at all — a reader would
+      // crash on it rather than degrade — so the default here is a real one, exactly as a
+      // default server reports it.
       if (method === 'GET' && path === '/api/v1/health') return jsonResponse(health(['claude']))
       return jsonResponse({})
     }),
@@ -316,25 +316,6 @@ describe('the GitHub tab lists', () => {
     // No URL selection → the first item's detail renders (legacy parity), marked current.
     expect(rows()[0]?.getAttribute('aria-current')).toBe('page')
     await waitFor(() => expect(detail()?.textContent).toContain('Login form drops session'))
-  })
-
-  // #801: the tab's only cross-link into automations follows the capability — advertising
-  // "Set up automations" on a server that answers 409 would be a dead end.
-  it('offers the automations shortcut only while the capability is on', async () => {
-    stubFetch()
-    renderAt('/github')
-    await waitFor(() => expect(document.querySelector('[data-slot="gh-header"]')).not.toBeNull())
-    expect(screen.queryByRole('link', { name: 'Set up automations' })).toBeNull()
-
-    cleanup()
-    stubFetch({
-      'GET /api/v1/health': () => jsonResponse({
-        ...health(['claude']),
-        capabilities: { ...health(['claude']).capabilities, automations: true },
-      }),
-    })
-    renderAt('/github')
-    expect(await screen.findByRole('link', { name: 'Set up automations' })).not.toBeNull()
   })
 
   it('/github/prs lists pull requests', async () => {
@@ -1108,7 +1089,7 @@ const health = (backends: readonly Runner[]): HealthResponse => ({
   checks: backends.map((name) => ({ name, available: true })),
   defaultRunner: backends[0] ?? 'claude',
   forge: null,
-  capabilities: { localHandoff: true, tokenMetrics: true, tokenUsageMetrics: true, costMetrics: true, followups: true, singleProject: false, automations: false },
+  capabilities: { followups: true },
 })
 
 /** More than one installed backend — the only state that shows the runner pill. */

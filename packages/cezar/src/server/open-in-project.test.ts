@@ -10,9 +10,9 @@ import { createApp, type ServerDeps } from './server.ts';
  * `POST /api/v1/open-in` — Settings → "Project folder" → Open with.
  *
  * The route takes NO path: the folder is the scoped project's own root, so what has to be pinned
- * is which TARGETS it accepts and that hosted mode refuses before anything launches. `openInApp`
- * and the detection are mocked, so the suite never spawns a GUI app and never depends on which
- * editors happen to be installed on the machine running it.
+ * is which TARGETS it accepts. `openInApp` and the detection are mocked, so the suite never
+ * spawns a GUI app and never depends on which editors happen to be installed on the machine
+ * running it.
  */
 vi.mock('./open-in-app.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./open-in-app.ts')>();
@@ -33,20 +33,16 @@ import { apiRequest } from './loopback-request.testkit.ts';
 describe('POST /api/v1/open-in — the project folder in a local app', () => {
   let repoRoot: string;
   let store: RunStore;
-  const savedRemote = process.env.CEZ_REMOTE;
 
   beforeEach(() => {
     vi.clearAllMocks();
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-openproject-'));
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
-    delete process.env.CEZ_REMOTE;
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
   });
 
   afterEach(() => {
     store.flush();
     rmSync(repoRoot, { recursive: true, force: true });
-    if (savedRemote === undefined) delete process.env.CEZ_REMOTE;
-    else process.env.CEZ_REMOTE = savedRemote;
   });
 
   const post = (body: unknown, over: Partial<ServerDeps> = {}) =>
@@ -64,14 +60,6 @@ describe('POST /api/v1/open-in — the project folder in a local app', () => {
     // The server's own resolved root (realpath-normalized), not anything the client sent.
     expect(realpathSync(body.path)).toBe(realpathSync(repoRoot));
     expect(openInApp).toHaveBeenCalledWith('finder', body.path);
-  });
-
-  it('409s in hosted mode (CEZ_REMOTE=1) without launching anything', async () => {
-    process.env.CEZ_REMOTE = '1';
-    const res = await post({ target: 'finder' });
-    expect(res.status).toBe(409);
-    expect(((await res.json()) as { error: string }).error).toContain('hosted mode');
-    expect(openInApp).not.toHaveBeenCalled();
   });
 
   it('refuses an agent CLI: it would start a session in the checkout, not a worktree', async () => {

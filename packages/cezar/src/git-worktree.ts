@@ -7,15 +7,20 @@ import { isSafeGitRef } from './git-refs.ts';
 
 /**
  * Git worktree per task (spec 006). Each run gets its own branch
- * `cez/<id8>` checked out into `.ai/cezar/worktrees/<runId>` so agents never
+ * `duck/<id8>` checked out into `.ai/coducktor/worktrees/<runId>` so agents never
  * touch the user's working tree. Pattern ported from github-janitor's
  * `git.ts` (createWorktree / autosaveCommit), minus the bare clone — we're
  * already inside a working copy. Everything degrades: helpers never throw
  * except `createWorktree`, whose failure the caller turns into a note.
+ *
+ * Task branches that predate the rename are `cez/<id8>` (dual-read shim, spec
+ * §2.2.2): the WRITER only emits `duck/`, but readers must still recognize the
+ * old `cez/` prefix — those are real refs that cannot be renamed without
+ * rewriting history, and old runs reference them.
  */
 
-/** Repo-relative home of all task worktrees (gitignored via .ai/cezar/.gitignore). */
-export const WORKTREES_DIR = '.ai/cezar/worktrees';
+/** Repo-relative home of all task worktrees (gitignored via .ai/coducktor/.gitignore). */
+export const WORKTREES_DIR = '.ai/coducktor/worktrees';
 
 const DIFF_CAP = 400_000;
 
@@ -43,7 +48,7 @@ function git(cwd: string, args: string[]): Promise<GitResult> {
 }
 
 export function branchFor(runId: string): string {
-  return `cez/${runId.slice(0, 8)}`;
+  return `duck/${runId.slice(0, 8)}`;
 }
 
 /**
@@ -307,7 +312,7 @@ function hasConflictMarkers(text: string): boolean {
 /**
  * Stage and commit everything in the worktree as a "cezar autosave" commit
  * (janitor pattern) — the agent's progress is always recoverable from the
- * `cez/<id8>` branch history. Quietly a no-op when nothing changed.
+ * `duck/<id8>` branch history. Quietly a no-op when nothing changed.
  *
  * The message carries `reason` so the opt-in periodic timer and the always-on
  * flushes are distinguishable in `git log`; the `cezar autosave` prefix is kept
@@ -481,7 +486,7 @@ export async function worktreeDiff(
  * `git diff --stat` version of `worktreeDiff` (spec 010 — the variant
  * comparison columns). Same merge-base anchoring, and it stays whole-branch
  * for a reason of its own: variants are sibling cezar worktrees, each on its
- * own `cez/*` branch, and the column exists to compare their *committed* work
+ * own `duck/*` branch, and the column exists to compare their *committed* work
  * against one another. Narrowing one variant to its uncommitted tree would
  * make the comparison meaningless rather than more honest. Returns '' on any
  * failure. (The task-diff rule the other surfaces follow: `git-diff-base.ts`.)
@@ -566,7 +571,7 @@ export async function worktreeShortstat(
 
 /**
  * Startup reconcile: `git worktree prune` + remove every directory under
- * `.ai/cezar/worktrees/` whose run id is no longer in the store (and its
+ * `.ai/coducktor/worktrees/` whose run id is no longer in the store (and its
  * branch). Returns the removed run ids for the boot log. Never throws.
  */
 export async function pruneOrphans(

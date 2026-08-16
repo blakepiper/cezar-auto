@@ -24,7 +24,7 @@ Alongside the transcript:
 To regenerate: build, boot `CEZ_DRY_RUN=1 node dist/index.js serve --repo <tmp-git-repo>`,
 POST a run whose task has no `mock:` marker, POST one `/messages` reply containing `mock:md`
 once it waits, POST `/finish` (twice: the mock's turn 1 touches `notes.md`, so the run parks
-at `review` first — the second finish accepts it), then copy `<tmp>/.ai/cezar/runs/<id>.ndjson`,
+at `review` first — the second finish accepts it), then copy `<tmp>/.ai/coducktor/runs/<id>.ndjson`,
 `<id>-images/` and the `runs.json` entry here. Then re-apply the synthetic extension below.
 
 ## Synthetic extension (R3 Step 1.3 — plan dock, step rail, check-step cards)
@@ -70,4 +70,4 @@ untouched.
 
 To regenerate: build, boot `CEZ_DRY_RUN=1 node dist/index.js serve --repo <tmp-git-repo>`,
 start a task whose text is `mock:subagents`, wait for it to settle, then copy
-`<tmp>/.ai/cezar/runs/<id>.ndjson` here and normalize the timestamps.
+`<tmp>/.ai/coducktor/runs/<id>.ndjson` here and normalize the timestamps.

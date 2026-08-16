@@ -278,19 +278,6 @@ describe('createSocketHub', () => {
 describe('verifyWsUpgrade', () => {
   const req = (headers: Record<string, string | undefined>) => ({ headers }) as IncomingMessage;
 
-  // The guard reads deployment mode off the environment, and its whole Host half is SKIPPED in
-  // hosted mode (a reverse proxy forwards the real public Host there). An ambient CEZ_REMOTE on
-  // the dev box must not decide what this table sees — without this the suite passes only when
-  // some earlier file in the same worker happened to delete the var.
-  const savedRemote = process.env.CEZ_REMOTE;
-  beforeEach(() => {
-    delete process.env.CEZ_REMOTE;
-  });
-  afterEach(() => {
-    if (savedRemote === undefined) delete process.env.CEZ_REMOTE;
-    else process.env.CEZ_REMOTE = savedRemote;
-  });
-
   it('trusts a loopback Host with no Origin (non-browser client)', () => {
     expect(verifyWsUpgrade(req({ host: '127.0.0.1:4321' }))).toEqual({ trusted: true });
   });

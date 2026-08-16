@@ -22,7 +22,6 @@ import {
   queryKeys,
   useAgentProfiles,
   useConfig,
-  useHealth,
   useMarkRunUnseen,
   useOpenTargets,
   usePatchRun,
@@ -89,10 +88,9 @@ import { useFinishRun } from './use-finish-run'
  * Two deliberate omissions, both seams rather than gaps:
  *  - **VS Code** (spec: `POST /api/runs/:id/open-in-editor`) — the endpoint does not exist yet;
  *    R5 adds it driver-detected. Faking the button against nothing would be dishonest.
- *  - **Hosted mode** (spec §"Deployment modes"): when R5's `capabilities.localHandoff` lands in
- *    `/api/health`, Terminal (and VS Code) must disappear entirely and the resume hint must drop
- *    its `cd`. Today's HealthResponse carries no such field, so Terminal renders per current
- *    (local-only) behavior — the gate goes in where the flags are read, `runActionFlags` callers.
+ *  - **Hosted mode** (spec §"Deployment modes") — retired with the deployment itself (A15,
+ *    decision 7): every cockpit is local, so Terminal renders unconditionally and the resume
+ *    hint keeps its `cd`.
  */
 /** Which run-detail tab this header instance sits above — drives the active underline.
  *  A prop rather than a route match so the header stays testable with a bare render. */
@@ -122,8 +120,7 @@ export function RunHeader({
   // query — already warm from the sidebar quick-list — because position is a property of the
   // whole queue, not of this record.
   const runs = useRuns()
-  const health = useHealth()
-  const metricVisibility = usageMetricVisibility(health.data)
+  const metricVisibility = usageMetricVisibility()
   const queuePosition =
     run.status === 'queued' ? queuePositions(runs.data ?? []).get(run.id) : undefined
 
@@ -155,11 +152,6 @@ export function RunHeader({
           run={run}
           showTokens={metricVisibility.tokens}
           showCost={metricVisibility.cost}
-          // `capabilities?.` like `usageMetricVisibility` above it: this header is rendered
-          // against minimal health payloads (a `{defaultRunner}`-only answer is pinned by its
-          // own test), so every capability read here tolerates an absent object. Absent stays
-          // fail-closed — the chip degrades to text rather than linking into a disabled view.
-          automationsAvailable={health.data?.capabilities?.automations === true}
         />
         <MonitoringSchedule run={run} />
 
@@ -479,15 +471,10 @@ function MetaRow({
   run,
   showTokens,
   showCost,
-  automationsAvailable,
 }: {
   run: ApiRun
   showTokens: boolean
   showCost: boolean
-  /** `capabilities.automations` (#801). A run launched while automations were on keeps its
-   *  `run.automation` provenance forever, so the chip must survive the flag going off — as
-   *  plain text, because the route it used to link to is disabled. */
-  automationsAvailable: boolean
 }) {
   // #526: the issue chip may be synthesized from the CEZ:ISSUE marker, and the only repository
   // such a link may name is the one on screen — never the transcript's.
@@ -547,28 +534,16 @@ function MetaRow({
   }
   if (run.diffStat) parts.push(<DiffStatLabel key="diff" stat={run.diffStat} />)
   if (run.automation) {
-    // Provenance is history and is always shown; only the LINK is gated. Following it with the
-    // capability off would land on the disabled `/automations` state, which says nothing about
-    // this task.
+    // Provenance is history; A15 retired the automations subsystem along with the log route it
+    // linked to, so the chip is plain text and always shown.
     parts.push(
-      automationsAvailable ? (
-        <Link
-          key="automation"
-          to={`/automations/${encodeURIComponent(run.automation.automationId)}/log`}
-          className="rounded-sm border border-border bg-card px-1.5 py-px text-[11px] font-medium hover:text-foreground"
-        >
-          Automation
-        </Link>
-      ) : (
-        <span
-          key="automation"
-          data-slot="automation-origin"
-          title="Automations are off on this server (CEZ_AUTOMATIONS)"
-          className="rounded-sm border border-border bg-card px-1.5 py-px text-[11px] font-medium"
-        >
-          Automation
-        </span>
-      ),
+      <span
+        key="automation"
+        data-slot="automation-origin"
+        className="rounded-sm border border-border bg-card px-1.5 py-px text-[11px] font-medium"
+      >
+        Automation
+      </span>,
     )
   }
 
@@ -765,7 +740,7 @@ function AgentBadge({ run }: { run: ApiRun }) {
           data-switched={runnerSwitched ? 'true' : undefined}
           title={summary}
           aria-label={`Agent: ${runner}${runnerSwitched ? ' (switched)' : ''}, ${account ? `account ${account}, ` : ''}model ${model}${reasoningEffort ? `, reasoning ${reasoningEffort}` : ''}`}
-          className="flex min-w-0 shrink items-center gap-1.5 rounded-sm px-1 py-1 text-soft-foreground hover:bg-muted hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none data-[switched=true]:text-amber-600 dark:data-[switched=true]:text-amber-400"
+          className="flex min-w-0 shrink items-center gap-1.5 rounded-sm px-1 py-1 text-soft-foreground hover:bg-muted hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none data-[switched=true]:text-pending-strong"
         >
           <BotIcon className="size-3.5 shrink-0" aria-hidden="true" />
           {/* READ, not just reachable. This was an icon alone, and "which agent, account and model
@@ -964,8 +939,8 @@ function ConfirmDialog({ run, actions }: { run: ApiRun; actions: RunActions }) {
 }
 
 /** "take over interactively: cd … && claude --resume …" — the legacy `#d-resume` line, now
- *  copyable. Local-machine phrasing; hosted mode (R5, `capabilities.localHandoff`) will swap the
- *  cd-prefix for a bare resume command. */
+ *  copyable. The hosted mode that would have swapped the cd-prefix for a bare resume command is
+ *  retired (A15, decision 7). */
 function ResumeHintLine({ hint }: { hint: string }) {
   return (
     <button

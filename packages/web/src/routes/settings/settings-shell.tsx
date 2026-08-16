@@ -1,6 +1,5 @@
 import { ChevronRightIcon, SlidersHorizontalIcon } from 'lucide-react'
 import { Link as RouterLink, NavLink as RouterNavLink } from 'react-router'
-import type { Capabilities } from '@open-mercato/cezar-api-client'
 import { Link as ScopedLink, NavLink as ScopedNavLink } from '@/lib/project-router'
 import { cn } from '@/lib/utils'
 import { ProjectGeneral } from './project-general'
@@ -51,15 +50,7 @@ function navComponents(scope: SettingsScope) {
     : { Link: ScopedLink, NavLink: ScopedNavLink }
 }
 
-function SectionNav({
-  scope,
-  activeId,
-  capabilities,
-}: {
-  scope: SettingsScope
-  activeId: SettingsSection['id'] | null
-  capabilities?: Pick<Capabilities, 'singleProject'>
-}) {
+function SectionNav({ scope, activeId }: { scope: SettingsScope; activeId: SettingsSection['id'] | null }) {
   const { NavLink } = navComponents(scope)
   return (
     <nav
@@ -83,7 +74,7 @@ function SectionNav({
         <SlidersHorizontalIcon aria-hidden="true" className="size-4 shrink-0" />
         General
       </NavLink>
-      {visibleSettingsSections(scope, capabilities).map((section) => (
+      {visibleSettingsSections(scope).map((section) => (
         <NavLink
           key={section.id}
           to={settingsSectionPath(scope, section.id)}
@@ -104,7 +95,7 @@ function SectionNav({
           Global: settings are per USER, not per repo, said once where the choice to write there
           is being made. Project: WHICH repo, by its absolute path on disk. */}
       {scope === 'global' ? (
-        <p className="mt-auto px-2.5 pt-3 text-[11px] text-soft-foreground">Stored in ~/.cezar</p>
+        <p className="mt-auto px-2.5 pt-3 text-[11px] text-soft-foreground">Stored in ~/.coducktor</p>
       ) : (
         <ProjectLocationNav />
       )}
@@ -113,15 +104,7 @@ function SectionNav({
 }
 
 /** The mobile stand-in for the left nav: one segmented, scrollable pill row. */
-function SectionPills({
-  scope,
-  activeId,
-  capabilities,
-}: {
-  scope: SettingsScope
-  activeId: SettingsSection['id']
-  capabilities?: Pick<Capabilities, 'singleProject'>
-}) {
+function SectionPills({ scope, activeId }: { scope: SettingsScope; activeId: SettingsSection['id'] }) {
   const { NavLink } = navComponents(scope)
   return (
     <nav
@@ -139,7 +122,7 @@ function SectionPills({
       >
         General
       </NavLink>
-      {visibleSettingsSections(scope, capabilities).map((section) => (
+      {visibleSettingsSections(scope).map((section) => (
         <NavLink
           key={section.id}
           to={settingsSectionPath(scope, section.id)}
@@ -160,15 +143,7 @@ function SectionPills({
 }
 
 /** One registered section inside the shell — `/p/<id>/settings/<id>` or `/settings/global/<id>`. */
-export function SettingsSectionRoute({
-  section,
-  scope,
-  capabilities,
-}: {
-  section: SettingsSection
-  scope: SettingsScope
-  capabilities?: Pick<Capabilities, 'singleProject'>
-}) {
+export function SettingsSectionRoute({ section, scope }: { section: SettingsSection; scope: SettingsScope }) {
   const Body = section.component
   return (
     <div
@@ -187,8 +162,8 @@ export function SettingsSectionRoute({
         ) : null}
       </header>
       <div className="flex flex-1 flex-col md:flex-row">
-        <SectionNav scope={scope} activeId={section.id} capabilities={capabilities} />
-        <SectionPills scope={scope} activeId={section.id} capabilities={capabilities} />
+        <SectionNav scope={scope} activeId={section.id} />
+        <SectionPills scope={scope} activeId={section.id} />
         <div className="flex min-w-0 flex-1 flex-col">
           <Body />
         </div>
@@ -199,10 +174,7 @@ export function SettingsSectionRoute({
 
 /** The area's index: the same registry rendered as a stacked list of cards (the mobile drill-in
  *  page; on desktop it sits beside the nav as a plain directory). */
-export function SettingsIndexRoute({ scope, capabilities }: {
-  scope: SettingsScope
-  capabilities?: Pick<Capabilities, 'singleProject'>
-}) {
+export function SettingsIndexRoute({ scope }: { scope: SettingsScope }) {
   const { Link } = navComponents(scope)
   const global = scope === 'global'
   return (
@@ -216,16 +188,14 @@ export function SettingsIndexRoute({ scope, capabilities }: {
         </p>
       </header>
       <div className="flex flex-1 flex-col md:flex-row">
-        <SectionNav scope={scope} activeId={null} capabilities={capabilities} />
+        <SectionNav scope={scope} activeId={null} />
         {/* No second h1 for small screens: the app shell's mobile top bar already titles the
             page "Settings" from the nav registry. */}
         <div className="flex min-w-0 flex-1 flex-col p-3 pb-[calc(90px+env(safe-area-inset-bottom))] md:p-5 md:pb-5">
           {/* The project area's index is a PAGE, not a menu: the folder, the registry facts, the
               concurrency ceiling and Remove. The global area has no such dashboard — nothing about
-              the machine is per-project — so there the cards are the whole page.
-              `capabilities` travels because the registry half of that page is exactly what
-              single-project mode disables, the same gate `visibleSettingsSections` applies. */}
-          {global ? null : <ProjectGeneral capabilities={capabilities} />}
+              the machine is per-project — so there the cards are the whole page. */}
+          {global ? null : <ProjectGeneral />}
           <ul
             data-slot="settings-index"
             className={cn(
@@ -235,7 +205,7 @@ export function SettingsIndexRoute({ scope, capabilities }: {
               global ? null : 'mt-7 md:hidden',
             )}
           >
-            {visibleSettingsSections(scope, capabilities).map((section) => (
+            {visibleSettingsSections(scope).map((section) => (
               <li key={section.id}>
                 <Link
                   to={settingsSectionPath(scope, section.id)}
@@ -258,7 +228,7 @@ export function SettingsIndexRoute({ scope, capabilities }: {
               each half says where the other one is. */}
           <p className="mx-auto mt-4 w-full max-w-2xl text-[12px] text-soft-foreground">
             {global ? (
-              <>Agents, worktrees, bookmarklets and prompt templates are per project.</>
+              <>Agents, worktrees and prompt templates are per project.</>
             ) : (
               <>
                 Appearance, notifications, host resources and the project registry live in{' '}

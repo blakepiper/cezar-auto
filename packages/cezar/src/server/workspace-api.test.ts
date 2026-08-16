@@ -12,7 +12,7 @@ import { createApp, type WorkspaceConfigResponse } from './server.ts';
 
 /**
  * The workspace settings API (multi-project spec, step 2.7):
- * `GET/PUT /api/v1/workspace/config` — the settings slice of `~/.cezar/config.json`
+ * `GET/PUT /api/v1/workspace/config` — the settings slice of `~/.coducktor/config.json`
  * with the `projectsDir` writability probe and the semaphore `refresh()` hook —
  * and `GET/PUT /api/v1/workspace/ui-state`, the global GUI state with the same
  * merge/key-cap semantics as the per-repo ui-state route. All workspace-level:
@@ -20,9 +20,7 @@ import { createApp, type WorkspaceConfigResponse } from './server.ts';
  */
 describe('the workspace settings API (step 2.7)', () => {
   const savedHome = process.env.CEZ_HOME;
-  const savedBrowseRoot = process.env.CEZ_BROWSE_ROOT;
   const savedProjectsDir = process.env.CEZ_PROJECTS_DIR;
-  const savedSkillsAutoUpdate = process.env.CEZ_SKILLS_AUTO_UPDATE;
   const savedAutonomousDefault = process.env.CEZ_AUTONOMOUS_DEFAULT;
   const savedWorktreeDefault = process.env.CEZ_WORKTREE_DEFAULT;
   let home: string;
@@ -34,14 +32,12 @@ describe('the workspace settings API (step 2.7)', () => {
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'cez-workspace-api-'));
     process.env.CEZ_HOME = home; // paths.ts sends all workspace paths here
-    delete process.env.CEZ_BROWSE_ROOT;
     delete process.env.CEZ_PROJECTS_DIR;
-    delete process.env.CEZ_SKILLS_AUTO_UPDATE;
     delete process.env.CEZ_AUTONOMOUS_DEFAULT;
     delete process.env.CEZ_WORKTREE_DEFAULT;
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-workspace-api-repo-'));
-    mkdirSync(join(repoRoot, '.ai/cezar'), { recursive: true });
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    mkdirSync(join(repoRoot, '.ai/coducktor'), { recursive: true });
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     // The REAL semaphore with its production loader (which reads the CEZ_HOME
     // config), so the PUT → refresh() → cached-limits chain is observed end to
     // end. The routes never touch the manager — an empty stub is honest.
@@ -59,12 +55,8 @@ describe('the workspace settings API (step 2.7)', () => {
     store.flush();
     if (savedHome === undefined) delete process.env.CEZ_HOME;
     else process.env.CEZ_HOME = savedHome;
-    if (savedBrowseRoot === undefined) delete process.env.CEZ_BROWSE_ROOT;
-    else process.env.CEZ_BROWSE_ROOT = savedBrowseRoot;
     if (savedProjectsDir === undefined) delete process.env.CEZ_PROJECTS_DIR;
     else process.env.CEZ_PROJECTS_DIR = savedProjectsDir;
-    if (savedSkillsAutoUpdate === undefined) delete process.env.CEZ_SKILLS_AUTO_UPDATE;
-    else process.env.CEZ_SKILLS_AUTO_UPDATE = savedSkillsAutoUpdate;
     if (savedAutonomousDefault === undefined) delete process.env.CEZ_AUTONOMOUS_DEFAULT;
     else process.env.CEZ_AUTONOMOUS_DEFAULT = savedAutonomousDefault;
     if (savedWorktreeDefault === undefined) delete process.env.CEZ_WORKTREE_DEFAULT;
@@ -89,10 +81,7 @@ describe('the workspace settings API (step 2.7)', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as WorkspaceConfigResponse & Record<string, unknown>;
     expect(body).toEqual({
-      browseRoot: '~/',
       projectsDir: '~/cezar/projects',
-      skillsAutoUpdate: null,
-      effectiveSkillsAutoUpdate: false,
       composerDefaults: {
         autonomous: null,
         worktree: null,
@@ -119,11 +108,10 @@ describe('the workspace settings API (step 2.7)', () => {
     expect(body.schemaVersion).toBeUndefined();
   });
 
-  it('GET resolves both zero-config roots from the environment', async () => {
-    process.env.CEZ_BROWSE_ROOT = '~/source';
+  it('GET resolves the zero-config projects root from the environment', async () => {
     process.env.CEZ_PROJECTS_DIR = '~/clones';
     const body = (await (await getConfig()).json()) as WorkspaceConfigResponse;
-    expect(body).toMatchObject({ browseRoot: '~/source', projectsDir: '~/clones' });
+    expect(body).toMatchObject({ projectsDir: '~/clones' });
   });
 
   it('PUT resources round-trips, persists to disk, and refreshes the semaphore cache', async () => {
@@ -140,10 +128,7 @@ describe('the workspace settings API (step 2.7)', () => {
     });
     expect(res.status).toBe(200);
     expect((await res.json()) as WorkspaceConfigResponse).toEqual({
-      browseRoot: '~/',
       projectsDir: '~/cezar/projects',
-      skillsAutoUpdate: null,
-      effectiveSkillsAutoUpdate: false,
       composerDefaults: {
         autonomous: null,
         worktree: null,
@@ -207,22 +192,6 @@ describe('the workspace settings API (step 2.7)', () => {
     });
   });
 
-  it('PUT stores explicit auto-update values and null clears back to the inherited env value', async () => {
-    process.env.CEZ_SKILLS_AUTO_UPDATE = '0';
-    expect((await (await getConfig()).json()) as WorkspaceConfigResponse).toMatchObject({
-      skillsAutoUpdate: null,
-      effectiveSkillsAutoUpdate: false,
-    });
-
-    const explicit = (await (await putConfig({ skillsAutoUpdate: true })).json()) as WorkspaceConfigResponse;
-    expect(explicit).toMatchObject({ skillsAutoUpdate: true, effectiveSkillsAutoUpdate: true });
-    expect(rawConfig().skillsAutoUpdate).toBe(true);
-
-    const inherited = (await (await putConfig({ skillsAutoUpdate: null })).json()) as WorkspaceConfigResponse;
-    expect(inherited).toMatchObject({ skillsAutoUpdate: null, effectiveSkillsAutoUpdate: false });
-    expect(rawConfig().skillsAutoUpdate).toBeUndefined();
-  });
-
   it('PUT stores and independently clears composer defaults while exposing env inheritance', async () => {
     process.env.CEZ_AUTONOMOUS_DEFAULT = '1';
     process.env.CEZ_WORKTREE_DEFAULT = '0';
@@ -242,11 +211,6 @@ describe('the workspace settings API (step 2.7)', () => {
 
     await putConfig({ composerDefaults: { worktree: null } });
     expect(rawConfig().composerDefaults).toEqual({ autonomous: false });
-  });
-
-  it('rejects invalid auto-update values without writing', async () => {
-    expect((await putConfig({ skillsAutoUpdate: 'false' })).status).toBe(400);
-    expect(() => readFileSync(workspaceConfigPath(), 'utf8')).toThrow();
   });
 
   it('rejects out-of-bounds resources with 400 and writes nothing', async () => {
@@ -287,34 +251,6 @@ describe('the workspace settings API (step 2.7)', () => {
     expect(readdirSync(dir)).toEqual([]);
   });
 
-  it('PUT browseRoot accepts and persists an existing independent browse directory', async () => {
-    const browseRoot = join(home, 'source', 'repos');
-    mkdirSync(browseRoot, { recursive: true });
-    const res = await putConfig({ browseRoot });
-    expect(res.status).toBe(200);
-    expect(((await res.json()) as WorkspaceConfigResponse).browseRoot).toBe(browseRoot);
-    expect(rawConfig().browseRoot).toBe(browseRoot);
-    expect(readdirSync(browseRoot)).toEqual([]);
-    expect(((await (await getConfig()).json()) as WorkspaceConfigResponse).projectsDir).toBe(
-      '~/cezar/projects',
-    );
-  });
-
-  it('PUT browseRoot warns for a missing directory without creating or persisting it', async () => {
-    const existing = join(home, 'existing-source');
-    mkdirSync(existing);
-    expect((await putConfig({ browseRoot: existing })).status).toBe(200);
-
-    const missing = join(home, 'missing', 'source');
-    const res = await putConfig({ browseRoot: missing });
-    expect(res.status).toBe(400);
-    expect((await res.json()) as { error: string }).toEqual({
-      error: `browse folder does not exist: ${missing}`,
-    });
-    expect(existsSync(missing)).toBe(false);
-    expect(rawConfig().browseRoot).toBe(existing);
-  });
-
   it('an unwritable projectsDir answers 400 "not writable: …" and persists NO change', async () => {
     await putConfig({ projectsDir: join(home, 'checkouts') }); // a known-good value first
     // A path under a regular file can never be created — fails on every
@@ -330,12 +266,6 @@ describe('the workspace settings API (step 2.7)', () => {
 
   it('a relative projectsDir is refused before any probe touches the filesystem', async () => {
     const res = await putConfig({ projectsDir: 'relative/path' });
-    expect(res.status).toBe(400);
-    expect(((await res.json()) as { error: string }).error).toMatch(/^not writable: /);
-  });
-
-  it('a relative browseRoot is refused before any probe touches the filesystem', async () => {
-    const res = await putConfig({ browseRoot: 'relative/path' });
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toMatch(/^not writable: /);
   });
@@ -366,7 +296,7 @@ describe('the workspace settings API (step 2.7)', () => {
     expect(await res.json()).toEqual({});
   });
 
-  it('PUT merges shallowly into ~/.cezar/ui-state.json — later keys never drop earlier ones', async () => {
+  it('PUT merges shallowly into ~/.coducktor/ui-state.json — later keys never drop earlier ones', async () => {
     expect((await putUiState({ appearance: { accent: 'violet' } })).status).toBe(200);
     const res = await putUiState({ sidebar: { collapsed: { cezar: true } } });
     expect(res.status).toBe(200);

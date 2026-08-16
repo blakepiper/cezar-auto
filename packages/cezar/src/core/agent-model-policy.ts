@@ -23,7 +23,7 @@ export function agentModelsLocked(
   if (env[AGENT_MODELS_LOCKED_ENV] === '1') return true;
   const paths = [
     workspaceConfigPath(env),
-    ...(repoRoot ? [join(repoRoot, '.ai', 'cezar', 'config.json')] : []),
+    ...(repoRoot ? [join(repoRoot, '.ai', 'coducktor', 'config.json')] : []),
   ];
   for (const path of paths) {
     try {

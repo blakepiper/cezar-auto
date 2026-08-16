@@ -48,7 +48,7 @@ export function readTestEnv(): EnvDescriptor {
  *
  * `CEZ_DRY_RUN` is why these boots need no network and no agent login. `CEZ_HOME` is why they
  * are *isolated*: since the multi-project workspace landed, booting in an unregistered folder
- * APPENDS it to `~/.cezar/config.json`, so an unpinned fixture server would (a) litter the
+ * APPENDS it to `~/.coducktor/config.json`, so an unpinned fixture server would (a) litter the
  * developer's real registry with a dead `/tmp/cezar-e2e-…` entry per run and (b) make every
  * spec order-dependent — once the registry holds more than one project the sidebar renders
  * the grouped multi-project shell instead of the flat one these specs assert against.

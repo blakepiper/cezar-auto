@@ -1,50 +1,17 @@
-import type { CreateRunInput, RunnerSelection } from '@open-mercato/cezar-api-client'
-
-import { BASELINE_SOURCE, buildCreateRunBody, type TaskSource } from './new-task-form'
-import type { NewTaskParams } from './new-task-params'
-
 /**
- * Bookmarklet auto-start (spec 011) — the React half of `handleDeepLink()` in web/app.js,
- * protected by BACKWARD_COMPATIBILITY.md: `/new?skill=&ref=&auto=1&key=` from a saved
- * bookmarklet must behave EXACTLY as it did on the legacy page.
+ * Deep-link prefill for `/new?skill=&ref=` — the React half of legacy's `handleDeepLink()`.
  *
- * Link semantics, retaining the same guarded auto-start behavior as the legacy page:
+ * The hosted-mode deep-link surface's unattended auto-start (`auto=1` + a matching
+ * launch key posting the run immediately) is retired (A15, decision 5 — `launch-key.ts`
+ * and `GET /api/v1/launch-key` are gone). What remains, matching legacy's honest degradation
+ * path for every other case:
  *  - no `ref` (nor the `task` alias) → nothing to do beyond a plain composer;
- *  - `auto=1` + the correct launch key → POST /api/runs immediately, unattended;
- *  - `auto=1` + a wrong/missing key (or an unreachable key endpoint) → BLOCKED: prefill
- *    only, the user presses Start;
+ *  - `auto=1` → always the blocked path: prefill only, the user presses Start;
  *  - no `auto` → prefill + a toast;
  *  - the skill name is NOT validated client-side — the server starts the run and notes
  *    "skill not found … running with the plain prompt" (src/workflows/run.ts). Blocking an
- *    unknown skill here would break saved bookmarklets that legacy honored.
+ *    unknown skill here would break saved links that legacy honored.
  */
-
-/** The unattended-start body. The runner stays absent when the resolved connected runner is the
- *  server default; a connected fallback is explicit so the server cannot resolve the request
- *  back to a disconnected default. */
-export function bookmarkletRunBody(
-  params: NewTaskParams,
-  runner: RunnerSelection,
-  defaultRunner: RunnerSelection,
-): CreateRunInput {
-  const source: TaskSource =
-      params.skill !== ''
-        ? { source: 'skill', ref: params.skill }
-      : BASELINE_SOURCE
-  return buildCreateRunBody({
-    task: params.ref,
-    source,
-    model: '',
-    runner,
-    defaultRunner,
-    variants: 1,
-    images: [],
-    autonomous: true,
-    // Absent for every saved bookmarklet (legacy links have no `todo`); if an in-app link ever
-    // arms auto, the inbox bookkeeping (#374) rides along here rather than being lost.
-    todoId: params.todo,
-  })
-}
 
 /** Why the composer is showing a prefilled form instead of a started run. */
 export type DeepLinkNotice =

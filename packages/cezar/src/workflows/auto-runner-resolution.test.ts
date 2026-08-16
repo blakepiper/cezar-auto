@@ -28,7 +28,7 @@ describe('RunManager auto runner resolution', () => {
     });
     const root = mkdtempSync(join(tmpdir(), 'cez-auto-route-'));
     roots.push(root);
-    const manager = new RunManager(RunStore.open(join(root, '.ai/cezar')), root, {
+    const manager = new RunManager(RunStore.open(join(root, '.ai/coducktor')), root, {
       quotaCoordinator: { acquire } as unknown as QuotaCoordinator,
     });
 
@@ -49,7 +49,7 @@ describe('RunManager auto runner resolution', () => {
     });
     const root = mkdtempSync(join(tmpdir(), 'cez-auto-route-'));
     roots.push(root);
-    const manager = new RunManager(RunStore.open(join(root, '.ai/cezar')), root, {
+    const manager = new RunManager(RunStore.open(join(root, '.ai/coducktor')), root, {
       quotaCoordinator: { acquire } as unknown as QuotaCoordinator,
     });
 

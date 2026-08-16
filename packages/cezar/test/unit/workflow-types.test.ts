@@ -73,8 +73,9 @@ test('only plain agent skill steps compact back to a portable stack', () => {
 // #410: a chain of 2+ skills gave every step the SAME task text and shared
 // one run-level handoff journal — a later step's fresh session had nothing
 // telling it "an earlier step's own completion doesn't cover you", so it
-// could read the earlier step's "done" signal and self-terminate (`CEZ:DONE`)
-// on its first turn without doing its own step's work. `chainStepNote` is the
+// could read the earlier step's "done" signal and self-terminate
+// (`DUCK:DONE`, the post-rename spelling of `CEZ:DONE`) on its first turn
+// without doing its own step's work. `chainStepNote` is the
 // prompt-level guard against that; these pin its exact contract.
 test('chainStepNote is absent for a single-step run (the common case, unchanged)', () => {
   assert.equal(chainStepNote(skillsToSteps(['implement']), 0), undefined);
@@ -114,7 +115,7 @@ test('chainStepNote names the step position, total, and skill for every step of 
   assert.ok(first?.includes('om-auto-review-pr'));
   assert.ok(second?.includes('step 2 of 2'));
   assert.ok(second?.includes('om-auto-verify-pr-ui'));
-  for (const note of [first, second]) assert.ok(note?.includes('CEZ:DONE'));
+  for (const note of [first, second]) assert.ok(note?.includes('DUCK:DONE'));
   // The whole point: tell a step that HAS a predecessor that the predecessor's
   // completion isn't its own. On step 1 that premise is false, so it is left out.
   assert.ok(second?.includes("does not mean step 2's work is done"));

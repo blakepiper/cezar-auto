@@ -1,7 +1,7 @@
 /**
  * The multi-project sidebar's per-project collapse map — per BROWSER, not per workspace.
  *
- * This used to live under `sidebar.collapsed` in `~/.cezar/ui-state.json`, which meant one
+ * This used to live under `sidebar.collapsed` in `~/.coducktor/ui-state.json`, which meant one
  * workspace-wide answer for every client at once: collapsing a group on the phone collapsed it on
  * the desktop, and each toggle cost a PUT that a second open cockpit could clobber. Which groups
  * are shut is a property of the window you are looking at — a narrow phone wants everything shut,

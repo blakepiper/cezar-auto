@@ -267,7 +267,7 @@ async fn workflow_save_parse_and_delete_round_trip() {
                 .unwrap_or(false)
         })
         .respond_with(ResponseTemplate::new(201).set_body_json(
-            json!({"path": "/repo/.ai/cezar/workflows/my-chain.yaml", "name": "my-chain"}),
+            json!({"path": "/repo/.ai/coducktor/workflows/my-chain.yaml", "name": "my-chain"}),
         ))
         .mount(&server)
         .await;
@@ -288,7 +288,7 @@ async fn workflow_save_parse_and_delete_round_trip() {
         .and(path("/api/v1/p/shop/workflows/my-chain"))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(
-                json!({"ok": true, "path": "/repo/.ai/cezar/workflows/my-chain.yaml"}),
+                json!({"ok": true, "path": "/repo/.ai/coducktor/workflows/my-chain.yaml"}),
             ),
         )
         .mount(&server)
@@ -360,9 +360,7 @@ async fn workspace_config_and_ui_state_write_to_the_unscoped_workspace_routes() 
     Mock::given(method("PUT"))
         .and(path("/api/v1/workspace/config"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "browseRoot": "/home",
             "projectsDir": "/home/user/projects",
-            "effectiveSkillsAutoUpdate": false,
             "composerDefaults": {"inheritedAutonomous": "source-dependent", "inheritedWorktree": false},
             "resources": {
                 "maxParallel": 4, "maxMonitoringSessions": 2,

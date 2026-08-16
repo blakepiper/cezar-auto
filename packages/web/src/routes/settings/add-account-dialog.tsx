@@ -1,8 +1,7 @@
 import { useState } from 'react'
 
 import { useCreateAgentProfile } from '@/api/queries'
-import type { FsBrowseDir, ProviderId } from '@open-mercato/cezar-api-client'
-import { FolderBrowser } from '@/components/folder-browser'
+import type { ProviderId } from '@open-mercato/cezar-api-client'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -28,9 +27,10 @@ import { toast } from '@/components/ui/toaster'
  *    browse root, so a browse-only field would make the whole feature unreachable for anyone
  *    whose accounts live outside it.
  *
- * The browser is therefore an assist that fills the field, and it asks for hidden folders because
- * otherwise it could not show a single real candidate. cezar still does not go LOOKING for
- * accounts — see the spec's "no globbing": a folder is an account because the user said so.
+ * A15 (decision 8) retired the folder-browse assist along with `fs-browse.ts` / `GET
+ * /api/v1/fs/browse` — the typed field was already the source of truth for exactly the two
+ * reasons above, so it is now the only way in. cezar still does not go LOOKING for accounts —
+ * see the spec's "no globbing": a folder is an account because the user said so.
  *
  * Validation stays server-side (absolute after `~` expansion, not already another account's
  * folder, no control characters); this dialog only refuses an empty field, because that is not a
@@ -49,29 +49,12 @@ export function AddAccountDialog({
   /** Which agent's "Add account" was clicked; still switchable in the dialog. */
   initialProvider?: ProviderId
 }) {
-  // `null` = the configured browse root. The dialog never spells that path itself.
-  const [path, setPath] = useState<string | null>(null)
-  const [selected, setSelected] = useState<FsBrowseDir | null>(null)
   const [provider, setProvider] = useState<ProviderId>(initialProvider ?? providers[0] ?? 'claude')
   const [label, setLabel] = useState('')
   const [configDir, setConfigDir] = useState('')
-  const [browsing, setBrowsing] = useState(false)
   const create = useCreateAgentProfile()
 
   const trimmed = configDir.trim()
-
-  const enter = (dir: string) => {
-    setPath(dir)
-    setSelected(null)
-    create.reset() // a stale "already used by …" must not haunt the next folder
-  }
-
-  /** Browsing writes into the field; the field is what gets submitted. */
-  const take = (dir: FsBrowseDir) => {
-    setSelected(dir)
-    setConfigDir(dir.path)
-    create.reset()
-  }
 
   const add = () => {
     if (trimmed === '' || create.isPending) return
@@ -82,8 +65,6 @@ export function AddAccountDialog({
           onOpenChange(false)
           setLabel('')
           setConfigDir('')
-          setSelected(null)
-          setBrowsing(false)
           toast('Account added — use Connect to sign in')
         },
       },
@@ -145,40 +126,15 @@ export function AddAccountDialog({
               placeholder={provider === 'codex' ? '~/.codex-second' : '~/.claude-second'}
               onChange={(event) => {
                 setConfigDir(event.target.value)
-                setSelected(null)
                 create.reset()
               }}
               className="min-w-0 flex-1 rounded-md border border-input bg-card px-2 py-1 font-mono text-[12.5px] outline-none focus-visible:border-ring"
             />
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              data-action="add-account-browse"
-              aria-expanded={browsing}
-              onClick={() => setBrowsing((on) => !on)}
-            >
-              {browsing ? 'Hide folders' : 'Browse…'}
-            </Button>
           </label>
           <p className="text-[11.5px] text-soft-foreground">
             A <code>~</code> is kept as written and expanded when the agent runs.
           </p>
         </div>
-
-        {/* Collapsed by default: typing (or pasting) the path is the fast path, and browsing to a
-            folder that does not exist yet is impossible anyway. */}
-        {browsing ? (
-          <FolderBrowser
-            path={path}
-            selected={selected}
-            onSelect={take}
-            onEnter={enter}
-            // Every agent config folder is hidden — without this the listing shows none of them.
-            showHidden
-            emptyHint="No subfolders here — pick this folder by typing its path above."
-          />
-        ) : null}
 
         {/* The server's own words: "that is already this agent's default folder", "already used
             by …", "must be an absolute path". This dialog cannot know which applies. */}

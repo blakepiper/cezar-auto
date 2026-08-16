@@ -64,7 +64,7 @@ describe('pastedAttachmentsText / pastedAttachmentsNote', () => {
 
 /**
  * End-to-end through the real engine with CEZ_DRY_RUN=1 (#357): a pasted
- * screenshot must land as a real file under `.ai/cezar/runs/<id>-images/`
+ * screenshot must land as a real file under `.ai/coducktor/runs/<id>-images/`
  * (named `pasted-<n>.<ext>`, never `screenshot-<n>.<ext>` — that prefix stays
  * reserved for the agent's own tool screenshots) and its absolute path must
  * reach the agent in the prompt/message text — verified via the mock's
@@ -81,7 +81,7 @@ describe('pasted screenshots materialize to disk and reach the agent as file pat
 
   beforeAll(async () => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-pasted-'));
-    dataDir = join(repoRoot, '.ai/cezar');
+    dataDir = join(repoRoot, '.ai/coducktor');
     argsFile = join(repoRoot, 'mock-args.ndjson');
     stdinFile = join(repoRoot, 'mock-stdin.ndjson');
     savedEnv.CEZ_DRY_RUN = process.env.CEZ_DRY_RUN;

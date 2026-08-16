@@ -345,7 +345,7 @@ export interface UiAskQuestion {
 
 /**
  * The agent asked the user a structured multiple-choice question via a
- * `CEZ:ASK` marker (spec `2026-07-18-askuser-across-runners`). Emitted by the
+ * `DUCK:ASK` marker (spec `2026-07-18-askuser-across-runners`). Emitted by the
  * RunManager off the assembled turn text — uniform across claude/codex/opencode
  * with no per-backend mapper work. The run parks `waiting`; the cockpit renders
  * clickable option chips. Resolution is client-side — the next user message for

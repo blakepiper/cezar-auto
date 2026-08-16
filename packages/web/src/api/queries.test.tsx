@@ -26,7 +26,6 @@ import {
   useRunChanges,
   useRuns,
   useSkills,
-  useSkillsUpdate,
   workspaceQueryKeys,
 } from './queries'
 
@@ -72,7 +71,7 @@ const HEALTH = {
   repo: { root: '/home/me/cezar', branch: 'main' },
   checks: [],
   defaultRunner: 'claude',
-  capabilities: { localHandoff: true, followups: false, singleProject: false, automations: false },
+  capabilities: { followups: false },
 }
 
 /** Just enough WebSocket for useHealth's topic subscription (api/ws.ts): records the frames the
@@ -444,7 +443,6 @@ describe('queryKeys', () => {
       expect(queryKeys.health).toEqual(['proj-a', 'health'])
       expect(queryKeys.todos).toEqual(['proj-a', 'todos'])
       expect(queryKeys.skills).toEqual(['proj-a', 'skills'])
-      expect(queryKeys.skillsReady).toEqual(['proj-a', 'skills', 'ready'])
       expect(queryKeys.agentConfig).toEqual(['proj-a', 'agent-config'])
       expect(queryKeys.agentConfigFile('claude.project.settings')).toEqual([
         'proj-a',
@@ -464,69 +462,14 @@ describe('queryKeys', () => {
 })
 
 describe('useSkills', () => {
-  it('renders the fast catalog, then converges when the cold team cache is ready', async () => {
-    let resolveReady!: (response: Response) => void
-    fetchMock.mockImplementation(async (input) => {
-      if (String(input) === '/api/v1/skills') {
-        return json([{ name: 'local', source: 'ai', body: '', path: '/repo/local.md' }])
-      }
-      if (String(input) === '/api/v1/skills?wait=1') {
-        return new Promise<Response>((resolve) => {
-          resolveReady = resolve
-        })
-      }
-      return new Response(null, { status: 404 })
-    })
+  it('renders the discovered catalog with a single request — the team-cache wait follow-up is retired (A15)', async () => {
+    fetchMock.mockResolvedValue(json([{ name: 'local', source: 'ai', body: '', path: '/repo/local.md' }]))
 
     const { result } = renderHook(() => useSkills(), { wrapper: wrapper() })
     await waitFor(() => expect(result.current.data?.map((skill) => skill.name)).toEqual(['local']))
-    await waitFor(() => expect(resolveReady).toBeTypeOf('function'))
 
-    resolveReady(
-      json([
-        { name: 'local', source: 'ai', body: '', path: '/repo/local.md' },
-        { name: 'om-fix', source: 'team', body: '', path: 'skills/om-fix/SKILL.md' },
-      ]),
-    )
-
-    await waitFor(() =>
-      expect(result.current.data?.map((skill) => skill.name)).toEqual(['local', 'om-fix']),
-    )
-    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual(['/api/v1/skills', '/api/v1/skills?wait=1'])
-  })
-})
-
-describe('useSkillsUpdate', () => {
-  it('retries a transient snapshot conservatively until the background server check converges', async () => {
-    fetchMock.mockResolvedValue(json({
-      status: 'idle',
-      available: false,
-      autoUpdateEnabled: false,
-      inherited: false,
-      checkedAt: null,
-      updatedAt: null,
-      scopes: [],
-      needsUpgradeNotes: false,
-    }))
-    const client = createQueryClient()
-    const key = workspaceQueryKeys.skillsUpdate('boot')
-    const { result } = renderHook(() => useSkillsUpdate('boot'), {
-      wrapper: ({ children }: { children: ReactNode }) => (
-        <QueryClientProvider client={client}>{children}</QueryClientProvider>
-      ),
-    })
-    await waitFor(() => expect(result.current.data?.status).toBe('idle'))
-
-    const query = client.getQueryCache().find({ queryKey: key })
-    const interval = query?.observers[0]?.options.refetchInterval
-    expect(typeof interval).toBe('function')
-    expect((interval as (current: typeof query) => number | false)(query)).toBe(60_000)
-
-    client.setQueryData(key, { ...result.current.data!, status: 'current' })
-    expect((interval as (current: typeof query) => number | false)(query)).toBe(false)
-
-    client.setQueryData(key, { ...result.current.data!, status: 'available' })
-    expect((interval as (current: typeof query) => number | false)(query)).toBe(false)
+    // One query, one request: `getSkillsWhenReady`'s `/skills?wait=1` follow-up is gone.
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual(['/api/v1/skills'])
   })
 })
 
@@ -617,32 +560,6 @@ describe('useHealth', () => {
     } finally {
       vi.useRealTimers()
     }
-  })
-
-  it('uses authenticated HTTP only in remote mode and never starts the WebSocket reconnect loop', async () => {
-    FakeHealthSocket.instances = []
-    vi.stubGlobal('WebSocket', FakeHealthSocket)
-    fetchMock.mockResolvedValue(json({
-      ...HEALTH,
-      capabilities: { ...HEALTH.capabilities, localHandoff: false },
-    }))
-    const client = createQueryClient()
-    const scopedWrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    )
-    const { result } = renderHook(
-      () => {
-        useHealthSubscription()
-        return useHealth()
-      },
-      { wrapper: scopedWrapper },
-    )
-
-    await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(FakeHealthSocket.instances).toHaveLength(0)
-    expect(fetchMock).toHaveBeenCalledWith('/api/v1/health', expect.objectContaining({
-      credentials: 'include',
-    }))
   })
 })
 

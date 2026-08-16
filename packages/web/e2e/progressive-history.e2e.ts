@@ -148,11 +148,11 @@ function parkCurrentThread(): number {
 
 beforeAll(async () => {
   dataRoot = mkdtempSync(join(tmpdir(), 'cezar-e2e-progressive-history-'))
-  mkdirSync(join(dataRoot, '.ai/cezar/runs'), { recursive: true })
-  writeFileSync(join(dataRoot, '.ai/cezar/runs.json'), JSON.stringify([RUN, RUN_B], null, 2), 'utf8')
+  mkdirSync(join(dataRoot, '.ai/coducktor/runs'), { recursive: true })
+  writeFileSync(join(dataRoot, '.ai/coducktor/runs.json'), JSON.stringify([RUN, RUN_B], null, 2), 'utf8')
   for (const runId of [RUN_ID, RUN_B_ID]) {
     writeFileSync(
-      join(dataRoot, '.ai/cezar/runs', `${runId}.ndjson`),
+      join(dataRoot, '.ai/coducktor/runs', `${runId}.ndjson`),
       events.map((event) => JSON.stringify(event)).join('\n') + '\n',
       'utf8',
     )

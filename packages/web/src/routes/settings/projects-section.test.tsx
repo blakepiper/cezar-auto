@@ -80,10 +80,7 @@ function serve(answers: Answers = {}) {
   }
   const config: WorkspaceConfigResponse = {
     agentDefaults: {},
-    browseRoot: '~/',
     projectsDir: '~/cezar/projects',
-    skillsAutoUpdate: null,
-    effectiveSkillsAutoUpdate: true,
     composerDefaults: {
       autonomous: null,
       worktree: null,
@@ -113,7 +110,6 @@ function serve(answers: Answers = {}) {
       if (url === '/api/v1/workspace/config' && method === 'GET') return json(config)
       if (url === '/api/v1/workspace/config' && method === 'PUT') {
         if (answers.putConfig) return json(answers.putConfig.payload, answers.putConfig.status)
-        config.browseRoot = String(body?.browseRoot ?? config.browseRoot)
         config.projectsDir = String(body?.projectsDir ?? config.projectsDir)
         return json(config)
       }
@@ -185,9 +181,6 @@ const removeButton = (id: string) => row(id)?.querySelector<HTMLButtonElement>('
 const rootInput = () => document.querySelector<HTMLInputElement>('[data-slot="projects-checkout-root"]')
 const saveRoot = () => document.querySelector<HTMLButtonElement>('[data-action="projects-save-checkout-root"]')
 const inlineError = () => document.querySelector<HTMLElement>('[data-slot="projects-checkout-root-error"]')
-const browseInput = () => document.querySelector<HTMLInputElement>('[data-slot="projects-browse-root"]')
-const saveBrowse = () => document.querySelector<HTMLButtonElement>('[data-action="projects-save-browse-root"]')
-const browseError = () => document.querySelector<HTMLElement>('[data-slot="projects-browse-root-error"]')
 const confirmButton = () => document.querySelector<HTMLButtonElement>('[data-action="projects-confirm-remove"]')
 const deletes = () => requests.filter((r) => r.method === 'DELETE')
 const patches = () => requests.filter((r) => r.method === 'PATCH')
@@ -259,19 +252,6 @@ describe('Global settings → Projects', () => {
     await waitFor(() => expect(inlineError()).toBeNull())
   })
 
-  it('shows a missing browse-folder warning inline and keeps the typed path', async () => {
-    const reason = 'browse folder does not exist: ~/missing'
-    serve({ putConfig: { status: 400, payload: { error: reason } } })
-    renderProjects()
-    await waitFor(() => expect(browseInput()).not.toBeNull())
-    fireEvent.change(browseInput()!, { target: { value: '~/missing' } })
-    fireEvent.click(saveBrowse()!)
-
-    await waitFor(() => expect(browseError()?.textContent).toContain(reason))
-    expect(browseInput()!.value).toBe('~/missing')
-    expect(browseInput()!.getAttribute('aria-invalid')).toBe('true')
-  })
-
   it('saves a valid checkout root through PUT /api/v1/workspace/config', async () => {
     serve()
     renderProjects()
@@ -290,28 +270,6 @@ describe('Global settings → Projects', () => {
       expect(requests.filter((r) => r.method === 'GET' && r.url === '/api/v1/projects')).toHaveLength(1),
     )
     expect(inlineError()).toBeNull()
-  })
-
-  it('saves the browse folder independently without refreshing the clone destination', async () => {
-    serve()
-    const client = renderProjects()
-    client.setQueryData(workspaceQueryKeys.fsBrowse(null), {
-      path: '/home/piotr',
-      parent: null,
-      dirs: [],
-    })
-    await waitFor(() => expect(browseInput()).not.toBeNull())
-    expect(browseInput()!.value).toBe('~/')
-    fireEvent.change(browseInput()!, { target: { value: '~/source' } })
-    fireEvent.click(saveBrowse()!)
-    await waitFor(() =>
-      expect(requests.filter((r) => r.method === 'PUT' && r.url === '/api/v1/workspace/config')).toEqual([
-        { method: 'PUT', url: '/api/v1/workspace/config', body: { browseRoot: '~/source' } },
-      ]),
-    )
-    expect(rootInput()!.value).toBe('~/cezar/projects')
-    expect(requests.filter((r) => r.method === 'GET' && r.url === '/api/v1/projects')).toHaveLength(0)
-    await waitFor(() => expect(client.getQueryState(workspaceQueryKeys.fsBrowse(null))?.isInvalidated).toBe(true))
   })
 
   it('removes a project only after a confirm that promises no files are deleted', async () => {

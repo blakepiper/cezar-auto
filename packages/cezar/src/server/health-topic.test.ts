@@ -37,16 +37,12 @@ describe('health topic + cache (live-server path)', () => {
   let repoRoot: string;
   let store: RunStore;
   const savedDryRun = process.env.CEZ_DRY_RUN;
-  const savedRemote = process.env.CEZ_REMOTE;
 
   beforeEach(() => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-health-topic-'));
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     // Keeps the CLI/forge probes off the network so the payload is deterministic.
     process.env.CEZ_DRY_RUN = '1';
-    // Health's `repoRoot` is trimmed in hosted mode, so an ambient CEZ_REMOTE on the dev box
-    // must not decide what these assertions see.
-    delete process.env.CEZ_REMOTE;
   });
 
   afterEach(() => {
@@ -54,16 +50,14 @@ describe('health topic + cache (live-server path)', () => {
     rmSync(repoRoot, { recursive: true, force: true });
     if (savedDryRun === undefined) delete process.env.CEZ_DRY_RUN;
     else process.env.CEZ_DRY_RUN = savedDryRun;
-    if (savedRemote === undefined) delete process.env.CEZ_REMOTE;
-    else process.env.CEZ_REMOTE = savedRemote;
     vi.restoreAllMocks();
   });
 
-  /** `defaultRunner` comes from `.ai/cezar/config.json`, so writing it is a cheap way to
+  /** `defaultRunner` comes from `.ai/coducktor/config.json`, so writing it is a cheap way to
    *  change what a fresh snapshot would say without touching git or the CLI probes. */
   const setRunner = (runner: string): void => {
-    mkdirSync(join(repoRoot, '.ai/cezar'), { recursive: true });
-    writeFileSync(join(repoRoot, '.ai/cezar/config.json'), JSON.stringify({ defaultRunner: runner }));
+    mkdirSync(join(repoRoot, '.ai/coducktor'), { recursive: true });
+    writeFileSync(join(repoRoot, '.ai/coducktor/config.json'), JSON.stringify({ defaultRunner: runner }));
   };
 
   const build = () => {

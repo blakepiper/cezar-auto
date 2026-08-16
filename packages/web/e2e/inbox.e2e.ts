@@ -23,7 +23,7 @@ const sessionId = `e2e-inbox-${process.pid}`
 const DESKTOP = { width: 1440, height: 900 }
 
 // Where `src/index.ts` puts the data dir, for the server booted from this worktree.
-const dataDir = resolve(import.meta.dirname, '../../../.ai/cezar')
+const dataDir = resolve(import.meta.dirname, '../../../.ai/coducktor')
 const todosFile = resolve(dataDir, 'todos.json')
 
 const CARD = '[data-slot="todo-card"]'

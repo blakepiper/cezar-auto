@@ -1,8 +1,11 @@
 import { z } from 'zod';
 
 /**
- * The project-registry family: `GET/POST/PATCH/DELETE /api/v1/projects`, the folder picker
- * (`GET /api/v1/fs/browse`) that feeds it, and the launch-key read.
+ * The project-registry family: `GET/POST/PATCH/DELETE /api/v1/projects` and the
+ * clone-from-GitHub checkout body. `GET /api/v1/fs/browse` and `GET /api/v1/launch-key` are
+ * retired (A15, decisions 5 and 8 — spec §16a): the folder picker is a typed path now (the
+ * dialogs never needed the browse assist to be reachable), and the hosted-mode deep-link
+ * surface is gone.
  *
  * Node-free by construction (see README rule 1) — `zod` and nothing else.
  */
@@ -16,7 +19,7 @@ import { z } from 'zod';
  *
  * Deliberately a CLOSED object even though the server's persistence schema
  * (`src/workspace/config.ts`, `workspaceProjectSchema.passthrough()`) keeps unknown keys in the
- * file: passthrough is a durability promise about `~/.cezar/config.json`, not a promise that the
+ * file: passthrough is a durability promise about `~/.coducktor/config.json`, not a promise that the
  * API answers arbitrary keys. Modelling it as a loose object here would also be unprovable — see
  * the note on the index signature in `src/server/contract-parity.workspace.test.ts`.
  */
@@ -157,38 +160,3 @@ export const checkoutProjectInputSchema = z.object({
   checkoutId: z.string().trim().max(128).optional(),
 });
 export type CheckoutProjectInput = z.infer<typeof checkoutProjectInputSchema>;
-
-/** One directory in a `GET /api/v1/fs/browse` listing (multi-project spec, step 4.1). `path` is
- *  absolute — same-origin route, like `ProjectListEntry.root`. */
-export const fsBrowseDirSchema = z.object({
-  name: z.string(),
-  path: z.string(),
-  /** Has a `.git` entry — drives the "git" badge. A non-repo folder is still selectable. */
-  isRepo: z.boolean(),
-});
-export type FsBrowseDir = z.infer<typeof fsBrowseDirSchema>;
-
-/** `GET /api/v1/fs/browse?path=` — the folder picker's listing. Rooted at the independently
- *  configured browse root, directories only. */
-export const fsBrowseResponseSchema = z.object({
-  /** The realpath'd directory actually listed — never the spelling asked for, so the breadcrumb
-   *  shows where the picker really is. */
-  path: z.string(),
-  /** `null` AT the browse root: there is no "up" out of it, and the dialog must render no parent
-   *  row rather than one that 400s. */
-  parent: z.string().nullable(),
-  dirs: z.array(fsBrowseDirSchema),
-  /** True when the listing was capped server-side — surfaced honestly instead of showing a
-   *  silently short list. */
-  truncated: z.boolean(),
-});
-export type FsBrowseResponse = z.infer<typeof fsBrowseResponseSchema>;
-
-/** `GET /api/v1/launch-key` — the bookmarklet auto-start secret (spec 011). Fetched to COMPARE
- *  against the `?key=` query param and to bake into the `javascript:` links the Settings → Skills
- *  bookmarklet panel generates. The value never renders as text, never logs, and never goes back
- *  into the address bar. */
-export const launchKeyResponseSchema = z.object({
-  key: z.string(),
-});
-export type LaunchKeyResponse = z.infer<typeof launchKeyResponseSchema>;

@@ -112,7 +112,7 @@ function serve({
 } = {}) {
   requests = []
   let providerStatusReads = 0
-  // The selection store, keyed by repo root exactly as `~/.cezar/agent-accounts.json` is.
+  // The selection store, keyed by repo root exactly as `~/.coducktor/agent-accounts.json` is.
   const selections: Record<string, Record<string, string>> = {
     ...(agentProfiles?.selections as Record<string, Record<string, string>>),
   }

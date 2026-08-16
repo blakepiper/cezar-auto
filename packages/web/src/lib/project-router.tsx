@@ -75,8 +75,9 @@ export function scopeTo(projectId: string | null, to: To): To {
 /**
  * The scope every wrapper prefixes with: context when provided, else the URL's own prefix.
  *
- * Exported because links are not the only thing that needs the active project: the bookmarklet
- * generator (step 3.6) bakes it into an absolute URL a browser will open from github.com, and
+ * Exported because links are not the only thing that needs the active project: the retired
+ * hosted-mode deep-link generator (step 3.6) baked it into an absolute URL a browser would
+ * open from github.com, and
  * that URL must name the project even for the BOOT project — which mounts UNSCOPED (context
  * `projectId` null) yet still lives under `/p/<boot>/`, so the URL fallback is what answers.
  */

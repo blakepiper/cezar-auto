@@ -20,13 +20,11 @@ describe('request-origin guard (#426)', () => {
   let repoRoot: string;
   let store: RunStore;
   let app: Hono;
-  const savedRemote = process.env.CEZ_REMOTE;
   const savedDryRun = process.env.CEZ_DRY_RUN;
 
   beforeEach(() => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-guard-'));
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
-    delete process.env.CEZ_REMOTE;
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     process.env.CEZ_DRY_RUN = '1'; // keeps the /api/v1/health probe off the network
     // Capturing stub (the start-run.test.ts pattern) — the guard runs before
     // the handler, so a real run only needs to prove the request got through.
@@ -46,8 +44,6 @@ describe('request-origin guard (#426)', () => {
   afterEach(() => {
     store.flush();
     rmSync(repoRoot, { recursive: true, force: true });
-    if (savedRemote === undefined) delete process.env.CEZ_REMOTE;
-    else process.env.CEZ_REMOTE = savedRemote;
     if (savedDryRun === undefined) delete process.env.CEZ_DRY_RUN;
     else process.env.CEZ_DRY_RUN = savedDryRun;
   });
@@ -270,7 +266,7 @@ describe('request-origin guard (#426)', () => {
     expect(res.status).toBe(403);
   });
 
-  it('leaves /api/v1/health open cross-origin on a loopback Host (the bookmarklet discovery probe) → 200', async () => {
+  it('leaves /api/v1/health open cross-origin on a loopback Host (the CORS-open discovery probe) → 200', async () => {
     const res = await app.request('/api/v1/health', {
       headers: { host: LOOPBACK, origin: 'https://github.com' },
     });
@@ -284,62 +280,5 @@ describe('request-origin guard (#426)', () => {
     });
     expect(res.status).toBe(204);
     expect(res.headers.get('access-control-allow-origin')).toBe('*');
-  });
-});
-
-/**
- * Hosted mode (CEZ_REMOTE=1 — spec §"Deployment modes"): cezar binds loopback
- * behind a reverse proxy that forwards the real public Host, so the loopback
- * allowlist must stand down there. CSRF protection stays on — Origin still has
- * to match the served Host.
- */
-describe('request-origin guard — hosted mode (#426)', () => {
-  let repoRoot: string;
-  let store: RunStore;
-  let app: Hono;
-  const savedRemote = process.env.CEZ_REMOTE;
-
-  beforeEach(() => {
-    repoRoot = mkdtempSync(join(tmpdir(), 'cez-guard-hosted-'));
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
-    process.env.CEZ_REMOTE = '1';
-    const manager = {
-      startRun: (_workflow: WorkflowDef, input: StartRunInput) =>
-        store.createRun({ title: 't', workflow: '(planned)', task: input.task, steps: [] }),
-    } as unknown as RunManager;
-    app = createApp({
-      repoRoot,
-      store,
-      manager,
-      version: '0.0.0-test',
-      providerAuth: connectedProviderAuth(),
-    });
-  });
-
-  afterEach(() => {
-    store.flush();
-    rmSync(repoRoot, { recursive: true, force: true });
-    if (savedRemote === undefined) delete process.env.CEZ_REMOTE;
-    else process.env.CEZ_REMOTE = savedRemote;
-  });
-
-  const startBody = { task: 'do the thing', steps: [{ id: 'work', prompt: '{{task}}' }] };
-  const postRuns = (headers: Record<string, string>) =>
-    app.request('/api/v1/runs', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...headers },
-      body: JSON.stringify(startBody),
-    });
-
-  it('allows the public-domain same-origin write (Origin === forwarded Host) → 201', async () => {
-    const res = await postRuns({ host: 'cez.example.com', origin: 'https://cez.example.com' });
-    expect(res.status).toBe(201);
-    expect(store.listRuns()).toHaveLength(1);
-  });
-
-  it('still rejects a cross-origin write in hosted mode → 403', async () => {
-    const res = await postRuns({ host: 'cez.example.com', origin: 'https://evil.tld' });
-    expect(res.status).toBe(403);
-    expect(store.listRuns()).toHaveLength(0);
   });
 });

@@ -658,7 +658,7 @@ function WorkflowsBuilder({ routeName }: { routeName: string | undefined }) {
             <AlertDialogTitle>Delete workflow &ldquo;{trimmedName}&rdquo;?</AlertDialogTitle>
             <AlertDialogDescription>
               Removes {savedFile?.path?.split('/').pop() ?? 'the saved file'} from{' '}
-              <span className="font-mono">.ai/cezar/workflows/</span>. There is no undo.
+              <span className="font-mono">.ai/coducktor/workflows/</span>. There is no undo.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -9,9 +9,8 @@ import type {
   HealthResponse,
   ProviderStatusResponse,
   RunRecord,
-  SkillsUpdateState,
 } from '@open-mercato/cezar-api-client'
-import { AppShellContainer, repoChipOf, skillsUpdateMarkerOf } from '@/components/app-shell-container'
+import { AppShellContainer, repoChipOf } from '@/components/app-shell-container'
 import { ThemeProvider } from '@/components/theme-provider'
 
 const fetchMock = vi.fn<typeof fetch>()
@@ -41,7 +40,7 @@ const HEALTH: HealthResponse = {
   checks: [],
   defaultRunner: 'claude',
   forge: null,
-  capabilities: { localHandoff: true, tokenMetrics: true, tokenUsageMetrics: true, costMetrics: true, followups: true, singleProject: false, automations: false },
+  capabilities: { followups: true },
 }
 
 /** One registered project — the degenerate workspace every existing install upgrades into. */
@@ -143,24 +142,6 @@ describe('repoChipOf', () => {
   })
 })
 
-const UPDATE: SkillsUpdateState = {
-  status: 'available', available: true, autoUpdateEnabled: true, inherited: true,
-  checkedAt: '2026-07-22T00:00:00.000Z', updatedAt: null, scopes: [], needsUpgradeNotes: false,
-}
-
-describe('skillsUpdateMarkerOf', () => {
-  it.each([
-    ['loading', undefined, false],
-    ['available', UPDATE, true],
-    ['proven available with an error', { ...UPDATE, status: 'error' as const }, true],
-    ['current', { ...UPDATE, status: 'current' as const, available: false }, false],
-    ['unavailable', { ...UPDATE, status: 'unavailable' as const, available: false }, false],
-    ['updating', { ...UPDATE, status: 'updating' as const }, false],
-  ])('%s → %s', (_name, state, expected) => {
-    expect(skillsUpdateMarkerOf(state)).toBe(expected)
-  })
-})
-
 describe('sidebar wiring', () => {
   it('renders the repo and version chips from /api/v1/health', async () => {
     serve({ '/api/v1/health': HEALTH, '/api/v1/todos': [] })
@@ -184,7 +165,7 @@ describe('sidebar wiring', () => {
   // #471 — the global inbox is opt-in; the shell must not offer what the server cannot fill.
   it('drops the Inbox nav item and its badge when the server has follow-ups off', async () => {
     serve({
-      '/api/v1/health': { ...HEALTH, capabilities: { localHandoff: true, tokenMetrics: true, tokenUsageMetrics: true, costMetrics: true, followups: false } },
+      '/api/v1/health': { ...HEALTH, capabilities: { followups: false } },
       '/api/v1/todos': TODOS,
     })
     renderShell()
@@ -199,7 +180,7 @@ describe('sidebar wiring', () => {
 
   it('never asks for todos on a server with the inbox off', async () => {
     serve({
-      '/api/v1/health': { ...HEALTH, capabilities: { localHandoff: true, tokenMetrics: true, tokenUsageMetrics: true, costMetrics: true, followups: false } },
+      '/api/v1/health': { ...HEALTH, capabilities: { followups: false } },
       '/api/v1/todos': TODOS,
     })
     renderShell()
@@ -209,32 +190,6 @@ describe('sidebar wiring', () => {
     // nothing here needs the list before health has spoken.
     const asked = fetchMock.mock.calls.map((call) => String(call[0]))
     expect(asked).not.toContain('/api/v1/todos')
-  })
-
-  // #801 — the same honesty rule for the opt-in automations capability. Both cases carry a
-  // reachable forge, so the ONLY thing deciding the Automations item here is the capability:
-  // before the flag, every project with a GitHub remote saw that tab.
-  const WITH_FORGE = { ...HEALTH, forge: { kind: 'github' as const, available: true } }
-
-  it('drops the Automations nav item when the server has automations off', async () => {
-    serve({ '/api/v1/health': WITH_FORGE, '/api/v1/todos': [] })
-    renderShell()
-
-    await waitFor(() => expect(versionChip()).not.toBeNull())
-    expect(screen.queryByRole('link', { name: /Automations/ })).toBeNull()
-    // The gate owns exactly one item — GitHub is forge-gated, not automations-gated.
-    expect(screen.getByRole('link', { name: /GitHub/ })).toBeTruthy()
-  })
-
-  it('shows the Automations nav item once health reports the capability', async () => {
-    serve({
-      '/api/v1/health': { ...WITH_FORGE, capabilities: { ...HEALTH.capabilities, automations: true } },
-      '/api/v1/todos': [],
-    })
-    renderShell()
-
-    await waitFor(() => expect(versionChip()).not.toBeNull())
-    expect(screen.getByRole('link', { name: /Automations/ })).toBeTruthy()
   })
 
   it('renders no badge for an empty inbox', async () => {
@@ -270,46 +225,6 @@ describe('sidebar wiring', () => {
     expect(repoChip()).toBeNull()
     expect(versionChip()).toBeNull()
     expect(screen.getByText('route content')).toBeTruthy()
-  })
-
-  // CEZ_SINGLE_PROJECT pins this response to the boot row even when the saved registry has more.
-  // The shell must collapse from that ordinary one-row response, not grow a second capability
-  // branch for navigation: flat nav, one quick-list, repo chip, no group headers.
-  it('keeps the sidebar flat when single-project mode pins the registry to the boot project', async () => {
-    serve({
-      '/api/v1/health': {
-        ...HEALTH,
-        capabilities: { ...HEALTH.capabilities, singleProject: true },
-      },
-      '/api/v1/todos': [],
-      '/api/v1/projects': { projects: [PROJECT], bootProject: 'cezar', projectsDir: '/home/me/cezar/projects' },
-      '/api/v1/runs': [],
-    })
-    renderShell()
-
-    await waitFor(() => expect(repoChip()).not.toBeNull())
-    expect(document.querySelector('[data-slot="project-groups"]')).toBeNull()
-    expect(screen.getByRole('navigation', { name: 'Main' })).toBeTruthy()
-    expect(document.querySelector('[data-slot="task-quick-list"]')).not.toBeNull()
-    expect(repoChip()?.textContent).toBe('cezar / feat/cockpit')
-  })
-
-  it('hides add-project chrome when health reports single-project mode', async () => {
-    serve({
-      '/api/v1/health': {
-        ...HEALTH,
-        capabilities: { ...HEALTH.capabilities, singleProject: true },
-      },
-      '/api/v1/todos': [],
-      '/api/v1/projects': { projects: [PROJECT], bootProject: 'cezar', projectsDir: '/home/me/cezar/projects' },
-      '/api/v1/runs': [],
-    })
-    renderShell()
-
-    await waitFor(() => expect(versionChip()).not.toBeNull())
-    expect(screen.queryByRole('button', { name: 'Add project' })).toBeNull()
-    expect(screen.getByRole('link', { name: /New task/ })).toBeTruthy()
-    expect(screen.getByRole('navigation', { name: 'Main' })).toBeTruthy()
   })
 
   it('renders one collapsible group per project once the workspace has two', async () => {
@@ -450,14 +365,14 @@ describe('document title wiring', () => {
     })
     renderShell('/p/shop/git')
 
-    await waitFor(() => expect(document.title).toBe('Storefront — Git · cezar'))
+    await waitFor(() => expect(document.title).toBe('Storefront — Git · coducktor'))
   })
 
   it('falls back to the boot repository name when the registry is unavailable', async () => {
     serve({ '/api/v1/health': HEALTH_WITH_BOOT, '/api/v1/todos': [], '/api/v1/runs': [] })
     renderShell('/p/cezar/')
 
-    await waitFor(() => expect(document.title).toBe('cezar — Tasks · cezar'))
+    await waitFor(() => expect(document.title).toBe('cezar — Tasks · coducktor'))
   })
 
   it('keeps global settings and a no-repo task route free of invented project context', async () => {
@@ -469,11 +384,11 @@ describe('document title wiring', () => {
     })
     const global = renderShell('/settings/global/projects')
 
-    await waitFor(() => expect(document.title).toBe('Settings · cezar'))
+    await waitFor(() => expect(document.title).toBe('Settings · coducktor'))
     global.unmount()
 
     renderShell('/tasks/missing')
-    await waitFor(() => expect(document.title).toBe('cezar'))
+    await waitFor(() => expect(document.title).toBe('coducktor'))
   })
 
   it('updates after in-app navigation without remounting the shell', async () => {
@@ -485,9 +400,9 @@ describe('document title wiring', () => {
     })
     renderShell('/p/cezar/')
 
-    await waitFor(() => expect(document.title).toBe('cezar — Tasks · cezar'))
+    await waitFor(() => expect(document.title).toBe('cezar — Tasks · coducktor'))
     fireEvent.click(screen.getByRole('link', { name: 'Git' }))
-    await waitFor(() => expect(document.title).toBe('cezar — Git · cezar'))
+    await waitFor(() => expect(document.title).toBe('cezar — Git · coducktor'))
   })
 
   it('reacts to live project and task title cache updates', async () => {
@@ -505,7 +420,7 @@ describe('document title wiring', () => {
     const { client } = renderShell('/p/shop/tasks/run-1')
 
     await waitFor(() =>
-      expect(document.title).toBe('Storefront — Implement page titles · cezar'),
+      expect(document.title).toBe('Storefront — Implement page titles · coducktor'),
     )
 
     act(() => {
@@ -519,7 +434,7 @@ describe('document title wiring', () => {
     })
 
     await waitFor(() =>
-      expect(document.title).toBe('Renamed storefront — Rename browser titles · cezar'),
+      expect(document.title).toBe('Renamed storefront — Rename browser titles · coducktor'),
     )
   })
 })

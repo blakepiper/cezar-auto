@@ -60,14 +60,12 @@ describe('workspace provider API', () => {
   let store: RunStore;
   const savedModelsLocked = process.env.CEZ_AGENT_MODELS_LOCKED;
   const savedDryRun = process.env.CEZ_DRY_RUN;
-  const savedRemote = process.env.CEZ_REMOTE;
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'cez-providers-api-'));
-    store = RunStore.open(join(root, '.ai/cezar'));
+    store = RunStore.open(join(root, '.ai/coducktor'));
     delete process.env.CEZ_AGENT_MODELS_LOCKED;
     delete process.env.CEZ_DRY_RUN;
-    delete process.env.CEZ_REMOTE;
   });
 
   afterEach(() => {
@@ -77,8 +75,6 @@ describe('workspace provider API', () => {
     else process.env.CEZ_AGENT_MODELS_LOCKED = savedModelsLocked;
     if (savedDryRun === undefined) delete process.env.CEZ_DRY_RUN;
     else process.env.CEZ_DRY_RUN = savedDryRun;
-    if (savedRemote === undefined) delete process.env.CEZ_REMOTE;
-    else process.env.CEZ_REMOTE = savedRemote;
   });
 
   const service = (
@@ -108,7 +104,6 @@ describe('workspace provider API', () => {
   const app = (options: {
     providerAuth?: ProviderAuthService;
     openTerminal?: (cwd: string, command: string) => Promise<boolean>;
-    bindHost?: string;
     workspaceEvents?: WorkspaceEventBus;
     workspaceConfig?: ReturnType<typeof memoryWorkspaceConfig>;
     contexts?: ProjectContexts;
@@ -119,7 +114,6 @@ describe('workspace provider API', () => {
     version: 'test',
     providerAuth: options.providerAuth ?? service(),
     openTerminal: options.openTerminal,
-    bindHost: options.bindHost,
     workspaceEvents: options.workspaceEvents,
     workspaceConfig: options.workspaceConfig,
     contexts: options.contexts,
@@ -415,7 +409,7 @@ describe('workspace provider API', () => {
 
   it('observes a lazy-project auth failure emitted during recovery', async () => {
     const lazyRoot = mkdtempSync(join(tmpdir(), 'cez-providers-lazy-'));
-    const lazyStore = RunStore.open(join(lazyRoot, '.ai/cezar'), { keepLive: true });
+    const lazyStore = RunStore.open(join(lazyRoot, '.ai/coducktor'), { keepLive: true });
     const run = lazyStore.createRun({
       title: 'lazy recovery',
       workflow: 'quick-task',
@@ -626,22 +620,6 @@ describe('workspace provider API', () => {
     expect(response.headers.get('content-type')).toContain('application/json');
     expect(JSON.parse(raw)).toEqual({ error: 'Authentication could not be verified. Try again.' });
     expect(raw).not.toContain('private provider probe output');
-    expect(openTerminal).not.toHaveBeenCalled();
-  });
-
-  it('POST returns 409 plus command when localHandoff is false', async () => {
-    const openTerminal = vi.fn(async () => true);
-    const response = await connect(app({
-      providerAuth: service({ codex: 'disconnected' }),
-      openTerminal,
-      bindHost: '0.0.0.0',
-    }), 'codex');
-
-    expect(response.status).toBe(409);
-    expect(await response.json()).toEqual({
-      error: 'Run this command on the machine hosting cezar.',
-      command: "'codex' login",
-    });
     expect(openTerminal).not.toHaveBeenCalled();
   });
 

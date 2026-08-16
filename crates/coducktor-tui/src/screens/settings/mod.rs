@@ -1394,10 +1394,7 @@ mod tests {
 
     fn sample_workspace_config() -> WorkspaceConfigResponse {
         WorkspaceConfigResponse {
-            browse_root: "/home".to_owned(),
             projects_dir: "/home/user/projects".to_owned(),
-            skills_auto_update: None,
-            effective_skills_auto_update: false,
             composer_defaults: ComposerDefaults {
                 autonomous: None,
                 worktree: None,

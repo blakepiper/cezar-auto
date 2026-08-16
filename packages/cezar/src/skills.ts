@@ -1,16 +1,16 @@
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve, basename, dirname, extname } from 'node:path';
-import { gatedSkillsRepos } from './config.ts';
-import { getTeamSkillsCached } from './skills-remote.ts';
-import { readWorkspaceUiState } from './workspace/ui-state.ts';
 
 /**
  * A skill is a Markdown file with optional YAML-ish frontmatter (`name`,
  * `description`). Discovered from the repo's `.ai/skills/` (shared with other
- * agent tooling), `.ai/cezar/skills/` (cez-local), the `npx skills` install
- * dirs (`.agents/skills` + the per-agent mirrors, project and global), and
- * the configured team skills repos (spec 005 — bare clones, no checkout).
+ * agent tooling), `.ai/coducktor/skills/` (cez-local), and the `npx skills` install
+ * dirs (`.agents/skills` + the per-agent mirrors, project and global).
+ *
+ * Team skills from remote git repos are retired (A15, decision 7 — spec §16a
+ * Tier 2): local discovery is all that remains. `~/.agents/skills/` is already
+ * a supported discovery location and needs no clone, cache or network.
  * Adapted from @cezar/core's skill-catalog.
  */
 export interface Skill {
@@ -20,17 +20,7 @@ export interface Skill {
   interactive?: true;
   body: string;
   path: string;
-  source: 'ai' | 'cezar' | 'agents' | 'global' | 'team';
-  /** Team skills only: where the definition lives in its skills repo. */
-  team?: {
-    repo: string;
-    ref: string;
-    path: string;
-    /** True for the `SKILL.md` convention — a whole directory (references/…). */
-    dir: boolean;
-    /** The exact commit `ref` resolved to when the skill was read (#428). */
-    commit?: string;
-  };
+  source: 'ai' | 'cezar' | 'agents' | 'global';
 }
 
 /* Precedence order — earlier dirs win name collisions. `npx skills` writes
@@ -44,7 +34,7 @@ export interface Skill {
    process, so adding a dir here without updating the hint makes the hint lie.
    That test pins this list and says where to go. */
 export const SKILL_DIRS: Array<{ dir: string; source: Skill['source'] }> = [
-  { dir: '.ai/cezar/skills', source: 'cezar' },
+  { dir: '.ai/coducktor/skills', source: 'cezar' },
   { dir: '.ai/skills', source: 'ai' },
   { dir: '.agents/skills', source: 'agents' },
   { dir: '.claude/skills', source: 'agents' },
@@ -64,41 +54,19 @@ const GLOBAL_SKILL_DIRS: Array<{ dir: string; source: Skill['source'] }> = [
 
 /**
  * Discover the merged skill catalog for a repo. Name collisions resolve
- * local-first: `.ai/cezar/skills` → `.ai/skills` → `.agents/skills` + agent
- * mirrors → global (`~/.agents/skills`, `~/.claude/skills`) → team repo
- * ("the user's repo is the source of truth"). Missing directories are fine —
- * an empty catalog is fully supported (steps fall back to their plain
- * prompt). Team skills come from the in-process cache; the first call starts
- * a background load so nothing here ever waits on the network.
- *
- * Opt-out gate: skills from a configured default/vendor skills repo — see
- * `gatedSkillsRepos` — appear unless the user has curated them away. `importedSkills`
- * in the GLOBAL `~/.cezar/ui-state.json` (not the
- * per-repo file — the selection describes the person and must not depend on the launch
- * directory, multi-project workspace) is a tri-state: ABSENT means "not curated" and
- * every default skill shows (the historical behavior — no upgrade break for existing
- * installs); a PRESENT array (even `[]`) means the user has taken control and only those
- * names show. A repo that sets its own `skillsRepos` gates nothing regardless. This is the
- * single chokepoint, so the decision is identical for every consumer — catalog, composer
- * picker, planner, runner.
+ * local-first: `.ai/coducktor/skills` → `.ai/skills` → `.agents/skills` + agent
+ * mirrors → global (`~/.agents/skills`, `~/.claude/skills`). Missing
+ * directories are fine — an empty catalog is fully supported (steps fall
+ * back to their plain prompt).
  */
 export async function discoverSkills(repoRoot: string): Promise<Skill[]> {
-  const [lists, gatedRepos, uiState] = await Promise.all([
-    Promise.all([
-      ...SKILL_DIRS.map(({ dir, source }) => readMarkdownSkills(resolve(repoRoot, dir), source)),
-      ...GLOBAL_SKILL_DIRS.map(({ dir, source }) => readMarkdownSkills(dir, source)),
-    ]),
-    gatedSkillsRepos(repoRoot),
-    readWorkspaceUiState(),
+  const lists = await Promise.all([
+    ...SKILL_DIRS.map(({ dir, source }) => readMarkdownSkills(resolve(repoRoot, dir), source)),
+    ...GLOBAL_SKILL_DIRS.map(({ dir, source }) => readMarkdownSkills(dir, source)),
   ]);
-  const teamSkills = filterImportedTeamSkills(
-    getTeamSkillsCached(repoRoot),
-    gatedRepos,
-    readImportedSkills(uiState),
-  );
   const merged: Skill[] = [];
   const seen = new Set<string>();
-  for (const skills of [...lists, teamSkills]) {
+  for (const skills of lists) {
     for (const skill of skills) {
       if (seen.has(skill.name)) continue;
       seen.add(skill.name);
@@ -107,41 +75,6 @@ export async function discoverSkills(repoRoot: string): Promise<Skill[]> {
   }
   merged.sort((a, b) => a.name.localeCompare(b.name));
   return merged;
-}
-
-/**
- * The imported team-skill names from a raw `ui-state.json` object, as a tri-state:
- * `undefined` means the key is absent — "not curated", so every default skill shows
- * (the opt-out default that keeps existing installs whole); an array (even empty) is
- * the user's explicit selection. Defensive because the file is user-editable: a value
- * that is not an array degrades to `undefined` (keep all — the safe, backward-compatible
- * reading), and non-string / empty entries inside an array are dropped rather than thrown on.
- */
-export function readImportedSkills(uiState: Record<string, unknown>): string[] | undefined {
-  const value = uiState.importedSkills;
-  if (!Array.isArray(value)) return undefined;
-  return value.filter((name): name is string => typeof name === 'string' && name.length > 0);
-}
-
-/**
- * The opt-out gate: keep every team skill whose repo is NOT gated (a repo with its own
- * configured `skillsRepos` — auto-loads everything). For skills from a gated default
- * (vendor) repo, `importedSkills === undefined` keeps them ALL (not curated — the
- * historical behavior), while a present array keeps only the named ones. Local skills
- * carry no `team` and are always kept. Pure so the gate is unit-testable without a
- * network clone (the gated set is a const default otherwise).
- */
-export function filterImportedTeamSkills(
-  teamSkills: readonly Skill[],
-  gatedRepos: ReadonlySet<string>,
-  importedSkills: readonly string[] | undefined,
-): Skill[] {
-  // Not curated → the full default catalog still appears (no upgrade break).
-  if (importedSkills === undefined) return [...teamSkills];
-  const imported = new Set(importedSkills);
-  return teamSkills.filter(
-    (skill) => !skill.team || !gatedRepos.has(skill.team.repo) || imported.has(skill.name),
-  );
 }
 
 /**

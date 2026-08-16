@@ -116,16 +116,8 @@ function ProjectsPane({
       // their own `max-w-sm`, so widening the column costs them nothing.
       className="mx-auto flex w-full max-w-4xl flex-col gap-7 p-4 pb-[calc(90px+env(safe-area-inset-bottom))] md:p-6 md:pb-6"
     >
-      <WorkspaceRootField
-        configKey="browseRoot"
-        value={config.browseRoot}
-        title="Default browse folder"
-        hint="Where “Open local folder…” starts. The picker cannot navigate above this folder."
-        placeholder="~/"
-        slot="browse"
-        savedLabel="Browse folder"
-        footer="Only affects folder browsing; GitHub checkouts use the separate checkout folder."
-      />
+      {/* A15 (decision 8): the folder picker is a typed path now, so there is no "default
+          browse folder" to configure — the browse-root setting was retired with `GET /api/v1/fs/browse`. */}
       <WorkspaceRootField
         configKey="projectsDir"
         value={config.projectsDir}
@@ -142,7 +134,8 @@ function ProjectsPane({
   )
 }
 
-/** A workspace folder — edited locally, saved explicitly, and validated by the SERVER. */
+/** The workspace checkout folder — edited locally, saved explicitly, and validated by the
+ *  SERVER. */
 function WorkspaceRootField({
   configKey,
   value: configuredValue,
@@ -154,28 +147,25 @@ function WorkspaceRootField({
   footer,
   refreshProjects = false,
 }: {
-  configKey: 'browseRoot' | 'projectsDir'
+  configKey: 'projectsDir'
   value: string
   title: string
   hint: string
   placeholder: string
-  slot: 'browse' | 'checkout'
+  slot: 'checkout'
   savedLabel: string
   footer: string
   refreshProjects?: boolean
 }) {
   const queryClient = useQueryClient()
   // The merged config the PUT answers with lands straight in the workspace-config query. The
-  // projects response carries projectsDir for the clone dialog, while every fs-browse result is
-  // relative to browseRoot. Invalidate the corresponding authoritative cache after either save.
+  // projects response carries projectsDir for the clone dialog, so the registry is invalidated
+  // after a save too.
   const save = useMutation({
-    mutationFn: (next: string) =>
-      putWorkspaceConfig(configKey === 'browseRoot' ? { browseRoot: next } : { projectsDir: next }),
+    mutationFn: (next: string) => putWorkspaceConfig({ projectsDir: next }),
     onSuccess: (result) => {
       queryClient.setQueryData(workspaceQueryKeys.config, result)
-      if (configKey === 'browseRoot') {
-        void queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.fsBrowseRoot })
-      } else if (refreshProjects) {
+      if (refreshProjects) {
         void queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.projects })
       }
     },
@@ -192,11 +182,7 @@ function WorkspaceRootField({
   return (
     <SettingsField
       title={title}
-      hint={`${hint} ${
-        configKey === 'browseRoot'
-          ? 'Choose an existing folder; it is verified writable before saving.'
-          : 'The folder is created recursively if needed, then verified writable before saving.'
-      }`}
+      hint={`${hint} The folder is created recursively if needed, then verified writable before saving.`}
     >
       <div className="flex items-center gap-2">
         <input

@@ -2,11 +2,12 @@ import { z } from 'zod';
 // `StartTodoResponse` embeds a whole run record, which belongs to the runs slice.
 import { runRecordSchema } from './runs.ts';
 
-// ---- skills (`GET /skills`, `POST /skills/refresh`) ---------------------------------------
+// ---- skills (`GET /skills`) ----------------------------------------------------------------
 
 /**
- * One discovered skill: repo (`.ai/skills`, `.ai/cezar/skills`), `npx skills` install dirs
- * (project + global), or a configured team skills repo (spec 005).
+ * One discovered skill: repo (`.ai/skills`, `.ai/coducktor/skills`) or `npx skills` install dirs
+ * (project + global). Remote team skills are retired (A15, decision 7 — spec §16a Tier 2):
+ * local discovery is all that remains.
  */
 export const skillSchema = z.object({
   name: z.string(),
@@ -15,46 +16,13 @@ export const skillSchema = z.object({
   interactive: z.literal(true).optional(),
   body: z.string(),
   path: z.string(),
-  source: z.enum(['ai', 'cezar', 'agents', 'global', 'team']),
-  /** Team skills only: where the definition lives in its skills repo. */
-  team: z
-    .object({
-      repo: z.string(),
-      ref: z.string(),
-      path: z.string(),
-      /** True for the `SKILL.md` convention — a whole directory (references/…). */
-      dir: z.boolean(),
-      /**
-       * The exact commit `ref` resolved to when the skill was read (#428).
-       *
-       * The hand-written DTO omitted this field entirely — it was NARROWER than the route,
-       * which has served it since #428.
-       */
-      commit: z.string().optional(),
-    })
-    .optional(),
+  source: z.enum(['ai', 'cezar', 'agents', 'global']),
 });
 export type Skill = z.infer<typeof skillSchema>;
 
-/**
- * One row in the "Manage skills" panel — a skill a default (vendor) repo offers, from
- * `GET /skills/importable`, independent of whether it is currently kept.
- *
- * `description` is optional because that is what the WIRE says: the handler builds
- * `{ name, description: skill.description }` and `JSON.stringify` omits an undefined value, so
- * a description-less skill is serialized as `{ "name": "…" }`. The route's own type disagrees
- * (it claims the key is always present) — a handler defect, see
- * `contract-parity.workflows.test.ts`.
- */
-export const importableSkillSchema = z.object({
-  name: z.string(),
-  description: z.string().optional(),
-});
-export type ImportableSkill = z.infer<typeof importableSkillSchema>;
-
 // ---- follow-up inbox / todos (spec 007) ---------------------------------------------------
 
-/** One entry of `.ai/cezar/todos.json`, as `GET /todos` serves it (ids are backfilled on read). */
+/** One entry of `.ai/coducktor/todos.json`, as `GET /todos` serves it (ids are backfilled on read). */
 export const todoItemSchema = z.object({
   id: z.string(),
   ts: z.string().optional(),

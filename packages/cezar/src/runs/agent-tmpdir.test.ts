@@ -188,7 +188,7 @@ describe('reaping the per-run temp directories (#785)', () => {
     expect(existsSync(agentTmpDir(dataDir, 'orphan-1'))).toBe(false);
   });
 
-  // BACKWARD_COMPATIBILITY §3: `.ai/cezar/` is a protected surface. The sweep is
+  // BACKWARD_COMPATIBILITY §3: `.ai/coducktor/` is a protected surface. The sweep is
   // confined to its own `tmp/` subtree and must never see a sibling.
   it('never touches sibling run state', () => {
     agentTmpEnv(dataDir, 'orphan', {});

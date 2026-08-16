@@ -110,7 +110,6 @@ describe('AppShell', () => {
       'IDE',
       'Git',
       'GitHub',
-      'Automations',
       'Skills',
       'Workflows',
       'Settings',
@@ -122,7 +121,6 @@ describe('AppShell', () => {
       '/ide',
       '/git',
       '/github',
-      '/automations',
       '/skills',
       '/workflows',
       '/settings',
@@ -142,21 +140,6 @@ describe('AppShell', () => {
     const links = within(nav()).getAllByRole('link')
     expect(links.map((a) => a.getAttribute('href'))).not.toContain('/github')
     expect(links).toHaveLength(NAV_ITEMS.filter((item) => !item.forge).length)
-  })
-
-  // #801: same degradation for the opt-in automations capability — the item disappears, it does
-  // not render disabled. The two gates on that item are independent: a forge alone is not enough.
-  it('drops the Automations item when the capability is off', () => {
-    renderShell('/', { automationsAvailable: false })
-    const links = within(nav()).getAllByRole('link')
-    expect(links.map((a) => a.getAttribute('href'))).not.toContain('/automations')
-    expect(links).toHaveLength(NAV_ITEMS.filter((item) => !item.automations).length)
-  })
-
-  it('shows the Automations item once the capability is on', () => {
-    renderShell('/', { automationsAvailable: true })
-    expect(within(nav()).getAllByRole('link').map((a) => a.getAttribute('href')))
-      .toContain('/automations')
   })
 
   describe('active nav state follows the current route', () => {
@@ -201,13 +184,6 @@ describe('AppShell', () => {
     it('is shown by default', () => {
       renderShell()
       expect(within(sidebar()).getByRole('button', { name: 'Add project' })).toBeTruthy()
-    })
-
-    it('is omitted in single-project mode while normal navigation remains', () => {
-      renderShell('/', { singleProject: true })
-      expect(within(sidebar()).queryByRole('button', { name: 'Add project' })).toBeNull()
-      expect(within(nav()).getByRole('link', { name: 'Tasks' })).toBeTruthy()
-      expect(within(sidebar()).getByRole('link', { name: /New task/ })).toBeTruthy()
     })
   })
 
@@ -269,13 +245,6 @@ describe('AppShell', () => {
       expect(opened).toHaveBeenCalledTimes(1)
     })
 
-    it('still shows the version chip update affordance (#368) in the narrower row', () => {
-      renderShell('/', { version: '1.2.3', latestVersion: '1.3.0' })
-      const chip = controls().querySelector('[data-slot="version-chip"]') as HTMLElement
-      expect(chip.getAttribute('data-update-available')).toBe('true')
-      expect(chip.querySelector('[data-slot="status-dot"]')).not.toBeNull()
-    })
-
     /* The two-row footer holds only while something in the controls row can give: every icon
      * button is `shrink-0` (button base class), so a long version string — `0.9.2-nightly.…`,
      * the nightly dist-tag of #876 — used to push the gear and the toggle outside the 264px
@@ -317,36 +286,6 @@ describe('AppShell', () => {
       expect(within(footer()).getByText('v1.2.3')).toBeTruthy()
     })
 
-    describe('version chip update affordance (#368)', () => {
-      const chip = () => document.querySelector('[data-slot="version-chip"]') as HTMLElement
-
-      it('stays plain while the registry has nothing newer', () => {
-        renderShell('/', { version: '1.2.3' })
-        expect(chip().getAttribute('data-update-available')).toBeNull()
-        // A tooltip, but one that claims nothing: the chip truncates, so the full version has to
-        // stay reachable on hover even when there is no update to announce.
-        expect(chip().getAttribute('title')).toBe('v1.2.3')
-        expect(chip().querySelector('[data-slot="status-dot"]')).toBeNull()
-      })
-
-      it('stays plain when latestVersion equals the running version', () => {
-        renderShell('/', { version: '1.2.3', latestVersion: '1.2.3' })
-        expect(chip().getAttribute('data-update-available')).toBeNull()
-        expect(chip().querySelector('[data-slot="status-dot"]')).toBeNull()
-      })
-
-      it('pulses and names the newer version when one exists', () => {
-        renderShell('/', { version: '1.2.3', latestVersion: '1.3.0' })
-        expect(chip().getAttribute('data-update-available')).toBe('true')
-        expect(chip().getAttribute('title')).toBe('v1.2.3 — update available: v1.3.0')
-        const dot = chip().querySelector('[data-slot="status-dot"]') as HTMLElement
-        expect(dot.getAttribute('data-tone')).toBe('pending')
-        expect(dot.className).toContain('animate-pulse')
-        // The version shown is still the one actually running.
-        expect(chip().textContent).toContain('v1.2.3')
-      })
-    })
-
     it('renders the Inbox badge only for a non-zero count', () => {
       renderShell('/', { inboxCount: 2 })
       const inbox = within(nav()).getByRole('link', { name: /Inbox/ })
@@ -355,25 +294,6 @@ describe('AppShell', () => {
       cleanup()
       renderShell('/', { inboxCount: 0 })
       expect(document.querySelector('[data-slot="nav-badge"]')).toBeNull()
-    })
-
-    it('renders a quiet accessible Skills update marker in desktop and mobile navigation', () => {
-      renderShell('/', { skillsUpdateAvailable: true })
-      expect(document.querySelectorAll('[data-slot="nav-update-marker"]')).toHaveLength(1)
-      fireEvent.click(screen.getByRole('button', { name: 'Open menu' }))
-      const markers = document.querySelectorAll('[data-slot="nav-update-marker"]')
-      expect(markers).toHaveLength(2)
-      for (const marker of markers) {
-        expect(marker.textContent).toBe('Skills update available')
-        expect(marker.innerHTML).not.toContain('animate-')
-      }
-      // Radix hides the desktop app from the accessibility tree while the mobile drawer is modal.
-      expect(screen.getAllByRole('link', { name: /Skills update available/ })).toHaveLength(1)
-    })
-
-    it('renders no Skills marker without an actionable update', () => {
-      renderShell()
-      expect(document.querySelector('[data-slot="nav-update-marker"]')).toBeNull()
     })
 
     it('reserves the quick-list, tools and composer slots for later Steps', () => {

@@ -1,17 +1,5 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { AutomationStore } from '../automations/store.ts';
-import { AutomationCoordinator } from '../automations/coordinator.ts';
-import { GithubPoller } from '../automations/github-poller.ts';
-import { ProjectAutomationScheduler, WorkspaceAutomationScheduler } from '../automations/scheduler.ts';
-import { launchAutomationRun, reconcileAutomationReceipts, validateAutomationPrompt } from '../automations/task-template.ts';
-import {
-  automationEventSchema,
-  automationFiltersSchema,
-  automationLogResultSchema,
-  automationTaskSchema,
-  type AutomationDefinition,
-} from '../automations/types.ts';
 import type { IncomingMessage } from 'node:http';
 import { access, constants as fsConstants, mkdir, readFile, realpath, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -76,8 +64,6 @@ import {
 } from '../workflows/types.ts';
 import { planChain, slugify } from '../planner.ts';
 import { discoverSkills } from '../skills.ts';
-import { SkillsUpdateConflictError, SkillsUpdateCoordinator, SkillsUpdateService, type SkillsUpdateState } from '../skills-update.ts';
-import { getTeamSkillsCached, refreshTeamSkills, waitForTeamSkills } from '../skills-remote.ts';
 import { appendHandoffHeartbeat, handoffProgressExcerpt, readHandoff } from '../handoff.ts';
 import { markStarted, onTodosChanged, readTodos, removeTodo, todoTaskText, type TodoItem } from '../todos.ts';
 import type { RunEvent, RunRecord, RunStatus, RunStore } from '../runs/store.ts';
@@ -112,7 +98,7 @@ import {
   pushCurrentBranch,
   readWorktreePath,
 } from './git-changes.ts';
-import { gatedSkillsRepos, loadConfig, resolveWorktreeRetention, type CezConfig } from '../config.ts';
+import { loadConfig, resolveWorktreeRetention, type CezConfig } from '../config.ts';
 import { findConfigFile } from '../agent-config/catalog.ts';
 import { readConfigFile, statConfigPath, writeConfigFile } from '../agent-config/files.ts';
 import { readAgentModelDefaults } from '../agent-config/models.ts';
@@ -122,7 +108,6 @@ import { readAccountIdentity } from '../agent-config/account-identity.ts';
 import {
   PROJECT_ID_RE,
   defaultWorkspaceConfig,
-  effectiveSkillsAutoUpdate,
   loadWorkspaceConfig,
   mergeWriteWorkspaceConfig,
   effectiveComposerDefault,
@@ -171,11 +156,9 @@ import { readUiState, uiStatePath } from '../ui-state.ts';
 import { agentHomePaths, expandTilde } from '../paths.ts';
 import { isLoopbackHostHeader, normalizeHostname, resolveCapabilities } from './capabilities.ts';
 import { createSocketHub, type SocketHub, type WsUpgradeVerdict } from './ws.ts';
-import { browseDirectory, isInsideBrowseRoot, isLexicallyInsideBrowseRoot, resolveBrowseRoot } from './fs-browse.ts';
 import { listIdeDirectory, readIdeFile, writeIdeFile } from './ide-files.ts';
 import { parseRemote, resolveForge, type ForgeAvailability } from './forge/index.ts';
 import { fetchGithub, fetchGithubChecks, fetchGithubComments, fetchGithubPrDiff, fetchGithubRefStatus, forgetRefStatus, readCachedRefStatuses, refNumberFromUrl, GithubPrNotFoundError, GH_CHECKS_MAX, GH_REF_STATUS_MAX } from './github.ts';
-import { ensureLaunchKey } from './launch-key.ts';
 import { openInTerminal } from './open-in-terminal.ts';
 import { agentCliRunner, detectOpenTargets, openFileInDefaultApp, openInApp } from './open-in-app.ts';
 import { createDraftPr } from './pr.ts';
@@ -199,10 +182,8 @@ export interface ServerDeps {
   store: RunStore;
   manager: RunManager;
   version: string;
-  /** Optional externally supplied update metadata. The CLI does not contact a package registry. */
-  update?: { latest?: string };
-  /** Host the HTTP server binds (default 127.0.0.1). A non-loopback host
-   *  implies hosted mode — `capabilities.localHandoff:false`. */
+  /** Host the HTTP server binds (default 127.0.0.1). Local dev/testing convenience only — the
+   *  normal CLI path never passes a non-loopback value (A15, decision 5 retires hosted mode). */
   bindHost?: string;
   /** Workspace-registry id of the boot project (multi-project spec) — plumbed
    *  from `initWorkspace` in src/index.ts. Optional: legacy callers/tests get
@@ -216,10 +197,6 @@ export interface ServerDeps {
    *  context is seeded from `deps.{store,manager}` (which src/index.ts already
    *  recovered/pruned at startup) and the resolver short-circuits to it. */
   contexts?: ProjectContexts;
-  /** Boot project's shared automation store. `startServer` injects the
-   *  coordinator-owned instance so HTTP routes and the scheduler never cache
-   *  separate views of the same project files. */
-  automationStore?: AutomationStore;
   /** Workspace-wide parallel-cap semaphore + cached resource config (spec
    *  2026-07-20, step 2.5): the ONE instance boot created, refreshed, and gave
    *  the boot manager — threaded into the default `ProjectContexts` so every
@@ -264,16 +241,11 @@ export interface ServerDeps {
    *  reaches `openInTerminal`. Injected for the same reason as the two above: a test that reaches
    *  this for real opens a window on the developer's machine (#820). */
   openApp?: typeof openInApp;
-  /** Process-wide configured skills update detector. Injected in tests and
-   * shared by every workspace route/project; createApp owns the default. */
-  skillsUpdate?: SkillsUpdateService;
   /** WebSocket subscription hub (`/api/v1/ws`, src/server/ws.ts). `createApp`
    *  only registers topics on it — `startServer` builds one and attaches it
    *  to the HTTP server it binds. Optional so legacy callers/tests change
    *  nothing: no hub, no topics, and the HTTP surface is byte-identical. */
   socketHub?: SocketHub;
-  /** Re-arm the workspace automation timer after definition mutations. */
-  automationsChanged?: () => void;
 }
 
 // ---- project-scoped routing (multi-project spec, step 2.2) -----------------
@@ -328,11 +300,6 @@ const selectAgentProfileSchema = z.object({
   profileId: z.string().max(64).nullable(),
 }).strict();
 
-/** The hosted-mode refusal, worded like the agent-config one it mirrors. */
-const hostedProfileRefusal = {
-  error: 'agent accounts are managed from the machine that owns the checkout (this cockpit runs in hosted mode)',
-};
-
 /**
  * Allocate a profile id from the label (or, with no label, the folder name).
  *
@@ -351,46 +318,6 @@ const providerEnabledSchema = z.object({ enabled: z.boolean() }).strict();
 const providerRetrySchema = z.object({
   authFailureId: z.string().min(1).max(128),
 }).strict();
-
-const automationEditableSchema = z
-  .object({
-    name: z.string().trim().min(1).max(200),
-    description: z.string().max(2_000).optional(),
-    enabled: z.boolean().optional(),
-    events: z.array(automationEventSchema).min(1).max(4),
-    intervalSeconds: z.number().int().min(60).max(86_400),
-    filters: automationFiltersSchema,
-    task: automationTaskSchema,
-  })
-  .strict();
-const automationCreateSchema = automationEditableSchema.extend({ enable: z.boolean().optional() });
-const automationUpdateSchema = automationEditableSchema.extend({ expectedRevision: z.number().int().positive() });
-const automationCheckRequestSchema = z.object({ mode: z.enum(['preview', 'execute']) }).strict();
-const automationLogQuerySchema = z.object({
-  automationId: z.string().optional(),
-  result: automationLogResultSchema.optional(),
-  event: automationEventSchema.optional(),
-  since: z.string().datetime().optional(),
-  cursor: z.coerce.number().int().positive().optional(),
-  // Optional, not `.default(100)`: `AutomationStore.logs` already clamps `limit ?? 100` into
-  // 1..100, so the default here was a second copy of it — and a defaulted key is REQUIRED in the
-  // request type `queryZodValidator` publishes (see validators.ts on why the request side falls
-  // back to the schema's output), which would have made every caller send a `?limit=` this route
-  // never needed.
-  limit: z.coerce.number().int().min(1).max(100).optional(),
-});
-
-function editableAutomation(definition: AutomationDefinition) {
-  return {
-    name: definition.name,
-    description: definition.description,
-    enabled: definition.enabled,
-    events: definition.events,
-    intervalSeconds: definition.intervalSeconds,
-    filters: definition.filters,
-    task: definition.task,
-  };
-}
 
 /** One row of the mirrored project-route table. */
 export interface ProjectRouteInfo {
@@ -437,9 +364,6 @@ export function projectRouteManifest(app: Hono): ProjectRouteInfo[] {
 /** 409 body for the inbox mutators while the follow-up inbox is off (#471). */
 const FOLLOWUPS_OFF = 'the follow-up inbox is disabled — set CEZ_FOLLOWUPS=1 to enable it';
 
-/** 409 body for every automations route while GitHub automations are off (#801). */
-const AUTOMATIONS_OFF = 'GitHub automations are disabled — set CEZ_AUTOMATIONS=1 to enable them';
-
 // ---- variant-compare response shapes (spec 010) ----------------------------
 // Named and exported so `api-types.test.ts` can drift-guard the cockpit's
 // hand-mirrored copies (`web/app/src/api/types.ts`) against the real thing.
@@ -468,7 +392,7 @@ export interface RegisterProjectResponse {
 
 /** `DELETE /api/projects/:projectId` (multi-project spec, step 4.4) — the
  *  Projects settings pane's Remove. DEREGISTRATION ONLY: the entry leaves
- *  `~/.cezar/config.json` and nothing under the project root is read, moved or
+ *  `~/.coducktor/config.json` and nothing under the project root is read, moved or
  *  deleted. `removed` is always true on a 200 (the failure paths are 404/409). */
 export interface RemoveProjectResponse {
   removed: true;
@@ -485,7 +409,7 @@ export interface UpdateProjectResponse {
 }
 
 /** `GET/PUT /api/workspace/config` (multi-project spec, step 2.7) — the
- *  settings slice of `~/.cezar/config.json`: global knobs ONLY, never the
+ *  settings slice of `~/.coducktor/config.json`: global knobs ONLY, never the
  *  project registry (that is `GET /api/projects`' job). */
 export type WorkspaceConfigResponse = ContractWorkspaceConfigResponse;
 
@@ -573,7 +497,7 @@ const startRunSchema = z
     // journal is unaffected either way.
     generateFollowups: z.boolean().optional(),
     // Per-run system-prompt override (R2 2.3) — programmatic callers only
-    // (bookmarklets, scripts); deliberately NOT a composer-UI control. Wins
+    // (external scripts); deliberately NOT a composer-UI control. Wins
     // over the config.json default; whitespace-only degrades to absent.
     systemPrompt: z
       .string()
@@ -634,7 +558,7 @@ const parseWorkflowSchema = z.object({
   yaml: z.string().min(1).max(100_000),
 });
 
-// Small GUI preferences persisted in `.ai/cezar/ui-state.json` (files, not a
+// Small GUI preferences persisted in `.ai/coducktor/ui-state.json` (files, not a
 // DB): today just the last-used task source, so the form preselects what you
 // actually run. Unknown keys pass through — future prefs won't need a schema
 // dance.
@@ -652,7 +576,7 @@ const UI_STATE_MAX_KEYS = 200;
 /** Settings → Appearance (redesign R6): accent + density + reading width. ONE
  *  schema for both ui-state files — per-repo (the legacy home, kept so an older
  *  cezar in the same repo still honours it) and workspace
- *  (`~/.cezar/ui-state.json`, its post-migration home — multi-project spec,
+ *  (`~/.coducktor/ui-state.json`, its post-migration home — multi-project spec,
  *  Data Model).
  *
  *  Every key is `.optional()` so an older ui-state.json parses unchanged, but
@@ -725,9 +649,9 @@ const uiStateSchema = z
       .optional(),
     // Skills promo banner (#391): set once the cockpit banner is dismissed, never unset.
     // Server-persisted (not a cookie) so the "shown once" promise holds across browsers.
-    // Retained for backward compatibility — the banner is gone, replaced by the workspace-level
-    // `importedSkills` curation (see `workspaceUiStateSchema`); `.passthrough()` would preserve
-    // the key regardless, but keep it typed.
+    // Retained for backward compatibility — the banner is gone and the skills-curation
+    // key that replaced it went with the skills-network features (A15, decision 7);
+    // `.passthrough()` would preserve the key regardless, but keep it typed.
     dismissedSkillsBanner: z.boolean().optional(),
   })
   .passthrough();
@@ -901,7 +825,6 @@ const uiStateBody = uiStateSchema.superRefine(capUiStateKeys);
 const queryValue = z.union([z.string(), z.array(z.string()).transform((v) => v[0] as string)]).optional();
 
 const refreshQuery = z.object({ refresh: queryValue });
-const waitQuery = z.object({ wait: queryValue });
 
 /**
  * HTTP content negotiation for the two routes that serve more than one FORMAT on one path:
@@ -1005,14 +928,14 @@ async function probeWritableDir(dir: string, create: boolean): Promise<string | 
 // Annotating it `Hono` here would erase every route from the type and leave the typed client
 // with nothing to offer. See the `routed` assembly at the end of the function.
 export function createApp(deps: ServerDeps) {
-  const { version, update, bindHost, bootProjectId } = deps;
+  const { version, bindHost, bootProjectId } = deps;
   // Boot singletons keep DELIBERATELY distinct names (`boot*`): every
-  // project-scoped handler must resolve its `{store, manager, root, dataDir,
-  // launchKey}` from `c.get('project')` — a bare `store`/`repoRoot` in a
-  // handler body would silently pin it to the boot project, which the rename
-  // turns into a compile error instead.
+  // project-scoped handler must resolve its `{store, manager, root, dataDir}`
+  // from `c.get('project')` — a bare `store`/`repoRoot` in a handler body
+  // would silently pin it to the boot project, which the rename turns into a
+  // compile error instead.
   const bootRoot = deps.repoRoot;
-  const bootDataDir = join(bootRoot, '.ai/cezar');
+  const bootDataDir = join(bootRoot, '.ai/coducktor');
   const modelCatalog = deps.modelCatalog ?? new RunnerModelCatalog({
     adapters: {
       codex: { discover: () => discoverCodexModels({ cwd: bootRoot }) },
@@ -1071,7 +994,6 @@ export function createApp(deps: ServerDeps) {
   const openTerminal = deps.openTerminal ?? openInTerminal;
   const openFile = deps.openFile ?? openFileInDefaultApp;
   const openApp = deps.openApp ?? openInApp;
-  const skillsUpdate = deps.skillsUpdate ?? new SkillsUpdateService();
 
   // ---- workspace boot-project identity (multi-project spec) ----------------
   // The boot flow (`initWorkspace` in src/index.ts) registers the boot repo
@@ -1098,7 +1020,7 @@ export function createApp(deps: ServerDeps) {
   };
   // Health's workspace garnish: id+name ONLY — never `root` (#431, see the
   // health route). Reads only the registry file; no per-root status probes,
-  // so health stays cheap enough for the bookmarklet's 800 ms port sweep.
+  // so health stays cheap enough for cross-origin port sweeps.
   const workspaceSummary = async (): Promise<{
     projects: { id: string; name: string }[];
     bootProject: string;
@@ -1106,13 +1028,10 @@ export function createApp(deps: ServerDeps) {
     try {
       const registry = (await loadWorkspaceConfig()).projects;
       const bootProject = await resolveBootProject(registry);
-      const visible = capabilities().singleProject
-        ? registry.filter((project) => project.id === bootProject)
-        : registry;
       return {
         // Explicit picks, not a spread: the registry schema passes unknown
         // keys through, and `root` must never ride along onto health.
-        projects: visible.map((p) => ({
+        projects: registry.map((p) => ({
           id: p.id,
           name: p.name || basename(p.root),
         })),
@@ -1122,12 +1041,7 @@ export function createApp(deps: ServerDeps) {
       return { projects: [], bootProject: await resolveBootProject([]) };
     }
   };
-  // Hosted-mode gate (spec §"Deployment modes") — read per request so
-  // CEZ_REMOTE flips take effect live (and tests can toggle it).
-  const capabilities = () => resolveCapabilities(process.env, bindHost);
-  const singleProjectRefusal = (
-    action: 'adding projects' | 'editing projects' | 'removing projects' | 'folder browsing',
-  ) => ({ error: `single-project mode is enabled; ${action} is disabled` });
+  const capabilities = () => resolveCapabilities(process.env);
   // Inbox live updates (spec 007). Opt-in (#471): no capability, no watcher —
   // and since step 2.3 the per-dataDir watch is created lazily by the first
   // SSE subscription (and torn down with the last), nothing to start here.
@@ -1136,7 +1050,7 @@ export function createApp(deps: ServerDeps) {
   // The boot project's context is SEEDED from the deps the caller already
   // built (src/index.ts `serveCommand` did the recover/prune/launch-key work
   // at startup — observable boot behavior unchanged); it never enters the
-  // lazy map, so its `.ai/cezar` state is never double-opened. `id` starts as
+  // lazy map, so its `.ai/coducktor` state is never double-opened. `id` starts as
   // the reserved alias when registration was suppressed — handlers never read
   // it; API payloads name the boot project via `resolveBootProject` instead.
   const bootContext: ProjectContext = {
@@ -1145,36 +1059,17 @@ export function createApp(deps: ServerDeps) {
     dataDir: bootDataDir,
     store: deps.store,
     manager: deps.manager,
-    automationStore: deps.automationStore ?? AutomationStore.open(bootDataDir),
-    launchKey: ensureLaunchKey(bootDataDir), // bookmarklet auto-start secret (spec 011)
   };
   // Non-boot projects build lazily on first scoped request; their managers
   // count against the same workspace semaphore as the boot manager (step 2.5).
   const contexts = deps.contexts ?? new ProjectContexts({
-    listProjects: async () => {
-      const selector = capabilities().singleProject
-        ? { projectId: await resolveBootProject() }
-        : undefined;
-      return listProjects(selector);
-    },
+    listProjects: async () => listProjects(),
     semaphore: deps.semaphore,
     quotaCoordinator: deps.quotaCoordinator,
   });
   // Workspace-level SSE bus (step 2.8) — the registry mutators and the
   // checkout flow (Phase 4) emit here; /api/workspace/events relays.
   const workspaceEvents = deps.workspaceEvents ?? new WorkspaceEventBus();
-  const emitAutomationChange = (
-    project: ProjectContext,
-    automationId: string,
-    revision: number,
-    deleted = false,
-  ) => workspaceEvents.emit('automation-change', {
-    project: project.id,
-    automationId,
-    revision,
-    ...(deleted ? { deleted: true } : {}),
-  });
-  const automationsChanged = () => deps.automationsChanged?.();
 
   const providerRuntimeAuth = deps.providerRuntimeAuth
     ?? new ProviderRuntimeAuthObserver(providerAuth, (status) => {
@@ -1203,12 +1098,12 @@ export function createApp(deps: ServerDeps) {
   // Two zero-config checks close both holes on every /api route EXCEPT
   // /api/v1/health (the intentional cross-origin discovery endpoint, spec 011 —
   // it exposes nothing sensitive, see #431):
-  //   1. Host allowlist (loopback deployments only) — a request whose Host is
-  //      not a loopback name did not really originate from this machine. A
-  //      rebound `evil.com` still sends `Host: evil.com`, so this kills DNS
-  //      rebinding for reads AND writes. Skipped in hosted mode (CEZ_REMOTE /
-  //      non-loopback bind), where the reverse proxy forwards the real public
-  //      Host and TLS+auth own the perimeter.
+  //   1. Host allowlist — a request whose Host is not a loopback name did not
+  //      really originate from this machine. A rebound `evil.com` still sends
+  //      `Host: evil.com`, so this kills DNS rebinding for reads AND writes.
+  //      Local is the only deployment mode now (A15, decision 5), so this
+  //      check is unconditional — there is no reverse-proxy/hosted case where
+  //      it would need to be skipped.
   //      The match runs through `isLoopbackHostHeader`, whose 127.0.0.0/8 test
   //      is *anchored* and whose missing-Host answer is "untrusted". Both are
   //      load-bearing: a `startsWith('127.')` prefix would accept the
@@ -1219,8 +1114,7 @@ export function createApp(deps: ServerDeps) {
   //      authority (host AND port) must match the served Host. A blind CSRF
   //      POST from evil.tld is rejected; the cockpit's own same-origin fetch
   //      (Origin === Host, or no Origin at all for non-browser callers) passes
-  //      untouched. Works in both local and hosted mode because it compares
-  //      Origin to the actual Host.
+  //      untouched.
   // Scope note: check 2 covers writes only. A cross-origin GET from any site
   // still reaches the read routes — but its Host is ours, so it is a *forced
   // request*, not a read: the same-origin policy stops the attacker seeing any
@@ -1228,13 +1122,12 @@ export function createApp(deps: ServerDeps) {
   // handler mutates state. Rebinding, which WOULD make those reads legible, is
   // what check 1 stops.
   const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-  const isHostedMode = () => !resolveCapabilities(process.env, bindHost).localHandoff;
   app.use('/api/*', async (c, next) => {
     const hostName = hostnameOfHost(c.req.header('host'));
     // Strict twin of `isLoopbackHost`: a *missing* Host is untrusted here (an
     // absent header is not the "we defaulted to the loopback bind" case), and
     // the loopback match is anchored so `127.0.0.1.evil.com` does not pass.
-    if (!isHostedMode() && !isLoopbackHostHeader(hostName)) {
+    if (!isLoopbackHostHeader(hostName)) {
       return c.json(
         {
           error: 'forbidden: unexpected Host header — this request did not originate from this machine (see #426)',
@@ -1400,10 +1293,11 @@ export function createApp(deps: ServerDeps) {
   app.get('/open-mercato.svg', staticFile('open-mercato.svg', 'image/svg+xml'));
 
   // ---- meta ----------------------------------------------------------------
-  // CORS — deliberately for /api/health ONLY (spec 011): the bookmarklets
-  // fetch it cross-origin from github.com to discover which local ports run a
-  // cockpit and which repo each serves. Health exposes no secrets beyond the
-  // repo path/remote; every other endpoint stays same-origin.
+  // CORS — deliberately for /api/health ONLY (BACKWARD_COMPATIBILITY.md §2):
+  // the cross-origin discovery endpoint — a remote page probes it to discover
+  // which local ports run a cockpit and which repo each serves. Health exposes
+  // no secrets beyond the repo path/remote; every other endpoint stays
+  // same-origin.
   const healthCors = async (c: Context, next: Next): Promise<Response | void> => {
     c.header('access-control-allow-origin', '*');
     if (c.req.method === 'OPTIONS') {
@@ -1436,25 +1330,13 @@ export function createApp(deps: ServerDeps) {
     const caps = capabilities();
     return {
       version,
-      // Spread rather than `latestVersion: update?.latest`: an `undefined` VALUE is dropped by
-      // JSON.stringify, so the key is absent on the wire — but writing it unconditionally types
-      // the key as always-present, which is a shape no client ever receives. The contract schema
-      // says `.optional()`, and contract-parity.test.ts holds the two together.
-      ...(update?.latest !== undefined ? { latestVersion: update.latest } : {}),
-      // Health is CORS-open and, in hosted mode, reachable off the loopback —
-      // so any site/host that reads it would learn the developer's absolute
-      // checkout path and username (#431). Local mode keeps the full path (the
-      // protected bookmarklet shape); hosted/remote mode trims it to a basename.
-      // NB this narrows the VALUE of a field named in BACKWARD_COMPATIBILITY.md
-      // §2: the field is always present and a string, but under CEZ_REMOTE it is
-      // no longer an absolute path. Deliberate — a hosted cockpit's paths are on
-      // a machine the reader does not have anyway. See §2's `repoRoot` note.
-      repoRoot: caps.localHandoff ? bootRoot : basename(bootRoot),
+      // Local is the only mode now (A15, decision 5) — always the full absolute path.
+      repoRoot: bootRoot,
       repo,
       checks,
       defaultRunner: config.defaultRunner,
       // Non-blocking: cached availability or null-until-warm — health must never pay a `gh`
-      // shell-out (the bookmarklet aborts its port probe at 800 ms). See detectGithubCached.
+      // shell-out (a cross-origin probe aborts its port sweep at 800 ms). See detectGithubCached.
       forge: forge ? { kind: forge.kind, ...(forge.detectCached() ?? {}) } : null,
       capabilities: caps,
       // Workspace enumeration (multi-project spec) — additive, id+name ONLY.
@@ -1590,7 +1472,6 @@ export function createApp(deps: ServerDeps) {
    */
   const warmAgentKnowledge = async (): Promise<void> => {
     await providerAuth.status().catch(() => {});
-    if (!capabilities().localHandoff) return;
     const store = await loadAgentAccounts().catch(() => defaultAgentAccountStore());
     for (const account of listAgentProfiles(store, PROVIDER_IDS)) {
       if (account.isDefault) continue; // covered by `status()` above
@@ -1737,18 +1618,6 @@ export function createApp(deps: ServerDeps) {
       const body = { data: c.req.valid('json') };
 
       const provider = body.data.provider as ProviderId;
-      // A NAMED account is refused in hosted mode before anything is resolved, exactly like every
-      // sibling route in the agent-profiles family. Checking later would already have read
-      // `~/.cezar/agent-accounts.json`, built a command carrying the account's absolute path (which
-      // both the success body and the hosted 409 echo), and — for a stored account — spawned a
-      // probe. It would also answer `unknown account: <id>` for a wrong id, which is an enumeration
-      // oracle for the very ids the hosted listing withholds. The bare-provider spelling keeps its
-      // existing behaviour: it names no host path and is how the Providers card has always worked.
-      if (body.data.profileId !== undefined
-        && body.data.profileId !== DEFAULT_AGENT_ACCOUNT_ID
-        && !capabilities().localHandoff) {
-        return c.json(hostedProfileRefusal, 409);
-      }
       // Resolve the account BEFORE anything else: both the command and the status probe below
       // must describe the same one, or the pane reports on the personal login while the terminal
       // signs into the work login.
@@ -1787,9 +1656,6 @@ export function createApp(deps: ServerDeps) {
       if (row.status === 'unknown') {
         return c.json({ error: row.hint ?? 'Authentication could not be verified. Try again.', command }, 409);
       }
-      if (!capabilities().localHandoff) {
-        return c.json({ error: 'Run this command on the machine hosting cezar.', command }, 409);
-      }
       let opened = false;
       try {
         // No `env` argument: `loginCommand` already rendered the account's config dir INTO the
@@ -1814,7 +1680,7 @@ export function createApp(deps: ServerDeps) {
   //
   // Writing is a LOCAL-MACHINE capability, exactly like `PUT /api/v1/agent-config/:id`: a profile
   // points an agent at a directory on the host, and the listing echoes absolute paths carrying
-  // the username — the same disclosure `/api/v1/health` trims in hosted mode (#431).
+  // the username — the same disclosure `/api/v1/health`'s workspace summary keeps off the wire (#431).
 
   /**
    * This agent's own USER-scope config files, resolved inside ONE account's folder.
@@ -1926,40 +1792,36 @@ export function createApp(deps: ServerDeps) {
 
   const agentProfilesRoutes = new Hono<ProjectApiEnv>()
     .get('/workspace/agent-profiles', async (c) => {
-      const editable = capabilities().localHandoff;
-      // Hosted mode withholds the listing entirely rather than serving it read-only: the paths
-      // are the host disclosure, so an empty list is the only honest hosted answer.
-      //
-      // ONE body object, never a hosted `return` and a local `return`: two returns let hono
-      // narrow `editable` to the literal `false`/`true` of each branch, and the contract's
-      // honest `z.boolean()` then reads as wider than the route. Same shape as
-      // `listAgentConfig`, which carries the same flag for the same reason.
+      // `editable` is always true now (A15, decision 5 retires hosted mode) — kept on the wire
+      // since it's a protected contract field (BACKWARD_COMPATIBILITY.md), just never false.
+      // `editable` is always true now (A15, decision 5 retires hosted mode) — kept on the wire
+      // since it's a protected contract field (BACKWARD_COMPATIBILITY.md), just never false.
+      // `Boolean(true)` on purpose: hono infers the route's `editable` from this variable, and
+      // TS narrows even an ANNOTATED `const editable: boolean = true` to the literal `true`
+      // (initializer narrowing), which reads the contract's honest `z.boolean()` as wider than
+      // the route. A call result is opaque to that narrowing — same trick the pre-A15
+      // hosted-mode branch used.
+      const editable = Boolean(true);
       let store = defaultAgentAccountStore();
-      if (editable) {
-        try {
-          store = await loadAgentAccounts();
-        } catch {
-          // an unreadable home degrades to "no extra accounts", never a failed request
-        }
+      try {
+        store = await loadAgentAccounts();
+      } catch {
+        // an unreadable home degrades to "no extra accounts", never a failed request
       }
-      const profiles = editable
-        ? await Promise.all(listAgentProfiles(store, PROVIDER_IDS).map(agentProfileBody))
-        : [];
+      const profiles = await Promise.all(listAgentProfiles(store, PROVIDER_IDS).map(agentProfileBody));
       return c.json({
         editable,
         profiles,
         profileCapableProviders: [...PROFILE_CAPABLE_PROVIDERS],
         // Which account each project uses, keyed by repo root. Served here rather than on the
         // project registry because it lives in the same file as the accounts it names.
-        selections: editable ? store.selections : {},
-        /** The machine-wide fallback, for repos that have chosen nothing. Withheld in hosted mode
-         *  on the same terms as the rest of this family. */
-        defaults: editable ? store.defaults : {},
+        selections: store.selections,
+        /** The machine-wide fallback, for repos that have chosen nothing. */
+        defaults: store.defaults,
       });
     })
 
     .post('/workspace/agent-profiles', jsonZodValidator(() => createAgentProfileSchema), async (c) => {
-      if (!capabilities().localHandoff) return c.json(hostedProfileRefusal, 409);
       const { provider, configDir, label } = c.req.valid('json');
       if (!supportsProfiles(provider)) {
         return c.json({ error: `${provider} cannot carry more than one account` }, 400);
@@ -2015,8 +1877,7 @@ export function createApp(deps: ServerDeps) {
       paramZodValidator(z.object({ id: z.string() })),
       jsonZodValidator(() => updateAgentProfileSchema),
       async (c) => {
-        if (!capabilities().localHandoff) return c.json(hostedProfileRefusal, 409);
-        const id = c.req.param('id');
+          const id = c.req.param('id');
         const { label, configDir } = c.req.valid('json');
         if (configDir !== undefined) {
           const dirError = checkProfileDir(configDir);
@@ -2081,8 +1942,7 @@ export function createApp(deps: ServerDeps) {
       paramZodValidator(z.object({ id: z.string() })),
       queryZodValidator(z.object({ refresh: queryValue.refine((v) => v === undefined || v === '1') }), { message: 'refresh must be 1 when provided' }),
       async (c) => {
-        if (!capabilities().localHandoff) return c.json(hostedProfileRefusal, 409);
-        const account = await accountById(c.req.param('id'));
+          const account = await accountById(c.req.param('id'));
         if (!account) return c.json({ error: `unknown account: ${c.req.param('id')}` }, 404);
         const refresh = c.req.valid('query').refresh === '1';
         // The discovered account's row is the one `GET /api/v1/providers/status` owns, so it comes
@@ -2117,8 +1977,7 @@ export function createApp(deps: ServerDeps) {
       '/workspace/agent-profiles/:id/details',
       paramZodValidator(z.object({ id: z.string() })),
       async (c) => {
-        if (!capabilities().localHandoff) return c.json(hostedProfileRefusal, 409);
-        const account = await accountById(c.req.param('id'));
+          const account = await accountById(c.req.param('id'));
         if (!account) return c.json({ error: `unknown account: ${c.req.param('id')}` }, 404);
         return c.json(await readAccountIdentity(account.provider, account.path));
       },
@@ -2137,8 +1996,7 @@ export function createApp(deps: ServerDeps) {
       paramZodValidator(z.object({ id: z.string() })),
       jsonZodValidator(() => openAgentAccountFileSchema),
       async (c) => {
-        if (!capabilities().localHandoff) return c.json(hostedProfileRefusal, 409);
-        const account = await accountById(c.req.param('id'));
+          const account = await accountById(c.req.param('id'));
         if (!account) return c.json({ error: `unknown account: ${c.req.param('id')}` }, 404);
         const { file, target } = c.req.valid('json');
 
@@ -2188,8 +2046,7 @@ export function createApp(deps: ServerDeps) {
       '/workspace/agent-profiles/selection',
       jsonZodValidator(() => selectAgentProfileSchema),
       async (c) => {
-        if (!capabilities().localHandoff) return c.json(hostedProfileRefusal, 409);
-        const { projectId, provider, profileId } = c.req.valid('json');
+          const { projectId, provider, profileId } = c.req.valid('json');
         // `null` writes the MACHINE-WIDE default instead of one repo's selection: the account any
         // repo that has chosen nothing uses, so a second login is set up once rather than per
         // checkout. No project to resolve, and therefore no 404 path.
@@ -2241,8 +2098,7 @@ export function createApp(deps: ServerDeps) {
       '/workspace/agent-profiles/:id',
       paramZodValidator(z.object({ id: z.string() })),
       async (c) => {
-        if (!capabilities().localHandoff) return c.json(hostedProfileRefusal, 409);
-        const id = c.req.param('id');
+          const id = c.req.param('id');
         let removed = false;
         // Captured inside the mutator, because after the write there is nothing left to ask which
         // provider this account belonged to — and the eviction below is keyed by it.
@@ -2293,14 +2149,6 @@ export function createApp(deps: ServerDeps) {
     }
   };
 
-  const workspaceBrowseRoot = async (): Promise<string> => {
-    try {
-      return (await loadWorkspaceConfig()).browseRoot;
-    } catch {
-      return defaultWorkspaceConfig().browseRoot;
-    }
-  };
-
   // ---- chained family: project registry (workspace-level) ----
   const projectsRoutes = new Hono<ProjectApiEnv>()
     .get('/projects', async (c) => {
@@ -2308,10 +2156,7 @@ export function createApp(deps: ServerDeps) {
       let projectsDir = defaultWorkspaceConfig().projectsDir;
       try {
         projectsDir = (await loadWorkspaceConfig()).projectsDir;
-        const selector = capabilities().singleProject
-          ? { projectId: await resolveBootProject() }
-          : undefined;
-        projects = await listProjects(selector);
+        projects = await listProjects();
       } catch {
         // unreadable workspace — degrade to the empty registry + defaults
       }
@@ -2331,9 +2176,6 @@ export function createApp(deps: ServerDeps) {
     })
 
     .delete('/projects/:projectId', async (c) => {
-      if (capabilities().singleProject) {
-        return c.json(singleProjectRefusal('removing projects'), 409);
-      }
       const raw = c.req.param('projectId');
       // Same gate the scoped-route resolver applies, and the same 404 wording —
       // a malformed id is an unknown project, not a validation essay.
@@ -2408,12 +2250,9 @@ export function createApp(deps: ServerDeps) {
     // never be degraded away by the next load's `.catch`.
     //
     // Deliberately NOT the home of the agent-account selection: that lives in
-    // `~/.cezar/agent-accounts.json` beside the accounts it names, so a cezar version that has
+    // `~/.coducktor/agent-accounts.json` beside the accounts it names, so a cezar version that has
     // never heard of accounts cannot drop it (see workspace/agent-accounts.ts).
     .patch('/projects/:projectId', jsonZodValidator(updateProjectInputSchema), async (c) => {
-      if (capabilities().singleProject) {
-        return c.json(singleProjectRefusal('editing projects'), 409);
-      }
       const raw = c.req.param('projectId');
       // Same gate + 404 wording as DELETE: a malformed id is an unknown project.
       if (!projectIdSchema.safeParse(raw).success) {
@@ -2479,9 +2318,6 @@ export function createApp(deps: ServerDeps) {
     })
 
     .post('/projects/checkout', jsonZodValidator(() => checkoutSchema, { message: 'url must be a GitHub repository' }), async (c) => {
-      if (capabilities().singleProject) {
-        return c.json(singleProjectRefusal('adding projects'), 409);
-      }
       const parsed = { data: c.req.valid('json') };
       const { url, name, checkoutId } = parsed.data;
       const result = await checkoutRepo({
@@ -2542,12 +2378,8 @@ export function createApp(deps: ServerDeps) {
     | { status: 200; body: RegisterProjectResponse }
     | { status: 400 | 409 | 500; body: RegisterProjectResponse | { error: string } }
   > => {
-    if (capabilities().singleProject) {
-      return { status: 409, body: singleProjectRefusal('adding projects') };
-    }
-    // `~` is expanded for the same reason `/api/fs/browse` expands it: the
-    // dialog hands back absolute paths, but a hand-written body (curl, a
-    // future CLI) spells home the way a shell does.
+    // `~` is expanded so a hand-written body (curl, a future CLI) can spell home the way a
+    // shell does, same as the dialog's own absolute paths.
     const requested = expandTilde(spelled);
     if (!requested.startsWith('/')) {
       return {
@@ -2555,49 +2387,14 @@ export function createApp(deps: ServerDeps) {
         body: { error: `not a folder: ${spelled} is not an absolute path` },
       };
     }
-    // Hosted mode: the same root the picker is narrowed to, re-checked — see
-    // `isInsideBrowseRoot`. Local mode deliberately has NO containment: a
-    // project under `/srv/code` is a normal local setup and `cezar serve`
-    // registers it today.
+    // Local is the only mode now (A15, decision 5): no containment root. A project under
+    // `/srv/code` is a normal local setup and `cezar serve` registers it today.
     //
-    // Containment is asked in two halves, around the stat, and the split is
-    // deliberate.
-    //
-    // The LEXICAL half runs BEFORE the stat, and that order is the security
-    // property: an out-of-root path must answer the SAME way whether or not it
-    // exists, or the route becomes the existence oracle fs-browse narrows the
-    // tree to prevent. Lexical, not realpath, because a realpath check answers
-    // `false` for a path that IS inside the root and merely absent — which
-    // would tell a hosted user who typo'd a folder under their own checkout
-    // root that it is "outside the browsable root".
-    const hostedBrowseRoot = capabilities().localHandoff
-      ? null
-      : resolveBrowseRoot(await workspaceBrowseRoot());
-    if (hostedBrowseRoot !== null) {
-      if (!(await isLexicallyInsideBrowseRoot(hostedBrowseRoot, requested))) {
-        // No resolved path in the message (fs-browse's rule): saying where the
-        // root is would hand a remote viewer the layout the narrowing hides.
-        return {
-          status: 400,
-          body: { error: 'folder is outside the browsable root' },
-        };
-      }
-    }
     // Existence is checked HERE rather than left to `registerProject` (which
     // degrades a failed realpath to a plain resolve): a registry full of
     // `missing` rows the user never had is worse than a 400 they can act on.
     const info = await stat(requested).catch(() => null);
     if (!info?.isDirectory()) return { status: 400, body: { error: `no such folder: ${spelled}` } };
-    // The REALPATH half, now that the path is known to exist: a symlink inside
-    // the root pointing out of it spells as contained and is not. Same message
-    // as the lexical rejection, so the two halves stay indistinguishable from
-    // outside.
-    if (hostedBrowseRoot !== null && !(await isInsideBrowseRoot(hostedBrowseRoot, requested))) {
-      return {
-        status: 400,
-        body: { error: 'folder is outside the browsable root' },
-      };
-    }
     // The boot-time auto-registration guard, applied to the manual gesture
     // too: `$HOME` and cezar's own task worktrees are exactly as wrong a
     // project root when a human clicks "Add project" as when `cezar serve`
@@ -2649,8 +2446,8 @@ export function createApp(deps: ServerDeps) {
   // Deregister a project (multi-project spec, step 4.4 — Settings → Projects,
   // the per-row "Remove"). READ THIS BEFORE TOUCHING THE HANDLER: the ONLY
   // durable effect allowed here is dropping one entry from
-  // `~/.cezar/config.json`. There is deliberately no `rm`, no `rmdir`, no
-  // `RunStore.open` (which would `mkdir` `<root>/.ai/cezar/runs` and therefore
+  // `~/.coducktor/config.json`. There is deliberately no `rm`, no `rmdir`, no
+  // `RunStore.open` (which would `mkdir` `<root>/.ai/coducktor/runs` and therefore
   // WRITE into a folder the user just asked us to forget) anywhere below —
   // `removeProject` is a registry filter and `contexts.dispose` only tears down
   // in-process handles. Re-registering the same root later finds every task,
@@ -2681,60 +2478,6 @@ export function createApp(deps: ServerDeps) {
     return ctx.store.listRuns().filter((run) => ACTIVE_RUN_STATUSES.has(run.status)).length;
   };
 
-  // Workspace-level by design: update state spans project and global installs,
-  // but the selected registered project supplies the safe, server-owned cwd.
-  const skillsUpdateInputSchema = z.object({ projectId: projectIdSchema }).strict();
-  const resolveSkillsUpdateRoot = async (raw: string): Promise<
-    { root: string } | { status: 404 | 409; error: string }
-  > => {
-    if (!projectIdSchema.safeParse(raw).success) return { status: 404, error: `unknown project: ${raw}` };
-    const bootId = await resolveBootProject();
-    if (raw === 'default' || raw === bootId) return { root: bootRoot };
-    const project = (await loadWorkspaceConfig()).projects.find((entry) => entry.id === raw);
-    if (!project) return { status: 404, error: `unknown project: ${raw}` };
-    if ((await probeProjectStatus(project.root)).status === 'missing') {
-      return { status: 409, error: `project folder not found: ${raw}` };
-    }
-    return { root: project.root };
-  };
-
-  const skillsUpdateResponse = async (state: SkillsUpdateState): Promise<SkillsUpdateState> => {
-    const config = await loadWorkspaceConfig();
-    return { ...state, autoUpdateEnabled: effectiveSkillsAutoUpdate(config), inherited: config.skillsAutoUpdate === undefined };
-  };
-
-  // ---- chained family: skills updates (workspace-level) ----
-  const skillsUpdateRoutes = new Hono<ProjectApiEnv>()
-    .get('/workspace/skills-update', queryZodValidator(skillsUpdateInputSchema, { message: 'projectId is required' }), async (c) => {
-      const parsed = { data: c.req.valid('query') };
-      const resolved = await resolveSkillsUpdateRoot(parsed.data.projectId);
-      if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
-      const state: SkillsUpdateState = skillsUpdate.snapshot(resolved.root);
-      void skillsUpdate.check(resolved.root).catch(() => {});
-      return c.json(await skillsUpdateResponse(state));
-    })
-
-    .post('/workspace/skills-update/check', jsonZodValidator(skillsUpdateInputSchema, { message: 'body must contain only projectId' }), async (c) => {
-      const parsed = { data: c.req.valid('json') };
-      const resolved = await resolveSkillsUpdateRoot(parsed.data.projectId);
-      if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
-      return c.json(await skillsUpdateResponse(await skillsUpdate.check(resolved.root, true)));
-    })
-
-    .post('/workspace/skills-update/apply', jsonZodValidator(skillsUpdateInputSchema, { message: 'body must contain only projectId' }), async (c) => {
-      const parsed = { data: c.req.valid('json') };
-      const resolved = await resolveSkillsUpdateRoot(parsed.data.projectId);
-      if ('error' in resolved) return c.json({ error: resolved.error }, resolved.status);
-      try {
-        return c.json(await skillsUpdateResponse(await skillsUpdate.update(resolved.root, true)));
-      } catch (error) {
-        if (error instanceof SkillsUpdateConflictError) {
-          return c.json({ error: 'another skills update operation is running', state: await skillsUpdateResponse(skillsUpdate.snapshot(resolved.root)) }, 409);
-        }
-        throw error;
-      }
-    });
-
   // ---- GUI clone (multi-project spec, step 4.3) ----------------------------
   // "Add project → Clone from GitHub": clone into the checkout root, then
   // register the result through `registerFolder` above (same guards, same
@@ -2754,14 +2497,11 @@ export function createApp(deps: ServerDeps) {
   // ---- workspace settings (multi-project spec, step 2.7) -------------------
   // WORKSPACE-level routes: single-mount (never mirrored under /api/p/),
   // same-origin. The config routes carry the settings UI's slice of
-  // `~/.cezar/config.json` — global knobs only; the registry stays on
+  // `~/.coducktor/config.json` — global knobs only; the registry stays on
   // /api/projects above, and schemaVersion (a migration cursor, not a
   // setting) is deliberately omitted.
   const workspaceConfigBody = (config: WorkspaceConfig): WorkspaceConfigResponse => ({
-    browseRoot: config.browseRoot,
     projectsDir: config.projectsDir,
-    skillsAutoUpdate: config.skillsAutoUpdate ?? null,
-    effectiveSkillsAutoUpdate: effectiveSkillsAutoUpdate(config),
     composerDefaults: {
       autonomous: config.composerDefaults.autonomous ?? null,
       worktree: config.composerDefaults.worktree ?? null,
@@ -2820,42 +2560,22 @@ export function createApp(deps: ServerDeps) {
 
     .put('/workspace/config', jsonZodValidator(() => workspaceConfigUpdateSchema), async (c) => {
       const parsed = { data: c.req.valid('json') };
-      const { browseRoot, projectsDir, skillsAutoUpdate, composerDefaults, resources, agentDefaults, quotaRouting } = parsed.data;
-      for (const [configuredRoot, create] of [
-        [browseRoot, false],
-        [projectsDir, true],
-      ] as const) {
-        if (configuredRoot === undefined) continue;
-        // Validated ON CHANGE, never at load (spec): browse roots must already
-        // exist; checkout roots use `mkdir -p`. Both get a real write probe.
-        // Any failure → 400 and NO change persisted.
-        const expanded = expandTilde(configuredRoot);
+      const { projectsDir, composerDefaults, resources, agentDefaults, quotaRouting } = parsed.data;
+      if (projectsDir !== undefined) {
+        // Validated ON CHANGE, never at load (spec): checkout roots use `mkdir -p` and get a
+        // real write probe. Any failure → 400 and NO change persisted.
+        const expanded = expandTilde(projectsDir);
         if (!expanded.startsWith('/')) {
-          return c.json({ error: `not writable: ${configuredRoot} is not an absolute path` }, 400);
+          return c.json({ error: `not writable: ${projectsDir} is not an absolute path` }, 400);
         }
-        if (!create) {
-          try {
-            if (!(await stat(expanded)).isDirectory()) {
-              return c.json({ error: `browse folder is not a directory: ${configuredRoot}` }, 400);
-            }
-          } catch (err) {
-            if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-              return c.json({ error: `browse folder does not exist: ${configuredRoot}` }, 400);
-            }
-            return c.json({ error: `browse folder unavailable: ${err instanceof Error ? err.message : String(err)}` }, 400);
-          }
-        }
-        const probeError = await probeWritableDir(expanded, create);
+        const probeError = await probeWritableDir(expanded, true);
         if (probeError !== null) return c.json({ error: `not writable: ${probeError}` }, 400);
       }
       let written: WorkspaceConfig;
       try {
         written = await mergeWriteWorkspaceConfig((config) => {
-          // Roots are stored as written (`~` kept); only the probe expands them.
-          if (browseRoot !== undefined) config.browseRoot = browseRoot;
+          // Stored as written (`~` kept); only the probe expands it.
           if (projectsDir !== undefined) config.projectsDir = projectsDir;
-          if (skillsAutoUpdate === null) delete config.skillsAutoUpdate;
-          else if (skillsAutoUpdate !== undefined) config.skillsAutoUpdate = skillsAutoUpdate;
           if (composerDefaults?.autonomous === null) delete config.composerDefaults.autonomous;
           else if (composerDefaults?.autonomous !== undefined) {
             config.composerDefaults.autonomous = composerDefaults.autonomous;
@@ -2908,7 +2628,7 @@ export function createApp(deps: ServerDeps) {
       return c.json(workspaceConfigBody(written));
     })
 
-    // Global GUI state (`~/.cezar/ui-state.json`) — same parse/key-cap/shallow-
+    // Global GUI state (`~/.coducktor/ui-state.json`) — same parse/key-cap/shallow-
     // merge semantics as the per-repo /api/v1/ui-state route below (the shared half
     // is `uiStateBodySchema`), but backed by the workspace file.
     .get('/workspace/ui-state', async (c) => c.json(await readWorkspaceUiState()))
@@ -2939,9 +2659,7 @@ export function createApp(deps: ServerDeps) {
   // workspace schema (src/workspace/config.ts, step 1.2) exactly, so a value
   // this route accepts can never be degraded away by the next load's `.catch`.
   const workspaceConfigUpdateSchema = z.object({
-    browseRoot: z.string().trim().min(1).max(4096).optional(),
     projectsDir: z.string().trim().min(1).max(4096).optional(),
-    skillsAutoUpdate: z.boolean().nullable().optional(),
     composerDefaults: z
       .object({
         autonomous: z.boolean().nullable().optional(),
@@ -2976,72 +2694,10 @@ export function createApp(deps: ServerDeps) {
       .optional(),
     quotaRouting: z.object({ enabled: z.boolean().optional() }).optional(),
   });
-  // ---- chained family: filesystem browse (workspace-level) ----
-  const fsBrowseRoutes = new Hono<ProjectApiEnv>()
-    .get(
-      '/fs/browse',
-      queryZodValidator(z.object({ path: queryValue, showHidden: queryValue })),
-      async (c) => {
-        if (capabilities().singleProject) {
-          return c.json(singleProjectRefusal('folder browsing'), 409);
-        }
-        const query = c.req.valid('query');
-        const root = resolveBrowseRoot(await workspaceBrowseRoot());
-        const result = await browseDirectory({
-          root,
-          path: query.path,
-          showHidden: query.showHidden === '1',
-        });
-        if (!result.ok) return c.json({ error: result.error }, result.status);
-        return c.json(result.body);
-      },
-    );
-
-  // ---- chained family: launch-key (project-scoped) ----
-  const launchKeyRoutes = new Hono<ProjectApiEnv>()
-    .get('/launch-key', (c) => c.json({ key: c.get('project').launchKey }));
-
   // ---- chained family: skills (project-scoped) ----
   const skillsRoutes = new Hono<ProjectApiEnv>()
-    .get('/skills', queryZodValidator(waitQuery), async (c) => {
-      const repoRoot = c.get('project').root;
-      // The default read stays fast and starts the team load in the background.
-      // The cockpit follows it with `wait=1`, off the render path, so a cold
-      // cache converges without polling or a manual reload (spec 005 / #555).
-      if (c.req.valid('query').wait === '1') await waitForTeamSkills(repoRoot);
-      return c.json(await discoverSkills(repoRoot));
-    })
-
-    // The opt-in catalog for the "Import skills" panel: every skill a configured
-    // default/vendor repo offers, regardless of import state, so the panel can
-    // present them all with a per-skill toggle. Empty once a repo configures its
-    // own `skillsRepos` (nothing is gated then). `wait=1` lets the
-    // panel wait out a cold team-skill cache, same as `GET /skills` (spec 005).
-    .get('/skills/importable', queryZodValidator(waitQuery), async (c) => {
-      const repoRoot = c.get('project').root;
-      const gated = await gatedSkillsRepos(repoRoot);
-      if (gated.size === 0) return c.json([]);
-      if (c.req.valid('query').wait === '1') await waitForTeamSkills(repoRoot);
-      const importable = getTeamSkillsCached(repoRoot)
-        .filter((skill) => skill.team && gated.has(skill.team.repo))
-        // Spread `description` rather than writing it unconditionally: an undefined VALUE is
-        // dropped by JSON.stringify, so the key is absent on the wire, and writing it always
-        // typed the route as sending a key it does not. contract/skills.ts says `.optional()`,
-        // which is what the client actually receives.
-        .map((skill) => ({
-          name: skill.name,
-          ...(skill.description !== undefined ? { description: skill.description } : {}),
-        }));
-      return c.json(importable);
-    })
-
-    // Refresh team skills (spec 005): clone/fetch the configured skills repos,
-    // then return the merged catalog. Degrades quietly — offline just means the
-    // team entries stay as they were (or absent).
-    .post('/skills/refresh', async (c) => {
-      const { root: repoRoot } = c.get('project');
-      await refreshTeamSkills(repoRoot);
-      return c.json(await discoverSkills(repoRoot));
+    .get('/skills', async (c) => {
+      return c.json(await discoverSkills(c.get('project').root));
     });
 
   // ---- chained family: GUI prefs / ui-state (project-scoped) ----
@@ -3075,7 +2731,7 @@ export function createApp(deps: ServerDeps) {
     .get('/workflows', async (c) => c.json(await loadWorkflows(c.get('project').root)))
 
     // Save an approved plan as a reusable chain (spec 008): YAML in
-    // `.ai/cezar/workflows/<slug>.yaml` — from then on it's in the dropdown
+    // `.ai/coducktor/workflows/<slug>.yaml` — from then on it's in the dropdown
     // like any other workflow.
     .post('/workflows', jsonZodValidator(saveWorkflowSchema), async (c) => {
       const { root: repoRoot } = c.get('project');
@@ -3166,277 +2822,6 @@ export function createApp(deps: ServerDeps) {
       const blocked = configuredRunner === 'auto' ? null : await providerActionError([configuredRunner]);
       if (blocked) return c.json({ error: blocked }, 409);
       return c.json(await planChain(repoRoot, parsed.data.task));
-    });
-
-  // ---- GitHub automations --------------------------------------------------
-
-  /**
-   * One manual "test filter" check, in server memory only.
-   *
-   * Declared here rather than inferred from `contract/src/automations.ts`: the contract's
-   * `automationCheckSchema` is checked against what this route ANSWERS
-   * (`contract-parity.automations.test.ts`), and a schema that annotated the handler it is
-   * compared with would be true by construction.
-   */
-  type ManualCheck = {
-    id: string;
-    automationId: string;
-    mode: 'preview' | 'execute';
-    status: 'queued' | 'running' | 'complete' | 'error';
-    createdAt: string;
-    completedAt?: string;
-    matches?: number;
-    truncated?: boolean;
-    error?: string;
-  };
-  const manualChecks = new Map<string, ManualCheck>();
-
-  /**
-   * The automations gate (#801): with `CEZ_AUTOMATIONS` unset, every route of the feature
-   * answers 409 before touching a store, a lease or GitHub.
-   *
-   * Written as MIDDLEWARE rather than a line in each handler so the family cannot drift: a route
-   * added to either chain below inherits the gate from its path, where a per-handler check is one
-   * omission away from an ungated endpoint.
-   *
-   * Registered against EXPLICIT paths, never `use('*')`. Both chains are mounted with
-   * `.route('/', …)` alongside a dozen unrelated sub-apps, and `route()` re-registers a sub-app's
-   * middleware under the mount prefix — so a `'*'` here would gate the entire `/api/v1` surface,
-   * including `/health`. The two-line pairing (`/automations` and `/automations/*`) is what makes
-   * a path match both the collection and everything under it.
-   */
-  const requireAutomations = async (c: Context, next: Next) => {
-    if (!capabilities().automations) return c.json({ error: AUTOMATIONS_OFF }, 409);
-    await next();
-  };
-
-  // ---- chained family: GitHub automations (project-scoped) ----
-  // Every handler below reads `c.get('project')` — the definitions, their runtime state and the
-  // execution log are per-project files — so the family is project-scoped and mounted with the
-  // rest of the mirrored table. The one exception is the manual-check read, which touches no
-  // project at all; it is its own workspace-level family below.
-  const automationsRoutes = new Hono<ProjectApiEnv>()
-    .use('/automations', requireAutomations)
-    .use('/automations/*', requireAutomations)
-    .use('/automation-log', requireAutomations)
-    .use('/automation-log/*', requireAutomations)
-    .get('/automations', async (c) => {
-      const { root, automationStore } = c.get('project');
-      const forge = resolveForge(await getRepoInfo(root));
-      // Annotated, so the two branches are ONE shape rather than a union of two: the fallback
-      // literal always carries `reason`, the cached answer only sometimes does, and the route
-      // type is what `contract/src/automations.ts` has to describe.
-      const availability: ForgeAvailability = forge?.detectCached() ?? {
-        available: false,
-        reason: forge ? 'GitHub availability is still being checked' : 'No GitHub remote is configured',
-      };
-      const automations = automationStore.list().map((automation) => {
-        const logs = automationStore.logs({ automationId: automation.id, limit: 100 });
-        const state = automationStore.state(automation.id);
-        const latestLog = logs[0];
-        return {
-          ...automation,
-          // Spread conditionally, never `state: maybeUndefined`: the latter types the key as
-          // always-present while `JSON.stringify` drops it from the wire, so the contract would
-          // have to describe a key consumers never receive.
-          ...(state ? { state } : {}),
-          ...(latestLog ? { latestLog } : {}),
-          counts: {
-            matches: logs.filter((row) => row.result === 'launched' || row.result === 'duplicate').length,
-            launched: logs.filter((row) => row.result === 'launched').length,
-            duplicates: logs.filter((row) => row.result === 'duplicate').length,
-            errors: logs.filter((row) => row.result === 'error' || row.result === 'rate-limited').length,
-          },
-        };
-      });
-      const nextDue = automations.map((item) => item.state?.nextCheckAt).filter(Boolean).sort()[0];
-      return c.json({
-        ...availability,
-        scheduler: {
-          // `as const` on both arms: in an object literal a conditional of two string literals
-          // widens to `string`, which would erase the two states this key can hold.
-          state: automations.some((item) => item.enabled) ? ('scheduled' as const) : ('idle' as const),
-          ...(nextDue ? { nextDue } : {}),
-        },
-        automations,
-      });
-    })
-
-    .post('/automations', jsonZodValidator(() => automationCreateSchema), async (c) => {
-      const { automationStore } = c.get('project');
-      const parsed = { data: c.req.valid('json') };
-      const promptIssue = validateAutomationPrompt(parsed.data.task.prompt);
-      if (promptIssue) return c.json({ error: promptIssue }, 400);
-      const { enable, ...input } = parsed.data;
-      try {
-        const automation = automationStore.create({ ...input, enabled: enable === true });
-        if (enable) {
-          const baselineAt = new Date().toISOString();
-          automationStore.setState(automation.id, {
-            revision: automation.revision,
-            baselineAt,
-            cursor: { timestamp: baselineAt },
-            nextCheckAt: new Date(Date.now() + automation.intervalSeconds * 1_000).toISOString(),
-          });
-        }
-        emitAutomationChange(c.get('project'), automation.id, automation.revision);
-        automationsChanged();
-        return c.json({ automation }, 201);
-      } catch (error) {
-        return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
-      }
-    })
-
-    .get('/automations/:id', (c) => {
-      const { automationStore } = c.get('project');
-      const automation = automationStore.get(c.req.param('id'));
-      if (!automation) return c.json({ error: 'not found' }, 404);
-      const state = automationStore.state(automation.id);
-      const latestLog = automationStore.logs({ automationId: automation.id, limit: 1 })[0];
-      return c.json({
-        automation,
-        ...(state ? { state } : {}),
-        ...(latestLog ? { latestLog } : {}),
-      });
-    })
-
-    .put('/automations/:id', jsonZodValidator(() => automationUpdateSchema), async (c) => {
-      const { automationStore } = c.get('project');
-      const parsed = { data: c.req.valid('json') };
-      const promptIssue = validateAutomationPrompt(parsed.data.task.prompt);
-      if (promptIssue) return c.json({ error: promptIssue }, 400);
-      const { expectedRevision, ...input } = parsed.data;
-      if (!automationStore.get(c.req.param('id'))) return c.json({ error: 'not found' }, 404);
-      try {
-        const automation = automationStore.update(c.req.param('id'), expectedRevision, { ...input, enabled: input.enabled ?? false });
-        emitAutomationChange(c.get('project'), automation.id, automation.revision);
-        automationsChanged();
-        return c.json({ automation });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return c.json({ error: message }, message.includes('conflict') ? 409 : 400);
-      }
-    })
-
-    .delete('/automations/:id', (c) => {
-      const id = c.req.param('id');
-      const store = c.get('project').automationStore;
-      const current = store.get(id);
-      if (!current || !store.delete(id)) return c.json({ error: 'not found' }, 404);
-      emitAutomationChange(c.get('project'), id, current.revision, true);
-      automationsChanged();
-      return c.body(null, 204);
-    })
-
-    .post('/automations/:id/enable', (c) => {
-      const store = c.get('project').automationStore;
-      const current = store.get(c.req.param('id'));
-      if (!current) return c.json({ error: 'not found' }, 404);
-      const automation = store.update(current.id, current.revision, { ...editableAutomation(current), enabled: true });
-      const baselineAt = new Date().toISOString();
-      store.setState(automation.id, {
-        ...store.state(automation.id),
-        revision: automation.revision,
-        baselineAt,
-        cursor: { timestamp: baselineAt },
-        nextCheckAt: new Date(Date.now() + automation.intervalSeconds * 1_000).toISOString(),
-      });
-      store.appendLog({ automationId: automation.id, revision: automation.revision, result: 'baseline', reason: 'Enabled from a current-time baseline; existing records were not launched.' });
-      emitAutomationChange(c.get('project'), automation.id, automation.revision);
-      automationsChanged();
-      return c.json({ automation });
-    })
-
-    .post('/automations/:id/pause', (c) => {
-      const store = c.get('project').automationStore;
-      const current = store.get(c.req.param('id'));
-      if (!current) return c.json({ error: 'not found' }, 404);
-      const automation = store.update(current.id, current.revision, { ...editableAutomation(current), enabled: false });
-      emitAutomationChange(c.get('project'), automation.id, automation.revision);
-      automationsChanged();
-      return c.json({ automation });
-    })
-
-    // The body is validated as MIDDLEWARE, which is what puts it in the route type — and moves
-    // the 400 ahead of this route's 404: `POST /automations/<unknown>/check` with a malformed
-    // body now answers 400 rather than 404. Nothing else about either answer changed.
-    .post('/automations/:id/check', jsonZodValidator(() => automationCheckRequestSchema), async (c) => {
-      const project = c.get('project');
-      const store = project.automationStore;
-      const automation = store.get(c.req.param('id'));
-      if (!automation) return c.json({ error: 'not found' }, 404);
-      const parsed = { data: c.req.valid('json') };
-      // `string`, not `randomUUID`'s template-literal type: the wire carries an opaque id, and
-      // leaking `${string}-${string}-…` into the route type would make the contract describe the
-      // generator rather than the answer.
-      const id: string = randomUUID();
-      const check: ManualCheck = { id, automationId: automation.id, mode: parsed.data.mode, status: 'queued', createdAt: new Date().toISOString() };
-      if (manualChecks.size >= 200) manualChecks.delete(manualChecks.keys().next().value!);
-      manualChecks.set(id, check);
-      void (async () => {
-        check.status = 'running';
-        try {
-          const remote = parseRemote((await getRepoInfo(project.root))?.remote ?? '');
-          if (!remote || remote.host !== 'github.com') throw new Error('No GitHub remote is configured');
-          const scheduler = new ProjectAutomationScheduler({
-            projectId: project.id,
-            owner: remote.owner,
-            repo: remote.repo,
-            store,
-            poller: new GithubPoller(),
-            launch: parsed.data.mode === 'execute'
-              ? (definition, candidate, receiptId) => launchAutomationRun({ root: project.root, manager: project.manager, store: project.store, definition, candidate, receiptId })
-              : undefined,
-            onChange: (automationId, revision) => emitAutomationChange(project, automationId, revision),
-          });
-          const result = await scheduler.check(automation, parsed.data.mode);
-          Object.assign(check, { status: 'complete', completedAt: new Date().toISOString(), matches: result.candidates.length, truncated: result.truncated });
-        } catch (error) {
-          Object.assign(check, { status: 'error', completedAt: new Date().toISOString(), error: error instanceof Error ? error.message : String(error) });
-        }
-      })();
-      return c.json({ checkId: id }, 202);
-    })
-
-    .get('/automation-log', queryZodValidator(automationLogQuerySchema), (c) => {
-      return c.json({ records: c.get('project').automationStore.logs(c.req.valid('query')) });
-    })
-
-    .post('/automation-log/:receiptId/retry', async (c) => {
-      const project = c.get('project');
-      const store = project.automationStore;
-      const receipt = [...store.latestReceipts().values()].find((row) => row.receiptId === c.req.param('receiptId'));
-      if (!receipt) return c.json({ error: 'not found' }, 404);
-      if (receipt.status !== 'launch-error' || receipt.runId) return c.json({ error: 'receipt is not retryable' }, 409);
-      if (!receipt.candidate) return c.json({ error: 'receipt predates retry context and cannot be retried safely' }, 409);
-      const definition = store.get(receipt.automationId);
-      if (!definition) return c.json({ error: 'automation not found' }, 404);
-      const lease = store.acquireLease();
-      if (!lease) return c.json({ error: 'automation polling lease is held by another process' }, 409);
-      const reserved = { ...receipt, status: 'reserved' as const, error: undefined, updatedAt: new Date().toISOString() };
-      store.appendReceipt(reserved);
-      try {
-        const launched = await launchAutomationRun({ root: project.root, manager: project.manager, store: project.store, definition, candidate: receipt.candidate, receiptId: receipt.receiptId });
-        store.appendReceipt({ ...reserved, status: 'launched', runId: launched.runId, updatedAt: new Date().toISOString() });
-        emitAutomationChange(project, definition.id, definition.revision);
-        return c.json({ receiptId: receipt.receiptId, runId: launched.runId }, 202);
-      } catch (error) {
-        store.appendReceipt({ ...reserved, status: 'launch-error', error: error instanceof Error ? error.message : String(error), updatedAt: new Date().toISOString() });
-        return c.json({ error: error instanceof Error ? error.message : String(error) }, 409);
-      } finally {
-        lease.release();
-      }
-    });
-
-  // ---- chained family: manual automation checks (workspace-level) ----
-  // Workspace-level because the handler reads no project: a check lives in the server-memory map
-  // above, keyed by an unguessable id that the project-scoped POST hands back. Mounting it under
-  // `/api/v1/p/:projectId` too would be a second spelling of a lookup that consults no project.
-  const automationChecksRoutes = new Hono()
-    .use('/automation-checks/*', requireAutomations)
-    .get('/automation-checks/:checkId', (c) => {
-      const check = manualChecks.get(c.req.param('checkId'));
-      return check ? c.json(check) : c.json({ error: 'not found' }, 404);
     });
 
   // ---- runs ----------------------------------------------------------------
@@ -3857,17 +3242,6 @@ export function createApp(deps: ServerDeps) {
       const id = c.req.param('id');
       const run = store.getRun(id);
       if (!run) return c.json({ error: 'not found' }, 404);
-      // Hosted mode: there is no "my machine" to open a terminal on. The UI
-      // hides the button when localHandoff is false — this is defense in depth.
-      if (!capabilities().localHandoff) {
-        return c.json(
-          {
-            error:
-              'local handoff is disabled — this cockpit runs in hosted mode (CEZ_REMOTE); resume the session from a machine that has the checkout',
-          },
-          409,
-        );
-      }
       const sessionStep = [...run.steps].reverse().find((s) => s.sessionId);
       const sessionId = sessionStep?.sessionId;
       if (!sessionId) return c.json({ error: 'no agent session to resume' }, 409);
@@ -3899,14 +3273,6 @@ export function createApp(deps: ServerDeps) {
       const id = c.req.param('id');
       const run = store.getRun(id);
       if (!run) return c.json({ error: 'not found' }, 404);
-      if (!capabilities().localHandoff) {
-        return c.json(
-          {
-            error: 'local handoff is disabled — this cockpit runs in hosted mode (CEZ_REMOTE)',
-          },
-          409,
-        );
-      }
       // Follows the safeParse convention (#429); the downstream allowlist match is the real
       // injection guard, this just validates the shape.
       const parsedBody = { data: c.req.valid('json') };
@@ -4215,7 +3581,7 @@ export function createApp(deps: ServerDeps) {
         return c.json({ error: outcome.error, manual: `git merge ${run.branch}` }, 409);
       }
       // A number the cockpit asked about BEFORE the pull request existed is cached as "this
-      // repository has no such number" — which is exactly what a `CEZ:PR=901` marker declared
+      // repository has no such number" — which is exactly what a `DUCK:PR=901` marker declared
       // ahead of the push looks like. It exists now.
       const createdNumber = refNumberFromUrl(outcome.url);
       if (createdNumber !== null) forgetRefStatus(repoRoot, createdNumber);
@@ -4350,7 +3716,7 @@ export function createApp(deps: ServerDeps) {
 
   // ---- chained family: open-targets (project-scoped) ----
   const openTargetsRoutes = new Hono<ProjectApiEnv>()
-    .get('/open-targets', (c) => c.json({ targets: capabilities().localHandoff ? detectOpenTargets() : [] }))
+    .get('/open-targets', (c) => c.json({ targets: detectOpenTargets() }))
 
     // Open the PROJECT ROOT itself (Settings → "Project folder" → Open with). The run route
     // above opens a task worktree and needs a run to name one; this is the repo the cockpit is
@@ -4358,12 +3724,6 @@ export function createApp(deps: ServerDeps) {
     // the client and there is nothing to contain.
     .post('/open-in', jsonZodValidator(openProjectInSchema), async (c) => {
       const { root } = c.get('project');
-      if (!capabilities().localHandoff) {
-        return c.json(
-          { error: 'local handoff is disabled — this cockpit runs in hosted mode (CEZ_REMOTE)' },
-          409,
-        );
-      }
       const { target } = c.req.valid('json');
       // Refused here rather than left to the menu, on the same principle as the accounts route:
       // a `cli:<runner>` handoff would START AN AGENT in the checkout everything else runs in a
@@ -5150,10 +4510,10 @@ export function createApp(deps: ServerDeps) {
     });
 
   // Set/clear the agents' config knobs (Settings → Agents; the Repo tab's
-  // base-branch picker). Merges into the RAW config.json so user keys
-  // (skillsRepos…) survive and schema defaults are never materialized into
-  // the file. All fields optional + additive: `null` (and `''` for the
-  // R6 keys) clears a knob back to its default.
+  // base-branch picker). Merges into the RAW config.json so user keys survive
+  // and schema defaults are never materialized into the file. All fields
+  // optional + additive: `null` (and `''` for the R6 keys) clears a knob back
+  // to its default.
   const modelPresetSchema = z.string().trim().max(200).nullable().optional();
   const setConfigSchema = z.object({
     baseBranch: z.string().trim().min(1).max(200).nullable().optional(),
@@ -5194,22 +4554,13 @@ export function createApp(deps: ServerDeps) {
   // so `AppType` carries it — see `healthRoutes`.
   const agentConfigRoutes = new Hono<ProjectApiEnv>()
     .get('/agent-config', async (c) => {
-      const editable = capabilities().localHandoff;
-      return c.json(await listAgentConfig(c.get('project').root, process.env, editable));
+      return c.json(await listAgentConfig(c.get('project').root, process.env, true));
     })
 
     .get('/agent-config/:id', async (c) => {
       const id = c.req.param('id');
       const def = findConfigFile(id);
       if (!def) return c.json({ error: 'unknown config file' }, 404);
-      if (def.tracked === 'outside-repo' && !capabilities().localHandoff) {
-        return c.json(
-          {
-            error: 'this file lives in your home directory and is not served in hosted mode (CEZ_REMOTE)',
-          },
-          409,
-        );
-      }
       const read = await readConfigFile(id, c.get('project').root);
       if (read === null) return c.json({ error: 'unknown config file' }, 404);
       if ('error' in read) return c.json({ error: read.error }, 500);
@@ -5217,17 +4568,6 @@ export function createApp(deps: ServerDeps) {
     })
 
     .put('/agent-config/:id', jsonZodValidator(setAgentConfigSchema), async (c) => {
-      // Config files may define hooks and MCP commands, so writes remain a
-      // local-machine capability and are re-gated on every request.
-      if (!capabilities().localHandoff) {
-        return c.json(
-          {
-            error:
-              'editing agent config is disabled in hosted mode (CEZ_REMOTE) — edit it from the machine that owns the checkout',
-          },
-          409,
-        );
-      }
       const parsed = { data: c.req.valid('json') };
       const out = await writeConfigFile(
         c.req.param('id'),
@@ -5281,12 +4621,10 @@ export function createApp(deps: ServerDeps) {
   // from — it is what puts these routes in `AppType`, and so in the typed client.
   const v1 = new Hono<ProjectApiEnv>()
     .use('*', resolveProjectScope)
-    .route('/', launchKeyRoutes)
     .route('/', skillsRoutes)
     .route('/', uiStateRoutes)
     .route('/', workflowsRoutes)
     .route('/', planRoutes)
-    .route('/', automationsRoutes)
     .route('/', runsRoutes)
     .route('/', groupsRoutes)
     .route('/', openTargetsRoutes)
@@ -5399,10 +4737,7 @@ export function createApp(deps: ServerDeps) {
     .get('/workspace/runs-index', async (c) => {
       let projects: ProjectListEntry[] = [];
       try {
-        const selector = capabilities().singleProject
-          ? { projectId: await resolveBootProject() }
-          : undefined;
-        projects = await listProjects(selector);
+        projects = await listProjects();
       } catch {
         // unreadable workspace — an empty index, never a 500. The palette degrades to the
         // active project's own run list, which it holds either way.
@@ -5417,7 +4752,7 @@ export function createApp(deps: ServerDeps) {
       // lazy `/github/ref-status` route fills it in.
       const referenceStatuses: RunsIndexResponse['referenceStatuses'] = {};
       for (const project of projects) {
-        // No folder, no runs to read. `not-git` still has an `.ai/cezar` worth indexing.
+        // No folder, no runs to read. `not-git` still has an `.ai/coducktor` worth indexing.
         if (project.status === 'missing') continue;
         const owned = project.id === bootId ? bootContext : contexts.peek(project.id);
         // `listRuns()` already sorts newest-first; the disk reader returns file order, so both
@@ -5428,7 +4763,7 @@ export function createApp(deps: ServerDeps) {
         // is findable while you stand in its project and vanishes the moment you leave — the
         // exact asymmetry a cross-project finder exists to remove.
         const recent = (
-          owned ? owned.store.listRuns() : readRunIndexFromDisk(join(project.root, '.ai/cezar'))
+          owned ? owned.store.listRuns() : readRunIndexFromDisk(join(project.root, '.ai/coducktor'))
         ).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
         if (recent.length > RUNS_INDEX_PER_PROJECT) truncated.push(project.id);
         const mentioned: number[] = [];
@@ -5464,10 +4799,7 @@ export function createApp(deps: ServerDeps) {
     .route('/', providersRoutes)
     .route('/', projectsRoutes)
     .route('/', agentProfilesRoutes)
-    .route('/', skillsUpdateRoutes)
     .route('/', workspaceConfigRoutes)
-    .route('/', fsBrowseRoutes)
-    .route('/', automationChecksRoutes)
     .route('/', runsIndexRoutes)
     .route('/', workspaceEventsRoutes);
 
@@ -5501,127 +4833,30 @@ export function createApp(deps: ServerDeps) {
 
 export function startServer(deps: ServerDeps, port: number): ServerType {
   const workspaceEvents = deps.workspaceEvents ?? new WorkspaceEventBus();
-  const skillsUpdate = deps.skillsUpdate ?? new SkillsUpdateService({ invalidateCatalog: refreshTeamSkills });
   // The subscription hub rides the same HTTP server (one port, zero config):
   // createApp registers the topics, the `upgrade` hook below owns the socket.
   const socketHub = deps.socketHub ?? createSocketHub();
-  const automationCoordinator = new AutomationCoordinator({ listProjects });
-  const bootProjectId = deps.bootProjectId ?? 'default';
-  const bootAutomationStore = automationCoordinator.store(bootProjectId, deps.repoRoot)!;
   const sharedContexts = deps.contexts ?? new ProjectContexts({
     listProjects,
     semaphore: deps.semaphore,
     quotaCoordinator: deps.quotaCoordinator,
-    automationStore: (projectId, root) => automationCoordinator.store(projectId, root)!,
   });
-  // #801: GitHub automations are opt-in. Off, the flag must remove the BEHAVIOR and not merely
-  // the UI — no scheduler, no GitHub polling, no launched runs — so every entry point into the
-  // workspace scheduler below is gated on it. Read per call rather than captured, for the same
-  // reason `capabilities()` is inside `createApp`: tests flip the variable between apps.
-  const automationsEnabled = () => resolveCapabilities(process.env, deps.bindHost).automations;
-  let rescheduleAutomations = () => {};
   const app = createApp({
     ...deps,
     contexts: sharedContexts,
-    automationStore: bootAutomationStore,
     workspaceEvents,
-    skillsUpdate,
     socketHub,
-    automationsChanged: () => rescheduleAutomations(),
   });
   // SECURITY: default to loopback. This server executes agents locally and its endpoints are
   // same-origin-trusted (only /api/health is CORS-open); binding to a non-loopback host would
-  // expose an agent-executing box to the network. `bindHost` exists only for a deliberate
-  // hosted/VPS deployment (which also flips CEZ_REMOTE to gate the local-handoff endpoints) —
-  // src/index.ts never passes it, so the loopback guarantee holds for the normal CLI.
+  // expose an agent-executing box to the network. `bindHost` exists for local dev/testing
+  // convenience only — src/index.ts never passes it non-loopback in the normal CLI path.
   const server = serve({
     fetch: app.fetch,
     port,
     hostname: deps.bindHost ?? '127.0.0.1',
   });
-  const coordinator = new SkillsUpdateCoordinator(skillsUpdate, async () =>
-    effectiveSkillsAutoUpdate(await loadWorkspaceConfig()));
-  const automationProjects = new Map<string, { root: string; owner: string; repo: string }>();
-  const automationScheduler = new WorkspaceAutomationScheduler({
-    coordinator: automationCoordinator,
-    handle: (projectId, store) => {
-      const project = automationProjects.get(projectId);
-      if (!project) return undefined;
-      return {
-        projectId,
-        owner: project.owner,
-        repo: project.repo,
-        store,
-        poller: new GithubPoller(),
-        onChange: (automationId, revision) =>
-          workspaceEvents.emit('automation-change', { project: projectId, automationId, revision }),
-        launch: async (definition, candidate, receiptId) => {
-          const bootId = deps.bootProjectId ?? 'default';
-          const context = projectId === bootId
-            ? { root: deps.repoRoot, manager: deps.manager, store: deps.store }
-            : await sharedContexts.context(projectId);
-          return launchAutomationRun({
-            root: context.root,
-            manager: context.manager,
-            store: context.store,
-            definition,
-            candidate,
-            receiptId,
-          });
-        },
-      };
-    },
-  });
-  // The scheduler is inert until `start()` anyway (it constructs `stopped`), but the gate is
-  // stated here rather than inherited from that detail: a definition saved while the flag is off
-  // must not even ask the coordinator to refresh.
-  rescheduleAutomations = () => {
-    if (!automationsEnabled()) return;
-    void automationScheduler.reschedule();
-  };
-  const unsubscribe = workspaceEvents.on((event, data) => {
-    if (event === 'project-added') {
-      const project = (data as { project?: { id?: unknown; root?: unknown; status?: unknown } }).project;
-      if (project && typeof project.id === 'string' && typeof project.root === 'string' && project.status !== 'missing') {
-        coordinator.add(project.id, project.root);
-        void getRepoInfo(project.root).then((info) => {
-          const parsed = parseRemote(info?.remote ?? '');
-          if (parsed?.host === 'github.com') automationProjects.set(project.id as string, { root: project.root as string, owner: parsed.owner, repo: parsed.repo });
-          return rescheduleAutomations();
-        });
-      }
-    } else if (event === 'project-removed') {
-      const id = (data as { id?: unknown }).id;
-      if (typeof id === 'string') coordinator.remove(id);
-      if (typeof id === 'string') {
-        automationCoordinator.remove(id);
-        automationProjects.delete(id);
-        rescheduleAutomations();
-      }
-    }
-  });
-  server.once('listening', () => {
-    void listProjects().then((projects) => {
-      const all = projects.some((project) => project.root === deps.repoRoot)
-        ? projects : [{ id: deps.bootProjectId ?? 'default', root: deps.repoRoot, status: 'ok' as const }, ...projects];
-      coordinator.start(all);
-      // #801: with automations off there is nothing to warm — no remote to resolve, no receipts
-      // to reconcile, and above all no scheduler to start. The skills-update coordinator above is
-      // a separate feature and starts either way.
-      if (!automationsEnabled()) return;
-      void Promise.all(all.map(async (project) => {
-        const parsed = parseRemote((await getRepoInfo(project.root))?.remote ?? '');
-        if (parsed?.host === 'github.com') automationProjects.set(project.id, { root: project.root, owner: parsed.owner, repo: parsed.repo });
-        const automationStore = automationCoordinator.store(project.id, project.root);
-        const runStore = project.id === (deps.bootProjectId ?? 'default')
-          ? deps.store
-          : sharedContexts.peek(project.id)?.store;
-        if (automationStore && runStore) reconcileAutomationReceipts(automationStore, runStore);
-      })).then(() => automationScheduler.start()).catch(() => undefined);
-    }).catch(() => undefined);
-  });
-  server.once('close', () => { unsubscribe(); coordinator.stop(); automationScheduler.stop(); });
-  socketHub.attach(server, (req) => verifyWsUpgrade(req, deps.bindHost));
+  socketHub.attach(server, (req) => verifyWsUpgrade(req));
   return server;
 }
 
@@ -5658,11 +4893,10 @@ export function startServer(deps: ServerDeps, port: number): ServerType {
  * provably the cockpit itself: a same-authority Origin, a no-Origin native
  * client, or a dev proxy the browser vouches for via `Sec-Fetch-Site`.
  */
-export function verifyWsUpgrade(req: IncomingMessage, bindHost?: string): WsUpgradeVerdict {
+export function verifyWsUpgrade(req: IncomingMessage): WsUpgradeVerdict {
   const host = req.headers.host;
   const hostName = hostnameOfHost(host);
-  const hosted = !resolveCapabilities(process.env, bindHost).localHandoff;
-  if (!hosted && !isLoopbackHostHeader(hostName)) return false;
+  if (!isLoopbackHostHeader(hostName)) return false;
   const origin = req.headers.origin;
   if (origin === undefined) return { trusted: true }; // non-browser client — no Origin to spoof
   // Scheme-checked, like the HTTP guard's comparison: `authorityOfOrigin` is

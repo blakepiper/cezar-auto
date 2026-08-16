@@ -117,8 +117,8 @@ function openCommits() {
 
 beforeAll(async () => {
   dataRoot = mkdtempSync(join(tmpdir(), 'cezar-e2e-commit-list-'))
-  const worktree = join(dataRoot, '.ai/cezar/worktrees', RUN_ID)
-  mkdirSync(join(dataRoot, '.ai/cezar/runs'), { recursive: true })
+  const worktree = join(dataRoot, '.ai/coducktor/worktrees', RUN_ID)
+  mkdirSync(join(dataRoot, '.ai/coducktor/runs'), { recursive: true })
   buildWorktree(worktree)
 
   const run = {
@@ -133,7 +133,7 @@ beforeAll(async () => {
     steps: [record.steps[0]],
     pullRequestUrl: undefined,
   }
-  writeFileSync(join(dataRoot, '.ai/cezar/runs.json'), JSON.stringify([run], null, 2), 'utf8')
+  writeFileSync(join(dataRoot, '.ai/coducktor/runs.json'), JSON.stringify([run], null, 2), 'utf8')
 
   const port = await freePort()
   baseUrl = `http://localhost:${port}`

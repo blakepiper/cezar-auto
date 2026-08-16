@@ -2175,7 +2175,7 @@ async function detectGithub(repoRoot: string): Promise<ForgeAvailability> {
  * Non-blocking availability for `GET /api/health` (#major-health-latency): serves the last-known
  * probe immediately (stale-while-revalidate) and only returns `null` on a cold start, before the
  * first probe has ever warmed the cache. It NEVER shells out to `gh` on the request that reads it,
- * so health stays under the bookmarklet's 800 ms port budget (a `gh repo view` round-trip is
+ * so health stays under the health discovery probe's 800 ms port budget (a `gh repo view` round-trip is
  * ~500–650 ms on its own). `null` is contract-safe — the whole `forge` field is additive, so
  * "unknown until warm" is a valid answer.
  *

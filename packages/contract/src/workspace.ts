@@ -2,9 +2,10 @@ import { z } from 'zod';
 import { type Runner, runnerSchema, runnerSelectionSchema } from './health.ts';
 
 /**
- * The workspace + settings families: `~/.cezar/config.json`'s settings slice, both GUI-pref bags
+ * The workspace + settings families: `~/.coducktor/config.json`'s settings slice, both GUI-pref bags
  * (per-repo and workspace), the per-repo agent knobs, provider auth status, the host model
- * catalog, the skills-update state, and the "Open in…" targets.
+ * catalog, and the "Open in…" targets. The skills-update state was retired with the
+ * skills-network features (A15, decision 7 — spec §16a Tier 2).
  *
  * Node-free by construction (see README rule 1) — `zod` and the sibling contract modules only.
  */
@@ -12,7 +13,7 @@ import { type Runner, runnerSchema, runnerSelectionSchema } from './health.ts';
 // ---- workspace settings (`GET/PUT /api/v1/workspace/config`) --------------------------------
 
 /**
- * `GET/PUT /api/v1/workspace/config` — the settings slice of `~/.cezar/config.json` (step 2.7).
+ * `GET/PUT /api/v1/workspace/config` — the settings slice of `~/.coducktor/config.json` (step 2.7).
  *
  * Global knobs only: the registry itself is `GET /api/v1/projects`, and `schemaVersion` (a
  * migration cursor, not a setting) is deliberately absent. `resources` is the workspace's
@@ -26,13 +27,8 @@ import { type Runner, runnerSchema, runnerSelectionSchema } from './health.ts';
  * was wider than the server has ever been.
  */
 export const workspaceConfigResponseSchema = z.object({
-  /** Root exposed by the Add-project directory browser — stored as written (`~` kept). */
-  browseRoot: z.string(),
   /** Checkout root for GUI-cloned projects — stored as written (`~` kept). */
   projectsDir: z.string(),
-  /** Stored override; `null` means inherit `CEZ_SKILLS_AUTO_UPDATE`, then true. */
-  skillsAutoUpdate: z.boolean().nullable(),
-  effectiveSkillsAutoUpdate: z.boolean(),
   composerDefaults: z.object({
     autonomous: z.boolean().nullable(),
     worktree: z.boolean().nullable(),
@@ -63,7 +59,7 @@ export const workspaceConfigResponseSchema = z.object({
    * Both keys are OPTIONAL on the wire, and that is load-bearing rather than lax: absent means
    * "this machine has no opinion, the built-in default applies", and it has to stay distinguishable
    * from a value someone chose or the fallback collapses into "always claude". Consulted only where
-   * the repo's own `.ai/cezar/config.json` is silent — a repo that chose is never overruled.
+   * the repo's own `.ai/coducktor/config.json` is silent — a repo that chose is never overruled.
    */
   agentDefaults: z.object({
     runner: runnerSelectionSchema.optional(),
@@ -85,9 +81,7 @@ export type WorkspaceConfigResponse = z.infer<typeof workspaceConfigResponseSche
  * the next load's `.catch`.
  */
 export const setWorkspaceConfigInputSchema = z.object({
-  browseRoot: z.string().trim().min(1).max(4096).optional(),
   projectsDir: z.string().trim().min(1).max(4096).optional(),
-  skillsAutoUpdate: z.boolean().nullable().optional(),
   composerDefaults: z
     .object({
       autonomous: z.boolean().nullable().optional(),
@@ -162,7 +156,7 @@ export const taskSourceSchema = z.union([
 ]);
 
 /**
- * `GET/PUT /api/v1/ui-state` — the per-repo GUI prefs in `.ai/cezar/ui-state.json`.
+ * `GET/PUT /api/v1/ui-state` — the per-repo GUI prefs in `.ai/coducktor/ui-state.json`.
  *
  * An OPEN bag on purpose (BACKWARD_COMPATIBILITY.md §3): unknown keys round-trip untouched, so a
  * newer cockpit's prefs survive an older server and a future pref needs no server change. Hence
@@ -207,18 +201,18 @@ export const uiStateSchema = z.looseObject({
     )
     .optional(),
   /** The open-mercato/skills promo banner (#391), dismissed for good. Legacy — the banner is
-   *  gone, replaced by `WorkspaceUiState.importedSkills`; retained so old files round-trip. */
+   *  gone; retained so old files round-trip. */
   dismissedSkillsBanner: z.boolean().optional(),
 });
 export type UiState = z.infer<typeof uiStateSchema>;
 
 /**
- * `GET/PUT /api/v1/workspace/ui-state` — cross-project GUI prefs in `~/.cezar/ui-state.json`
+ * `GET/PUT /api/v1/workspace/ui-state` — cross-project GUI prefs in `~/.coducktor/ui-state.json`
  * (multi-project spec, step 2.7).
  *
  * The same open bag as its per-repo twin above, and open for the same reason. The PUT merges
- * SHALLOWLY at the top level server-side, so a writer must send the whole `sidebar` object (or the
- * whole `importedSkills` array), never a leaf.
+ * SHALLOWLY at the top level server-side, so a writer must send the whole `sidebar` object,
+ * never a leaf.
  */
 export const workspaceLastLocationSchema = z.strictObject({
   projectId: z.string().min(1).max(64),
@@ -261,10 +255,6 @@ export const workspaceUiStateSchema = z.looseObject({
    *  cockpit keeps it in localStorage (`packages/web/src/lib/last-location.ts`): stored here, the
    *  last client to navigate decided where every OTHER client's next launch landed. */
   lastLocation: workspaceLastLocationSchema.optional(),
-  /** The user's curated selection of default (vendor) skills. Tri-state: ABSENT means "not
-   *  curated", so every default skill shows; a PRESENT array (even `[]`) means only those names
-   *  show from that repo. */
-  importedSkills: z.array(z.string()).optional(),
 });
 export type WorkspaceUiState = z.infer<typeof workspaceUiStateSchema>;
 
@@ -296,10 +286,6 @@ export const setWorkspaceUiStateInputSchema = z
         opencode: z.string().min(1).max(128).optional(),
         pi: z.string().min(1).max(128).optional(),
       })
-      .optional(),
-    importedSkills: z
-      .array(z.string().min(1).max(200))
-      .max(WORKSPACE_UI_STATE_MAX_KEYS)
       .optional(),
     taskTable: taskTableUiStateSchema
       .extend({
@@ -393,45 +379,6 @@ export const setConfigInputSchema = z.object({
   reviewGate: z.boolean().nullable().optional(),
 });
 export type SetConfigInput = z.infer<typeof setConfigInputSchema>;
-
-// ---- skills updates (`/api/v1/workspace/skills-update`) --------------------------------------
-
-export const skillsUpdateStatusSchema = z.enum([
-  'idle',
-  'checking',
-  'available',
-  'updating',
-  'current',
-  'unavailable',
-  'error',
-]);
-export type SkillsUpdateStatus = z.infer<typeof skillsUpdateStatusSchema>;
-
-export const skillsUpdateScopeStateSchema = z.object({
-  scope: z.enum(['project', 'global']),
-  status: skillsUpdateStatusSchema,
-  available: z.boolean(),
-  skills: z.array(z.string()),
-  checkedAt: z.string().nullable(),
-  updatedAt: z.string().nullable(),
-  reason: z.string().optional(),
-});
-export type SkillsUpdateScopeState = z.infer<typeof skillsUpdateScopeStateSchema>;
-
-/** `GET /api/v1/workspace/skills-update` (and the check/apply POSTs) — the merged project+global
- *  skills-update state. `autoUpdateEnabled`/`inherited` are re-stamped from the workspace config
- *  on the way out (`skillsUpdateResponse`, src/server/server.ts:1818). */
-export const skillsUpdateStateSchema = z.object({
-  status: skillsUpdateStatusSchema,
-  available: z.boolean(),
-  autoUpdateEnabled: z.boolean(),
-  inherited: z.boolean(),
-  checkedAt: z.string().nullable(),
-  updatedAt: z.string().nullable(),
-  scopes: z.array(skillsUpdateScopeStateSchema),
-  needsUpgradeNotes: z.boolean(),
-});
-export type SkillsUpdateState = z.infer<typeof skillsUpdateStateSchema>;
 
 // ---- provider auth (`/api/v1/providers/*`) ---------------------------------------------------
 
@@ -536,7 +483,7 @@ export const openTargetSchema = z.object({
 });
 export type OpenTarget = z.infer<typeof openTargetSchema>;
 
-/** `GET /api/v1/open-targets` — the detected local apps; empty in hosted mode (CEZ_REMOTE). */
+/** `GET /api/v1/open-targets` — the detected local apps; empty in the retired hosted-mode surface. */
 export const openTargetsResponseSchema = z.object({
   targets: z.array(openTargetSchema),
 });

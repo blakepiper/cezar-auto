@@ -33,13 +33,13 @@ describe('worktree retention fires on a terminal transition (#483)', () => {
     await run('git', ['add', '-A'], { cwd: repoRoot });
     await run('git', [...GIT_ID, 'commit', '-q', '-m', 'base'], { cwd: repoRoot });
     // keep=1: with two finished worktrees, the older is over budget.
-    mkdirSync(join(repoRoot, '.ai/cezar'), { recursive: true });
+    mkdirSync(join(repoRoot, '.ai/coducktor'), { recursive: true });
     writeFileSync(
-      join(repoRoot, '.ai/cezar/config.json'),
+      join(repoRoot, '.ai/coducktor/config.json'),
       JSON.stringify({ worktreeRetention: 1 }),
       'utf8',
     );
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     manager = new RunManager(store, repoRoot);
   });
 

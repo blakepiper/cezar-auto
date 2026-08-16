@@ -9,7 +9,7 @@ import { createApp } from './server.ts';
 /**
  * The `BACKWARD_COMPATIBILITY.md` §2 route inventory drift guard (#525 Phase 3).
  *
- * §2 declares the cockpit's HTTP API a protected surface consumed by saved bookmarklets and by
+ * §2 declares the cockpit's HTTP API a protected surface consumed by saved deep links and by
  * anyone scripting `localhost:4321`. But the inventory is prose, and the repo has no linter, no
  * markdown check and no link checker — so nothing verified the list matched reality. It didn't:
  * `GET /api/v1/github/comments/:kind/:number` (#499), `GET /api/v1/worktrees` and
@@ -111,7 +111,7 @@ describe('BACKWARD_COMPATIBILITY.md §2 route inventory', () => {
   const repoRoot = mkdtempSync(join(tmpdir(), 'cez-bc-inventory-'));
   const app = createApp({
     repoRoot,
-    store: RunStore.open(join(repoRoot, '.ai/cezar')),
+    store: RunStore.open(join(repoRoot, '.ai/coducktor')),
     manager: {} as RunManager,
     version: '0.0.0-test',
   });

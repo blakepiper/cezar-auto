@@ -10,7 +10,7 @@ export type LocationParts = Pick<Location, 'pathname' | 'search' | 'hash'>
 /**
  * Where the remembered location lives: THIS browser, not the workspace file.
  *
- * It shipped in `~/.cezar/ui-state.json` and that made one answer serve every client — the phone
+ * It shipped in `~/.coducktor/ui-state.json` and that made one answer serve every client — the phone
  * on the couch decided where the desktop's next bare-root launch landed, and two open cockpits
  * overwrote each other on every navigation. "The page this window was last on" describes a
  * browser, so it is stored per browser (like `cez-theme`). A server that still holds the legacy

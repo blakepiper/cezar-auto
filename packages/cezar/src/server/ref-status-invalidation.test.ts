@@ -45,13 +45,13 @@ describe('a reference cezar changes itself is forgotten, not waited out', () => 
   beforeEach(() => {
     vi.mocked(forgetRefStatus).mockClear();
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-refinvalidate-'));
-    mkdirSync(join(repoRoot, '.ai/cezar'), { recursive: true });
+    mkdirSync(join(repoRoot, '.ai/coducktor'), { recursive: true });
     execFileSync('git', ['init', '-b', 'main'], { cwd: repoRoot });
     execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoRoot });
     execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoRoot });
     execFileSync('git', ['commit', '--allow-empty', '-m', 'init'], { cwd: repoRoot });
     execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/acme/demo.git'], { cwd: repoRoot });
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     app = createApp({
       repoRoot,
       store,

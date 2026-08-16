@@ -16,7 +16,7 @@ import {
  *
  * A GLOBAL section since the multi-project split (step 3.5): the browser doing the notifying
  * is one browser whichever project you are looking at, so the answer belongs to the user, not
- * to a repo. It persists in `~/.cezar/ui-state.json` via `PUT /api/workspace/ui-state`
+ * to a repo. It persists in `~/.coducktor/ui-state.json` via `PUT /api/workspace/ui-state`
  * (Migration 001 carried the pre-existing per-repo value up).
  *
  * One real knob: the browser-notification toggle, OFF by default. Two contracts it keeps:

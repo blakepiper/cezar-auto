@@ -257,7 +257,7 @@ async fn prime_app(app: &mut App, engine: &HttpEngine) {
 /// or leaves a clear notice if the directory isn't a registered project rather than
 /// silently staying put. `--workflow`/`--model` preselect the New Task screen,
 /// covering the same "hand a task to the agent from outside the TUI" use case the
-/// deleted bookmarklet used to (spec §9.3 point 2).
+/// deleted browser-launch surface used to (spec §9.3 point 2).
 async fn apply_launch_args(engine: &HttpEngine, app: &mut App, cli: &Cli) {
     if let Some(repo) = &cli.repo {
         match cli::resolve_repo(&app.project_registry, repo) {

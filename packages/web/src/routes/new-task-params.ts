@@ -1,4 +1,4 @@
-/** The `/new` deep-link contract the saved bookmarklets rely on (spec 011,
+/** The `/new` deep-link contract the saved deep-link links rely on (spec 011,
  *  protected by BACKWARD_COMPATIBILITY.md): `?skill=&ref=&auto=1&key=`.
  *
  *  Parsing lives apart from the component so it stays table-testable and so the
@@ -13,7 +13,7 @@ export interface NewTaskParams {
   key: string
   /** The inbox entry this prefill came from (#374), when any — the composer sends it back as
    *  `todoId` on POST /api/runs so the started task is recorded on the entry. NOT part of the
-   *  bookmarklet contract: saved links never carry it, and it is inert on its own. */
+   *  deep-link contract: saved links never carry it, and it is inert on its own. */
   todo: string
 }
 
@@ -31,7 +31,8 @@ export function parseNewTaskParams(search: string | URLSearchParams): NewTaskPar
 /**
  * Build a same-origin `/new` href from this contract — the counterpart to `parseNewTaskParams`
  * for in-app callers (e.g. the Inbox's "Run", #374). Deliberately never sets `auto`/`key`:
- * those arm the bookmarklet's unattended start, but an in-app link always lands on the
+ * those arm the retired hosted-mode deep-link surface's unattended start, but an in-app link
+ * always lands on the
  * editable composer so the user can review before launching.
  *
  * `todo` is the audit-trail half of that detour: it names the inbox entry the prefill came

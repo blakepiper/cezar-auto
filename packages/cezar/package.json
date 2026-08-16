@@ -24,25 +24,14 @@
     "node": ">=20"
   },
   "scripts": {
-    "prebuild": "node scripts/sync-readme.mjs",
     "build": "tsc",
-    "check:pack": "node scripts/check-pack.mjs",
     "dev": "tsx src/index.ts",
-    "install-as-command": "node scripts/install-as-command.mjs --mode link",
-    "install-as-command:global": "node scripts/install-as-command.mjs --mode global",
-    "uninstall-as-command": "node scripts/install-as-command.mjs --mode uninstall",
-    "server-install": "tsx src/index.ts server-install",
-    "server-deploy": "tsx src/index.ts server-deploy",
-    "server-uninstall": "tsx src/index.ts server-uninstall",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:unit": "node --import tsx --test test/unit/*.test.ts",
-    "test:package": "node --import tsx --test test/e2e/*.test.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.test.json",
-    "postbuild": "node scripts/inline-contract.mjs"
+    "typecheck": "tsc --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
-    "@clack/prompts": "^0.11.0",
     "@hono/node-server": "^1.13.0",
     "hono": "^4.6.0",
     "smol-toml": "^1.7.0",

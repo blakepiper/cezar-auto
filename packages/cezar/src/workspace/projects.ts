@@ -11,7 +11,7 @@ import {
 } from './config.ts';
 
 /**
- * Project registry operations over `~/.cezar/config.json` (spec
+ * Project registry operations over `~/.coducktor/config.json` (spec
  * 2026-07-20-multi-project-workspace, "Project identity" + "Boot flow"):
  *
  * - `registerProject(root)` — realpath-normalize, dedupe by realpath, allocate
@@ -22,7 +22,7 @@ import {
  * - `listProjects()` — registry entries + a cheap per-root status/branch probe
  *   behind a short TTL cache, so a sidebar render never shells `git` N times.
  * - `removeProject(id)` — unregister only. It never touches any file inside
- *   the repo (a project's own state stays in `<repo>/.ai/cezar/`).
+ *   the repo (a project's own state stays in `<repo>/.ai/coducktor/`).
  */
 
 /**
@@ -91,9 +91,9 @@ async function normalizeRoot(root: string): Promise<string> {
   }
 }
 
-/** True when `path` sits inside a cezar task worktree (`…/.ai/cezar/worktrees/…`). */
+/** True when `path` sits inside a cezar task worktree (`…/.ai/coducktor/worktrees/…`). */
 function isInsideTaskWorktree(path: string): boolean {
-  const marker = `${sep}.ai${sep}cezar${sep}worktrees${sep}`;
+  const marker = `${sep}.ai${sep}coducktor${sep}worktrees${sep}`;
   return `${path}${sep}`.includes(marker);
 }
 
@@ -103,7 +103,7 @@ function isInsideTaskWorktree(path: string): boolean {
  * normally, it just doesn't pollute the registry — when the resolved
  * `repoRoot` is:
  *
- * - inside any `…/.ai/cezar/worktrees/…` path (task worktrees and nested
+ * - inside any `…/.ai/coducktor/worktrees/…` path (task worktrees and nested
  *   `cez` invocations — the same nesting reality the `CEZ_TODOS_FILE=''`
  *   guard in `workflows/run.ts` acknowledges), checked on both the raw and
  *   realpath'd spelling so neither a symlinked prefix nor a literal one
@@ -287,7 +287,7 @@ export async function listProjects(selector?: ProjectListSelector): Promise<Proj
 
 /**
  * Remove `id` from the registry. Returns false when no such entry exists.
- * Pure unregistration: nothing inside the repo (worktrees, `.ai/cezar/`,
+ * Pure unregistration: nothing inside the repo (worktrees, `.ai/coducktor/`,
  * run history) is touched — re-registering the same root later gets a fresh
  * slug but finds all its state intact.
  */

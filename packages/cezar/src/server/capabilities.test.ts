@@ -2,9 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { isLoopbackHost, isLoopbackHostHeader, normalizeHostname, resolveCapabilities } from './capabilities.ts';
 
 /**
- * `resolveCapabilities` takes its env as a parameter, so these drive it
- * directly rather than mutating `process.env`.
- *
  * The two loopback predicates sit at different trust seams and must not be
  * collapsed into one (#426 / #467 review):
  *   - `isLoopbackHost(bindHost)`   — our own config. Undefined = "we defaulted
@@ -13,7 +10,8 @@ import { isLoopbackHost, isLoopbackHostHeader, normalizeHostname, resolveCapabil
  *                                     Absent or unparseable ⇒ untrusted.
  * Both share an *anchored* address match: a `127.` string prefix also matches
  * registrable hostnames like `127.0.0.1.evil.com`, which was the DNS-rebinding
- * bypass this pair replaced.
+ * bypass this pair replaced. Both stay live through Phase A and B (A15,
+ * decision 5) — a port is still open, so the origin/WS guards still need them.
  */
 
 const REAL_LOOPBACK = [
@@ -120,135 +118,23 @@ describe('isLoopbackHost (our own bind host)', () => {
   });
 });
 
-describe('resolveCapabilities — localHandoff', () => {
-  it('is on for a default local bind', () => {
-    expect(resolveCapabilities({}, undefined).localHandoff).toBe(true);
-  });
-
-  it('is on for an explicit loopback bind', () => {
-    expect(resolveCapabilities({}, '127.0.0.1').localHandoff).toBe(true);
-  });
-
-  it('is off when CEZ_REMOTE=1', () => {
-    expect(resolveCapabilities({ CEZ_REMOTE: '1' }, undefined).localHandoff).toBe(false);
-  });
-
-  it('is off for a non-loopback bind host', () => {
-    expect(resolveCapabilities({}, '0.0.0.0').localHandoff).toBe(false);
-  });
-});
-
 describe('resolveCapabilities — followups (#471)', () => {
   it('is OFF by default — the global inbox is opt-in', () => {
-    expect(resolveCapabilities({}, undefined).followups).toBe(false);
+    expect(resolveCapabilities({}).followups).toBe(false);
   });
 
   it('is on with CEZ_FOLLOWUPS=1', () => {
-    expect(resolveCapabilities({ CEZ_FOLLOWUPS: '1' }, undefined).followups).toBe(true);
+    expect(resolveCapabilities({ CEZ_FOLLOWUPS: '1' }).followups).toBe(true);
   });
 
   it.each(['0', 'true', 'yes', '', 'on'])(
     'stays off for CEZ_FOLLOWUPS=%j — only an exact "1" opts in',
     (value) => {
-      expect(resolveCapabilities({ CEZ_FOLLOWUPS: value }, undefined).followups).toBe(false);
+      expect(resolveCapabilities({ CEZ_FOLLOWUPS: value }).followups).toBe(false);
     },
   );
 
-  it('is independent of the deployment mode', () => {
-    expect(resolveCapabilities({ CEZ_FOLLOWUPS: '1', CEZ_REMOTE: '1' }, '0.0.0.0')).toEqual({
-      localHandoff: false,
-      followups: true,
-      singleProject: false,
-      automations: false,
-      tokenMetrics: true,
-      tokenUsageMetrics: true,
-      costMetrics: true,
-    });
-  });
-});
-
-describe('resolveCapabilities — singleProject', () => {
-  it('is off by default', () => {
-    expect(resolveCapabilities({}).singleProject).toBe(false);
-  });
-
-  it('is on with CEZ_SINGLE_PROJECT=1', () => {
-    expect(resolveCapabilities({ CEZ_SINGLE_PROJECT: '1' }).singleProject).toBe(true);
-  });
-
-  it.each(['0', 'true', 'yes', '', 'on'])(
-    'stays off for CEZ_SINGLE_PROJECT=%j — only an exact "1" opts in',
-    (value) => {
-      expect(resolveCapabilities({ CEZ_SINGLE_PROJECT: value }).singleProject).toBe(false);
-    },
-  );
-});
-
-describe('resolveCapabilities — automations (#801)', () => {
-  it('is OFF by default — GitHub automations are opt-in', () => {
-    expect(resolveCapabilities({}).automations).toBe(false);
-  });
-
-  it('is on with CEZ_AUTOMATIONS=1', () => {
-    expect(resolveCapabilities({ CEZ_AUTOMATIONS: '1' }).automations).toBe(true);
-  });
-
-  it.each(['0', 'true', 'yes', '', 'on'])(
-    'stays off for CEZ_AUTOMATIONS=%j — only an exact "1" opts in',
-    (value) => {
-      expect(resolveCapabilities({ CEZ_AUTOMATIONS: value }).automations).toBe(false);
-    },
-  );
-
-  // The three opt-in capabilities are independent switches; turning one on must never
-  // imply another, or a user enabling automations would silently get the inbox too.
-  it('does not turn on any other opt-in capability', () => {
-    expect(resolveCapabilities({ CEZ_AUTOMATIONS: '1' })).toMatchObject({
-      automations: true,
-      followups: false,
-      singleProject: false,
-    });
-  });
-});
-
-describe('resolveCapabilities — usage presentation', () => {
-  it('shows token usage and cost by default', () => {
-    expect(resolveCapabilities({})).toMatchObject({
-      tokenMetrics: true,
-      tokenUsageMetrics: true,
-      costMetrics: true,
-    });
-  });
-
-  it.each([
-    [{ CEZ_HIDE_TOKEN_METRICS: '1' }, false, false, false],
-    [{ CEZ_HIDE_TOKEN_USAGE: '1' }, false, false, true],
-    [{ CEZ_HIDE_COST: '1' }, false, true, false],
-    [{ CEZ_HIDE_TOKEN_USAGE: '1', CEZ_HIDE_COST: '1' }, false, false, false],
-    [{ CEZ_HIDE_TOKEN_METRICS: '1', CEZ_HIDE_TOKEN_USAGE: '0', CEZ_HIDE_COST: '0' }, false, false, false],
-  ] as const)(
-    'resolves strict visibility for %o',
-    (env, tokenMetrics, tokenUsageMetrics, costMetrics) => {
-      expect(resolveCapabilities(env)).toMatchObject({ tokenMetrics, tokenUsageMetrics, costMetrics });
-    },
-  );
-
-  it.each(['0', 'true', 'yes', '', 'on'])(
-    'stays visible for CEZ_HIDE_TOKEN_METRICS=%j — only an exact "1" opts out',
-    (value) => {
-      expect(resolveCapabilities({
-        CEZ_HIDE_TOKEN_METRICS: value,
-        CEZ_HIDE_TOKEN_USAGE: value,
-        CEZ_HIDE_COST: value,
-      })).toMatchObject({ tokenMetrics: true, tokenUsageMetrics: true, costMetrics: true });
-    },
-  );
-
-  it('does not change telemetry visibility when another deployment capability is enabled', () => {
-    expect(resolveCapabilities({ CEZ_REMOTE: '1', CEZ_FOLLOWUPS: '1' })).toMatchObject({
-      tokenMetrics: true,
-      tokenUsageMetrics: true,
-      costMetrics: true,
-    });
+  it('is the only key on the capability set now', () => {
+    expect(resolveCapabilities({ CEZ_FOLLOWUPS: '1' })).toEqual({ followups: true });
   });
 });

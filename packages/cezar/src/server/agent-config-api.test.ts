@@ -10,22 +10,20 @@ import { createApp } from './server.ts';
 
 /**
  * `GET/PUT /api/v1/agent-config` (spec #404). The contract under test: files are
- * addressed by catalog id (unknown → 404); reads work in every mode; and the
- * load-bearing security property — EVERY write 409s in hosted mode
- * (`CEZ_REMOTE`), including a repo-LOCAL file whose hooks would otherwise be a
- * remote code-execution primitive.
+ * addressed by catalog id (unknown → 404) and the load-bearing security property —
+ * a repo-LOCAL file whose hooks would otherwise be a remote code-execution
+ * primitive — is editable like any other. Writes are a local-machine capability
+ * and local is the only mode (A15, decision 5 retires hosted mode).
  */
 describe('the agent-config API', () => {
   let repoRoot: string;
   let store: RunStore;
   let app: Hono;
-  const prevRemote = process.env.CEZ_REMOTE;
 
   beforeEach(() => {
-    delete process.env.CEZ_REMOTE;
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-agentcfg-'));
-    mkdirSync(join(repoRoot, '.ai/cezar'), { recursive: true });
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    mkdirSync(join(repoRoot, '.ai/coducktor'), { recursive: true });
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     app = createApp({
       repoRoot,
       store,
@@ -36,8 +34,6 @@ describe('the agent-config API', () => {
   afterEach(() => {
     store.flush();
     rmSync(repoRoot, { recursive: true, force: true });
-    if (prevRemote === undefined) delete process.env.CEZ_REMOTE;
-    else process.env.CEZ_REMOTE = prevRemote;
   });
 
   const put = (id: string, body: unknown) =>
@@ -103,39 +99,5 @@ describe('the agent-config API', () => {
 
   it('PUT :id → 404 for an unknown id', async () => {
     expect((await put('nope', { content: 'x', version: null })).status).toBe(404);
-  });
-
-  // The regression test for the hooks RCE hole: a repo-LOCAL file must 409 in
-  // hosted mode, not just a user-scope one. settings.json defines hooks.
-  it('hosted mode: EVERY write 409s — including a repo-local settings file', async () => {
-    process.env.CEZ_REMOTE = '1';
-    const local = await put('claude.project.settings', {
-      content: '{"hooks":{}}',
-      version: null,
-    });
-    expect(local.status).toBe(409);
-    const userScope = await put('claude.user.settings', {
-      content: '{}',
-      version: null,
-    });
-    expect(userScope.status).toBe(409);
-  });
-
-  it('hosted mode: repo-file reads work, home-dir file reads are withheld, userMcp is null', async () => {
-    process.env.CEZ_REMOTE = '1';
-    const res = await apiRequest(app, '/api/v1/agent-config');
-    const body = (await res.json()) as {
-      editable: boolean;
-      userMcp: unknown;
-      files: { writable: boolean }[];
-    };
-    expect(body.editable).toBe(false);
-    expect(body.userMcp).toBeNull();
-    expect(body.files.every((f) => f.writable === false)).toBe(true);
-    // a repo-local file read still works (the cockpit already serves repo contents)
-    expect((await apiRequest(app, '/api/v1/agent-config/claude.project.settings')).status).toBe(200);
-    // but an OUTSIDE-REPO ($HOME) file's contents are NOT served — they can hold secrets
-    expect((await apiRequest(app, '/api/v1/agent-config/claude.user.settings')).status).toBe(409);
-    expect((await apiRequest(app, '/api/v1/agent-config/codex.user.config')).status).toBe(409);
   });
 });

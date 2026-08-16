@@ -19,7 +19,7 @@ import { AppRoutes } from '@/routes'
  * separate page would mean adding an account here and going elsewhere to say "use it".
  *
  * What this pins is the STORES. One click answers one question but writes two files — the runner and
- * the models to `~/.cezar/config.json`, the account to `~/.cezar/agent-accounts.json` — and neither
+ * the models to `~/.coducktor/config.json`, the account to `~/.coducktor/agent-accounts.json` — and neither
  * may ever reach the per-repo `/api/v1/config`, which is committable. A regression there would
  * publish which login someone works under.
  */
@@ -75,10 +75,7 @@ function serve({
 } = {}) {
   requests = []
   const state: WorkspaceConfigResponse = {
-    browseRoot: '~/',
     projectsDir: '~/cezar/projects',
-    skillsAutoUpdate: null,
-    effectiveSkillsAutoUpdate: true,
     composerDefaults: {
       autonomous: null,
       worktree: null,
@@ -188,10 +185,7 @@ describe('Agent accounts → Defaults for new projects', () => {
           new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } })
         if (url === '/api/v1/workspace/config') {
           return json({
-            browseRoot: '~/',
             projectsDir: '~/cezar/projects',
-            skillsAutoUpdate: null,
-            effectiveSkillsAutoUpdate: true,
             composerDefaults: {
               autonomous: null,
               worktree: null,

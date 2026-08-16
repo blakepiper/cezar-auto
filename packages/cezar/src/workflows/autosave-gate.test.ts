@@ -43,7 +43,7 @@ describe('periodic autosave gate (#471)', () => {
     writeFileSync(join(repoRoot, 'a.txt'), 'base\n');
     await run('git', ['add', '-A'], { cwd: repoRoot });
     await run('git', [...GIT_ID, 'commit', '-q', '-m', 'base'], { cwd: repoRoot });
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     manager = new RunManager(store, repoRoot) as unknown as TimerSeam;
     const record = store.createRun({ title: 't', workflow: 'quick-task', task: 't', steps: [] });
     worktreePath = (await createWorktree(repoRoot, record.id, 'main')).path;

@@ -6,7 +6,6 @@ import { workspaceConfigPath } from '../paths.ts';
 import {
   atomicTmpPath,
   defaultWorkspaceConfig,
-  effectiveSkillsAutoUpdate,
   effectiveComposerDefault,
   loadWorkspaceConfig,
   mergeWriteWorkspaceConfig,
@@ -15,7 +14,7 @@ import {
 } from './config.ts';
 
 /**
- * `~/.cezar/config.json` house rules under test (spec
+ * `~/.coducktor/config.json` house rules under test (spec
  * 2026-07-20-multi-project-workspace, step 1.2): zero-config defaults, per-key
  * `.catch` degradation, `.passthrough()` forward compatibility, atomic `0600`
  * writes, and the read-modify-write merge that keeps concurrent writers from
@@ -23,28 +22,20 @@ import {
  */
 describe('workspace config', () => {
   const originalHome = process.env.CEZ_HOME;
-  const originalBrowseRoot = process.env.CEZ_BROWSE_ROOT;
   const originalProjectsDir = process.env.CEZ_PROJECTS_DIR;
-  const originalSkillsAutoUpdate = process.env.CEZ_SKILLS_AUTO_UPDATE;
   let home: string;
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'cez-workspace-'));
     process.env.CEZ_HOME = home; // paths.ts sends all workspace paths here
-    delete process.env.CEZ_BROWSE_ROOT;
     delete process.env.CEZ_PROJECTS_DIR;
-    delete process.env.CEZ_SKILLS_AUTO_UPDATE;
   });
 
   afterEach(() => {
     if (originalHome === undefined) delete process.env.CEZ_HOME;
     else process.env.CEZ_HOME = originalHome;
-    if (originalBrowseRoot === undefined) delete process.env.CEZ_BROWSE_ROOT;
-    else process.env.CEZ_BROWSE_ROOT = originalBrowseRoot;
     if (originalProjectsDir === undefined) delete process.env.CEZ_PROJECTS_DIR;
     else process.env.CEZ_PROJECTS_DIR = originalProjectsDir;
-    if (originalSkillsAutoUpdate === undefined) delete process.env.CEZ_SKILLS_AUTO_UPDATE;
-    else process.env.CEZ_SKILLS_AUTO_UPDATE = originalSkillsAutoUpdate;
     rmSync(home, { recursive: true, force: true });
     vi.restoreAllMocks();
   });
@@ -66,7 +57,6 @@ describe('workspace config', () => {
     const config = await loadWorkspaceConfig();
     expect(config).toEqual(defaultWorkspaceConfig());
     expect(config.schemaVersion).toBe(0);
-    expect(config.browseRoot).toBe('~/');
     expect(config.projectsDir).toBe('~/cezar/projects');
     expect(config.resources).toEqual({ maxParallel: 2, maxMonitoringSessions: 2, monitoringWakeIntervalMinutes: 5, autoResumeOnUsageLimit: true, intelligentContextRefresh: false, memoryLimitMb: null, worktreeRetentionDefault: 10 });
     expect(config.quotaRouting).toMatchObject({
@@ -111,27 +101,15 @@ describe('workspace config', () => {
     expect(config.projectsDir).toBe('/tmp/projects');
   });
 
-  it('takes zero-config roots from the environment while explicit stored values win', async () => {
-    process.env.CEZ_BROWSE_ROOT = '~/source';
+  it('takes the zero-config projects root from the environment while explicit stored values win', async () => {
     process.env.CEZ_PROJECTS_DIR = '~/checkouts';
     expect(defaultWorkspaceConfig()).toMatchObject({
-      browseRoot: '~/source',
       projectsDir: '~/checkouts',
     });
-    write({ browseRoot: '/srv/source', projectsDir: '/srv/checkouts' });
+    write({ projectsDir: '/srv/checkouts' });
     expect(await loadWorkspaceConfig()).toMatchObject({
-      browseRoot: '/srv/source',
       projectsDir: '/srv/checkouts',
     });
-  });
-
-  it('resolves skills auto-update as explicit setting, then 0/1 env, then false', () => {
-    expect(effectiveSkillsAutoUpdate({}, {})).toBe(false);
-    expect(effectiveSkillsAutoUpdate({}, { CEZ_SKILLS_AUTO_UPDATE: '0' })).toBe(false);
-    expect(effectiveSkillsAutoUpdate({}, { CEZ_SKILLS_AUTO_UPDATE: '1' })).toBe(true);
-    expect(effectiveSkillsAutoUpdate({}, { CEZ_SKILLS_AUTO_UPDATE: 'invalid' })).toBe(false);
-    expect(effectiveSkillsAutoUpdate({ skillsAutoUpdate: false }, { CEZ_SKILLS_AUTO_UPDATE: '1' })).toBe(false);
-    expect(effectiveSkillsAutoUpdate({ skillsAutoUpdate: true }, { CEZ_SKILLS_AUTO_UPDATE: '0' })).toBe(true);
   });
 
   it('resolves composer defaults as stored value, exact 0/1 env, then fallback', () => {
@@ -182,13 +160,13 @@ describe('workspace config', () => {
   });
 
   it('degrades a bad stored preference per-key and preserves raw absence on unrelated writes', async () => {
-    write({ skillsAutoUpdate: 'no', futureKey: true });
-    expect((await loadWorkspaceConfig()).skillsAutoUpdate).toBeUndefined();
+    write({ modelsLocked: 'no', futureKey: true });
+    expect((await loadWorkspaceConfig()).modelsLocked).toBeUndefined();
     await mergeWriteWorkspaceConfig((config) => {
       config.resources.maxParallel = 3;
     });
     const raw = JSON.parse(readFileSync(workspaceConfigPath(), 'utf8')) as Record<string, unknown>;
-    expect(raw.skillsAutoUpdate).toBeUndefined();
+    expect(raw.modelsLocked).toBeUndefined();
     expect(raw.futureKey).toBe(true);
   });
 
@@ -223,7 +201,7 @@ describe('workspace config', () => {
 
   it('every atomic write stages through its own tmp file (pid + random, never a shared name)', () => {
     // Two cezar processes (a `serve` per repo, a settings PUT, `cezar run`)
-    // share `~/.cezar/` — a fixed `${path}.tmp` would let one writer O_TRUNC
+    // share `~/.coducktor/` — a fixed `${path}.tmp` would let one writer O_TRUNC
     // the other's staging file mid-write and rename corruption into place.
     const path = workspaceConfigPath();
     const a = atomicTmpPath(path);
@@ -283,14 +261,12 @@ describe('workspace config', () => {
   it('degrades bad values per-key instead of discarding the file', async () => {
     write({
       schemaVersion: 'two',
-      browseRoot: 42,
       projectsDir: 42,
       resources: { maxParallel: 99, maxMonitoringSessions: 99, monitoringWakeIntervalMinutes: 0, memoryLimitMb: 'lots', worktreeRetentionDefault: -1 },
       projects: [project('good')],
     });
     const config = await loadWorkspaceConfig();
     expect(config.schemaVersion).toBe(0);
-    expect(config.browseRoot).toBe('~/');
     expect(config.projectsDir).toBe('~/cezar/projects');
     expect(config.resources).toEqual({ maxParallel: 2, maxMonitoringSessions: 2, monitoringWakeIntervalMinutes: 5, autoResumeOnUsageLimit: true, intelligentContextRefresh: false, memoryLimitMb: null, worktreeRetentionDefault: 10 });
     expect(config.projects).toEqual([project('good')]);

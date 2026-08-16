@@ -459,7 +459,7 @@ function variantLabel(run: RunRecord, showTokens: boolean, showCost: boolean): s
 export function TaskQuickListContainer() {
   const runs = useRuns()
   const health = useHealth()
-  const visibility = usageMetricVisibility(health.data)
+  const visibility = usageMetricVisibility()
   const [view, setView] = useListView()
   // Project-prefix-agnostic matches (step 3.2): `/p/<id>/tasks/:id` must light its row too.
   const match = useProjectMatch('/tasks/:id/*')

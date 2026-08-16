@@ -100,7 +100,10 @@ export async function getBranches(root: string): Promise<string[]> {
   } catch {
     // no remotes — local only
   }
-  return [...names].filter((n) => !n.startsWith('cez/')).sort((a, b) => a.localeCompare(b));
+  // Task branches are hidden from the Repo-view branch list. Both prefixes:
+  // the `cez/` spelling old runs left behind and the `duck/` one current runs
+  // create (dual-read shim, spec §2.2.2).
+  return [...names].filter((n) => !n.startsWith('cez/') && !n.startsWith('duck/')).sort((a, b) => a.localeCompare(b));
 }
 
 /** One commit — message + stat + patch — for the Repo view's expandable rows. */

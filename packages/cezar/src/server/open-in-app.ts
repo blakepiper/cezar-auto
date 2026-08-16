@@ -5,22 +5,15 @@ import { join } from 'node:path';
 
 import type { RunnerId } from '../core/agent-runner.ts';
 import { openInTerminal, refuseSpawnUnderTest } from './open-in-terminal.ts';
-import { isWsl, translateToWindowsPath } from './wsl.ts';
 
 /**
  * "Open in…" session takeover (#open-in): detect the editors / file managers / terminals on THIS
  * machine, and open a run's worktree in the one the user picks — the desktop-app equivalent of
- * the "cd <path>" hint. Local-only; the server gates these behind `localHandoff` (CEZ_REMOTE).
+ * the "cd <path>" hint. Local-only, unconditionally available (decision 5 — there is no hosted
+ * mode to gate it behind anymore).
  *
  * Detection is best-effort and cross-platform: an editor counts as present if its CLI is on PATH
  * or (macOS) its .app bundle is installed. Finder/file-manager and Terminal are always offered.
- *
- * WSL (#361): when this process itself runs inside WSL, `process.platform` reads `linux` but the
- * user's GUI apps mostly live on the Windows side, reachable through interop. `resolveOnPath`
- * additionally probes directly-spawnable `.com`/`.exe` suffixes there (Node's own PATH lookup
- * only does that under real win32), and `openInApp`/`openFileManager` translate the worktree path
- * to its `\\wsl$\…` (or `C:\…`) form before handing it to a resolved Windows-side binary — a WSL-native
- * launcher (e.g. VS Code's Remote-WSL `code` shim) keeps the POSIX path unchanged.
  */
 
 export interface OpenTarget {
@@ -66,25 +59,23 @@ const EDITORS: EditorDef[] = [
   { id: 'warp', label: 'Warp', icon: 'warp', cli: 'warp', mac: 'Warp' },
 ];
 
-const FILE_MANAGER_LABEL =
-  process.platform === 'darwin' ? 'Finder' : process.platform === 'win32' || isWsl() ? 'Explorer' : 'Files';
+const FILE_MANAGER_LABEL = process.platform === 'darwin' ? 'Finder' : process.platform === 'win32' ? 'Explorer' : 'Files';
 
-/** Is `bin` (with a directly-spawnable Windows suffix under win32/WSL interop) on PATH?
+/** Is `bin` (with a directly-spawnable Windows suffix under win32) on PATH?
  *  Returns the exact resolved name (which may carry the suffix) — pure filesystem probe, no
  *  child process — or null. `.cmd`/`.bat` are intentionally excluded: modern Node refuses to
  *  spawn them directly, while launching them through a shell would reintroduce the BatBadBut
  *  command-injection surface fixed in #459. An unavailable target is safer than one the menu
  *  offers and then silently fails to open (#469 review).
  *
- *  The optional environment arguments keep Windows/WSL suffix behavior testable on any host. */
+ *  The optional environment arguments keep Windows suffix behavior testable on any host. */
 export function resolveOnPath(
   bin: string,
   platform: NodeJS.Platform = process.platform,
-  wsl: boolean = isWsl(),
   searchPath: string = process.env.PATH ?? '',
 ): string | null {
   const dirs = searchPath.split(platform === 'win32' ? ';' : ':');
-  const suffixed = platform === 'win32' || wsl;
+  const suffixed = platform === 'win32';
   const names = suffixed ? [bin, `${bin}.com`, `${bin}.exe`] : [bin];
   for (const dir of dirs) {
     if (!dir) continue;
@@ -158,21 +149,15 @@ export function detectOpenTargets(): OpenTarget[] {
 }
 
 /** The (bin, args) a file-manager launch resolves to — pure so the per-platform routing
- *  (including the WSL→Explorer interop branch) is unit-testable without spawning anything.
- *  `platform`/`wsl` default to the real environment; tests pass them explicitly. */
-export function fileManagerLaunch(
-  dir: string,
-  platform: NodeJS.Platform = process.platform,
-  wsl: boolean = isWsl(),
-): { bin: string; args: string[] } {
+ *  is unit-testable without spawning anything. `platform` defaults to the real environment;
+ *  tests pass it explicitly. */
+export function fileManagerLaunch(dir: string, platform: NodeJS.Platform = process.platform): { bin: string; args: string[] } {
   if (platform === 'darwin') return { bin: 'open', args: [dir] };
   if (platform === 'win32') return { bin: 'explorer', args: [dir] };
-  if (wsl) return { bin: 'explorer.exe', args: [translateToWindowsPath(dir)] };
   return { bin: 'xdg-open', args: [dir] };
 }
 
-/** Open `dir` in the file manager, natively per platform. Under WSL there is no Linux desktop to
- *  hand `xdg-open` to — go through interop to Windows Explorer instead, translating the path. */
+/** Open `dir` in the file manager, natively per platform. */
 async function openFileManager(dir: string): Promise<boolean> {
   const { bin, args } = fileManagerLaunch(dir);
   return runDetached(bin, args);
@@ -182,7 +167,7 @@ async function openFileManager(dir: string): Promise<boolean> {
  *  default handler — the diff pane's "open in default app" action for images (#365). Distinct
  *  from `openFileManager` above: that opens a *directory* in the file manager; this launches
  *  the file itself (e.g. the OS's default image viewer), never a directory listing. Local-only
- *  by construction — the caller gates this behind `localHandoff`.
+ *  by construction — the caller gates this behind the local-handoff capability.
  *
  *  `path` is worktree CONTENT — a filename some cloned repo or coding agent chose — so it is
  *  hostile input, and it must never reach a process that re-parses its command line. That rules
@@ -213,12 +198,8 @@ export async function openInApp(targetId: string, dir: string): Promise<boolean>
   return false;
 }
 
-/** The path argument to hand a resolved binary: a Windows-suffixed name found through WSL
- *  interop needs the Windows-side path; a bare-name binary (native Linux, or a WSL-aware shim
- *  like VS Code's Remote-WSL `code`) takes the POSIX path unchanged. `wsl` defaults to the real
- *  environment; tests pass it explicitly so this needs no global platform stubbing. */
-export function launchPathFor(resolvedBin: string, dir: string, wsl: boolean = isWsl()): string {
-  if (wsl && /\.(com|exe)$/i.test(resolvedBin)) return translateToWindowsPath(dir);
+/** The path argument to hand a resolved binary — the ordinary POSIX path, unchanged. */
+export function launchPathFor(_resolvedBin: string, dir: string): string {
   return dir;
 }
 

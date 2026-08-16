@@ -239,7 +239,7 @@ export interface ForgeDriver {
   /** Cheap, cached availability probe. May shell out (used by the GitHub tab). */
   detect(): Promise<ForgeAvailability>;
   /** Non-blocking availability for the health path: cached result, or null while warming — never
-   *  shells out on the read (keeps /api/health under the bookmarklet's latency budget). */
+   *  shells out on the read (keeps /api/health under the health discovery probe's latency budget). */
   detectCached(): ForgeAvailability | null;
   listIssues(opts?: ForgeListOptions): Promise<ForgeItem[]>;
   listPRs(opts?: ForgeListOptions): Promise<ForgeItem[]>;

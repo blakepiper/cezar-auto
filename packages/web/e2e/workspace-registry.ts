@@ -29,7 +29,7 @@ const repoRoot = resolve(import.meta.dirname, '../../..')
 /** Mirrors `CEZ_HOME` in `.ai/scripts/test-env-up.sh` — change one, change the other. */
 const sharedHome = resolve(repoRoot, '.ai/qa/cez-home')
 
-/** One registry entry, as `~/.cezar/config.json` stores it (src/workspace/config.ts). */
+/** One registry entry, as `~/.coducktor/config.json` stores it (src/workspace/config.ts). */
 export type RegistryProject = {
   id: string
   root: string
@@ -45,13 +45,13 @@ type SharedConfig = { projects?: RegistryProject[] } & Record<string, unknown>
  * A path inside the pinned test home.
  *
  * The guard is the point: everything in this module REWRITES workspace state, and the one file
- * it must never reach is the operator's real `~/.cezar/` — losing that means losing their whole
+ * it must never reach is the operator's real `~/.coducktor/` — losing that means losing their whole
  * project list. `.ai/qa/cez-home` can only collide with it if the repo itself lives at `$HOME`,
  * so that is exactly what is refused.
  */
 function sharedFile(name: string): string {
   const path = resolve(sharedHome, name)
-  if (path.startsWith(resolve(homedir(), '.cezar'))) {
+  if (path.startsWith(resolve(homedir(), '.coducktor'))) {
     throw new Error(`cezar e2e: refusing to touch the real workspace home at ${path}`)
   }
   return path

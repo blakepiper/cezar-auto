@@ -23,7 +23,6 @@ import {
   getRunHandoff,
   getRuns,
   getSkills,
-  getSkillsWhenReady,
   getTodos,
   getUiState,
   getWorkflows,
@@ -31,7 +30,6 @@ import {
   patchRun,
   pickVariant,
   putUiState,
-  refreshSkills,
   removeTodo,
   runFileRawUrl,
   sendMessage,
@@ -136,13 +134,6 @@ describe('request shapes', () => {
     { name: 'getUiState', call: () => getUiState(), path: '/api/v1/ui-state', method: 'GET' },
     { name: 'getWorkflows', call: () => getWorkflows(), path: '/api/v1/workflows', method: 'GET' },
     { name: 'getSkills', call: () => getSkills(), path: '/api/v1/skills', method: 'GET' },
-    {
-      name: 'getSkillsWhenReady',
-      call: () => getSkillsWhenReady(),
-      path: '/api/v1/skills?wait=1',
-      method: 'GET',
-    },
-    { name: 'refreshSkills', call: () => refreshSkills(), path: '/api/v1/skills/refresh', method: 'POST' },
     { name: 'getTodos', call: () => getTodos(), path: '/api/v1/todos', method: 'GET' },
     { name: 'getRepo', call: () => getRepo(), path: '/api/v1/repo', method: 'GET' },
     { name: 'getGroup', call: () => getGroup('grp-1'), path: '/api/v1/groups/grp-1', method: 'GET' },
@@ -433,11 +424,11 @@ describe('response parsing', () => {
   it('returns the health payload as-is', async () => {
     const health = {
       version: '0.1.3',
-      latestVersion: '0.2.0',
       repoRoot: '/home/me/cezar',
       repo: { root: '/home/me/cezar', branch: 'main', remote: 'origin' },
       checks: [{ name: 'claude', available: true, version: '2.0.1' }],
       defaultRunner: 'claude',
+      capabilities: { followups: true },
     }
     reply(health)
     await expect(getHealth()).resolves.toEqual(health)

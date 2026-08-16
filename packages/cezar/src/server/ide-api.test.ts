@@ -11,7 +11,6 @@ import { createApp } from './server.ts';
 
 describe('project IDE API', () => {
   const savedCezHome = process.env.CEZ_HOME;
-  const savedRemote = process.env.CEZ_REMOTE;
   let home: string;
   let root: string;
   let store: RunStore;
@@ -21,12 +20,11 @@ describe('project IDE API', () => {
     home = mkdtempSync(join(tmpdir(), 'cez-ide-api-home-'));
     root = mkdtempSync(join(tmpdir(), 'cez-ide-api-root-'));
     process.env.CEZ_HOME = home;
-    delete process.env.CEZ_REMOTE;
-    mkdirSync(join(root, '.ai/cezar'), { recursive: true });
+    mkdirSync(join(root, '.ai/coducktor'), { recursive: true });
     writeFileSync(join(root, 'README.md'), '# cezar\n', 'utf8');
     mkdirSync(join(root, 'src'), { recursive: true });
     writeFileSync(join(root, 'src/index.ts'), 'export const answer = 42\n', 'utf8');
-    store = RunStore.open(join(root, '.ai/cezar'));
+    store = RunStore.open(join(root, '.ai/coducktor'));
     app = createApp({
       repoRoot: root,
       store,
@@ -41,8 +39,6 @@ describe('project IDE API', () => {
     rmSync(root, { recursive: true, force: true });
     if (savedCezHome === undefined) delete process.env.CEZ_HOME;
     else process.env.CEZ_HOME = savedCezHome;
-    if (savedRemote === undefined) delete process.env.CEZ_REMOTE;
-    else process.env.CEZ_REMOTE = savedRemote;
   });
 
   it('lists, reads, and saves through both project aliases', async () => {

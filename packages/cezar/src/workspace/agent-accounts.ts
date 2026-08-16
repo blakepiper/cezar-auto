@@ -9,7 +9,7 @@ import { agentAccountsPath, workspaceConfigPath } from '../paths.ts';
 import { atomicWriteJsonSync } from './config.ts';
 
 /**
- * `~/.cezar/agent-accounts.json` — the agent-accounts store (spec `2026-07-29-agent-profiles.md`).
+ * `~/.coducktor/agent-accounts.json` — the agent-accounts store (spec `2026-07-29-agent-profiles.md`).
  *
  * ## Why its own file
  *
@@ -184,7 +184,7 @@ export function defaultAgentAccountStore(): AgentAccountStore {
 /**
  * Read the store on demand — never cached, never throws.
  *
- * Not cached because `~/.cezar/` is shared by every cezar process on the machine, so a snapshot is
+ * Not cached because `~/.coducktor/` is shared by every cezar process on the machine, so a snapshot is
  * a staleness bug; one small JSON read is free next to spawning a CLI.
  *
  * A missing file is the zero-config default (silent). A corrupt one degrades to the default with a

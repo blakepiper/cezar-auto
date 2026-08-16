@@ -345,7 +345,7 @@ function AgentsForm({
  *
  * The two halves land in DIFFERENT stores, and that is deliberate rather than incidental: the runner
  * is a team decision and goes in the repo's committable config, while the account is personal and
- * per-machine (`~/.cezar/agent-accounts.json`) — committing it would publish which login someone
+ * per-machine (`~/.coducktor/agent-accounts.json`) — committing it would publish which login someone
  * works under. Hence two writes for one click, and the copy says so.
  */
 function DefaultAgentField({

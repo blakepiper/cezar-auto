@@ -9,7 +9,7 @@ import { atomicWriteJsonSync, loadWorkspaceConfig, mergeWriteWorkspaceConfig } f
 
 /**
  * The registry-clobber regression. A cezar test run used to be able to replace
- * the developer's real `~/.cezar/config.json` with a fixture's projects: the
+ * the developer's real `~/.coducktor/config.json` with a fixture's projects: the
  * `CEZ_HOME` pin lives in `process.env`, a timing-out test drops it in
  * `afterEach` while a merge-write is still in flight, and the write then
  * resolved a different home than the read. These cases lock in the two
@@ -80,9 +80,9 @@ describe('cezar home write safety', () => {
     delete process.env.CEZ_HOME;
     const target = workspaceConfigPath();
 
-    expect(target).toBe(join(fakeUserHome, '.cezar', 'config.json'));
+    expect(target).toBe(join(fakeUserHome, '.coducktor', 'config.json'));
     expect(() => atomicWriteJsonSync(target, { projects: [] })).toThrow(/CEZ_HOME is not pinned/);
-    expect(existsSync(join(fakeUserHome, '.cezar'))).toBe(false);
+    expect(existsSync(join(fakeUserHome, '.coducktor'))).toBe(false);
   });
 
   it('leaves an existing real-home registry byte-for-byte intact when a leaked write is refused', () => {
@@ -90,7 +90,7 @@ describe('cezar home write safety', () => {
     delete process.env.CEZ_HOME;
     const target = workspaceConfigPath();
     const existing = '{"projects":[{"id":"real","root":"/repos/real"}]}\n';
-    mkdirSync(join(fakeUserHome, '.cezar'), { recursive: true });
+    mkdirSync(join(fakeUserHome, '.coducktor'), { recursive: true });
     writeFileSync(target, existing);
 
     expect(() => atomicWriteJsonSync(target, { projects: [] })).toThrow(/refusing to write/);
@@ -102,7 +102,7 @@ describe('cezar home write safety', () => {
     // CLI suite with a timeout short enough that every case is killed mid-write,
     // pointed at a throwaway HOME and started with no CEZ_HOME at all — the way
     // `npm test` runs on a developer's machine. Run against the code as it was
-    // before this change, that command wrote `<home>/.cezar/config.json` holding
+    // before this change, that command wrote `<home>/.coducktor/config.json` holding
     // the fixture's projects on 5 runs out of 5; the `remove` cases are the
     // cheapest set that does it (~1s, against ~40s for the whole file).
     //
@@ -126,7 +126,7 @@ describe('cezar home write safety', () => {
     // The nested suite is EXPECTED to fail — 15ms cannot finish a `git init`.
     // What matters is what it left behind outside its sandbox.
     expect(run.error).toBeUndefined();
-    expect(existsSync(join(fakeUserHome, '.cezar'))).toBe(false);
+    expect(existsSync(join(fakeUserHome, '.coducktor'))).toBe(false);
   }, 180_000);
 
   it('allows writes outside the real cezar home, and is inert outside vitest', () => {
@@ -135,7 +135,7 @@ describe('cezar home write safety', () => {
 
     expect(() => assertCezarHomeWriteIsSandboxed(sandboxed)).not.toThrow();
     expect(() =>
-      assertCezarHomeWriteIsSandboxed(join(homedir(), '.cezar', 'config.json'), { VITEST: undefined }),
+      assertCezarHomeWriteIsSandboxed(join(homedir(), '.coducktor', 'config.json'), { VITEST: undefined }),
     ).not.toThrow();
   });
 });

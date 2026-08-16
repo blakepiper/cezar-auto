@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeEach } from 'vitest'
 
-// Nothing in this suite may write to the developer's own `~/.cezar`. Most cases pin
+// Nothing in this suite may write to the developer's own `~/.coducktor`. Most cases pin
 // `CEZ_HOME` themselves, but the pin is one global for the whole worker and their
 // `afterEach` deletes it — so a write that outlives its test (a timeout is enough)
 // used to resolve the real home and replace the project registry with the fixture's.

@@ -26,7 +26,6 @@ let baseUrl: string
 
 let forgeAvailable = false
 let followupsAvailable = false
-let automationsAvailable = false
 let bootProject: string
 
 /** A flat route target under the shared env's project prefix (multi-project spec, step 3.2):
@@ -38,24 +37,21 @@ beforeAll(async () => {
   browser = AgentBrowser.open(runId)
   const health = (await fetch(`${baseUrl}/api/v1/health`).then((r) => r.json())) as {
     forge: { available: boolean } | null
-    capabilities: { followups: boolean; automations: boolean }
+    capabilities: { followups: boolean }
   }
   forgeAvailable = health.forge?.available === true
   followupsAvailable = health.capabilities.followups
-  automationsAvailable = health.capabilities.automations
   bootProject = await bootProjectId(baseUrl)
 })
 
-/** The nav the shell renders — GitHub, Inbox and Automations all gate on live health
- *  capabilities, so the expectation must too. Automations carries BOTH gates (#801): it needs a
- *  forge to poll AND the operator's opt-in to exist at all. */
+/** The nav the shell renders — GitHub and Inbox gate on live health capabilities, so the
+ *  expectation must too. (Automations gated the same way until A15 retired the subsystem.) */
 function expectedNavLabels(): string[] {
   return [
     'Tasks',
     ...(followupsAvailable ? ['Inbox'] : []),
     'Git',
     ...(forgeAvailable ? ['GitHub'] : []),
-    ...(forgeAvailable && automationsAvailable ? ['Automations'] : []),
     'Skills',
     'Workflows',
     'Settings',
@@ -475,7 +471,7 @@ describe('mobile shell', () => {
  *
  * The interesting half is not that a socket opens — it is that a server-side change reaches the
  * rendered UI with nobody reloading anything. The inbox is the one path this suite can drive for
- * free: `.ai/cezar/todos.json` is a documented external contract (agents append to it via
+ * free: `.ai/coducktor/todos.json` is a documented external contract (agents append to it via
  * `CEZ_TODOS_FILE`), the server watches the file and re-broadcasts the whole array on `todos`, and
  * the nav badge renders whatever the todos query holds. So writing that file *is* a live event —
  * no fixture invented, nothing mocked.
@@ -486,7 +482,7 @@ describe('mobile shell', () => {
  */
 describe('global SSE stream', () => {
   // Where `src/index.ts` puts the data dir, for the server booted from this worktree.
-  const dataDir = resolve(import.meta.dirname, '../../../.ai/cezar')
+  const dataDir = resolve(import.meta.dirname, '../../../.ai/coducktor')
   const todosFile = resolve(dataDir, 'todos.json')
   const BADGE = '[data-slot="nav-badge"]'
   let previousTodos: string | null = null
@@ -580,10 +576,10 @@ describe('legacy cockpit retirement (R7)', () => {
   })
 
   it('serves the React shell for a full load of /new — the R1 legacy pin is gone (R4 1.3)', () => {
-    // The React composer now carries the bookmarklet contract (/new?skill=&ref=&auto=1&key=),
-    // so a full document load of /new gets the shell like every other route. Without a valid
-    // key nothing starts — this link only prefills (the full auto-start matrix runs against
-    // the dry-run server in new-task.e2e.ts).
+    // A full document load of /new gets the shell like every other route. The retired
+    // hosted-mode deep-link surface's auto-start grammar (/new?skill=&ref=&auto=1&key=) is gone
+    // (A15, decision 5): this link only prefills, and the key check that used to arm a start is
+    // gone entirely.
     browser.goto(baseUrl + '/new?skill=om-code-review&ref=hello&auto=1')
 
     expect(browser.evaluate('document.getElementById("root") !== null')).toBe(true)
@@ -591,7 +587,7 @@ describe('legacy cockpit retirement (R7)', () => {
     browser.waitForFunction(`document.querySelector('[data-route="new"]') !== null`)
     // The sensitive params are stripped from the address bar (legacy replaceState parity).
     browser.waitForFunction(`location.search === ''`)
-    // The legacy flat `/new?…` bookmarklet grammar still lands, now on its scoped twin.
+    // The legacy flat `/new?…` deep-link grammar still lands, now on its scoped twin.
     expect(browser.url()).toBe(baseUrl + scoped('/new'))
   })
 

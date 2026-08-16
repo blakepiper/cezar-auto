@@ -35,7 +35,7 @@ describe('POST /api/v1/groups/:groupId/pick — review gate', () => {
 
   beforeEach(() => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-pick-'));
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     app = createApp({
       repoRoot,
       store,

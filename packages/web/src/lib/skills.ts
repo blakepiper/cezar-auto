@@ -6,15 +6,9 @@ import type { Skill, WorkflowDef } from '@open-mercato/cezar-api-client'
  * and how a typed query narrows the list — so the rules live here, not in any one surface.
  */
 
-/** Project-oriented skills first, user-global after — the #377/#555 ordering rule. Team skills
- *  are configured and cached per project even though their files live in a shared remote repo,
- *  so they belong with project skills. Only `global` comes from the user's home catalog. */
-const PROJECT_SKILL_SOURCES: ReadonlySet<Skill['source']> = new Set([
-  'ai',
-  'cezar',
-  'agents',
-  'team',
-])
+/** Project-oriented skills first, user-global after — the #377/#555 ordering rule. Only
+ *  `global` comes from the user's home catalog. */
+const PROJECT_SKILL_SOURCES: ReadonlySet<Skill['source']> = new Set(['ai', 'cezar', 'agents'])
 
 /** Project skills render emphasized (bold) wherever skills are listed. Accepts anything
  *  carrying a `source` so tag components need not conjure a whole Skill. */

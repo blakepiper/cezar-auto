@@ -98,7 +98,7 @@ function project(overrides: Partial<ProjectListEntry> & { id: string }): Project
 }
 
 /** Health with/without a working forge — what gates the Views group's GitHub row (R6 1.1). */
-function health(forgeAvailable: boolean, automations = false): HealthResponse {
+function health(forgeAvailable: boolean): HealthResponse {
   return {
     version: '0.0.0-test',
     projects: [],
@@ -108,7 +108,7 @@ function health(forgeAvailable: boolean, automations = false): HealthResponse {
     checks: [],
     defaultRunner: 'claude',
     forge: forgeAvailable ? { kind: 'github', available: true } : null,
-    capabilities: { localHandoff: true, tokenMetrics: true, tokenUsageMetrics: true, costMetrics: true, followups: true, singleProject: false, automations },
+    capabilities: { followups: true },
   }
 }
 
@@ -137,7 +137,6 @@ function renderPalette({
   truncated = [] as string[],
   theme,
   forge = true,
-  automations = false,
   uiState = {} as Record<string, unknown>,
   entry = '/',
 }: {
@@ -149,8 +148,6 @@ function renderPalette({
   truncated?: string[]
   theme?: Theme
   forge?: boolean
-  /** `capabilities.automations` (#801) — off by default, exactly as a default server reports. */
-  automations?: boolean
   uiState?: Record<string, unknown>
   /** The URL to mount at. `/p/<id>/…` is what gives the palette an ACTIVE project. */
   entry?: string
@@ -159,7 +156,7 @@ function renderPalette({
   serve({
     '/api/v1/runs': runs,
     '/api/v1/skills': skills,
-    '/api/v1/health': health(forge, automations),
+    '/api/v1/health': health(forge),
     '/api/v1/ui-state': uiState,
     '/api/v1/projects': { projects, bootProject: projects[0]?.id ?? 'default', projectsDir: '/repos' },
     '/api/v1/workspace/runs-index': { runs: indexed, perProjectLimit: 200, truncated },
@@ -239,47 +236,31 @@ describe('opening and closing', () => {
 })
 
 describe('Views group', () => {
-  it('leads with New task and its C hint, then the 9 nav destinations', async () => {
-    renderPalette({ automations: true })
+  it('leads with New task and its C hint, then the 8 nav destinations', async () => {
+    renderPalette()
     openWith({ metaKey: true })
     await screen.findByRole('dialog')
 
     // The GitHub row waits on the health answer (forge gate) — settle before asserting.
     await waitFor(() =>
-      expect(document.querySelectorAll('[data-slot="palette-view"]')).toHaveLength(10),
+      expect(document.querySelectorAll('[data-slot="palette-view"]')).toHaveLength(9),
     )
     const views = [...document.querySelectorAll('[data-slot="palette-view"]')]
     // New task FIRST — an empty query pre-selects it, so ⌘K then Enter starts a task.
     expect(views.map((view) => view.getAttribute('data-nav-to'))).toEqual([
-      '/new', '/', '/inbox', '/ide', '/git', '/github', '/automations', '/skills', '/workflows', '/settings',
+      '/new', '/', '/inbox', '/ide', '/git', '/github', '/skills', '/workflows', '/settings',
     ])
     expect(views[0]?.textContent).toContain('New task')
     // The chip advertises `c` — ⌘N is browser-reserved and only fires in the desktop shell.
     expect(views[0]?.textContent).toContain('C')
   })
 
-  // #801: the palette's Views group renders through the same `visibleNavItems` the sidebar does,
-  // so the two can never disagree about whether Automations exists.
-  it('omits Automations while the capability is off — the default', async () => {
+  it('offers exactly ONE New task row — not one per group', async () => {
     renderPalette()
     openWith({ metaKey: true })
     await screen.findByRole('dialog')
-
     await waitFor(() =>
       expect(document.querySelectorAll('[data-slot="palette-view"]')).toHaveLength(9),
-    )
-    const views = [...document.querySelectorAll('[data-slot="palette-view"]')]
-    expect(views.map((view) => view.getAttribute('data-nav-to'))).toEqual([
-      '/new', '/', '/inbox', '/ide', '/git', '/github', '/skills', '/workflows', '/settings',
-    ])
-  })
-
-  it('offers exactly ONE New task row — not one per group', async () => {
-    renderPalette({ automations: true })
-    openWith({ metaKey: true })
-    await screen.findByRole('dialog')
-    await waitFor(() =>
-      expect(document.querySelectorAll('[data-slot="palette-view"]')).toHaveLength(10),
     )
 
     const newTaskRows = [...document.querySelectorAll('[data-nav-to="/new"]')]
@@ -307,13 +288,12 @@ describe('Views group', () => {
     await screen.findByRole('dialog')
 
     await waitFor(() =>
-      expect(document.querySelectorAll('[data-slot="palette-view"]')).toHaveLength(8),
+      expect(document.querySelectorAll('[data-slot="palette-view"]')).toHaveLength(7),
     )
     const targets = [...document.querySelectorAll('[data-slot="palette-view"]')].map((view) =>
       view.getAttribute('data-nav-to'),
     )
     expect(targets).not.toContain('/github')
-    expect(targets).not.toContain('/automations')
   })
 
   it('navigates to the selected view and closes', async () => {
@@ -846,7 +826,7 @@ describe('Skills group', () => {
   const MIXED: Skill[] = [
     skill({ name: 'global-deploy', source: 'global', description: 'Deploy from anywhere' }),
     skill({ name: 'project-review', source: 'agents', description: 'Review the diff' }),
-    skill({ name: 'team-release', source: 'team' }),
+    skill({ name: 'team-release', source: 'ai' }),
     skill({ name: 'project-fix', source: 'ai' }),
     skill({ name: 'project-plan', source: 'cezar' }),
   ]
@@ -901,12 +881,11 @@ describe('the pure ordering helpers', () => {
   it('orderSkills puts every project source before every non-project one', () => {
     const ordered = orderSkills([
       skill({ name: 'g', source: 'global' }),
-      skill({ name: 't', source: 'team' }),
       skill({ name: 'a', source: 'agents' }),
       skill({ name: 'c', source: 'cezar' }),
       skill({ name: 'i', source: 'ai' }),
     ])
-    expect(ordered.map((entry) => entry.source)).toEqual(['team', 'agents', 'cezar', 'ai', 'global'])
+    expect(ordered.map((entry) => entry.source)).toEqual(['agents', 'cezar', 'ai', 'global'])
   })
 
   it('orderRuns sorts newest first without mutating its input', () => {

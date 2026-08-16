@@ -8,10 +8,9 @@ import { createApp, type ServerDeps } from './server.ts';
 
 /**
  * `POST /api/v1/runs/:id/open-in` with `target: 'default'` (#365): the diff pane's "open in OS
- * default app" action for one worktree file. Must (a) 409 in hosted mode before ever touching
- * the filesystem, (b) reject any path that doesn't resolve inside the run's own worktree, and
- * (c) actually launch the OS opener only for a real in-worktree file — `openFileInDefaultApp`
- * is mocked so the suite never actually spawns a real GUI app.
+ * default app" action for one worktree file. Must reject any path that doesn't resolve inside
+ * the run's own worktree, and actually launch the OS opener only for a real in-worktree file —
+ * `openFileInDefaultApp` is mocked so the suite never actually spawns a real GUI app.
  */
 vi.mock('./open-in-app.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./open-in-app.ts')>();
@@ -26,7 +25,6 @@ describe("POST /api/v1/runs/:id/open-in — target 'default' (local-mode file op
   let store: RunStore;
   let runId: string;
   let worktree: string;
-  const savedRemote = process.env.CEZ_REMOTE;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -35,18 +33,15 @@ describe("POST /api/v1/runs/:id/open-in — target 'default' (local-mode file op
     writeFileSync(join(worktree, 'logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     mkdirSync(join(worktree, 'sub'), { recursive: true });
     writeFileSync(join(worktree, 'sub', 'nested.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     runId = store.createRun({ title: 't', workflow: 'quick-task', task: 'do it', steps: [] }).id;
     store.updateRun(runId, { worktreePath: worktree });
-    delete process.env.CEZ_REMOTE;
   });
 
   afterEach(() => {
     store.flush();
     rmSync(repoRoot, { recursive: true, force: true });
     rmSync(worktree, { recursive: true, force: true });
-    if (savedRemote === undefined) delete process.env.CEZ_REMOTE;
-    else process.env.CEZ_REMOTE = savedRemote;
   });
 
   const post = (body: unknown, over: Partial<ServerDeps> = {}) =>
@@ -55,20 +50,6 @@ describe("POST /api/v1/runs/:id/open-in — target 'default' (local-mode file op
       `/api/v1/runs/${runId}/open-in`,
       { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) },
     );
-
-  it('409s in hosted mode (CEZ_REMOTE=1) before any filesystem/open-in-app call', async () => {
-    process.env.CEZ_REMOTE = '1';
-    const res = await post({ target: 'default', path: 'logo.png' });
-    expect(res.status).toBe(409);
-    expect(((await res.json()) as { error: string }).error).toContain('hosted mode');
-    expect(openFileInDefaultApp).not.toHaveBeenCalled();
-  });
-
-  it('409s the same way on a non-loopback bind host', async () => {
-    const res = await post({ target: 'default', path: 'logo.png' }, { bindHost: '10.0.0.5' });
-    expect(res.status).toBe(409);
-    expect(openFileInDefaultApp).not.toHaveBeenCalled();
-  });
 
   it('opens a real in-worktree file and answers its absolute path', async () => {
     const res = await post({ target: 'default', path: 'sub/nested.png' });

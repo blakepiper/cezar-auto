@@ -32,7 +32,6 @@ import {
 } from './routes/settings/settings-shell'
 import { TasksOverviewRoute } from './routes/tasks-overview'
 import { GlobalTasksRoute } from './routes/global-tasks'
-import { AutomationsRoute } from './routes/automations/automations'
 import { IdeLoading } from './routes/ide/ide-loading'
 
 /** Lazy ON PURPOSE: the thread view carries the markdown stack (Streamdown + remark/rehype,
@@ -96,7 +95,7 @@ const WorkflowsRoute = lazy(() =>
 const SkillsRoute = lazy(() => import('./routes/skills').then((m) => ({ default: m.SkillsRoute })))
 
 /** `/settings/skills` moved to the top-level `/skills` (out of the Settings shell). Redirect —
- *  preserving the `?skill=` selection and any hash — so pasted links and saved bookmarklets
+ *  preserving the `?skill=` selection and any hash — so pasted links and saved deep links
  *  still land. The scoped Navigate keeps the redirect inside the active project. */
 function SettingsSkillsRedirect() {
   const location = useLocation()
@@ -225,8 +224,8 @@ function NewTaskProjectRoute() {
 
 /**
  * Legacy flat URLs — every pre-multi-project path, `/tasks/:id` bookmarks and the `/new?...`
- * bookmarklet grammar included — redirect to the boot project's scoped twin, preserving path,
- * query and hash byte-for-byte (BACKWARD_COMPATIBILITY.md protects the bookmarklet contract).
+ * deep-link grammar included — redirect to the boot project's scoped twin, preserving path,
+ * query and hash byte-for-byte (BACKWARD_COMPATIBILITY.md protects the deep-link contract).
  * The exact bare root is the sole exception: once health and the registry settle, it may restore
  * the last valid project-scoped page THIS browser was on (localStorage, so a second client never
  * decides where this one lands). Any query/hash makes `/` explicit, so pasted links always win.
@@ -286,7 +285,6 @@ const PAGE_TITLE_ROUTES = [
   { pattern: '/git/*', pageLabel: 'Git' },
   { pattern: '/ide', pageLabel: 'IDE' },
   { pattern: '/github/*', pageLabel: 'GitHub' },
-  { pattern: '/automations/*', pageLabel: 'Automations' },
   { pattern: '/skills', pageLabel: 'Skills' },
   { pattern: '/inbox', pageLabel: 'Inbox' },
   { pattern: '/workflows/*', pageLabel: 'Workflows' },
@@ -316,7 +314,6 @@ export function pageTitleContext(pathname: string): PageTitleContext {
  *  stay stable — they are what teammates paste, and the legacy flat URLs redirect onto them.
  */
 export function AppRoutes() {
-  const capabilities = useHealth().data?.capabilities
   return (
     <Routes>
       <Route path="/p/:projectId" element={<ProjectScopeRoute />}>
@@ -459,11 +456,6 @@ export function AppRoutes() {
             </Suspense>
           }
         />
-        <Route path="automations" element={<AutomationsRoute />} />
-        <Route path="automations/new" element={<AutomationsRoute mode="new" />} />
-        <Route path="automations/:automationId" element={<AutomationsRoute mode="edit" />} />
-        <Route path="automations/:automationId/log" element={<AutomationsRoute mode="log" />} />
-
         {/* The skills catalog (R6 Step 1.4) — its own top-level surface, no settings sub-nav.
             `/settings/skills` redirects here (below) so pasted links keep working. */}
         <Route
@@ -504,20 +496,20 @@ export function AppRoutes() {
 
             Only the PROJECT-scoped sections live here (multi-project spec, step 3.5); the
             global ones are the top-level `/settings/global/*` block below. */}
-        <Route path="settings" element={<SettingsIndexRoute scope="project" capabilities={capabilities} />} />
+        <Route path="settings" element={<SettingsIndexRoute scope="project" />} />
         <Route path="settings/skills" element={<SettingsSkillsRedirect />} />
-        {visibleSettingsSections('project', capabilities).map((section) => (
+        {visibleSettingsSections('project').map((section) => (
           <Route
             key={section.id}
             path={`settings/${section.id}`}
-            element={<SettingsSectionRoute section={section} scope="project" capabilities={capabilities} />}
+            element={<SettingsSectionRoute section={section} scope="project" />}
           />
         ))}
         {/* A section that MOVED out of the project area keeps its old URL working: every
             pre-3.5 bookmark and every legacy flat `/settings/appearance` (which the redirect
             below turns into `/p/<boot>/settings/appearance`) lands on the global twin instead
             of a 404 — query and hash intact across both hops. */}
-        {visibleSettingsSections('global', capabilities).map((section) => (
+        {visibleSettingsSections('global').map((section) => (
           <Route
             key={section.id}
             path={`settings/${section.id}`}
@@ -546,12 +538,12 @@ export function AppRoutes() {
 
           Static segments outrank the `*` legacy redirect below in React Router's ranking, so
           these win regardless of order — listed here for readability. */}
-      <Route path="/settings/global" element={<SettingsIndexRoute scope="global" capabilities={capabilities} />} />
-      {visibleSettingsSections('global', capabilities).map((section) => (
+      <Route path="/settings/global" element={<SettingsIndexRoute scope="global" />} />
+      {visibleSettingsSections('global').map((section) => (
         <Route
           key={section.id}
           path={settingsSectionPath('global', section.id)}
-          element={<SettingsSectionRoute section={section} scope="global" capabilities={capabilities} />}
+          element={<SettingsSectionRoute section={section} scope="global" />}
         />
       ))}
 

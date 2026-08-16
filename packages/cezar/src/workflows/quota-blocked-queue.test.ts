@@ -65,7 +65,7 @@ describe('quota-blocked workflow queue', () => {
     const root = mkdtempSync(join(tmpdir(), 'cez-quota-queue-'));
     roots.push(root);
     const quota = coordinator(exhausted, selected);
-    const store = RunStore.open(join(root, '.ai/cezar'));
+    const store = RunStore.open(join(root, '.ai/coducktor'));
     const manager = new RunManager(store, root, { quotaCoordinator: quota as unknown as QuotaCoordinator });
     managers.push(manager);
 
@@ -83,7 +83,7 @@ describe('quota-blocked workflow queue', () => {
     process.env.CEZ_DRY_RUN = '1';
     const root = mkdtempSync(join(tmpdir(), 'cez-quota-recover-'));
     roots.push(root);
-    const store = RunStore.open(join(root, '.ai/cezar'));
+    const store = RunStore.open(join(root, '.ai/coducktor'));
     const firstQuota = coordinator(exhausted);
     const first = new RunManager(store, root, { quotaCoordinator: firstQuota as unknown as QuotaCoordinator });
     managers.push(first);
@@ -111,7 +111,7 @@ describe('quota-blocked workflow queue', () => {
       { ...selected, provider: 'claude', lease: { provider: 'claude', profileId: 'default', release: vi.fn() } },
       { ...selected, provider: 'codex', decision: { kind: 'selected', provider: 'codex', considered: [], softExhausted: new Set() }, lease: { provider: 'codex', profileId: 'default', release: vi.fn() } },
     );
-    const store = RunStore.open(join(root, '.ai/cezar'));
+    const store = RunStore.open(join(root, '.ai/coducktor'));
     const manager = new RunManager(store, root, { quotaCoordinator: quota as unknown as QuotaCoordinator });
     managers.push(manager);
 

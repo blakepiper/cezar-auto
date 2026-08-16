@@ -118,10 +118,10 @@ function openThread(query = '') {
 
 beforeAll(async () => {
   dataRoot = mkdtempSync(join(tmpdir(), 'cezar-e2e-thread-scroll-'))
-  mkdirSync(join(dataRoot, '.ai/cezar/runs'), { recursive: true })
-  writeFileSync(join(dataRoot, '.ai/cezar/runs.json'), JSON.stringify([RUN], null, 2), 'utf8')
+  mkdirSync(join(dataRoot, '.ai/coducktor/runs'), { recursive: true })
+  writeFileSync(join(dataRoot, '.ai/coducktor/runs.json'), JSON.stringify([RUN], null, 2), 'utf8')
   writeFileSync(
-    join(dataRoot, '.ai/cezar/runs', `${RUN_ID}.ndjson`),
+    join(dataRoot, '.ai/coducktor/runs', `${RUN_ID}.ndjson`),
     largeThreadEvents(TURNS)
       .map((line) => JSON.stringify(line))
       .join('\n') + '\n',

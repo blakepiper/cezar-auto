@@ -1,4 +1,4 @@
-/** Stable ids persisted in `~/.cezar/ui-state.json`; never derive them from labels. */
+/** Stable ids persisted in `~/.coducktor/ui-state.json`; never derive them from labels. */
 export const TASK_COLUMN_IDS = [
   'status',
   'task',

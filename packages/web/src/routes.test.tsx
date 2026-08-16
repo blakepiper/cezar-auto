@@ -49,7 +49,7 @@ const HEALTH = {
   checks: [],
   defaultRunner: 'claude',
   forge: null,
-  capabilities: { localHandoff: true, followups: true, singleProject: false, automations: false },
+  capabilities: { followups: true },
   projects: [{ id: BOOT, name: 'cezar' }],
   bootProject: BOOT,
 }
@@ -231,7 +231,6 @@ const ROUTE_CASES: Array<[url: string, route: string, title: string]> = [
   ['/settings/agents', 'settings-agents', 'Agents'],
   ['/settings/agent-config', 'settings-agent-config', 'Agent config'],
   ['/settings/worktrees', 'settings-worktrees', 'Worktrees'],
-  ['/settings/bookmarklets', 'settings-bookmarklets', 'Bookmarklets'],
   ['/settings/prompt-templates', 'settings-prompt-templates', 'Prompt templates'],
 ]
 
@@ -338,7 +337,6 @@ describe('the global settings area (/settings/global)', () => {
     ['/settings/global/appearance', 'settings-global-appearance', 'Appearance'],
     ['/settings/global/notifications', 'settings-global-notifications', 'Notifications'],
     ['/settings/global/resources', 'settings-global-resources', 'Resources'],
-    ['/settings/global/skills', 'settings-global-skills', 'Skills'],
     ['/settings/global/projects', 'settings-global-projects', 'Projects'],
   ]
   for (const [url, route, title] of GLOBAL_CASES) {
@@ -350,38 +348,6 @@ describe('the global settings area (/settings/global)', () => {
       expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(title)
     })
   }
-
-  // #801: a bookmarked deep link into any of the four `/automations*` routes still resolves — the
-  // route map is unchanged — but the view says the feature is off instead of rendering an editor
-  // whose every request would 409.
-  for (const path of ['automations', 'automations/new', 'automations/a-1', 'automations/a-1/log']) {
-    it(`/${path} renders the disabled state while the capability is off`, async () => {
-      renderAt(`/p/${BOOT}/${path}`)
-      expect(currentPathname()).toBe(`/p/${BOOT}/${path}`)
-      expect(routeName()).toBe('automations')
-      expect(await screen.findByText('GitHub automations are off')).not.toBeNull()
-      expect(screen.getByText(/CEZ_AUTOMATIONS=1/)).not.toBeNull()
-    })
-  }
-
-  // The window before health answers is the one that bites: `/automations/new` used to paint a
-  // full creation form optimistically, so a cold deep link on a gated server offered a submit
-  // that POSTs into a 409. No mode renders until the capability is known.
-  it('holds every /automations mode on a loading state until health answers', () => {
-    renderAt(`/p/${BOOT}/automations/new`, { health: null })
-    expect(routeName()).toBe('automations')
-    expect(screen.getByText('Loading automations…')).not.toBeNull()
-    expect(document.querySelector('#automation-name')).toBeNull()
-    expect(screen.queryByText('GitHub automations are off')).toBeNull()
-  })
-
-  it('omits the Projects route when single-project mode is active', () => {
-    renderAt('/settings/global/projects', {
-      health: { ...HEALTH, capabilities: { ...HEALTH.capabilities, singleProject: true } },
-    })
-    expect(routeName()).not.toBe('settings-global-projects')
-    expect(screen.queryByRole('heading', { level: 1, name: 'Projects' })).toBeNull()
-  })
 
   // A moved section's old URL, in both spellings a bookmark can have it.
   for (const id of ['appearance', 'notifications', 'resources']) {
@@ -605,15 +571,6 @@ describe('legacy flat URLs redirect to the boot project', () => {
     expect(routeName()).toBe('skills')
   })
 
-  it('delivers the full bookmarklet grammar into the composer (spec 011 contract)', () => {
-    renderAt('/new?skill=om-code-review&ref=https%3A%2F%2Fgithub.com%2Fo%2Fr%2Fpull%2F1&auto=1&key=s3cret')
-    expect(currentPathname()).toBe(`/p/${BOOT}/new`)
-    expect(routeName()).toBe('new')
-    // auto=1 + key armed the unattended start — only possible if every param survived.
-    expect(document.querySelector('[data-slot="auto-starting"]')).not.toBeNull()
-    expect(document.body.textContent).not.toContain('s3cret')
-  })
-
   it('renders the quiet resolving state while the boot id is unknown — never a wrong screen', () => {
     renderAt('/tasks/abc123', { seed: false })
     expect(routeName()).toBe('scope-resolving')
@@ -738,40 +695,23 @@ describe('unknown project ids', () => {
   })
 })
 
-/** The bookmarklet contract (spec 011), protected by BACKWARD_COMPATIBILITY.md:
- *  `/new?skill=&ref=&auto=1&key=`. Since R4 Step 1.3 `auto=1` arms the real unattended start
- *  (the full matrix lives in routes/new-task.test.tsx); this file keeps the URL contract —
- *  through the legacy redirect, exactly as a saved bookmarklet arrives. */
+/** The deep-link prefill contract: `/new?skill=&ref=` still fills the composer (the GitHub
+ *  screen's "Hand this to the agent" card is the one first-party source of these now). The
+ *  retired hosted-mode deep-link surface's `auto=1`/`key=` unattended-start grammar is gone
+ *  (A15, decision 5); the full matrix lives in routes/new-task.test.tsx. */
 describe('/new query params', () => {
   const textarea = () =>
     screen.getByLabelText('Describe a task for the agent') as HTMLTextAreaElement
 
-  it('prefills the composer from a non-auto deep link', () => {
+  it('prefills the composer from a deep link', () => {
     renderAt('/new?skill=om-code-review&ref=https%3A%2F%2Fgithub.com%2Fo%2Fr%2Fpull%2F1')
     expect(routeName()).toBe('new')
     expect(textarea().value).toBe('https://github.com/o/r/pull/1')
   })
 
-  it('an armed auto=1 link shows the starting surface, never the composer mid-flight', () => {
-    // fetch never answers here, so the key check is honestly in flight: no composer to type
-    // into, no run POSTed, and the key nowhere in the DOM.
-    renderAt('/new?skill=om-code-review&ref=https%3A%2F%2Fgithub.com%2Fo%2Fr%2Fpull%2F1&auto=1&key=s3cret')
-    expect(routeName()).toBe('new')
-    expect(document.querySelector('[data-slot="auto-starting"]')).not.toBeNull()
-    expect(screen.queryByLabelText('Describe a task for the agent')).toBeNull()
-    expect(document.body.textContent).not.toContain('s3cret')
-  })
-
   it('renders an empty composer without params', () => {
     renderAt('/new')
     expect(routeName()).toBe('new')
-    expect(textarea().value).toBe('')
-  })
-
-  it('never prints the launch key anywhere on the page', () => {
-    renderAt('/new?key=s3cret')
-    expect(routeName()).toBe('new')
-    expect(document.body.textContent).not.toContain('s3cret')
     expect(textarea().value).toBe('')
   })
 })

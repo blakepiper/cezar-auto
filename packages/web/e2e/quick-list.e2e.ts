@@ -12,7 +12,7 @@ import { AgentBrowser, bootProjectId, cezarCli, fixtureServeEnv } from './agent-
  * The task quick-list, in a real browser, against a real cezar serving real runs.
  *
  * Why this spec boots its own server instead of using the shared test env: the run store reads
- * `.ai/cezar/runs.json` **once, at startup** (`RunStore.open`) and is in-memory from then on, so
+ * `.ai/coducktor/runs.json` **once, at startup** (`RunStore.open`) and is in-memory from then on, so
  * writing that file under the already-running instance would change nothing — the way the inbox
  * spec can, because todos are file-watched and re-broadcast. The list would just render the empty
  * state. And "whatever runs happen to be in the dev checkout" is not a fixture: it is whatever the
@@ -178,8 +178,8 @@ const rowsIn = (label: string) =>
 
 beforeAll(async () => {
   dataRoot = mkdtempSync(join(tmpdir(), 'cezar-e2e-'))
-  mkdirSync(join(dataRoot, '.ai/cezar'), { recursive: true })
-  writeFileSync(join(dataRoot, '.ai/cezar/runs.json'), JSON.stringify(FIXTURE, null, 2), 'utf8')
+  mkdirSync(join(dataRoot, '.ai/coducktor'), { recursive: true })
+  writeFileSync(join(dataRoot, '.ai/coducktor/runs.json'), JSON.stringify(FIXTURE, null, 2), 'utf8')
 
   const port = await freePort()
   baseUrl = `http://localhost:${port}`
@@ -572,9 +572,9 @@ describe('a row under width contention, in a column the user can widen', () => {
 
   beforeAll(async () => {
     wideRoot = mkdtempSync(join(tmpdir(), 'cezar-e2e-wide-'))
-    mkdirSync(join(wideRoot, '.ai/cezar'), { recursive: true })
+    mkdirSync(join(wideRoot, '.ai/coducktor'), { recursive: true })
     writeFileSync(
-      join(wideRoot, '.ai/cezar/runs.json'),
+      join(wideRoot, '.ai/coducktor/runs.json'),
       JSON.stringify(
         [
           {

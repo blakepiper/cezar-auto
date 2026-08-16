@@ -5,14 +5,14 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { AgentBrowser, bootProjectId, readTestEnv } from './agent-browser'
 
 /**
- * Settings → Skills (R6 Step 1.4) end-to-end against the shared dry-run environment.
+ * `/skills` (R6 Step 1.4) end-to-end against the shared dry-run environment.
  *
  * Reachability: fully reachable. The server discovers skills fresh on every GET, so the
  * suite seeds two real project skills into this worktree's `.ai/skills/` (removed in
  * afterAll) — the catalog renders them bold and first (#377) next to whatever global skills
- * the host machine genuinely has. Refresh hits the real POST (no team repos configured in
- * dry-run → a fast no-op fetch answering the same catalog), which is exactly the #384
- * scenario: a refetch must not lose selection. Nothing else mutates state.
+ * the host machine genuinely has. Nothing here mutates state — team skills, the Refresh
+ * button and the hosted-mode deep-link panel are retired (A15, decisions 5/7): local discovery
+ * is a pure reader now.
  */
 
 const artifactsDir = resolve(import.meta.dirname, '../../../.ai/qa/artifacts_e2e')
@@ -91,63 +91,5 @@ describe('settings → skills against the live dry-run server', () => {
     )
     expect(browser.text('[data-slot="skill-body"]')).toContain('Do the alpha thing.')
     browser.screenshot(`${artifactsDir}/settings-skills.png`)
-  })
-
-  it('refresh keeps the selection and the list scroll position (#384)', () => {
-    browser.click(row(BETA))
-    browser.waitForFunction(
-      `document.querySelector('[data-slot="skills-detail"] [data-slot="skill-detail"] h2')?.textContent === '${BETA}'`,
-    )
-
-    // The host's real global catalog makes the list overflow — pin a scroll offset on it.
-    // The read-back must be 150: if the container did not truly overflow the browser would
-    // clamp to 0 and the whole scroll assertion would be vacuous.
-    browser.evaluate(`document.querySelector('[data-slot="skill-rows"]').scrollTop = 150`)
-    const before = Number(browser.evaluate(`document.querySelector('[data-slot="skill-rows"]').scrollTop`))
-    expect(before).toBe(150)
-
-    browser.click('[data-slot="skills-refresh"]')
-    // The button disables while the POST runs; wait until the round-trip settled.
-    browser.waitForFunction(`!document.querySelector('[data-slot="skills-refresh"]').disabled`)
-    browser.waitForFunction(`document.querySelector('[data-slot="toaster"]')?.textContent.includes('refreshed')`)
-
-    // Selection and scroll both survived the refetch.
-    expect(browser.count(`${row(BETA)}[aria-current="page"]`)).toBe(1)
-    expect(
-      browser.evaluate(
-        `document.querySelector('[data-slot="skills-detail"] [data-slot="skill-detail"] h2').textContent`,
-      ),
-    ).toBe(BETA)
-    expect(Number(browser.evaluate(`document.querySelector('[data-slot="skill-rows"]').scrollTop`))).toBe(
-      before,
-    )
-  })
-
-  it('the pinned bookmarklet panel generates javascript: launchers against /new', () => {
-    // The pinned row sits at the bottom of the (viewport-tall) list column, which a long
-    // skill detail can push past the fold — scroll it in before the click, as a user would.
-    browser.evaluate(
-      `document.querySelector('[data-slot="bookmarklets-row"]').scrollIntoView({ block: 'center' })`,
-    )
-    browser.click('[data-slot="bookmarklets-row"]')
-    browser.waitForFunction(`document.querySelector('[data-slot="bookmarklet-panel"]') !== null`)
-    // The imperative href lands after mount — wait for the real javascript: URL.
-    browser.waitForFunction(
-      `(document.querySelector('[data-slot="bm-generic"] [data-slot="bm-link"]')?.getAttribute('href') ?? '').startsWith('javascript:')`,
-    )
-
-    const generic = String(
-      browser.evaluate(`document.querySelector('[data-slot="bm-generic"] [data-slot="bm-link"]').getAttribute('href')`),
-    )
-    // The protected /new deep-link grammar, baked with the server's real launch key — now
-    // under this project's own URL prefix (multi-project spec, step 3.6).
-    expect(decodeURIComponent(generic)).toContain(`${scoped('/new')}?'+q`)
-    expect(decodeURIComponent(generic)).toMatch(/auto=0&key=[^&]+&ref=/)
-
-    // One launcher per catalog skill, the seeded ones included.
-    browser.waitForFunction(
-      `[...document.querySelectorAll('[data-slot="bm-list"] [data-slot="bm-link"]')].some((a) => a.textContent.includes('/${ALPHA}'))`,
-    )
-    browser.screenshot(`${artifactsDir}/settings-skills-bookmarklets.png`)
   })
 })

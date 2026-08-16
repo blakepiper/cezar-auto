@@ -11,10 +11,10 @@ import {
 } from './agent-accounts.ts';
 
 /**
- * Resolving an agent account against `~/.cezar/agent-accounts.json` — the I/O half of
+ * Resolving an agent account against `~/.coducktor/agent-accounts.json` — the I/O half of
  * `src/core/agent-profiles.ts` (which stays pure and owns the vendor knowledge).
  *
- * Nothing here is cached. `~/.cezar/` is shared by every cezar process on the machine (a `serve`
+ * Nothing here is cached. `~/.coducktor/` is shared by every cezar process on the machine (a `serve`
  * per repo, headless `cezar run`s, a settings PUT), so a snapshot is a staleness bug waiting to
  * happen — and one small JSON read is free next to spawning an agent CLI.
  */

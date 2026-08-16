@@ -66,16 +66,16 @@ const scoped = (path: string) => `/p/${bootProject}${path}`
 
 beforeAll(async () => {
   dataRoot = mkdtempSync(join(tmpdir(), 'cezar-e2e-thread-'))
-  mkdirSync(join(dataRoot, '.ai/cezar/runs'), { recursive: true })
-  writeFileSync(join(dataRoot, '.ai/cezar/runs.json'), JSON.stringify([RUN], null, 2), 'utf8')
+  mkdirSync(join(dataRoot, '.ai/coducktor/runs'), { recursive: true })
+  writeFileSync(join(dataRoot, '.ai/coducktor/runs.json'), JSON.stringify([RUN], null, 2), 'utf8')
   copyFileSync(
     resolve(import.meta.dirname, 'fixtures/thread-run.ndjson'),
-    join(dataRoot, '.ai/cezar/runs', `${RUN_ID}.ndjson`),
+    join(dataRoot, '.ai/coducktor/runs', `${RUN_ID}.ndjson`),
   )
   // The agent screenshot the transcript's `image` line points at (served by the run itself).
   cpSync(
     resolve(import.meta.dirname, 'fixtures/thread-run-images'),
-    join(dataRoot, '.ai/cezar/runs', `${RUN_ID}-images`),
+    join(dataRoot, '.ai/coducktor/runs', `${RUN_ID}-images`),
     { recursive: true },
   )
 

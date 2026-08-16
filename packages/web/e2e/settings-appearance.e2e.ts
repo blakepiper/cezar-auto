@@ -21,8 +21,8 @@ const sessionId = `e2e-settings-${process.pid}`
 const DESKTOP = { width: 1440, height: 900 }
 
 // Appearance persists in the WORKSPACE ui-state since step 3.5. `.ai/scripts/test-env-up.sh`
-// pins `CEZ_HOME` under `.ai/qa/cez-home`, so that — not the developer's `~/.cezar`, and not
-// the repo's `.ai/cezar` — is the file this suite reads and restores.
+// pins `CEZ_HOME` under `.ai/qa/cez-home`, so that — not the developer's `~/.coducktor`, and not
+// the repo's `.ai/coducktor` — is the file this suite reads and restores.
 const cezHomeDir = resolve(import.meta.dirname, '../../../.ai/qa/cez-home')
 const uiStateFile = resolve(cezHomeDir, 'ui-state.json')
 
@@ -61,18 +61,18 @@ describe('settings → appearance against the live dry-run server', () => {
     browser.goto(`${baseUrl}/settings/global/appearance`)
     browser.waitForFunction(`document.querySelector('[data-route="settings-global-appearance"]') !== null`)
 
-    // The GLOBAL nav: the original four sections plus the Open Mercato skills preference,
-    // and nothing project-scoped.
+    // The GLOBAL nav (A15 retired Bookmarklets and the Skills-update section — decisions 5/7):
+    // appearance, notifications, resources, accounts, projects, and nothing project-scoped.
     const nav = '[data-slot="settings-nav"][data-scope="global"]'
     expect(browser.count(`${nav} [data-section]`)).toBe(5)
     expect(browser.count(`${nav} [data-section="appearance"]`)).toBe(1)
     expect(browser.count(`${nav} [data-section="notifications"]`)).toBe(1)
     expect(browser.count(`${nav} [data-section="resources"]`)).toBe(1)
-    expect(browser.count(`${nav} [data-section="skills"]`)).toBe(1)
+    expect(browser.count(`${nav} [data-section="accounts"]`)).toBe(1)
     expect(browser.count(`${nav} [data-section="projects"]`)).toBe(1)
-    // Project sections live in the OTHER area; hidden registry entries are nowhere at all.
+    // Project sections live in the OTHER area; hidden/retired registry entries are nowhere at all.
     expect(browser.count(`${nav} [data-section="agents"]`)).toBe(0)
-    expect(browser.count(`${nav} [data-section="bookmarklets"]`)).toBe(0)
+    expect(browser.count(`${nav} [data-section="skills"]`)).toBe(0)
     expect(browser.count(`${nav} [data-section="mcp"]`)).toBe(0)
     expect(browser.count(`${nav} [aria-current="page"][data-section="appearance"]`)).toBe(1)
   })

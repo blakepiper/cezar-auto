@@ -53,7 +53,7 @@ let server: ChildProcess
 let repo: string
 let baseUrl: string
 /** The server's own count. NOT `FIXTURE_FILES`: booting cezar against the fixture writes
- *  `.ai/cezar/.gitignore` into it, which is itself an honest untracked change the view shows. */
+ *  `.ai/coducktor/.gitignore` into it, which is itself an honest untracked change the view shows. */
 let changedFiles = 0
 
 function freePort(): Promise<number> {

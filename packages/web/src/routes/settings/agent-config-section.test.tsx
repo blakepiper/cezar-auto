@@ -43,7 +43,7 @@ const HEALTH = {
   checks: [{ name: 'claude', available: true }],
   defaultRunner: 'claude',
   forge: null,
-  capabilities: { localHandoff: true },
+  capabilities: { followups: true },
 }
 
 function serve(listing: AgentConfigListing, fileContent = '{"a":1}') {

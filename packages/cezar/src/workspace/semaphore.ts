@@ -5,7 +5,7 @@ import { DEFAULT_MONITORING_WAKE_MINUTES, loadWorkspaceConfig } from './config.t
 /**
  * Workspace-wide resource governance (spec 2026-07-20-multi-project-workspace,
  * "Resource governance", step 2.5): `maxParallel` and `memoryLimitMb` protect
- * the *host*, not a repo, so they live in `~/.cezar/config.json` `resources`
+ * the *host*, not a repo, so they live in `~/.coducktor/config.json` `resources`
  * and are enforced by ONE shared object across every `RunManager` — the boot
  * path constructs a single `WorkspaceSemaphore` and threads it through
  * `ProjectContexts` and the boot manager.
@@ -21,7 +21,7 @@ import { DEFAULT_MONITORING_WAKE_MINUTES, loadWorkspaceConfig } from './config.t
  *    the cap — a resume must never wait on other projects' runs.
  * 2. **Cached resource config** — `maxParallel()`/`memoryLimitMb()` answer
  *    from an in-memory snapshot, NOT the file: the memory guard ticks ~every
- *    2 s per manager, and N projects re-reading `~/.cezar/config.json` every
+ *    2 s per manager, and N projects re-reading `~/.coducktor/config.json` every
  *    tick is exactly what the spec forbids. `refresh()` is the single cache
  *    hook: boot calls it once, and `PUT /api/workspace/config` (step 2.7)
  *    calls it after a write — it re-reads the file and pumps every manager so
@@ -119,7 +119,7 @@ const DEFAULT_LIMITS: WorkspaceResourceLimits = {
   memoryLimitMb: null,
 };
 
-/** Production loader: the `resources` slice of `~/.cezar/config.json`
+/** Production loader: the `resources` slice of `~/.coducktor/config.json`
  *  (schema-defaulted, so a missing/corrupt file yields the zero-config
  *  2 parallel / 2 monitoring / 5-minute wake / no memory cap),
  *  plus the per-project `maxParallel` overrides built into a root→limit map.
@@ -144,7 +144,7 @@ async function loadResourceLimits(): Promise<WorkspaceResourceLimits> {
 
 export interface WorkspaceSemaphoreOptions {
   /** Snapshot source for `refresh()` — tests inject a stub; production keeps
-   *  the `~/.cezar/config.json` reader. */
+   *  the `~/.coducktor/config.json` reader. */
   load?: () => Promise<WorkspaceResourceLimits>;
   /** Starting cache, before any `refresh()` — defaults to the workspace
    *  schema's own defaults (`maxParallel: 2`, no memory limit), so a manager

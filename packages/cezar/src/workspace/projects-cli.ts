@@ -15,7 +15,7 @@ import {
  * terminal twin of Settings → Projects, for the operator who is on a server (or
  * an ssh session) and has no cockpit in front of them.
  *
- * It talks to `~/.cezar/config.json` through `./projects.js` directly, NOT over
+ * It talks to `~/.coducktor/config.json` through `./projects.js` directly, NOT over
  * HTTP: the whole point is that it works with no server running, on a box where
  * the cockpit is behind an nginx login. `CEZ_HOME` therefore selects which
  * workspace it operates on, exactly as it does for `serve`.
@@ -36,13 +36,7 @@ const USAGE = `usage:
   cezar projects add [<dir>]   register a folder (default: --repo, else cwd)
   cezar projects remove <id>   drop a registry entry (the repo is untouched)
   cezar projects tag <id> [<tag>…]
-                               set the grouping tags of a project (none clears them)
-
-  add/remove/tag are unavailable when CEZ_SINGLE_PROJECT=1`;
-
-const SINGLE_PROJECT_ADD_ERROR = 'single-project mode is enabled; adding projects is disabled';
-const SINGLE_PROJECT_REMOVE_ERROR = 'single-project mode is enabled; removing projects is disabled';
-const SINGLE_PROJECT_EDIT_ERROR = 'single-project mode is enabled; editing projects is disabled';
+                               set the grouping tags of a project (none clears them)`;
 
 /**
  * Run one `projects` subcommand. Returns the process exit code (0 ok, 1 for a
@@ -54,29 +48,16 @@ export async function runProjectsCommand(
   opts: { defaultRoot: string; bootProjectId?: string; env?: NodeJS.ProcessEnv; io?: ProjectsCommandIo },
 ): Promise<number> {
   const io = opts.io ?? defaultIo;
-  const singleProject = (opts.env ?? process.env).CEZ_SINGLE_PROJECT === '1';
   const [sub = 'list', ...rest] = args;
   switch (sub) {
     case 'list':
-      return listCommand(io, singleProject, opts.bootProjectId);
+      return listCommand(io, opts.bootProjectId);
     case 'add':
-      if (singleProject) {
-        io.error(SINGLE_PROJECT_ADD_ERROR);
-        return 1;
-      }
       return addCommand(rest[0] ? resolve(rest[0]) : opts.defaultRoot, io);
     case 'remove':
     case 'rm':
-      if (singleProject) {
-        io.error(SINGLE_PROJECT_REMOVE_ERROR);
-        return 1;
-      }
       return removeCommand(rest[0], io);
     case 'tag':
-      if (singleProject) {
-        io.error(SINGLE_PROJECT_EDIT_ERROR);
-        return 1;
-      }
       return tagCommand(rest[0], rest.slice(1), io);
     default:
       io.error(`unknown projects subcommand: ${sub}\n`);
@@ -97,16 +78,10 @@ function statusMark(status: string): string {
   return status === 'missing' ? '✗' : status === 'not-git' ? '·' : '✓';
 }
 
-async function listCommand(
-  io: ProjectsCommandIo,
-  singleProject: boolean,
-  bootProjectId?: string,
-): Promise<number> {
+async function listCommand(io: ProjectsCommandIo, bootProjectId?: string): Promise<number> {
   const projects = bootProjectId
     ? await listProjects({ projectId: bootProjectId })
-    : singleProject
-      ? []
-      : await listProjects();
+    : await listProjects();
   if (projects.length === 0) {
     io.log('\n  no projects registered yet');
     io.log('  start the cockpit in a repo (npx cezar) or add one: cezar projects add <dir>\n');
@@ -162,7 +137,7 @@ async function removeCommand(id: string | undefined, io: ProjectsCommandIo): Pro
     io.error(`unknown project: ${id}`);
     return 1;
   }
-  io.log(`  - ${id} (registry entry only — the repo and its .ai/cezar/ are untouched)`);
+  io.log(`  - ${id} (registry entry only — the repo and its .ai/coducktor/ are untouched)`);
   return 0;
 }
 

@@ -21,7 +21,7 @@ import { SettingsField } from './settings-field'
  *    (seeing all of it is the point), plus the two things a user wants it for — Copy, and
  *    "Open with" (this machine's editors, file manager and terminal, via `POST /api/v1/open-in`);
  *  - `ProjectLocationNav` — the desktop section nav's footer, the project-scope twin of the
- *    global nav's "Stored in ~/.cezar": one truncated line that keeps the answer on every section.
+ *    global nav's "Stored in ~/.coducktor": one truncated line that keeps the answer on every section.
  *
  * Both render NOTHING when the root is unknown (registry still loading, or an unscoped mount): a
  * placeholder path is worse than no path, and the registry answer arrives within a tick anyway.
@@ -109,8 +109,8 @@ export function ProjectLocationNav() {
  * instead of the checkout. The server refuses them too (400) — this filter is so the menu never
  * offers a pick that can only fail.
  *
- * Renders nothing when there is nothing to offer: hosted mode (`CEZ_REMOTE`) answers with an
- * empty target list, and a menu whose every item is missing is worse than no menu.
+ * Renders nothing when there is nothing to offer: the retired hosted-mode surface answered with
+ * an empty target list, and a menu whose every item is missing is worse than no menu.
  */
 function OpenWithMenu({ root }: { root: string }) {
   const targets = useOpenTargets()

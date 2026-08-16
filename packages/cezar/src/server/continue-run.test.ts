@@ -31,7 +31,7 @@ describe('POST /api/v1/runs/:id/continue override', () => {
   beforeEach(() => {
     process.env.CEZ_DRY_RUN = '1';
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-continue-'));
-    store = RunStore.open(join(repoRoot, '.ai/cezar'));
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'));
     captured = undefined;
     runId = store.createRun({
       title: 't',
@@ -85,7 +85,7 @@ describe('POST /api/v1/runs/:id/continue override', () => {
 
   it('rejects a model override while locked but still permits switching runners', async () => {
     writeFileSync(
-      join(repoRoot, '.ai', 'cezar', 'config.json'),
+      join(repoRoot, '.ai', 'coducktor', 'config.json'),
       JSON.stringify({ modelsLocked: true }),
       'utf8',
     );

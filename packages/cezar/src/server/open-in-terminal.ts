@@ -4,17 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { shellQuote, withEnvPrefix } from '../core/shell-env.ts';
-import { isWsl, wslDistroName } from './wsl.ts';
 
 /**
  * Open a real terminal window at `cwd` running `command` — the "take over the
  * agent session locally" handoff. Cross-platform strategy ported from
  * github-janitor's `openInTerminal.ts`: macOS via osascript, Windows via
  * cmd/start, Linux by probing common emulators with a temp launch script
- * (which sidesteps per-emulator quoting rules). WSL (#361) reuses the Linux
- * script but hands it to a Windows-side terminal through interop, re-entering
- * the distro with `wsl.exe` — there is no Linux desktop of its own to open
- * `x-terminal-emulator` etc. on.
+ * (which sidesteps per-emulator quoting rules).
  *
  * Returns true when a launcher was started without an immediate error; the
  * caller shows a copy-the-command fallback otherwise.
@@ -56,16 +52,6 @@ export async function openInTerminal(
   // itself afterwards (#785) — see `createLaunchScript`.
   const scriptPath = createLaunchScript(cwd, prefixed);
 
-  if (isWsl()) {
-    // No Linux GUI here — go through interop to a Windows terminal, which re-enters this same
-    // distro (`wsl.exe -d <distro>`) to run the script we just wrote. `scriptPath`/`cwd` stay
-    // POSIX: `wsl.exe` interprets its command line inside the distro, not on the Windows side.
-    for (const [bin, args] of wslTerminalLaunchers(scriptPath, wslDistroName())) {
-      if (await runDetached(bin, args)) return true;
-    }
-    return false;
-  }
-
   const candidates: Array<[string, string[]]> = [
     ['x-terminal-emulator', ['-e', scriptPath]],
     ['gnome-terminal', ['--', scriptPath]],
@@ -79,23 +65,6 @@ export async function openInTerminal(
     if (await runDetached(bin, args)) return true;
   }
   return false;
-}
-
-/** The Windows-side (bin, args) candidates for launching `scriptPath` inside `distro` through
- *  WSL interop, in try-order — Windows Terminal first, a classic console window as fallback. Pure
- *  (no spawning) so the exact command line is unit-testable without a real WSL host.
- *
- *  Every launcher here is shell-free by construction, and must stay that way: routing through
- *  `cmd.exe` (`/c start …`) would reintroduce BatBadBut (CVE-2024-27980, see #459). Passing an
- *  argument array is NOT protection when the binary is a shell — libuv only quotes arguments
- *  containing space, tab or quote, so a space-free `distro` like `a&calc&` would reach `cmd`
- *  live and be interpreted. `wt.exe` and `conhost.exe` parse no metacharacters, so the same
- *  input is inert. `distro` is additionally validated at the source (`wslDistroName`). */
-export function wslTerminalLaunchers(scriptPath: string, distro: string): Array<[string, string[]]> {
-  return [
-    ['wt.exe', ['wsl.exe', '-d', distro, '--', scriptPath]],
-    ['conhost.exe', ['wsl.exe', '-d', distro, '--', scriptPath]],
-  ];
 }
 
 /** Grace period before a launch script's directory is removed. Generous next to the

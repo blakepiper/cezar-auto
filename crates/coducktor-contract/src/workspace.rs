@@ -11,10 +11,7 @@ use crate::health::{Runner, RunnerSelection};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceConfigResponse {
-    pub browse_root: String,
     pub projects_dir: String,
-    pub skills_auto_update: Option<bool>,
-    pub effective_skills_auto_update: bool,
     pub composer_defaults: ComposerDefaults,
     pub resources: WorkspaceResources,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -141,11 +138,7 @@ pub struct AgentDefaults {
 #[serde(rename_all = "camelCase")]
 pub struct SetWorkspaceConfigInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub browse_root: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub projects_dir: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub skills_auto_update: Option<Option<bool>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub composer_defaults: Option<ComposerDefaultsPatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

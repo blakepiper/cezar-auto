@@ -22,7 +22,7 @@ import { claudeStateFilePath } from '../paths.ts';
  * 2. **Read on demand, answered to exactly one route.** This never joins the accounts listing,
  *    never enters `runs.json` or the NDJSON, and is never logged. `provider-auth.ts` keeps account
  *    identity out of its own boundary on purpose; this is the deliberate, opt-in exception —
- *    localHandoff-gated, and only when the user asks for it — not a widening of that rule.
+ *    local-handoff-gated, and only when the user asks for it — not a widening of that rule.
  */
 
 /** One labelled row, as the pane renders it. Deliberately not a fixed per-provider shape: what an

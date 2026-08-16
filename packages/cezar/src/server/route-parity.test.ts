@@ -32,10 +32,7 @@ const spellings = (bootId: string, path: string): [string, string, string] => [
 
 describe('project-route alias parity (unprefixed vs /api/v1/p/<boot> vs /api/v1/p/default)', () => {
   const savedHome = process.env.CEZ_HOME;
-  const savedRemote = process.env.CEZ_REMOTE;
   const savedFollowups = process.env.CEZ_FOLLOWUPS;
-  const savedSingleProject = process.env.CEZ_SINGLE_PROJECT;
-  const savedAutomations = process.env.CEZ_AUTOMATIONS;
   const savedDryRun = process.env.CEZ_DRY_RUN;
   let home: string;
   let repoRoot: string;
@@ -51,23 +48,14 @@ describe('project-route alias parity (unprefixed vs /api/v1/p/<boot> vs /api/v1/
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-parity-boot-'));
     otherRoot = mkdtempSync(join(tmpdir(), 'cez-parity-other-'));
     process.env.CEZ_HOME = home; // paths.ts sends all workspace paths here
-    delete process.env.CEZ_REMOTE;
     delete process.env.CEZ_FOLLOWUPS;
-    delete process.env.CEZ_SINGLE_PROJECT;
-    // #801: automations are opt-in, and this suite compares the REAL answers of every mirrored
-    // route. Left off, the whole `/automations*` family would answer an identical 409 under all
-    // three spellings — parity would pass while testing nothing about those routes.
-    process.env.CEZ_AUTOMATIONS = '1';
     // Deterministic on any machine: no network, no real agent CLIs.
     process.env.CEZ_DRY_RUN = '1';
-    // `skillsRepos: []` disables team skills — no background clone can warm a
-    // cache between the first and third spelling of the /skills sweep.
     for (const root of [repoRoot, otherRoot]) {
-      mkdirSync(join(root, '.ai/cezar'), { recursive: true });
-      writeFileSync(join(root, '.ai/cezar', 'config.json'), '{"skillsRepos": []}\n', 'utf8');
+      mkdirSync(join(root, '.ai/coducktor'), { recursive: true });
     }
     clearProjectProbeCache();
-    store = RunStore.open(join(repoRoot, '.ai/cezar'), { keepLive: true });
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'), { keepLive: true });
     runId = store.createRun({
       title: 'parity',
       workflow: 'quick-task',
@@ -93,14 +81,8 @@ describe('project-route alias parity (unprefixed vs /api/v1/p/<boot> vs /api/v1/
     for (const dir of [home, repoRoot, otherRoot]) rmSync(dir, { recursive: true, force: true });
     if (savedHome === undefined) delete process.env.CEZ_HOME;
     else process.env.CEZ_HOME = savedHome;
-    if (savedRemote === undefined) delete process.env.CEZ_REMOTE;
-    else process.env.CEZ_REMOTE = savedRemote;
     if (savedFollowups === undefined) delete process.env.CEZ_FOLLOWUPS;
     else process.env.CEZ_FOLLOWUPS = savedFollowups;
-    if (savedSingleProject === undefined) delete process.env.CEZ_SINGLE_PROJECT;
-    else process.env.CEZ_SINGLE_PROJECT = savedSingleProject;
-    if (savedAutomations === undefined) delete process.env.CEZ_AUTOMATIONS;
-    else process.env.CEZ_AUTOMATIONS = savedAutomations;
     if (savedDryRun === undefined) delete process.env.CEZ_DRY_RUN;
     else process.env.CEZ_DRY_RUN = savedDryRun;
   });
@@ -161,7 +143,6 @@ describe('project-route alias parity (unprefixed vs /api/v1/p/<boot> vs /api/v1/
     // additive routes never break this suite.
     expect(manifest.length).toBeGreaterThanOrEqual(50);
     for (const expected of [
-      'GET /launch-key',
       'GET /events',
       'GET /runs/:id/events',
       'GET /runs/:id/history',
@@ -190,7 +171,6 @@ describe('project-route alias parity (unprefixed vs /api/v1/p/<boot> vs /api/v1/
       'GET /health',
       'GET /projects',
       'POST /projects',
-      'GET /fs/browse',
       'GET /workspace/runs-index',
       'GET /workspace/agent-profiles',
       'POST /workspace/agent-profiles',
@@ -329,18 +309,6 @@ describe('project-route alias parity (unprefixed vs /api/v1/p/<boot> vs /api/v1/
     expect(runs.status).toBe(200);
     expect(await runs.json()).toEqual([]); // its own (empty) store, not boot's
     expect(contexts.peek(other.id)).toBeDefined();
-    // Its launch key is its own — never the boot project's secret.
-    const bootKey = (
-      (await (await apiRequest(app, '/api/v1/launch-key')).json()) as {
-        key: string;
-      }
-    ).key;
-    const otherKey = (
-      (await (await apiRequest(app, `/api/v1/p/${other.id}/launch-key`)).json()) as {
-        key: string;
-      }
-    ).key;
-    expect(otherKey).not.toBe(bootKey);
   });
 
   it('agent config resolves repo-local files from the selected project only', async () => {

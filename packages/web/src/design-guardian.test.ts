@@ -81,11 +81,6 @@ const RULES: Rule[] = [
     // Bare or window./globalThis.-qualified calls; `foo.confirm(` (someone's API) stays legal.
     pattern: /(?<![\w$.])(?:window\.|globalThis\.)?(?:confirm|alert|prompt)\s*\(/g,
     applies: codeSources,
-    // The bookmarklet generator's `alert(` lives inside the javascript: PROGRAM STRING it
-    // emits (spec 011, ported verbatim from web/app.js). That program runs on github.com,
-    // where the cockpit's toaster does not exist — alert() is its only honest surface. The
-    // cockpit's own code in that file never calls a native dialog.
-    allowed: (rel) => rel === 'src/lib/bookmarklet.ts',
   },
   {
     name: 'no-dark-variant',
@@ -97,7 +92,7 @@ const RULES: Rule[] = [
   },
   {
     name: 'fixture-serve-must-pin-cez-home',
-    why: "a spec-owned `cezar serve` takes its env from fixtureServeEnv(dataRoot) — a hand-rolled { CEZ_DRY_RUN } leaves CEZ_HOME at the developer's real ~/.cezar, so every run appends a dead /tmp fixture to their project registry",
+    why: "a spec-owned `cezar serve` takes its env from fixtureServeEnv(dataRoot) — a hand-rolled { CEZ_DRY_RUN } leaves CEZ_HOME at the developer's real ~/.coducktor, so every run appends a dead /tmp fixture to their project registry",
     // Line-level: a CEZ_DRY_RUN that is not accompanied by a CEZ_HOME on the same line. Both
     // fixtureServeEnv() and the specs that spell the pair inline satisfy it.
     pattern: /^(?![^\n]*CEZ_HOME)[^\n]*\bCEZ_DRY_RUN\b/g,

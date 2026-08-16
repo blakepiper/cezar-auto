@@ -46,7 +46,7 @@ const HEALTH: HealthResponse = {
   checks: [],
   defaultRunner: 'claude',
   forge: { kind: 'github', available: true },
-  capabilities: { localHandoff: true, tokenMetrics: true, tokenUsageMetrics: true, costMetrics: true, followups: false, singleProject: false, automations: false },
+  capabilities: { followups: false },
 }
 
 /** The PROJECT-scoped `/repo` answer. The remote that gates Push is read from here rather than
@@ -310,17 +310,6 @@ describe('the Changes tab route', () => {
       expect(link?.getAttribute('href')).toBe('https://github.com/acme/demo/pull/9')
     })
     expect(toolbarAction('create-pr')).toBeNull()
-  })
-
-  it('hosted mode (localHandoff: false) hides the overflow menu entirely', async () => {
-    stubFetch({
-      'GET /api/v1/health': () =>
-        jsonResponse({ ...HEALTH, capabilities: { localHandoff: false } }),
-    })
-    renderChangesRoute()
-    await waitFor(() => expect(document.querySelector('[data-slot="git-toolbar"]')).not.toBeNull())
-    await waitFor(() => expect(toolbarAction('commit')?.disabled).toBe(false))
-    expect(document.querySelector('[aria-label="More git actions"]')).toBeNull()
   })
 
   it('local mode offers the terminal handoff in the overflow menu', async () => {

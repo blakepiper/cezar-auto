@@ -45,7 +45,7 @@ export const workflowStepDefSchema = z
   });
 export type WorkflowStepDef = z.infer<typeof workflowStepDefSchema>;
 
-/** One catalog entry: the built-in `quick-task`, or a `.ai/cezar/workflows/*.yaml` file. */
+/** One catalog entry: the built-in `quick-task`, or a `.ai/coducktor/workflows/*.yaml` file. */
 export const workflowDefSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
@@ -71,7 +71,7 @@ export const workflowsResponseSchema = z.object({
 export type WorkflowsResponse = z.infer<typeof workflowsResponseSchema>;
 
 /**
- * `POST /workflows` body: save a chain as `.ai/cezar/workflows/<slug>.yaml`.
+ * `POST /workflows` body: save a chain as `.ai/coducktor/workflows/<slug>.yaml`.
  *
  * Exactly one of `steps` / the portable `skills` shorthand — the refinement below is the same
  * XOR the server enforces. Without `overwrite` an existing file answers 409 (`exists: true`).

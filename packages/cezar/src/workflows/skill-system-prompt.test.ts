@@ -17,11 +17,6 @@ describe('skillSystemPrompt — installed-path hint for worktree agents', () => 
     expect(out.trimEnd().endsWith('Do the review.')).toBe(true);
   });
 
-  it('omits the path hint for team skills (they are materialized separately)', () => {
-    const out = skillSystemPrompt({ ...base, source: 'team', path: '/cache/whatever/SKILL.md' });
-    expect(out).not.toContain('installed on disk at');
-  });
-
   it('omits the path hint when no path/source is known', () => {
     const out = skillSystemPrompt(base);
     expect(out).not.toContain('installed on disk at');

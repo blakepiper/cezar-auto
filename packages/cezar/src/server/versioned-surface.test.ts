@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -37,12 +37,9 @@ describe('the versioned API surface', () => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-v1-boot-'));
     process.env.CEZ_HOME = home;
     process.env.CEZ_DRY_RUN = '1';
-    // `skillsRepos: []` keeps the workflow catalog hermetic — no background clone can warm a
-    // cache between the legacy request and the versioned one.
-    mkdirSync(join(repoRoot, '.ai/cezar'), { recursive: true });
-    writeFileSync(join(repoRoot, '.ai/cezar', 'config.json'), '{"skillsRepos": []}\n', 'utf8');
+    mkdirSync(join(repoRoot, '.ai/coducktor'), { recursive: true });
     clearProjectProbeCache();
-    store = RunStore.open(join(repoRoot, '.ai/cezar'), { keepLive: true });
+    store = RunStore.open(join(repoRoot, '.ai/coducktor'), { keepLive: true });
     contexts = new ProjectContexts({ listProjects });
     bootId = (await registerProject(repoRoot)).id;
     app = createApp({

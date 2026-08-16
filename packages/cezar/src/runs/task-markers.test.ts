@@ -40,6 +40,15 @@ describe('parseTaskMarkers', () => {
     expect(parseTaskMarkers('renamed the settings page')).toEqual({});
     expect(parseTaskMarkers('')).toEqual({});
   });
+
+  it('accepts the DUCK: spelling cezar now emits (dual-read shim, spec §2.2.2)', () => {
+    expect(parseTaskMarkers('Working on it.\nDUCK:PR=442\nDUCK:ISSUE=433\nDUCK:TITLE=fixing plan rendering\ndone soon')).toEqual({
+      pr: 442,
+      issue: 433,
+      title: 'fixing plan rendering',
+    });
+    expect(parseTaskMarkers('DUCK:PR=1\nsome progress\nDUCK:PR=500')).toEqual({ pr: 500 });
+  });
 });
 
 /** Spec 2026-07-21-report-ref-discovery — the report-tier lines skills end their runs with. */
@@ -110,5 +119,11 @@ describe('stripTaskMarkers', () => {
   it('leaves report-tier reference lines visible — they are human-readable by design', () => {
     const text = 'PR: #442 (link: https://github.com/o/r/pull/442)\nCEZ:PR=442\ndone';
     expect(stripTaskMarkers(text)).toBe('PR: #442 (link: https://github.com/o/r/pull/442)\ndone');
+  });
+
+  it('strips DUCK: control lines too (the spelling cezar emits now)', () => {
+    expect(stripTaskMarkers('Opened the PR.\nDUCK:PR=442\nDUCK:TITLE=fixing plan rendering\nNext: tests.')).toBe(
+      'Opened the PR.\nNext: tests.',
+    );
   });
 });

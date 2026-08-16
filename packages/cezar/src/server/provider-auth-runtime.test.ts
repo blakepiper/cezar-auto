@@ -39,7 +39,7 @@ describe('watchProviderRuntimeAuthFailures', () => {
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'cez-provider-auth-runtime-'));
-    store = RunStore.open(join(root, '.ai/cezar'));
+    store = RunStore.open(join(root, '.ai/coducktor'));
     delete process.env.CEZ_DRY_RUN;
     const runCommand = vi.fn<RunProviderCommand>(async (executable) => ({
       stdout: CONNECTED_OUTPUT[providerForExecutable(executable)],

@@ -718,32 +718,10 @@ describe('meta line, tabs, pill and resume hint', () => {
     },
   })
 
-  it('links the automation chip to its log while automations are on', async () => {
-    stubFetch({
-      '/api/v1/health': () =>
-        jsonResponse({
-          capabilities: {
-            localHandoff: true, followups: false, singleProject: false, automations: true,
-            tokenMetrics: true, tokenUsageMetrics: true, costMetrics: true,
-          },
-        }),
-    })
-    renderHeader(automated())
-
-    const link = await screen.findByRole('link', { name: 'Automation' })
-    expect(link.getAttribute('href')).toBe('/automations/a-1/log')
-  })
-
-  it('degrades the automation chip to plain text while automations are off', async () => {
-    stubFetch({
-      '/api/v1/health': () =>
-        jsonResponse({
-          capabilities: {
-            localHandoff: true, followups: false, singleProject: false, automations: false,
-            tokenMetrics: true, tokenUsageMetrics: true, costMetrics: true,
-          },
-        }),
-    })
+  // The provenance chip is history and always renders as plain text — A15 retired the
+  // automations subsystem and the log route it used to link to.
+  it('renders the automation provenance chip as plain text', async () => {
+    stubFetch()
     renderHeader(automated())
 
     const meta = document.querySelector('[data-slot="run-meta"]') as HTMLElement
@@ -752,28 +730,6 @@ describe('meta line, tabs, pill and resume hint', () => {
     )
     expect(meta.textContent).toContain('Automation')
     expect(screen.queryByRole('link', { name: 'Automation' })).toBeNull()
-  })
-
-  it('omits token and cost text when health disables token metrics', async () => {
-    stubFetch({
-      '/api/v1/health': () =>
-        jsonResponse({
-          capabilities: {
-            localHandoff: true,
-            followups: false,
-            singleProject: false,
-            tokenMetrics: false,
-          },
-        }),
-    })
-    renderHeader(run('done', { costUsd: 0.04 }))
-
-    const meta = document.querySelector('[data-slot="run-meta"]') as HTMLElement
-    await waitFor(() => {
-      expect(meta.textContent).not.toContain('IN 24.6k')
-      expect(meta.textContent).not.toContain('$0.04')
-    })
-    expect(within(meta).getByRole('button', { name: /Agent:/ })).not.toBeNull()
   })
 
   it.each([

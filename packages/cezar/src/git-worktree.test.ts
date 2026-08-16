@@ -40,6 +40,12 @@ afterEach(() => {
   }
 });
 
+describe('branchFor', () => {
+  it('writes the duck/<id8> spelling (spec §2.2.2)', () => {
+    expect(branchFor('12345678-aaaa-4aaa-8aaa-aaaaaaaaaaaa')).toBe('duck/12345678');
+  });
+});
+
 describe('parseShortstat', () => {
   const cases: Array<{ name: string; input: string; expected: { adds: number; dels: number; files: number } }> = [
     {
@@ -135,7 +141,7 @@ describe('createWorktree recovery (real git)', () => {
   it('preserves an unregistered non-empty managed path instead of deleting it', async () => {
     const repo = await fixtureRepo('cez-worktree-preserve-');
     const runId = '33333333-3333-4333-8333-333333333333';
-    const path = join(repo, '.ai/cezar/worktrees', runId);
+    const path = join(repo, '.ai/coducktor/worktrees', runId);
     const marker = join(path, 'uncommitted.txt');
     mkdirSync(path, { recursive: true });
     writeFileSync(marker, 'do not delete\n');

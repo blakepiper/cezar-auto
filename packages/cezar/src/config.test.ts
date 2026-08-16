@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { DEFAULT_SKILLS_REPOS, gatedSkillsRepos, loadConfig, resolveWorktreeRetention } from './config.ts';
+import { loadConfig, resolveWorktreeRetention } from './config.ts';
 
 /**
  * `config.json` schema roundtrips (R2 2.3: `systemPrompt?`). The invariants
@@ -15,7 +15,7 @@ describe('loadConfig systemPrompt', () => {
 
   beforeEach(() => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-config-'));
-    mkdirSync(join(repoRoot, '.ai/cezar'), { recursive: true });
+    mkdirSync(join(repoRoot, '.ai/coducktor'), { recursive: true });
   });
 
   afterEach(() => {
@@ -23,7 +23,7 @@ describe('loadConfig systemPrompt', () => {
   });
 
   const write = (value: unknown) =>
-    writeFileSync(join(repoRoot, '.ai/cezar', 'config.json'), JSON.stringify(value), 'utf8');
+    writeFileSync(join(repoRoot, '.ai/coducktor', 'config.json'), JSON.stringify(value), 'utf8');
 
   it('is undefined when no config file exists (zero-config default)', async () => {
     const config = await loadConfig(repoRoot);
@@ -76,7 +76,7 @@ describe('loadConfig systemPrompt', () => {
   });
 
   it('malformed JSON degrades to the full default (never throws)', async () => {
-    writeFileSync(join(repoRoot, '.ai/cezar', 'config.json'), '{not json', 'utf8');
+    writeFileSync(join(repoRoot, '.ai/coducktor', 'config.json'), '{not json', 'utf8');
     const config = await loadConfig(repoRoot);
     expect(config.systemPrompt).toBeUndefined();
     expect(config.maxParallel).toBe(2);
@@ -169,8 +169,8 @@ describe('resolveWorktreeRetention', () => {
 
   beforeEach(() => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-retention-'));
-    mkdirSync(join(repoRoot, '.ai/cezar'), { recursive: true });
-    // Pinned so the suite never reads (or writes) the developer's real ~/.cezar.
+    mkdirSync(join(repoRoot, '.ai/coducktor'), { recursive: true });
+    // Pinned so the suite never reads (or writes) the developer's real ~/.coducktor.
     cezHome = mkdtempSync(join(tmpdir(), 'cez-home-'));
     process.env.CEZ_HOME = cezHome;
   });
@@ -183,7 +183,7 @@ describe('resolveWorktreeRetention', () => {
   });
 
   const writeRepo = (value: unknown) =>
-    writeFileSync(join(repoRoot, '.ai/cezar', 'config.json'), JSON.stringify(value), 'utf8');
+    writeFileSync(join(repoRoot, '.ai/coducktor', 'config.json'), JSON.stringify(value), 'utf8');
   const writeWorkspace = (value: unknown) =>
     writeFileSync(join(cezHome, 'config.json'), JSON.stringify(value), 'utf8');
 
@@ -193,7 +193,7 @@ describe('resolveWorktreeRetention', () => {
   });
 
   it('inherits it when the repo has no config file at all', async () => {
-    rmSync(join(repoRoot, '.ai/cezar'), { recursive: true, force: true });
+    rmSync(join(repoRoot, '.ai/coducktor'), { recursive: true, force: true });
     writeWorkspace({ resources: { worktreeRetentionDefault: 7 } });
     expect(await resolveWorktreeRetention(repoRoot)).toBe(7);
   });
@@ -243,58 +243,9 @@ describe('resolveWorktreeRetention', () => {
   });
 
   it('treats a malformed repo config as unset', async () => {
-    writeFileSync(join(repoRoot, '.ai/cezar', 'config.json'), '{ nope', 'utf8');
+    writeFileSync(join(repoRoot, '.ai/coducktor', 'config.json'), '{ nope', 'utf8');
     writeWorkspace({ resources: { worktreeRetentionDefault: 8 } });
     expect(await resolveWorktreeRetention(repoRoot)).toBe(8);
-  });
-});
-
-/**
- * `gatedSkillsRepos` decides which repos are opt-in per skill (the "Import skills" flow). The
- * invariant: no remote source is gated in the zero-config default, and a repo that sets its OWN
- * `skillsRepos` gates nothing (it took control — everything it lists auto-loads). Detection must
- * probe the raw file because the schema's `.default()` erases the
- * "did the user set this?" distinction — the same reason `resolveWorktreeRetention` probes it.
- */
-describe('gatedSkillsRepos', () => {
-  let repoRoot: string;
-
-  beforeEach(() => {
-    repoRoot = mkdtempSync(join(tmpdir(), 'cez-gate-'));
-    mkdirSync(join(repoRoot, '.ai/cezar'), { recursive: true });
-  });
-
-  afterEach(() => {
-    rmSync(repoRoot, { recursive: true, force: true });
-  });
-
-  const write = (value: unknown) =>
-    writeFileSync(join(repoRoot, '.ai/cezar', 'config.json'), JSON.stringify(value), 'utf8');
-
-  const defaults = DEFAULT_SKILLS_REPOS.map((r) => r.repo);
-
-  it('has no gated remote defaults when there is no config file (zero-config)', async () => {
-    expect([...(await gatedSkillsRepos(repoRoot))]).toEqual(defaults);
-  });
-
-  it('has no gated remote defaults when the config omits skillsRepos (additive)', async () => {
-    write({ maxParallel: 4 });
-    expect([...(await gatedSkillsRepos(repoRoot))]).toEqual(defaults);
-  });
-
-  it('gates nothing once the repo sets its own skillsRepos', async () => {
-    write({ skillsRepos: [{ repo: 'acme/team-skills', ref: 'main' }] });
-    expect((await gatedSkillsRepos(repoRoot)).size).toBe(0);
-  });
-
-  it('gates nothing even when skillsRepos is set to empty (an explicit opt-out)', async () => {
-    write({ skillsRepos: [] });
-    expect((await gatedSkillsRepos(repoRoot)).size).toBe(0);
-  });
-
-  it('degrades a malformed config to the empty defaults (like loadConfig)', async () => {
-    writeFileSync(join(repoRoot, '.ai/cezar', 'config.json'), '{ nope', 'utf8');
-    expect([...(await gatedSkillsRepos(repoRoot))]).toEqual(defaults);
   });
 });
 
@@ -315,7 +266,7 @@ describe('loadConfig machine-wide agent defaults', () => {
   beforeEach(() => {
     repoRoot = mkdtempSync(join(tmpdir(), 'cez-machine-defaults-'));
     cezHome = mkdtempSync(join(tmpdir(), 'cez-machine-home-'));
-    mkdirSync(join(repoRoot, '.ai/cezar'), { recursive: true });
+    mkdirSync(join(repoRoot, '.ai/coducktor'), { recursive: true });
     process.env.CEZ_HOME = cezHome;
   });
 
@@ -326,7 +277,7 @@ describe('loadConfig machine-wide agent defaults', () => {
   });
 
   const writeRepo = (value: unknown) =>
-    writeFileSync(join(repoRoot, '.ai/cezar', 'config.json'), JSON.stringify(value), 'utf8');
+    writeFileSync(join(repoRoot, '.ai/coducktor', 'config.json'), JSON.stringify(value), 'utf8');
   const writeMachine = (agentDefaults: unknown) =>
     writeFileSync(join(cezHome, 'config.json'), JSON.stringify({ agentDefaults }), 'utf8');
 

@@ -36,9 +36,6 @@ describe('every mutating route carries a typed body into AppType', () => {
   type _Checks = [
     Assert<HasTypedBody<'/api/v1/runs', '$post'>>,
     Assert<HasTypedBody<'/api/v1/plan', '$post'>>,
-    Assert<HasTypedBody<'/api/v1/automations', '$post'>>,
-    Assert<HasTypedBody<'/api/v1/automations/:id', '$put'>>,
-    Assert<HasTypedBody<'/api/v1/automations/:id/check', '$post'>>,
     Assert<HasTypedBody<'/api/v1/projects', '$post'>>,
     Assert<HasTypedBody<'/api/v1/projects/checkout', '$post'>>,
     Assert<HasTypedBody<'/api/v1/projects/:projectId', '$patch'>>,
@@ -67,8 +64,6 @@ describe('every mutating route carries a typed body into AppType', () => {
     Assert<HasTypedBody<'/api/v1/ui-state', '$put'>>,
     Assert<HasTypedBody<'/api/v1/workspace/config', '$put'>>,
     Assert<HasTypedBody<'/api/v1/workspace/ui-state', '$put'>>,
-    Assert<HasTypedBody<'/api/v1/workspace/skills-update/check', '$post'>>,
-    Assert<HasTypedBody<'/api/v1/workspace/skills-update/apply', '$post'>>,
   ];
 
   type WorkspaceUiStatePutBody = Schema['/api/v1/workspace/ui-state']['$put']['input']['json'];
@@ -90,13 +85,9 @@ describe('every mutating route carries a typed body into AppType', () => {
     Assert<HasTypedInput<'/api/v1/github/prs/:number/merge-state', '$get', 'param'>>,
     Assert<HasTypedInput<'/api/v1/models', '$get', 'query'>>,
     Assert<HasTypedInput<'/api/v1/providers/status', '$get', 'query'>>,
-    Assert<HasTypedInput<'/api/v1/workspace/skills-update', '$get', 'query'>>,
     // The reads the cockpit's typed client needs a `query` argument for. `hc` offers one only
     // for keys a validator declares, so a route that reverted to `c.req.query('x')` would fail
     // here — and would otherwise fail nowhere, since the handler keeps working either way.
-    Assert<HasTypedInput<'/api/v1/fs/browse', '$get', 'query'>>,
-    Assert<HasTypedInput<'/api/v1/skills', '$get', 'query'>>,
-    Assert<HasTypedInput<'/api/v1/skills/importable', '$get', 'query'>>,
     Assert<HasTypedInput<'/api/v1/runs/:id/files', '$get', 'query'>>,
     Assert<HasTypedInput<'/api/v1/github', '$get', 'query'>>,
     Assert<HasTypedInput<'/api/v1/github/checks', '$get', 'query'>>,
@@ -105,7 +96,6 @@ describe('every mutating route carries a typed body into AppType', () => {
     Assert<HasTypedInput<'/api/v1/github/prs/:number/changes', '$get', 'query'>>,
     Assert<HasTypedInput<'/api/v1/github/prs/:number/changes', '$get', 'param'>>,
     Assert<HasTypedInput<'/api/v1/repo/commit/:sha', '$get', 'query'>>,
-    Assert<HasTypedInput<'/api/v1/automation-log', '$get', 'query'>>,
   ];
 
   it('is enforced by tsc, not at runtime', () => {

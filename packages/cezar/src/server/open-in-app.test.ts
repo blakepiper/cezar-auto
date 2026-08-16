@@ -213,28 +213,21 @@ describe('resolveOnPath (#469 Windows launcher safety)', () => {
     chmodSync(stub, 0o755);
   }
 
-  it('finds directly-spawnable .com and .exe launchers on native Windows and WSL', () => {
+  it('finds directly-spawnable .com and .exe launchers on native Windows', () => {
     addStub('editor.com');
-    expect(resolveOnPath('editor', 'win32', false, stubDir)).toBe('editor.com');
+    expect(resolveOnPath('editor', 'win32', stubDir)).toBe('editor.com');
 
     rmSync(join(stubDir, 'editor.com'));
     addStub('editor.exe');
-    expect(resolveOnPath('editor', 'win32', false, stubDir)).toBe('editor.exe');
-    expect(resolveOnPath('editor', 'linux', true, stubDir)).toBe('editor.exe');
+    expect(resolveOnPath('editor', 'win32', stubDir)).toBe('editor.exe');
   });
 
   it('does not offer .cmd or .bat shims that require a shell to execute', () => {
     addStub('editor.cmd');
     addStub('editor.bat');
 
-    expect(resolveOnPath('editor', 'win32', false, stubDir)).toBeNull();
-    expect(resolveOnPath('editor', 'linux', true, stubDir)).toBeNull();
-  });
-
-  it('prefers a WSL-native bare launcher over a Windows-side executable', () => {
-    addStub('editor');
-    addStub('editor.exe');
-    expect(resolveOnPath('editor', 'linux', true, stubDir)).toBe('editor');
+    expect(resolveOnPath('editor', 'win32', stubDir)).toBeNull();
+    expect(resolveOnPath('editor', 'linux', stubDir)).toBeNull();
   });
 });
 
@@ -252,48 +245,26 @@ describe('agentCliRunner', () => {
   });
 });
 
-describe('fileManagerLaunch (#361 WSL support)', () => {
+describe('fileManagerLaunch', () => {
   it('uses `open` on darwin and `explorer` on native win32, path unchanged', () => {
-    expect(fileManagerLaunch('/repo/worktree', 'darwin', false)).toEqual({ bin: 'open', args: ['/repo/worktree'] });
-    expect(fileManagerLaunch('C:\\repo\\worktree', 'win32', false)).toEqual({
+    expect(fileManagerLaunch('/repo/worktree', 'darwin')).toEqual({ bin: 'open', args: ['/repo/worktree'] });
+    expect(fileManagerLaunch('C:\\repo\\worktree', 'win32')).toEqual({
       bin: 'explorer',
       args: ['C:\\repo\\worktree'],
     });
   });
 
-  it('uses xdg-open on plain Linux (not WSL)', () => {
-    expect(fileManagerLaunch('/home/pat/project', 'linux', false)).toEqual({
+  it('uses xdg-open on Linux', () => {
+    expect(fileManagerLaunch('/home/pat/project', 'linux')).toEqual({
       bin: 'xdg-open',
       args: ['/home/pat/project'],
     });
   });
-
-  it('goes through interop to explorer.exe under WSL, translating the POSIX path', () => {
-    const result = fileManagerLaunch('/home/pat/project', 'linux', true);
-    expect(result.bin).toBe('explorer.exe');
-    // No real `wslpath` on the machine running this suite, so translateToWindowsPath falls back
-    // to the pure conversion — still deterministic and worth pinning here.
-    expect(result.args).toEqual(['\\\\wsl$\\Ubuntu\\home\\pat\\project']);
-  });
-
-  it('translates a WSL /mnt/<drive> path to its native Windows drive letter', () => {
-    const result = fileManagerLaunch('/mnt/c/Users/pat/project', 'linux', true);
-    expect(result.args).toEqual(['C:\\Users\\pat\\project']);
-  });
 });
 
-describe('launchPathFor (#361 WSL support)', () => {
-  it('passes the POSIX path through for a bare-name (WSL-native or non-WSL) binary', () => {
-    expect(launchPathFor('idea', '/home/pat/project', true)).toBe('/home/pat/project');
-    expect(launchPathFor('code', '/home/pat/project', false)).toBe('/home/pat/project');
-  });
-
-  it('translates the path for a Windows-suffixed binary resolved through WSL interop', () => {
-    expect(launchPathFor('idea.exe', '/home/pat/project', true)).toBe('\\\\wsl$\\Ubuntu\\home\\pat\\project');
-    expect(launchPathFor('pycharm.com', '/mnt/c/repo', true)).toBe('C:\\repo');
-  });
-
-  it('never translates when not running under WSL, even for a .exe name', () => {
-    expect(launchPathFor('idea.exe', '/home/pat/project', false)).toBe('/home/pat/project');
+describe('launchPathFor', () => {
+  it('always passes the POSIX path through unchanged', () => {
+    expect(launchPathFor('idea', '/home/pat/project')).toBe('/home/pat/project');
+    expect(launchPathFor('idea.exe', '/home/pat/project')).toBe('/home/pat/project');
   });
 });

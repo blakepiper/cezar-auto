@@ -1,4 +1,6 @@
+import { existsSync, renameSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { workspaceUiStateSchema } from '@open-mercato/cezar-contract';
 import { cezarHomeDir, workspaceConfigPath } from '../paths.ts';
@@ -52,7 +54,7 @@ function asObject(value: unknown): Record<string, unknown> | null {
 }
 
 /**
- * The boot repo's `.ai/cezar/config.json` resource keys, read RAW (not through
+ * The boot repo's `.ai/coducktor/config.json` resource keys, read RAW (not through
  * `loadConfig`) so only values the user explicitly set are imported — a
  * defaulted value must not masquerade as a preference. Bounds mirror the
  * workspace `resources` schema; out-of-range values are simply not imported.
@@ -60,7 +62,7 @@ function asObject(value: unknown): Record<string, unknown> | null {
 async function readRepoResourceKeys(
   repoRoot: string,
 ): Promise<{ maxParallel?: number; memoryLimitMb?: number }> {
-  const raw = await readRawObject(join(repoRoot, '.ai/cezar', 'config.json'));
+  const raw = await readRawObject(join(repoRoot, '.ai/coducktor', 'config.json'));
   const out: { maxParallel?: number; memoryLimitMb?: number } = {};
   const maxParallel = raw?.maxParallel;
   if (typeof maxParallel === 'number' && Number.isInteger(maxParallel) && maxParallel >= 1 && maxParallel <= 16) {
@@ -81,11 +83,11 @@ async function readRepoResourceKeys(
 /**
  * Migration 001 — `schemaVersion 0 → 1`, the "current version up" migration:
  *
- * 1. Create `~/.cezar/config.json` with defaults if absent (the merge-write
+ * 1. Create `~/.coducktor/config.json` with defaults if absent (the merge-write
  *    does this even when there is nothing to import).
  * 2. Booting inside a repo: import its `maxParallel`/`memoryLimitMb` into
  *    workspace `resources`, and its `appearance`/`notifications` ui-state
- *    keys into `~/.cezar/ui-state.json`. Keys already set globally are NEVER
+ *    keys into `~/.coducktor/ui-state.json`. Keys already set globally are NEVER
  *    overwritten — presence is checked against the RAW global file (before
  *    defaults are applied), which is exactly what makes a crash-interrupted
  *    re-run safe: the first pass writes the keys, the re-run sees them set.
@@ -138,13 +140,83 @@ const migration001: WorkspaceMigration = {
   },
 };
 
+/**
+ * One on-disk state-dir rename. Idempotent and never destructive:
+ *  - old absent → nothing to do (already migrated, or never existed);
+ *  - both present → the NEW dir wins; warn about the stray old one but never
+ *    delete it (deleting user data is not a migration's job);
+ *  - old present, new absent → rename and log one line.
+ * Failure degrades to a warning, never a failed boot (the migration framework's
+ * non-blocking contract).
+ */
+async function migrateStateDir(oldPath: string, newPath: string, label: string): Promise<void> {
+  const oldExists = existsSync(oldPath);
+  const newExists = existsSync(newPath);
+  if (!oldExists) return;
+  if (newExists) {
+    console.warn(
+      `[cez] found both ${oldPath} and ${newPath} — using ${newPath}; ` +
+        `remove ${oldPath} once you no longer need it`,
+    );
+    return;
+  }
+  try {
+    renameSync(oldPath, newPath);
+    console.log(`[cez] moved ${label} state from ${oldPath} to ${newPath}`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[cez] could not move ${label} state from ${oldPath} to ${newPath} (${message})`);
+  }
+}
+
+/**
+ * Migration 002 — `schemaVersion 1 → 2`, the coducktor rename (decision 6,
+ * spec §2.2.2 point 3): move the on-disk state dirs from their cezar-era names
+ * to the coducktor ones.
+ *
+ * This must ALSO run before migration 001's config read/write on a pre-rename
+ * install — the ordered loop alone would let 001 create a fresh
+ * `.ai/coducktor` config and strand the user's real `.cezar` one — so
+ * `runMigrations` calls `migrateStateDirs` at its very top. Registered here as
+ * a normal migration too, so the framework's record bumps `schemaVersion` to 2
+ * and re-running it is the same idempotent no-op (after the first rename both
+ * dirs are settled).
+ *
+ * Run state never migrates in place — the whole-directory rename carries
+ * runs.json, NDJSON logs, handoffs and worktrees wholesale, which is exactly
+ * why the A15 accept ("a run started before the migration still loads") holds:
+ * the data is moved, not rebuilt.
+ */
+const migration002: WorkspaceMigration = {
+  to: 2,
+  id: '002-coducktor-state-dirs',
+  async run({ home, bootRepoRoot }) {
+    await migrateStateDirs(home, bootRepoRoot);
+  },
+};
+
 /** All known migrations. Kept in ascending `to` order; `runMigrations` sorts
- *  defensively anyway. */
-export const WORKSPACE_MIGRATIONS: readonly WorkspaceMigration[] = [migration001];
+ *  defensively anyway. Declared after both migrations so the references are
+ *  live. */
+export const WORKSPACE_MIGRATIONS: readonly WorkspaceMigration[] = [migration001, migration002];
+
+/** The two state-dir renames migration 002 performs. Exported so `runMigrations`
+ *  can fire it first AND so the migration test can drive it directly. */
+export async function migrateStateDirs(home: string, bootRepoRoot: string | null): Promise<void> {
+  // Per-user home: only meaningful when CEZ_HOME is NOT overriding the base —
+  // an explicit CEZ_HOME *is* the location (tests/containers), so there is no
+  // old spelling to move.
+  if (!process.env.CEZ_HOME) {
+    await migrateStateDir(join(homedir(), '.cezar'), join(homedir(), '.coducktor'), 'home');
+  }
+  if (bootRepoRoot) {
+    await migrateStateDir(join(bootRepoRoot, '.ai', 'cezar'), join(bootRepoRoot, '.ai', 'coducktor'), 'repo');
+  }
+}
 
 /**
  * Run every pending workspace migration — called at boot before anything else
- * touches `~/.cezar`. Reads `schemaVersion` (absent file or key → 0, which
+ * touches `~/.coducktor`. Reads `schemaVersion` (absent file or key → 0, which
  * means "run everything" — safe because every migration is idempotent), runs
  * each migration with `to > current` in ascending order, and persists the new
  * `schemaVersion` after EACH one, so a crash resumes exactly where it left
@@ -159,6 +231,11 @@ export async function runMigrations(
   migrations: readonly WorkspaceMigration[] = WORKSPACE_MIGRATIONS,
 ): Promise<void> {
   const home = cezarHomeDir();
+  // State-dir rename FIRST: on a pre-rename install, migration 001's config
+  // write must land in the migrated home rather than create a fresh
+  // `.coducktor` alongside the user's real `.cezar` config (which would strand
+  // it — see migration 002's doc).
+  await migrateStateDirs(home, opts.bootRepoRoot);
   const ordered = [...migrations].sort((a, b) => a.to - b.to);
   let current = (await loadWorkspaceConfig()).schemaVersion;
   for (const migration of ordered) {

@@ -41,7 +41,7 @@ type AgentBackend = RunnerId | 'claude-cli';                       // + legacy i
 ```
 
 `RUNNER_IDS` is the tuple every other enumeration derives from — the zod schemas
-(config, run store, workflow steps, the API bodies), the server-install
+(config, run store, workflow steps, the API bodies), the boot-time
 "at least one agent CLI" gate, and the CLI-handoff registry. Re-listing the ids
 by hand is how a runner silently goes missing from one seam (#387 review); use
 `RUNNER_IDS` / `isRunnerId()` instead.
@@ -246,8 +246,9 @@ type UiEvent =
 
 **AskUser (`ask.requested`, #473, #565).** The portable path remains
 backend-neutral: the agent asks a structured
-multiple-choice question by ending a turn with a `CEZ:ASK <json>` control marker
-(a sibling of `CEZ:DONE` / `CEZ:MONITORING`); the RunManager detects it on the
+multiple-choice question by ending a turn with a `DUCK:ASK <json>` control marker
+(a sibling of `DUCK:DONE` / `DUCK:MONITORING`; the legacy `CEZ:*` spellings still
+parse, dual-read shim); the RunManager detects it on the
 *assembled* turn text — uniform across claude, codex and opencode with no mapper
 work — validates the payload (`packages/cezar/src/core/ask.ts`, modeled on Claude Code's
 `AskUserQuestion`: 1–4 questions, 2–4 options each, `header` ≤12 chars), emits
