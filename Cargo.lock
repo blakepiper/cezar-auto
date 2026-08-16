@@ -660,6 +660,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "coducktor-core"
+version = "0.1.0"
+dependencies = [
+ "coducktor-contract",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "coducktor-protocol"
 version = "0.1.0"
 dependencies = [
@@ -675,6 +685,7 @@ dependencies = [
  "clap",
  "coducktor-client",
  "coducktor-contract",
+ "coducktor-core",
  "coducktor-protocol",
  "criterion",
  "crossterm",

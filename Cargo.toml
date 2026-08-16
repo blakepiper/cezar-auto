@@ -2,6 +2,7 @@
 members = [
     "crates/coducktor-client",
     "crates/coducktor-contract",
+    "crates/coducktor-core",
     "crates/coducktor-protocol",
     "crates/coducktor-tui",
 ]

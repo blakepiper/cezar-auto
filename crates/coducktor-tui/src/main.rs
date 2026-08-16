@@ -94,9 +94,7 @@ fn configured_service() -> Option<ServiceSupervisor> {
     let base_url =
         env::var("DUCK_SERVICE_URL").unwrap_or_else(|_| "http://127.0.0.1:4321".to_owned());
     let engine = HttpEngine::new(base_url).ok()?;
-    let log_root = env::var_os("DUCK_HOME")
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".coducktor")))?;
+    let log_root = coducktor_core::paths::coducktor_home_dir(&coducktor_core::paths::ProcessEnv);
     let mut config = ServiceConfig::new(command, log_root.join("logs/service.log"));
     config.args = default_args;
     if let Some(args) = env::var_os("DUCK_SERVICE_ARGS") {

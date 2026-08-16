@@ -119,10 +119,10 @@ impl Keymap {
     }
 
     pub fn default_path() -> Option<PathBuf> {
-        std::env::var_os("DUCK_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".coducktor")))
-            .map(|home| home.join("keymap.toml"))
+        Some(
+            coducktor_core::paths::coducktor_home_dir(&coducktor_core::paths::ProcessEnv)
+                .join("keymap.toml"),
+        )
     }
 
     pub fn action_for(&self, mode: KeyMode, event: &KeyEvent) -> Option<ActionId> {

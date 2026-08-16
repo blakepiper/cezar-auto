@@ -7,8 +7,9 @@ whenever those change — there is no automated doc-gen for it yet.
 ## Global keymap (`default-keymap.toml`)
 
 Works from anywhere in the app. Override any binding with a user keymap at
-`$DUCK_HOME/keymap.toml` (or `~/.coducktor/keymap.toml` if `DUCK_HOME` is unset) —
-user bindings are merged over these defaults, key by key.
+`$DUCK_HOME/keymap.toml` (or `$CEZ_HOME/keymap.toml` if `DUCK_HOME` is unset — the name
+the Node server still reads until it's deleted; falls back to `~/.coducktor/keymap.toml`
+if neither is set) — user bindings are merged over these defaults, key by key.
 
 | Key | Action |
 |---|---|
