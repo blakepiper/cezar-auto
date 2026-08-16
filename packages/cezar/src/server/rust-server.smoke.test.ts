@@ -141,5 +141,19 @@ describe('Rust server HTTP harness', () => {
     const dismissed = await request('/api/v1/todos/missing', { method: 'DELETE' });
     expect(dismissed.status).toBe(409);
     expect(((await dismissed.json()) as { error: string }).error).toContain('CEZ_FOLLOWUPS');
+
+    const config = await request('/api/v1/config', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ systemPrompt: '  Rust smoke config  ', defaultModels: { claude: 'opus' } }),
+    });
+    expect(config.status).toBe(200);
+    const configBody = (await config.json()) as { systemPrompt: string; defaultModels: { claude: string } };
+    expect(configBody.systemPrompt).toBe('Rust smoke config');
+    expect(configBody.defaultModels.claude).toBe('opus');
+
+    const scopedConfig = await request('/api/v1/p/default/config');
+    expect(scopedConfig.status).toBe(200);
+    expect(((await scopedConfig.json()) as { defaultModels: { claude: string } }).defaultModels.claude).toBe('opus');
   });
 });

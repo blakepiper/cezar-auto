@@ -25,16 +25,17 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use coducktor_contract::{
-    ApiRun, BackendCheck, BackendCheckName, Capabilities, ContinueInput, CreateRunInput,
-    CreateRunResponse, DeleteRunResponse, DeleteWorkflowResponse, ForgeInfo, ForgeKind,
-    HealthProject, HealthResponse, MarkAllReadResponse, MessageInput, ParseWorkflowInput,
-    ParsedWorkflow, PatchRunInput, ProjectListEntry, ProjectSource, ProjectStatus,
-    ProjectsResponse, RegisterProjectInput, RegisterProjectResponse, RemoveProjectResponse,
-    RepoInfo, RunRecord, RunnerSelection, SaveWorkflowInput, SaveWorkflowResponse,
-    SetWorkspaceConfigInput, SetWorkspaceUiStateInput, StartTodoResponse, TodoItem, UiState,
-    UpdateProjectInput, UpdateProjectResponse, WorkflowStepDef, WorkflowsResponse,
-    WorkspaceConfigResponse,
+    ApiRun, BackendCheck, BackendCheckName, Capabilities, ConfigResponse, ContinueInput,
+    CreateRunInput, CreateRunResponse, DeleteRunResponse, DeleteWorkflowResponse, ForgeInfo,
+    ForgeKind, HealthProject, HealthResponse, MarkAllReadResponse, MessageInput,
+    ParseWorkflowInput, ParsedWorkflow, PatchRunInput, ProjectListEntry, ProjectSource,
+    ProjectStatus, ProjectsResponse, RegisterProjectInput, RegisterProjectResponse,
+    RemoveProjectResponse, RepoInfo, RunRecord, RunnerModels, RunnerSelection, SaveWorkflowInput,
+    SaveWorkflowResponse, SetConfigInput, SetWorkspaceConfigInput, SetWorkspaceUiStateInput,
+    StartTodoResponse, TodoItem, UiState, UpdateProjectInput, UpdateProjectResponse,
+    WorkflowStepDef, WorkflowsResponse, WorkspaceConfigResponse,
 };
+use coducktor_core::config::load_config;
 use coducktor_core::handoff::followups_enabled;
 use coducktor_core::paths::{ProcessEnv, coducktor_home_dir};
 use coducktor_core::skills::discover_skills;
@@ -270,6 +271,11 @@ pub fn router_with_state(state: ServerState) -> Router {
             "/api/v1/p/{project}/todos/{id}/start",
             axum::routing::post(start_scoped_todo),
         )
+        .route("/api/v1/config", get(get_config).put(update_config))
+        .route(
+            "/api/v1/p/{project}/config",
+            get(get_scoped_config).put(update_scoped_config),
+        )
         .fallback(not_found)
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state, request_origin_guard))
@@ -359,6 +365,122 @@ fn merge_repo_ui_state(state: &ServerState, input: Value) -> Result<Map<String, 
     atomic_write_json_sync(&repo_ui_state_path(state), &Value::Object(merged.clone()))
         .map_err(|error| error.to_string())?;
     Ok(merged)
+}
+
+fn repo_config_path(state: &ServerState) -> PathBuf {
+    repo_data_dir(state).join("config.json")
+}
+
+fn read_repo_config(state: &ServerState) -> Map<String, Value> {
+    let Ok(raw) = fs::read_to_string(repo_config_path(state)) else {
+        return Map::new();
+    };
+    serde_json::from_str::<Value>(&raw)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default()
+}
+
+fn config_models_locked(state: &ServerState, config: &coducktor_core::config::RepoConfig) -> bool {
+    std::env::var("CEZ_AGENT_MODELS_LOCKED").is_ok_and(|value| value == "1")
+        || workspace_config(state).models_locked == Some(true)
+        || config.models_locked == Some(true)
+}
+
+fn config_response(state: &ServerState) -> ConfigResponse {
+    let workspace = workspace_config(state);
+    let config = load_config(&state.config.repo_root, &workspace.agent_defaults);
+    let models_locked = config_models_locked(state, &config);
+    ConfigResponse {
+        base_branch: config.base_branch,
+        default_runner: config.default_runner,
+        system_prompt: config.system_prompt,
+        default_models: if models_locked {
+            RunnerModels::default()
+        } else {
+            config.default_models
+        },
+        models_locked,
+        max_parallel: config.max_parallel,
+        memory_limit_mb: config.memory_limit_mb,
+        worktree_retention: config.worktree_retention,
+        live_title_updates: config.live_title_updates,
+        review_gate: config.review_gate,
+    }
+}
+
+fn parse_set_config_input(input: Value) -> Result<(SetConfigInput, Map<String, Value>), String> {
+    let Some(object) = input.as_object().cloned() else {
+        return Err("config must be a JSON object".to_owned());
+    };
+    let typed = serde_json::from_value::<SetConfigInput>(Value::Object(object.clone()))
+        .map_err(|error| error.to_string())?;
+    if typed
+        .base_branch
+        .as_ref()
+        .and_then(|value| value.as_ref())
+        .is_some_and(|value| {
+            let trimmed = value.trim();
+            trimmed.is_empty() || trimmed.chars().count() > 200
+        })
+    {
+        return Err("baseBranch must be between 1 and 200 characters".to_owned());
+    }
+    if typed
+        .system_prompt
+        .as_ref()
+        .and_then(|value| value.as_ref())
+        .is_some_and(|value| value.trim().chars().count() > 20_000)
+    {
+        return Err("systemPrompt must be at most 20000 characters".to_owned());
+    }
+    if typed
+        .max_parallel
+        .is_some_and(|value| !(1..=16).contains(&value))
+    {
+        return Err("maxParallel must be an integer from 1 to 16".to_owned());
+    }
+    if typed
+        .memory_limit_mb
+        .flatten()
+        .is_some_and(|value| value > 1_048_576)
+    {
+        return Err("memoryLimitMb must be an integer from 0 to 1048576".to_owned());
+    }
+    if typed
+        .worktree_retention
+        .flatten()
+        .is_some_and(|value| value > 1000)
+    {
+        return Err("worktreeRetention must be an integer from 0 to 1000".to_owned());
+    }
+    if object.get("defaultModels").is_some_and(Value::is_null) {
+        return Err("defaultModels must be an object".to_owned());
+    }
+    if let Some(models) = object.get("defaultModels") {
+        let Some(models) = models.as_object() else {
+            return Err("defaultModels must be an object".to_owned());
+        };
+        for key in ["claude", "codex", "opencode", "pi"] {
+            if let Some(value) = models.get(key)
+                && value
+                    .as_str()
+                    .is_some_and(|model| model.trim().chars().count() > 200)
+            {
+                return Err("model names must be at most 200 characters".to_owned());
+            } else if models
+                .get(key)
+                .is_some_and(|value| !value.is_null() && !value.is_string())
+            {
+                return Err("model names must be strings or null".to_owned());
+            }
+        }
+    }
+    Ok((typed, object))
+}
+
+fn config_patch_value_is_null(object: &Map<String, Value>, key: &str) -> bool {
+    object.get(key).is_some_and(Value::is_null)
 }
 
 fn workflow_slug(value: &str) -> String {
@@ -1187,6 +1309,141 @@ async fn update_workspace_ui_state(
         Ok(state) => Json(state).into_response(),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
     }
+}
+
+async fn get_config(State(state): State<ServerState>) -> Response {
+    Json(config_response(&state)).into_response()
+}
+
+async fn get_scoped_config(
+    State(state): State<ServerState>,
+    AxumPath(_project): AxumPath<String>,
+) -> Response {
+    get_config(State(state)).await
+}
+
+async fn update_config(State(state): State<ServerState>, Json(input): Json<Value>) -> Response {
+    let (typed, object) = match parse_set_config_input(input) {
+        Ok(parsed) => parsed,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, &error),
+    };
+    let current = load_config(
+        &state.config.repo_root,
+        &workspace_config(&state).agent_defaults,
+    );
+    if config_models_locked(&state, &current) && object.contains_key("defaultModels") {
+        return error_response(
+            StatusCode::CONFLICT,
+            "agent models are locked — configure the model in the native coding-agent settings",
+        );
+    }
+
+    let mut raw = read_repo_config(&state);
+    if let Some(value) = object.get("baseBranch") {
+        if value.is_null() {
+            raw.remove("baseBranch");
+        } else if let Some(base_branch) = typed.base_branch.as_ref().and_then(Option::as_ref) {
+            raw.insert(
+                "baseBranch".to_owned(),
+                Value::String(base_branch.trim().to_owned()),
+            );
+        }
+    }
+    if let Some(default_runner) = typed.default_runner {
+        raw.insert(
+            "defaultRunner".to_owned(),
+            serde_json::to_value(default_runner).unwrap_or(Value::Null),
+        );
+    }
+    if let Some(value) = object.get("systemPrompt") {
+        if value.is_null()
+            || typed
+                .system_prompt
+                .as_ref()
+                .and_then(Option::as_ref)
+                .is_some_and(|prompt| prompt.trim().is_empty())
+        {
+            raw.remove("systemPrompt");
+        } else if let Some(prompt) = typed.system_prompt.as_ref().and_then(Option::as_ref) {
+            raw.insert(
+                "systemPrompt".to_owned(),
+                Value::String(prompt.trim().to_owned()),
+            );
+        }
+    }
+    if let Some(max_parallel) = typed.max_parallel {
+        raw.insert("maxParallel".to_owned(), Value::from(max_parallel));
+    }
+    if object.contains_key("worktreeRetention") {
+        if config_patch_value_is_null(&object, "worktreeRetention")
+            || typed
+                .worktree_retention
+                .is_some_and(|value| value.is_none())
+        {
+            raw.remove("worktreeRetention");
+        } else if let Some(Some(retention)) = typed.worktree_retention {
+            raw.insert("worktreeRetention".to_owned(), Value::from(retention));
+        }
+    }
+    for (field, key) in [
+        ("liveTitleUpdates", "liveTitleUpdates"),
+        ("reviewGate", "reviewGate"),
+    ] {
+        if !object.contains_key(field) {
+            continue;
+        }
+        if object.get(field).is_some_and(Value::is_null) {
+            raw.remove(key);
+        } else if let Some(value) = object.get(field).and_then(Value::as_bool) {
+            raw.insert(key.to_owned(), Value::Bool(value));
+        }
+    }
+    if object.contains_key("memoryLimitMb") {
+        if config_patch_value_is_null(&object, "memoryLimitMb")
+            || typed.memory_limit_mb.is_some_and(|value| value == Some(0))
+        {
+            raw.remove("memoryLimitMb");
+        } else if let Some(Some(limit)) = typed.memory_limit_mb {
+            raw.insert("memoryLimitMb".to_owned(), Value::from(limit));
+        }
+    }
+    if typed.default_models.is_some() {
+        let current_models = raw
+            .get("defaultModels")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        let mut models = current_models;
+        if let Some(value) = object.get("defaultModels").and_then(Value::as_object) {
+            for key in ["claude", "codex", "opencode", "pi"] {
+                let Some(value) = value.get(key) else {
+                    continue;
+                };
+                if value.is_null() || value.as_str().is_some_and(|model| model.trim().is_empty()) {
+                    models.remove(key);
+                } else if let Some(model) = value.as_str() {
+                    models.insert(key.to_owned(), Value::String(model.trim().to_owned()));
+                }
+            }
+        }
+        if models.is_empty() {
+            raw.remove("defaultModels");
+        } else {
+            raw.insert("defaultModels".to_owned(), Value::Object(models));
+        }
+    }
+    if let Err(error) = atomic_write_json_sync(&repo_config_path(&state), &Value::Object(raw)) {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string());
+    }
+    get_config(State(state)).await
+}
+
+async fn update_scoped_config(
+    State(state): State<ServerState>,
+    AxumPath(_project): AxumPath<String>,
+    Json(input): Json<Value>,
+) -> Response {
+    update_config(State(state), Json(input)).await
 }
 
 async fn get_ui_state(State(state): State<ServerState>) -> Response {
@@ -2437,6 +2694,93 @@ mod tests {
                 .expect("todos file remains")
                 .contains("todo-1")
         );
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test]
+    async fn config_routes_merge_raw_values_and_keep_project_aliases() {
+        let repo = test_repo();
+        let workspace = repo.join("workspace");
+        let manager = RunManager::open(repo.join(".ai").join("coducktor"));
+        let router = router_with_state(ServerState::with_manager_and_workspace_dir(
+            ServerConfig::new(&repo, "test"),
+            manager,
+            &workspace,
+        ));
+        let boot = repo
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("test repo name");
+
+        let initial = send(&router, Method::GET, "/api/v1/config", None).await;
+        assert_eq!(initial.status(), StatusCode::OK);
+        let initial_body = json_body(initial).await;
+        assert_eq!(initial_body["defaultRunner"], "claude");
+        assert_eq!(initial_body["maxParallel"], 2);
+        assert_eq!(initial_body["defaultModels"], serde_json::json!({}));
+
+        let updated = send(
+            &router,
+            Method::PUT,
+            "/api/v1/config",
+            Some(serde_json::json!({
+                "systemPrompt": "  Be brief.  ",
+                "defaultModels": { "claude": "  opus  " },
+                "maxParallel": 4,
+                "worktreeRetention": 0,
+                "memoryLimitMb": 0
+            })),
+        )
+        .await;
+        assert_eq!(updated.status(), StatusCode::OK);
+        let updated_body = json_body(updated).await;
+        assert_eq!(updated_body["systemPrompt"], "Be brief.");
+        assert_eq!(updated_body["defaultModels"]["claude"], "opus");
+        assert_eq!(updated_body["maxParallel"], 4);
+        assert_eq!(updated_body["worktreeRetention"], 0);
+        assert_eq!(updated_body["memoryLimitMb"], Value::Null);
+
+        let merged = send(
+            &router,
+            Method::PUT,
+            "/api/v1/config",
+            Some(serde_json::json!({ "defaultModels": { "codex": "gpt" } })),
+        )
+        .await;
+        assert_eq!(merged.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(merged).await["defaultModels"],
+            serde_json::json!({ "claude": "opus", "codex": "gpt" })
+        );
+
+        let cleared = send(
+            &router,
+            Method::PUT,
+            "/api/v1/config",
+            Some(serde_json::json!({ "defaultModels": { "claude": null } })),
+        )
+        .await;
+        assert_eq!(cleared.status(), StatusCode::OK);
+        assert_eq!(json_body(cleared).await["defaultModels"]["codex"], "gpt");
+
+        let scoped = send(
+            &router,
+            Method::GET,
+            &format!("/api/v1/p/{boot}/config"),
+            None,
+        )
+        .await;
+        assert_eq!(scoped.status(), StatusCode::OK);
+        assert_eq!(json_body(scoped).await["defaultModels"]["codex"], "gpt");
+
+        let invalid = send(
+            &router,
+            Method::PUT,
+            "/api/v1/config",
+            Some(serde_json::json!({ "defaultModels": null })),
+        )
+        .await;
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
         fs::remove_dir_all(repo).expect("remove test repo");
     }
 
