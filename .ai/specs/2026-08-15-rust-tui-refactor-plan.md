@@ -312,13 +312,15 @@ an incomplete state.
 Source: spec §11. Deliverable: `cezar serve` is a Rust binary; Node is deleted. Every
 step here keeps the React cockpit working until B12 — that's the oracle (spec §4).
 
-### [ ] B0 — Verify the ground is clear
+### [x] B0 — Verify the ground is clear
 **Ships:** nothing new — re-run A15's `rg` assertions, confirm nothing crept back.
 If A15 was skipped or partial, finish it now; porting condemned code is the single
 most wasteful thing this plan can do.
 **Accept:** the A15 accept criteria still hold.
 **Commit:** `chore(verify): B0 confirm A15 deletions are clean` (skip the commit
 entirely if there's nothing to fix — this step can be a no-op check.)
+— no-op: verified as A15's final gate (rg clean, `npm test`/`test:unit`/`build`
+green on `5414fce6`), nothing crept back; no commit.
 
 ### [ ] B1 — File layer
 **Ships:** `cezar-core::paths`, `config`, `workspace::{config, ui_state, migrations,
