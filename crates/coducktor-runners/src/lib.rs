@@ -8,3 +8,4 @@ mod wire;
 
 pub mod claude;
 pub mod codex;
+pub mod opencode;
