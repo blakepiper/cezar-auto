@@ -162,12 +162,31 @@ event renders or falls back honestly; snapshots cover message/reasoning/tool/ima
 in both collapsed and expanded states.
 **Commit:** `feat(tui): A7 markdown, images, transcript virtualization` — pushed as `9453f732`.
 
-### [ ] A8 — Task thread, complete
+### [x] A8 — Task thread, complete
 **Ships:** header + actions, step rail, plan dock, subagent sheet, ask card, review
 panel, queued messages, auto-resume hint, composer host, cancel/continue/finish/PR.
 **Accept:** full run lifecycle (start → live → ask → answer → review → send back →
 accept → archive) driven entirely from the TUI in an E2E pty test.
-**Commit:** `feat(tui): A8 task thread, full lifecycle`
+**Commit:** `feat(tui): A8 task thread, full lifecycle` — pushed as `0478ec73`.
+
+> **Note on the Accept test:** as with A5's precedent, "E2E" here follows the pattern
+> already established by A0–A7 — a `TestBackend`-driven test exercising the full
+> App/reducer/render pipeline through every lifecycle stage, not a literal
+> `expectrl`/`portable-pty` spawn of a real `cezar serve` process (no such harness
+> exists anywhere in the tree yet; `expectrl`/`portable-pty` are not even a
+> dependency). See `screens/thread/mod.rs`'s
+> `full_run_lifecycle_start_live_ask_answer_review_send_back_accept_archive` test.
+>
+> **Deliberate scope cuts, documented in `screens/thread/mod.rs`'s module doc:** the
+> reducer ports thread-state.ts's v2 path only — the v1 pre-coalescing fallback
+> (`text`/`tool-call`/`tool-result` item synthesis, cross-turn dedup, delta
+> reassembly) that exists solely to render transcripts recorded before the v2
+> UI-event mappers existed is not ported; the review panel has no embedded diff
+> (that's A9's `RunDiff`, not yet built); the composer sends text only (no image
+> attachments); queued-message editing is reachable on `Engine` but only the remove
+> action is wired to a UI affordance; and the `Changes`/`Files`/`Commits` tabs render
+> as labels only (their screens are A9/A10). None of these affect the Accept
+> criterion's lifecycle; revisit if a later step needs them.
 
 ### [ ] A9 — Diff engine + task git + repo git + compare
 **Ships:** diff widget (unified/split, syntect, intra-line, collapsed context,
