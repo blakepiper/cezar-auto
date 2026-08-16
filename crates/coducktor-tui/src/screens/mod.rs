@@ -1,9 +1,13 @@
 pub mod compare;
+pub mod github;
 pub mod global_tasks;
 pub mod ide;
+pub mod inbox;
 pub mod new_task;
 pub mod repo_git;
 pub mod runs_util;
+pub mod skills;
 pub mod task_git;
 pub mod tasks;
 pub mod thread;
+pub mod workflows;

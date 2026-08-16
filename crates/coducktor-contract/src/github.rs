@@ -242,6 +242,16 @@ pub enum GithubMergeMethod {
     Rebase,
 }
 
+impl std::fmt::Display for GithubMergeMethod {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Merge => "merge",
+            Self::Squash => "squash",
+            Self::Rebase => "rebase",
+        })
+    }
+}
+
 /// Mirrors `packages/contract/src/github.ts::GithubPrCheck`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -427,4 +437,14 @@ pub struct GithubPrChangesUnavailable {
 pub enum GithubPrChangesData {
     Available(GithubPrChangesAvailable),
     Unavailable(GithubPrChangesUnavailable),
+}
+
+/// The `POST /github/prs/:number/merge` request body (`mergeBodySchema` in `server.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubMergeInput {
+    pub method: GithubMergeMethod,
+    pub expected_head_sha: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub override_rules: Option<bool>,
 }

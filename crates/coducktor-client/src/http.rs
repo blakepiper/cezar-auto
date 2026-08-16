@@ -3,16 +3,19 @@ use std::pin::Pin;
 use coducktor_contract::{
     AgentProfilesResponse, ApiRun, ArchiveFinishedResponse, CancelAutoResumeResponse,
     CancelResponse, ChangesPayload, ConfigResponse, ContinueInput, ContinueResponse,
-    CreatePrResponse, CreateRunInput, CreateRunResponse, DeleteRunResponse,
+    CreatePrResponse, CreateRunInput, CreateRunResponse, DeleteRunResponse, DeleteWorkflowResponse,
     EditQueuedMessageResponse, FinishResponse, GitCommitInput, GitCommitResponse, GitPushResponse,
-    GithubData, GroupResponse, HealthResponse, IdeDirectoryResponse, IdeFileInput, IdeFileResponse,
-    MarkAllReadResponse, MessageInput, MessageResponse, OpenInCliResponse, OpenInInput,
-    PatchRunInput, PickVariantRequest, PickVariantResponse, PlanResponse, ProjectsResponse,
-    ProviderStatusResponse, QueuedMessagePatchInput, RemoveQueuedMessageResponse,
-    RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoResponse, RunCommitsResponse,
-    RunEvent, RunHistoryContext, RunHistoryPage, Runner, RunnerModelCatalogResponse,
-    RunsIndexResponse, SetConfigInput, Skill, UiState, WorkflowsResponse, WorkspaceConfigResponse,
-    WorkspaceUsageResponse, WorktreeEntry,
+    GithubChecksData, GithubCommentsData, GithubData, GithubMergeInput, GithubMergeResponse,
+    GithubPrChangesData, GithubPrMergeStateResponse, GithubRefStatusData, GroupResponse,
+    HealthResponse, IdeDirectoryResponse, IdeFileInput, IdeFileResponse, MarkAllReadResponse,
+    MessageInput, MessageResponse, OpenInCliResponse, OpenInInput, ParseWorkflowInput,
+    ParsedWorkflow, PatchRunInput, PickVariantRequest, PickVariantResponse, PlanResponse,
+    ProjectsResponse, ProviderStatusResponse, QueuedMessagePatchInput, RemoveQueuedMessageResponse,
+    RemoveTodoResponse, RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoResponse,
+    RunCommitsResponse, RunEvent, RunHistoryContext, RunHistoryPage, Runner,
+    RunnerModelCatalogResponse, RunsIndexResponse, SaveWorkflowInput, SaveWorkflowResponse,
+    SetConfigInput, Skill, StartTodoResponse, TodoItem, UiState, WorkflowsResponse,
+    WorkspaceConfigResponse, WorkspaceUsageResponse, WorktreeEntry,
 };
 use futures_core::Stream;
 use futures_util::StreamExt;
@@ -207,6 +210,144 @@ impl HttpEngine {
 
     pub async fn github(&self, scope: &Scope) -> Result<GithubData, EngineError> {
         self.get_json(scope, "/github").await
+    }
+
+    /// One checks glyph per PR number — the list pane's rollup column. `prs` join with
+    /// commas in the `?prs=` query, mirroring the web client.
+    pub async fn github_checks(
+        &self,
+        scope: &Scope,
+        prs: &[String],
+    ) -> Result<GithubChecksData, EngineError> {
+        let joined = prs.join(",");
+        let route = format!("/github/checks{}", query(&[("prs", Some(&joined))]));
+        self.get_json(scope, &route).await
+    }
+
+    pub async fn github_ref_status(
+        &self,
+        scope: &Scope,
+    ) -> Result<GithubRefStatusData, EngineError> {
+        self.get_json(scope, "/github/ref-status").await
+    }
+
+    pub async fn github_comments(
+        &self,
+        scope: &Scope,
+        kind: &str,
+        number: u64,
+    ) -> Result<GithubCommentsData, EngineError> {
+        self.get_json(
+            scope,
+            &format!("/github/comments/{}/{}", encode_path_segment(kind), number),
+        )
+        .await
+    }
+
+    pub async fn github_pr_merge_state(
+        &self,
+        scope: &Scope,
+        number: u64,
+    ) -> Result<GithubPrMergeStateResponse, EngineError> {
+        self.get_json(scope, &format!("/github/prs/{number}/merge-state"))
+            .await
+    }
+
+    pub async fn github_merge_pr(
+        &self,
+        scope: &Scope,
+        number: u64,
+        input: &GithubMergeInput,
+    ) -> Result<GithubMergeResponse, EngineError> {
+        self.send_json(
+            Method::POST,
+            scope,
+            &format!("/github/prs/{number}/merge"),
+            Some(input),
+        )
+        .await
+    }
+
+    pub async fn github_pr_changes(
+        &self,
+        scope: &Scope,
+        number: u64,
+    ) -> Result<GithubPrChangesData, EngineError> {
+        self.get_json(scope, &format!("/github/prs/{number}/changes"))
+            .await
+    }
+
+    pub async fn todos(&self, scope: &Scope) -> Result<Vec<TodoItem>, EngineError> {
+        self.get_json(scope, "/todos").await
+    }
+
+    pub async fn delete_todo(
+        &self,
+        scope: &Scope,
+        id: &str,
+    ) -> Result<RemoveTodoResponse, EngineError> {
+        self.send_json(
+            Method::DELETE,
+            scope,
+            &format!("/todos/{}", encode_path_segment(id)),
+            Option::<&Value>::None,
+        )
+        .await
+    }
+
+    /// Bodyless by design: the server's `startTodoSchema` accepts an absent body and runs
+    /// the todo's own suggested task text with the workspace defaults.
+    pub async fn start_todo(
+        &self,
+        scope: &Scope,
+        id: &str,
+    ) -> Result<StartTodoResponse, EngineError> {
+        self.send_json(
+            Method::POST,
+            scope,
+            &format!("/todos/{}/start", encode_path_segment(id)),
+            Option::<&Value>::None,
+        )
+        .await
+    }
+
+    pub async fn save_workflow(
+        &self,
+        scope: &Scope,
+        input: &SaveWorkflowInput,
+    ) -> Result<SaveWorkflowResponse, EngineError> {
+        self.send_json(Method::POST, scope, "/workflows", Some(input))
+            .await
+    }
+
+    pub async fn delete_workflow(
+        &self,
+        scope: &Scope,
+        name: &str,
+    ) -> Result<DeleteWorkflowResponse, EngineError> {
+        self.send_json(
+            Method::DELETE,
+            scope,
+            &format!("/workflows/{}", encode_path_segment(name)),
+            Option::<&Value>::None,
+        )
+        .await
+    }
+
+    pub async fn parse_workflow(
+        &self,
+        scope: &Scope,
+        yaml: &str,
+    ) -> Result<ParsedWorkflow, EngineError> {
+        self.send_json(
+            Method::POST,
+            scope,
+            "/workflows/parse",
+            Some(&ParseWorkflowInput {
+                yaml: yaml.to_owned(),
+            }),
+        )
+        .await
     }
 
     pub async fn agent_profiles(&self) -> Result<AgentProfilesResponse, EngineError> {

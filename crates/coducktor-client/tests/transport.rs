@@ -250,6 +250,79 @@ async fn ide_directory_file_and_save_round_trip_through_the_versioned_routes() {
 }
 
 #[tokio::test]
+async fn workflow_save_parse_and_delete_round_trip() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/p/shop/workflows"))
+        .and(|request: &wiremock::Request| {
+            serde_json::from_slice::<serde_json::Value>(&request.body)
+                .map(|body| {
+                    // The portable compact form: skills only, never both keys (spec 012).
+                    body == json!({
+                        "name": "my-chain",
+                        "skills": ["om-fix", "omarchy"],
+                        "overwrite": true,
+                    })
+                })
+                .unwrap_or(false)
+        })
+        .respond_with(ResponseTemplate::new(201).set_body_json(
+            json!({"path": "/repo/.ai/cezar/workflows/my-chain.yaml", "name": "my-chain"}),
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/p/shop/workflows/parse"))
+        .and(|request: &wiremock::Request| {
+            serde_json::from_slice::<serde_json::Value>(&request.body)
+                .map(|body| body == json!({"yaml": "name: qa\nskills: [om-fix]"}))
+                .unwrap_or(false)
+        })
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "qa",
+            "steps": [{"id": "om-fix", "name": "om-fix", "skill": "om-fix", "prompt": "{{task}}"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/v1/p/shop/workflows/my-chain"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(
+                json!({"ok": true, "path": "/repo/.ai/cezar/workflows/my-chain.yaml"}),
+            ),
+        )
+        .mount(&server)
+        .await;
+
+    let engine = HttpEngine::new(server.uri()).unwrap();
+    let scope = Scope::Project("shop".into());
+    let saved = engine
+        .save_workflow(
+            &scope,
+            &coducktor_contract::SaveWorkflowInput {
+                name: "my-chain".to_owned(),
+                description: None,
+                steps: None,
+                skills: Some(vec!["om-fix".to_owned(), "omarchy".to_owned()]),
+                overwrite: Some(true),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(saved.path.ends_with("my-chain.yaml"));
+
+    let parsed = engine
+        .parse_workflow(&scope, "name: qa\nskills: [om-fix]")
+        .await
+        .unwrap();
+    assert_eq!(parsed.name, "qa");
+    assert_eq!(parsed.steps.len(), 1);
+
+    let deleted = engine.delete_workflow(&scope, "my-chain").await.unwrap();
+    assert!(deleted.ok);
+}
+
+#[tokio::test]
 async fn runs_index_is_workspace_level() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

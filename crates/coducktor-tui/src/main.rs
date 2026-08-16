@@ -684,6 +684,176 @@ async fn execute_pending(engine: &HttpEngine, app: &mut App) {
             PendingAction::IdeDiscardThenNavigate(_) => unreachable!("resolved in app.rs"),
             PendingAction::IdeDiscardThenBack => unreachable!("resolved in app.rs"),
             PendingAction::IdeDiscardThenForward => unreachable!("resolved in app.rs"),
+            PendingAction::LoadGithub { project } => {
+                let scope = Scope::Project(project.clone());
+                match engine.github(&scope).await {
+                    Ok(data) => {
+                        if !data.available {
+                            app.github_ui.data = Some(data.clone());
+                        } else {
+                            app.github_ui.data = Some(data);
+                        }
+                    }
+                    Err(error) => app.notice = Some(format!("load github failed: {error}")),
+                }
+            }
+            PendingAction::LoadGithubPickers { project } => {
+                let scope = Scope::Project(project.clone());
+                if let Ok(workflows) = engine.workflows(&scope).await {
+                    app.github_ui.workflows = workflows.workflows;
+                }
+                if let Ok(skills) = engine.skills(&scope).await {
+                    app.github_ui.skills = skills;
+                }
+            }
+            PendingAction::LoadGithubComments {
+                project,
+                kind,
+                number,
+            } => {
+                let scope = Scope::Project(project.clone());
+                match engine.github_comments(&scope, &kind, number).await {
+                    Ok(comments) => app.github_ui.comments = Some(comments),
+                    Err(error) => app.notice = Some(format!("load comments failed: {error}")),
+                }
+            }
+            PendingAction::LoadGithubMergeState { project, number } => {
+                let scope = Scope::Project(project.clone());
+                match engine.github_pr_merge_state(&scope, number).await {
+                    Ok(state) => app.github_ui.merge_state = Some(state),
+                    Err(error) => app.notice = Some(format!("load merge state failed: {error}")),
+                }
+            }
+            PendingAction::LoadGithubPrChanges { project, number } => {
+                let scope = Scope::Project(project.clone());
+                match engine.github_pr_changes(&scope, number).await {
+                    Ok(changes) => app.github_ui.pr_changes = Some(changes),
+                    Err(error) => app.notice = Some(format!("load changes failed: {error}")),
+                }
+            }
+            PendingAction::GithubMerge {
+                project,
+                number,
+                method,
+                head_sha,
+                override_rules,
+            } => {
+                let scope = Scope::Project(project.clone());
+                let input = coducktor_contract::GithubMergeInput {
+                    method,
+                    expected_head_sha: head_sha,
+                    override_rules: Some(override_rules),
+                };
+                match engine.github_merge_pr(&scope, number, &input).await {
+                    Ok(response) => {
+                        app.notice = Some(format!("merged PR #{number} with {}", response.method));
+                        app.pending.push(PendingAction::LoadGithub { project });
+                    }
+                    Err(error) => app.notice = Some(format!("merge failed: {error}")),
+                }
+            }
+            PendingAction::GithubHandToAgent { project, input } => {
+                let scope = Scope::Project(project.clone());
+                match engine.start_run(&scope, &input).await {
+                    Ok(response) => {
+                        if let Some(id) = new_task_form::started_run_id(&response) {
+                            app.github_ui.queued = Some(id);
+                        }
+                        refresh_tasks(engine, app, &project).await;
+                    }
+                    Err(error) => app.notice = Some(format!("start failed: {error}")),
+                }
+            }
+            PendingAction::LoadInbox { project } => {
+                let scope = Scope::Project(project.clone());
+                match engine.health().await {
+                    Ok(health) => {
+                        app.inbox_ui.followups_enabled = Some(health.capabilities.followups);
+                    }
+                    Err(error) => app.notice = Some(format!("load health failed: {error}")),
+                }
+                match engine.todos(&scope).await {
+                    Ok(todos) => app.inbox_ui.todos = Some(todos),
+                    Err(error) => app.notice = Some(format!("load inbox failed: {error}")),
+                }
+            }
+            PendingAction::StartTodo { project, id } => {
+                let scope = Scope::Project(project.clone());
+                match engine.start_todo(&scope, &id).await {
+                    Ok(_) => {
+                        app.notice = Some("todo started — see Tasks".to_owned());
+                        refresh_tasks(engine, app, &project).await;
+                        app.pending.push(PendingAction::LoadInbox { project });
+                    }
+                    Err(error) => app.notice = Some(format!("start failed: {error}")),
+                }
+            }
+            PendingAction::DismissTodo { project, id } => {
+                let scope = Scope::Project(project.clone());
+                match engine.delete_todo(&scope, &id).await {
+                    Ok(_) => {
+                        app.pending.push(PendingAction::LoadInbox { project });
+                    }
+                    Err(error) => app.notice = Some(format!("dismiss failed: {error}")),
+                }
+            }
+            PendingAction::LoadSkills { project } => {
+                let scope = Scope::Project(project.clone());
+                match engine.skills(&scope).await {
+                    Ok(skills) => app.skills_ui.skills = skills,
+                    Err(error) => app.notice = Some(format!("load skills failed: {error}")),
+                }
+            }
+            PendingAction::LoadWorkflows { project } => {
+                let scope = Scope::Project(project.clone());
+                match engine.workflows(&scope).await {
+                    Ok(workflows) => {
+                        app.workflows_ui.workflows = workflows.workflows;
+                        if let Some(issue) = workflows.issues.first() {
+                            app.notice = Some(format!(
+                                "workflow issue: {} — {}",
+                                issue.path, issue.message
+                            ));
+                        }
+                    }
+                    Err(error) => app.notice = Some(format!("load workflows failed: {error}")),
+                }
+            }
+            PendingAction::LoadWorkflowSkills { project } => {
+                let scope = Scope::Project(project.clone());
+                match engine.skills(&scope).await {
+                    Ok(skills) => app.workflows_ui.palette_skills = skills,
+                    Err(error) => app.notice = Some(format!("load skills failed: {error}")),
+                }
+            }
+            PendingAction::SaveWorkflow { project } => {
+                save_or_export_workflow(engine, app, &project, false).await;
+            }
+            PendingAction::ExportWorkflow { project } => {
+                save_or_export_workflow(engine, app, &project, true).await;
+            }
+            PendingAction::DeleteWorkflow { project, name } => {
+                let scope = Scope::Project(project.clone());
+                match engine.delete_workflow(&scope, &name).await {
+                    Ok(_) => {
+                        app.notice = Some(format!("deleted workflow {name}"));
+                        app.pending.push(PendingAction::LoadWorkflows { project });
+                    }
+                    Err(error) => app.notice = Some(format!("delete failed: {error}")),
+                }
+            }
+            PendingAction::ImportWorkflow { project, yaml } => {
+                let scope = Scope::Project(project.clone());
+                match engine.parse_workflow(&scope, &yaml).await {
+                    Ok(parsed) => {
+                        app.workflows_ui.selected_tab = app.workflows_ui.workflows.len();
+                        app.workflows_ui.draft_name = parsed.name;
+                        app.workflows_ui.draft_steps = parsed.steps;
+                        app.notice = Some("imported — review and save".to_owned());
+                    }
+                    Err(error) => app.notice = Some(format!("import failed: {error}")),
+                }
+            }
             PendingAction::Quit => {}
         }
     }
@@ -924,6 +1094,65 @@ async fn run(
     }
 
     Ok(())
+}
+
+/// Save or export the workflows draft. Both write `POST /workflows`; the export path is the
+/// same write answered with the file path it landed in (spec §8.13). The body honors the
+/// portable compact form: `skills:` when every step is a plain skill step, `steps:` otherwise
+/// (mirrors the server's own `skillStackOf`, spec 012 — a protected format property).
+async fn save_or_export_workflow(engine: &HttpEngine, app: &mut App, project: &str, export: bool) {
+    let name = if app.workflows_ui.draft_name.trim().is_empty() {
+        app.workflows_ui
+            .workflows
+            .get(app.workflows_ui.selected_tab)
+            .map(|workflow| workflow.name.clone())
+            .unwrap_or_else(|| "my-chain".to_owned())
+    } else {
+        app.workflows_ui.draft_name.trim().to_owned()
+    };
+    let steps = if app.workflows_ui.selected_tab >= app.workflows_ui.workflows.len() {
+        app.workflows_ui.draft_steps.clone()
+    } else {
+        app.workflows_ui.workflows[app.workflows_ui.selected_tab]
+            .steps
+            .clone()
+    };
+    if steps.is_empty() {
+        app.notice = Some("nothing to save — add steps first".to_owned());
+        return;
+    }
+    // The portable compact form is XOR with the full form (the server's schema: "provide
+    // either steps or skills, not both").
+    let input = match screens::workflows::skill_stack_of(&steps) {
+        Some(skills) => coducktor_contract::SaveWorkflowInput {
+            name,
+            description: None,
+            steps: None,
+            skills: Some(skills),
+            overwrite: Some(true),
+        },
+        None => coducktor_contract::SaveWorkflowInput {
+            name,
+            description: None,
+            steps: Some(steps),
+            skills: None,
+            overwrite: Some(true),
+        },
+    };
+    let scope = Scope::Project(project.to_owned());
+    match engine.save_workflow(&scope, &input).await {
+        Ok(response) => {
+            app.notice = Some(if export {
+                format!("exported {} → {}", response.name, response.path)
+            } else {
+                format!("saved {} → {}", response.name, response.path)
+            });
+            app.pending.push(PendingAction::LoadWorkflows {
+                project: project.to_owned(),
+            });
+        }
+        Err(error) => app.notice = Some(format!("save failed: {error}")),
+    }
 }
 
 fn current_epoch_seconds() -> i64 {

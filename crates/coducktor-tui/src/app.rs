@@ -167,6 +167,18 @@ pub enum Route {
     Ide {
         project: String,
     },
+    Github {
+        project: String,
+    },
+    Skills {
+        project: String,
+    },
+    Inbox {
+        project: String,
+    },
+    Workflows {
+        project: String,
+    },
     RepoGit {
         project: String,
         tab: RepoGitTab,
@@ -220,6 +232,10 @@ impl Route {
                     group_id: (*parts.get(3)?).to_owned(),
                 }),
                 Some("ide") => Some(Self::Ide { project }),
+                Some("github") => Some(Self::Github { project }),
+                Some("skills") => Some(Self::Skills { project }),
+                Some("inbox") => Some(Self::Inbox { project }),
+                Some("workflows") => Some(Self::Workflows { project }),
                 Some("git" | "repo-git") => {
                     let tab = parts
                         .get(3)
@@ -251,6 +267,10 @@ impl Route {
                 format!("/p/{project}/tasks/{id}/{}", tab.path_segment())
             }
             Self::Ide { project } => format!("/p/{project}/ide"),
+            Self::Github { project } => format!("/p/{project}/github"),
+            Self::Skills { project } => format!("/p/{project}/skills"),
+            Self::Inbox { project } => format!("/p/{project}/inbox"),
+            Self::Workflows { project } => format!("/p/{project}/workflows"),
             Self::RepoGit { project, tab } => {
                 format!("/p/{project}/repo-git/{}", tab.path_segment())
             }
@@ -269,6 +289,10 @@ impl Route {
             Self::Thread { .. } => "TASK THREAD",
             Self::TaskGit { .. } => "TASK GIT",
             Self::Ide { .. } => "IDE",
+            Self::Github { .. } => "GITHUB",
+            Self::Skills { .. } => "SKILLS",
+            Self::Inbox { .. } => "INBOX",
+            Self::Workflows { .. } => "WORKFLOWS",
             Self::RepoGit { .. } => "REPO GIT",
             Self::Compare { .. } => "COMPARE",
             Self::Placeholder { nav, .. } => nav.uppercase_title(),
@@ -282,6 +306,10 @@ impl Route {
             | Self::Thread { project, .. }
             | Self::TaskGit { project, .. }
             | Self::Ide { project }
+            | Self::Github { project }
+            | Self::Skills { project }
+            | Self::Inbox { project }
+            | Self::Workflows { project }
             | Self::RepoGit { project, .. }
             | Self::Compare { project, .. }
             | Self::Placeholder { project, .. } => Some(project),
@@ -628,6 +656,78 @@ pub enum PendingAction {
     IdeDiscardThenNavigate(Box<Route>),
     IdeDiscardThenBack,
     IdeDiscardThenForward,
+    /// `GET /github` — the GitHub screen's aggregate read.
+    LoadGithub {
+        project: String,
+    },
+    /// The hand-to-agent pickers (`GET /workflows` + `GET /skills`).
+    LoadGithubPickers {
+        project: String,
+    },
+    LoadGithubComments {
+        project: String,
+        kind: String,
+        number: u64,
+    },
+    LoadGithubMergeState {
+        project: String,
+        number: u64,
+    },
+    LoadGithubPrChanges {
+        project: String,
+        number: u64,
+    },
+    /// `POST /github/prs/:number/merge` — the merge-gate confirm's action.
+    GithubMerge {
+        project: String,
+        number: u64,
+        method: coducktor_contract::GithubMergeMethod,
+        head_sha: String,
+        override_rules: bool,
+    },
+    /// The hand-to-agent's run start — like `StartRun` but stays on the GitHub screen and
+    /// reports the queued run id in the hand-off card instead of navigating away.
+    GithubHandToAgent {
+        project: String,
+        input: coducktor_contract::CreateRunInput,
+    },
+    /// The Inbox's combined read: health (for the followups capability) + `/todos`.
+    LoadInbox {
+        project: String,
+    },
+    StartTodo {
+        project: String,
+        id: String,
+    },
+    DismissTodo {
+        project: String,
+        id: String,
+    },
+    LoadSkills {
+        project: String,
+    },
+    LoadWorkflows {
+        project: String,
+    },
+    LoadWorkflowSkills {
+        project: String,
+    },
+    /// `POST /workflows` — save the draft in `skills:` form when portable, `steps:` otherwise.
+    SaveWorkflow {
+        project: String,
+    },
+    /// The export path: the same write, answered with the file path it landed in.
+    ExportWorkflow {
+        project: String,
+    },
+    DeleteWorkflow {
+        project: String,
+        name: String,
+    },
+    ImportWorkflow {
+        project: String,
+        yaml: String,
+    },
     Quit,
 }
 
@@ -712,6 +812,10 @@ pub struct App {
     pub repo_git_ui: crate::screens::repo_git::RepoGitUi,
     pub compare_ui: crate::screens::compare::CompareUi,
     pub ide_ui: crate::screens::ide::IdeUi,
+    pub github_ui: crate::screens::github::GithubUi,
+    pub skills_ui: crate::screens::skills::SkillsUi,
+    pub inbox_ui: crate::screens::inbox::InboxUi,
+    pub workflows_ui: crate::screens::workflows::WorkflowsUi,
     pub pending: Vec<PendingAction>,
     /// The absolute path main.rs should hand to `$EDITOR` (set by the `OpenIdeInEditor`
     /// handler; consumed by the run loop, which owns the terminal).
@@ -768,6 +872,10 @@ impl App {
             repo_git_ui: crate::screens::repo_git::RepoGitUi::default(),
             compare_ui: crate::screens::compare::CompareUi::default(),
             ide_ui: crate::screens::ide::IdeUi::default(),
+            github_ui: crate::screens::github::GithubUi::default(),
+            skills_ui: crate::screens::skills::SkillsUi::default(),
+            inbox_ui: crate::screens::inbox::InboxUi::default(),
+            workflows_ui: crate::screens::workflows::WorkflowsUi::default(),
             pending: Vec::new(),
             editor_handoff: None,
             filter_mode: false,
@@ -1304,6 +1412,22 @@ impl App {
                 crate::screens::ide::render(frame, area, self);
                 return;
             }
+            Route::Github { .. } => {
+                crate::screens::github::render(frame, area, self);
+                return;
+            }
+            Route::Skills { .. } => {
+                crate::screens::skills::render(frame, area, self);
+                return;
+            }
+            Route::Inbox { .. } => {
+                crate::screens::inbox::render(frame, area, self);
+                return;
+            }
+            Route::Workflows { .. } => {
+                crate::screens::workflows::render(frame, area, self);
+                return;
+            }
             Route::RepoGit { .. } => {
                 crate::screens::repo_git::render(frame, area, self);
                 return;
@@ -1542,6 +1666,13 @@ impl App {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(action) = self.hitmap.hit(mouse.column, mouse.row) {
+                    // Press on a workflow step arms the drag-reorder; the click itself is
+                    // still applied (it moves the step cursor), the release does the move.
+                    if let HitAction::WorkflowStep(index) = action
+                        && matches!(self.route(), Route::Workflows { .. })
+                    {
+                        self.workflows_ui.drag_source = Some(index);
+                    }
                     if action == HitAction::SidebarEdge {
                         self.sidebar_dragging = true;
                     } else {
@@ -1570,7 +1701,16 @@ impl App {
                     .saturating_add(1)
                     .clamp(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH);
             }
-            MouseEventKind::Up(MouseButton::Left) => self.sidebar_dragging = false,
+            MouseEventKind::Up(MouseButton::Left) => {
+                if let Some(source) = self.workflows_ui.drag_source.take()
+                    && let Some(HitAction::WorkflowStep(target)) =
+                        self.hitmap.hit(mouse.column, mouse.row)
+                    && matches!(self.route(), Route::Workflows { .. })
+                {
+                    crate::screens::workflows::drop_step(self, source, target);
+                }
+                self.sidebar_dragging = false;
+            }
             _ => {}
         }
     }
@@ -1606,6 +1746,10 @@ impl App {
             Route::Thread { .. } if crate::screens::thread::handle_key(self, key) => return,
             Route::TaskGit { .. } if crate::screens::task_git::handle_key(self, key) => return,
             Route::Ide { .. } if crate::screens::ide::handle_key(self, key) => return,
+            Route::Github { .. } if crate::screens::github::handle_key(self, key) => return,
+            Route::Skills { .. } if crate::screens::skills::handle_key(self, key) => return,
+            Route::Inbox { .. } if crate::screens::inbox::handle_key(self, key) => return,
+            Route::Workflows { .. } if crate::screens::workflows::handle_key(self, key) => return,
             Route::RepoGit { .. } if crate::screens::repo_git::handle_key(self, key) => return,
             Route::Compare { .. } if crate::screens::compare::handle_key(self, key) => return,
             _ => {}
@@ -1865,6 +2009,36 @@ impl App {
                     crate::screens::ide::apply_hit(self, action);
                 }
             }
+            HitAction::GithubScreen(action) => {
+                if matches!(self.route(), Route::Github { .. }) {
+                    crate::screens::github::apply_hit(self, action);
+                }
+            }
+            HitAction::InboxSelect(index) => {
+                if matches!(self.route(), Route::Inbox { .. }) {
+                    self.inbox_ui.selected = index;
+                }
+            }
+            HitAction::SkillsScreen(index) => {
+                if matches!(self.route(), Route::Skills { .. }) {
+                    self.skills_ui.selected = index;
+                }
+            }
+            HitAction::WorkflowTab(index) => {
+                if matches!(self.route(), Route::Workflows { .. }) {
+                    crate::screens::workflows::apply_tab_hit(self, index);
+                }
+            }
+            HitAction::WorkflowStep(index) => {
+                if matches!(self.route(), Route::Workflows { .. }) {
+                    crate::screens::workflows::apply_step_hit(self, index);
+                }
+            }
+            HitAction::WorkflowSkill(index) => {
+                if matches!(self.route(), Route::Workflows { .. }) {
+                    crate::screens::workflows::apply_palette_hit(self, index);
+                }
+            }
             HitAction::RepoGitScreen(action) => {
                 if matches!(self.route(), Route::RepoGit { .. }) {
                     crate::screens::repo_git::apply_hit(self, action);
@@ -1909,6 +2083,10 @@ impl App {
                     path: None,
                 });
             }
+            NavItem::Github => crate::screens::github::open(self, &project),
+            NavItem::Skills => crate::screens::skills::open(self, &project),
+            NavItem::Inbox => crate::screens::inbox::open(self, &project),
+            NavItem::Workflows => crate::screens::workflows::open(self, &project),
             NavItem::RepoGit => {
                 self.request_navigate(Route::RepoGit {
                     project: project.clone(),
@@ -1929,6 +2107,10 @@ impl App {
                 && matches!(self.route(), Route::Tasks { .. } | Route::Thread { .. }))
             || (nav == NavItem::NewTask && matches!(self.route(), Route::NewTask { .. }))
             || (nav == NavItem::Ide && matches!(self.route(), Route::Ide { .. }))
+            || (nav == NavItem::Github && matches!(self.route(), Route::Github { .. }))
+            || (nav == NavItem::Skills && matches!(self.route(), Route::Skills { .. }))
+            || (nav == NavItem::Inbox && matches!(self.route(), Route::Inbox { .. }))
+            || (nav == NavItem::Workflows && matches!(self.route(), Route::Workflows { .. }))
             || (nav == NavItem::RepoGit && matches!(self.route(), Route::RepoGit { .. }))
     }
 

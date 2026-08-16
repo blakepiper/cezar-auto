@@ -106,6 +106,13 @@ pub struct ParsedWorkflow {
     pub steps: Vec<WorkflowStepDef>,
 }
 
+/// The `POST /workflows/parse` request body (`parseWorkflowSchema` in `server.ts`) — the
+/// builder's import path: pasted YAML in either form, parsed and normalized server-side.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParseWorkflowInput {
+    pub yaml: String,
+}
+
 /// Mirrors `packages/contract/src/workflows.ts::DeleteWorkflowResponse`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeleteWorkflowResponse {

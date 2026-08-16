@@ -1,6 +1,7 @@
 use ratatui::layout::Rect;
 
 use crate::app::{RepoGitTab, TaskGitTab};
+use crate::screens::github::{GithubDetailTab, GithubTab};
 use crate::screens::thread::ThreadAction;
 use crate::widgets::table::ColumnId;
 
@@ -47,6 +48,17 @@ pub enum IdeAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompareAction {
     Pick(usize),
+}
+
+/// A GitHub (`screens/github`) screen control — routed by `apply_hit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GithubAction {
+    SwitchTab(GithubTab),
+    SelectItem(usize),
+    SwitchDetailTab(GithubDetailTab),
+    CycleMergeMethod,
+    CycleWorkflow,
+    RunAgent,
 }
 
 /// A new-task screen control (a pill, a button, or the composer).
@@ -113,6 +125,18 @@ pub enum HitAction {
     TaskGitScreen(TaskGitAction),
     /// An IDE screen control — routed by the screen.
     IdeScreen(IdeAction),
+    /// A GitHub screen control — routed by the screen.
+    GithubScreen(GithubAction),
+    /// An inbox row — click to select.
+    InboxSelect(usize),
+    /// A skills row — click to select.
+    SkillsScreen(usize),
+    /// A workflows tab — click to select.
+    WorkflowTab(usize),
+    /// A workflows step row — click to move the step cursor.
+    WorkflowStep(usize),
+    /// A workflows palette row — click to select.
+    WorkflowSkill(usize),
     /// A repo-git screen control — routed by the screen.
     RepoGitScreen(RepoGitAction),
     /// A compare-variants screen control — routed by the screen.

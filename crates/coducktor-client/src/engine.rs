@@ -2,15 +2,18 @@ use async_trait::async_trait;
 use coducktor_contract::{
     AgentProfilesResponse, ApiRun, ArchiveFinishedResponse, CancelAutoResumeResponse,
     CancelResponse, ChangesPayload, ConfigResponse, ContinueInput, ContinueResponse,
-    CreatePrResponse, CreateRunInput, CreateRunResponse, DeleteRunResponse,
+    CreatePrResponse, CreateRunInput, CreateRunResponse, DeleteRunResponse, DeleteWorkflowResponse,
     EditQueuedMessageResponse, FinishResponse, GitCommitInput, GitCommitResponse, GitPushResponse,
-    GithubData, GroupResponse, HealthResponse, IdeDirectoryResponse, IdeFileResponse,
-    MarkAllReadResponse, MessageInput, MessageResponse, OpenInCliResponse, OpenInInput,
-    PatchRunInput, PickVariantRequest, PickVariantResponse, PlanResponse, ProjectsResponse,
+    GithubChecksData, GithubCommentsData, GithubData, GithubMergeInput, GithubMergeResponse,
+    GithubPrChangesData, GithubPrMergeStateResponse, GithubRefStatusData, GroupResponse,
+    HealthResponse, IdeDirectoryResponse, IdeFileResponse, MarkAllReadResponse, MessageInput,
+    MessageResponse, OpenInCliResponse, OpenInInput, ParsedWorkflow, PatchRunInput,
+    PickVariantRequest, PickVariantResponse, PlanResponse, ProjectsResponse,
     ProviderStatusResponse, QueuedMessagePatchInput, RemoveQueuedMessageResponse,
-    RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoResponse, RunCommitsResponse,
-    RunHistoryContext, RunHistoryPage, Runner, RunnerModelCatalogResponse, RunsIndexResponse,
-    SetConfigInput, Skill, UiState, WorkflowsResponse, WorkspaceConfigResponse,
+    RemoveTodoResponse, RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoResponse,
+    RunCommitsResponse, RunHistoryContext, RunHistoryPage, Runner, RunnerModelCatalogResponse,
+    RunsIndexResponse, SaveWorkflowInput, SaveWorkflowResponse, SetConfigInput, Skill,
+    StartTodoResponse, TodoItem, UiState, WorkflowsResponse, WorkspaceConfigResponse,
     WorkspaceUsageResponse, WorktreeEntry,
 };
 use futures_core::stream::BoxStream;
@@ -75,6 +78,66 @@ pub trait Engine: Send + Sync {
     async fn provider_status(&self) -> Result<ProviderStatusResponse, EngineError>;
     async fn models(&self, runner: Runner) -> Result<RunnerModelCatalogResponse, EngineError>;
     async fn github(&self, scope: &Scope) -> Result<GithubData, EngineError>;
+
+    // ---- GitHub detail reads (spec §8.9, A11) ----------------------------------------------
+    /// `GET /github/checks?prs=` — one glyph per PR number, from the server's cache.
+    async fn github_checks(
+        &self,
+        scope: &Scope,
+        prs: &[String],
+    ) -> Result<GithubChecksData, EngineError>;
+    /// `GET /github/ref-status` — reference status (draft/review/checks/merged…) per PR/issue.
+    async fn github_ref_status(&self, scope: &Scope) -> Result<GithubRefStatusData, EngineError>;
+    /// `GET /github/comments/:kind/:number` — the comment + timeline detail for one item.
+    async fn github_comments(
+        &self,
+        scope: &Scope,
+        kind: &str,
+        number: u64,
+    ) -> Result<GithubCommentsData, EngineError>;
+    /// `GET /github/prs/:number/merge-state` — the PR merge gate, checks and eligibility.
+    async fn github_pr_merge_state(
+        &self,
+        scope: &Scope,
+        number: u64,
+    ) -> Result<GithubPrMergeStateResponse, EngineError>;
+    /// `POST /github/prs/:number/merge` — merge with an explicit method + expected head sha.
+    async fn github_merge_pr(
+        &self,
+        scope: &Scope,
+        number: u64,
+        input: &GithubMergeInput,
+    ) -> Result<GithubMergeResponse, EngineError>;
+    /// `GET /github/prs/:number/changes` — the PR's file diff (the Changes tab).
+    async fn github_pr_changes(
+        &self,
+        scope: &Scope,
+        number: u64,
+    ) -> Result<GithubPrChangesData, EngineError>;
+
+    // ---- follow-up inbox (spec §8.12, A11) -------------------------------------------------
+    async fn todos(&self, scope: &Scope) -> Result<Vec<TodoItem>, EngineError>;
+    async fn delete_todo(&self, scope: &Scope, id: &str)
+    -> Result<RemoveTodoResponse, EngineError>;
+    /// `POST /todos/:id/start` — no body: the server runs the todo's own suggested task.
+    async fn start_todo(&self, scope: &Scope, id: &str) -> Result<StartTodoResponse, EngineError>;
+
+    // ---- workflow builder writes (spec §8.13, A11) -----------------------------------------
+    async fn save_workflow(
+        &self,
+        scope: &Scope,
+        input: &SaveWorkflowInput,
+    ) -> Result<SaveWorkflowResponse, EngineError>;
+    async fn delete_workflow(
+        &self,
+        scope: &Scope,
+        name: &str,
+    ) -> Result<DeleteWorkflowResponse, EngineError>;
+    async fn parse_workflow(
+        &self,
+        scope: &Scope,
+        yaml: &str,
+    ) -> Result<ParsedWorkflow, EngineError>;
     async fn agent_profiles(&self) -> Result<AgentProfilesResponse, EngineError>;
     async fn ui_state(&self, scope: &Scope) -> Result<UiState, EngineError>;
     async fn put_ui_state(&self, scope: &Scope, state: &UiState) -> Result<UiState, EngineError>;
@@ -319,6 +382,92 @@ impl Engine for HttpEngine {
 
     async fn github(&self, scope: &Scope) -> Result<GithubData, EngineError> {
         HttpEngine::github(self, scope).await
+    }
+
+    async fn github_checks(
+        &self,
+        scope: &Scope,
+        prs: &[String],
+    ) -> Result<GithubChecksData, EngineError> {
+        HttpEngine::github_checks(self, scope, prs).await
+    }
+
+    async fn github_ref_status(&self, scope: &Scope) -> Result<GithubRefStatusData, EngineError> {
+        HttpEngine::github_ref_status(self, scope).await
+    }
+
+    async fn github_comments(
+        &self,
+        scope: &Scope,
+        kind: &str,
+        number: u64,
+    ) -> Result<GithubCommentsData, EngineError> {
+        HttpEngine::github_comments(self, scope, kind, number).await
+    }
+
+    async fn github_pr_merge_state(
+        &self,
+        scope: &Scope,
+        number: u64,
+    ) -> Result<GithubPrMergeStateResponse, EngineError> {
+        HttpEngine::github_pr_merge_state(self, scope, number).await
+    }
+
+    async fn github_merge_pr(
+        &self,
+        scope: &Scope,
+        number: u64,
+        input: &GithubMergeInput,
+    ) -> Result<GithubMergeResponse, EngineError> {
+        HttpEngine::github_merge_pr(self, scope, number, input).await
+    }
+
+    async fn github_pr_changes(
+        &self,
+        scope: &Scope,
+        number: u64,
+    ) -> Result<GithubPrChangesData, EngineError> {
+        HttpEngine::github_pr_changes(self, scope, number).await
+    }
+
+    async fn todos(&self, scope: &Scope) -> Result<Vec<TodoItem>, EngineError> {
+        HttpEngine::todos(self, scope).await
+    }
+
+    async fn delete_todo(
+        &self,
+        scope: &Scope,
+        id: &str,
+    ) -> Result<RemoveTodoResponse, EngineError> {
+        HttpEngine::delete_todo(self, scope, id).await
+    }
+
+    async fn start_todo(&self, scope: &Scope, id: &str) -> Result<StartTodoResponse, EngineError> {
+        HttpEngine::start_todo(self, scope, id).await
+    }
+
+    async fn save_workflow(
+        &self,
+        scope: &Scope,
+        input: &SaveWorkflowInput,
+    ) -> Result<SaveWorkflowResponse, EngineError> {
+        HttpEngine::save_workflow(self, scope, input).await
+    }
+
+    async fn delete_workflow(
+        &self,
+        scope: &Scope,
+        name: &str,
+    ) -> Result<DeleteWorkflowResponse, EngineError> {
+        HttpEngine::delete_workflow(self, scope, name).await
+    }
+
+    async fn parse_workflow(
+        &self,
+        scope: &Scope,
+        yaml: &str,
+    ) -> Result<ParsedWorkflow, EngineError> {
+        HttpEngine::parse_workflow(self, scope, yaml).await
     }
 
     async fn agent_profiles(&self) -> Result<AgentProfilesResponse, EngineError> {
