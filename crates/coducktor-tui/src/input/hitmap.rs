@@ -2,6 +2,24 @@ use ratatui::layout::Rect;
 
 use crate::widgets::table::ColumnId;
 
+/// A new-task screen control (a pill, a button, or the composer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewTaskAction {
+    SourcePill,
+    RunnerPill,
+    ModelPill,
+    ReasoningPill,
+    VariantsPill,
+    BasePill,
+    AccountPill,
+    AutonomousPill,
+    Start,
+    Plan,
+    Compose,
+    /// A suggestion chip below the composer — inserts the template into the draft.
+    Suggestion(usize),
+}
+
 /// Clickable actions registered while a frame renders.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HitAction {
@@ -32,6 +50,14 @@ pub enum HitAction {
     MarkAllRead,
     /// The Tasks title row's "Archive finished" action.
     ArchiveFinished,
+    /// A row of the open new-task picker overlay.
+    PickerRow(usize),
+    /// The new-task composer's paperclip (attach row).
+    ComposerAttach,
+    /// Remove the attachment at this index from the composer's attachment row.
+    ComposerRemoveAttachment(usize),
+    /// A new-task screen control (pill/button/composer) — routed by the screen.
+    NewTaskScreen(NewTaskAction),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

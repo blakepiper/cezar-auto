@@ -1,9 +1,10 @@
 use std::pin::Pin;
 
 use coducktor_contract::{
-    ApiRun, ArchiveFinishedResponse, ConfigResponse, CreateRunInput, CreateRunResponse,
-    DeleteRunResponse, GithubData, HealthResponse, MarkAllReadResponse, ProjectsResponse,
-    ProviderStatusResponse, RunEvent, Runner, RunnerModelCatalogResponse, RunsIndexResponse, Skill,
+    AgentProfilesResponse, ApiRun, ArchiveFinishedResponse, ConfigResponse, CreateRunInput,
+    CreateRunResponse, DeleteRunResponse, GithubData, HealthResponse, MarkAllReadResponse,
+    PlanResponse, ProjectsResponse, ProviderStatusResponse, RunEvent, Runner,
+    RunnerModelCatalogResponse, RunsIndexResponse, SetConfigInput, Skill, UiState,
     WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUsageResponse,
 };
 use futures_core::Stream;
@@ -176,6 +177,15 @@ impl HttpEngine {
         self.get_json(scope, "/config").await
     }
 
+    pub async fn put_config(
+        &self,
+        scope: &Scope,
+        input: &SetConfigInput,
+    ) -> Result<ConfigResponse, EngineError> {
+        self.send_json(Method::PUT, scope, "/config", Some(input))
+            .await
+    }
+
     pub async fn provider_status(&self) -> Result<ProviderStatusResponse, EngineError> {
         self.get_json(&Scope::Workspace, "/providers/status").await
     }
@@ -190,6 +200,34 @@ impl HttpEngine {
 
     pub async fn github(&self, scope: &Scope) -> Result<GithubData, EngineError> {
         self.get_json(scope, "/github").await
+    }
+
+    pub async fn agent_profiles(&self) -> Result<AgentProfilesResponse, EngineError> {
+        self.get_json(&Scope::Workspace, "/workspace/agent-profiles")
+            .await
+    }
+
+    pub async fn ui_state(&self, scope: &Scope) -> Result<UiState, EngineError> {
+        self.get_json(scope, "/ui-state").await
+    }
+
+    pub async fn put_ui_state(
+        &self,
+        scope: &Scope,
+        state: &UiState,
+    ) -> Result<UiState, EngineError> {
+        self.send_json(Method::PUT, scope, "/ui-state", Some(state))
+            .await
+    }
+
+    pub async fn plan(&self, scope: &Scope, task: &str) -> Result<PlanResponse, EngineError> {
+        self.send_json(
+            Method::POST,
+            scope,
+            "/plan",
+            Some(&serde_json::json!({ "task": task })),
+        )
+        .await
     }
 
     pub(crate) fn subscribe_topic(

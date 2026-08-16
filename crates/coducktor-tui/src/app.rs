@@ -96,6 +96,7 @@ impl NavItem {
 pub enum Route {
     Tasks { project: String },
     GlobalTasks,
+    NewTask { project: String },
     Thread { project: String, id: String },
     Placeholder { project: String, nav: NavItem },
 }
@@ -111,11 +112,17 @@ impl Route {
         if path == "/tasks" {
             return Some(Self::GlobalTasks);
         }
+        if path == "/new" {
+            return Some(Self::NewTask {
+                project: default_project.to_owned(),
+            });
+        }
         let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
         if parts.first() == Some(&"p") {
             let project = (*parts.get(1)?).to_owned();
             return match parts.get(2).copied() {
                 None => Some(Self::Tasks { project }),
+                Some("new") => Some(Self::NewTask { project }),
                 Some("tasks") if parts.len() >= 4 => Some(Self::Thread {
                     project,
                     id: (*parts.get(3)?).to_owned(),
@@ -139,6 +146,7 @@ impl Route {
         match self {
             Self::Tasks { project } => format!("/p/{project}"),
             Self::GlobalTasks => "/tasks".to_owned(),
+            Self::NewTask { project } => format!("/p/{project}/new"),
             Self::Thread { project, id } => format!("/p/{project}/tasks/{id}"),
             Self::Placeholder { project, nav } => {
                 format!("/p/{project}/{}", nav.path_segment())
@@ -150,6 +158,7 @@ impl Route {
         match self {
             Self::Tasks { .. } => "TASKS",
             Self::GlobalTasks => "GLOBAL TASKS",
+            Self::NewTask { .. } => "NEW TASK",
             Self::Thread { .. } => "TASK THREAD",
             Self::Placeholder { nav, .. } => nav.uppercase_title(),
         }
@@ -158,6 +167,7 @@ impl Route {
     fn project(&self) -> Option<&str> {
         match self {
             Self::Tasks { project }
+            | Self::NewTask { project }
             | Self::Thread { project, .. }
             | Self::Placeholder { project, .. } => Some(project),
             Self::GlobalTasks => None,
@@ -311,7 +321,7 @@ pub enum WorkspaceEvent {
 
 /// A mutation the shell or a screen wants the engine loop to run next frame.
 /// Main owns the engine; the app only queues these.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PendingAction {
     Archive {
         project: String,
@@ -340,11 +350,39 @@ pub enum PendingAction {
         project: String,
     },
     RefreshIndex,
+    /// Start a new task with an already-assembled create-run body.
+    StartRun {
+        project: String,
+        input: coducktor_contract::CreateRunInput,
+    },
+    /// Load the new-task screen's per-project data (skills, workflows, config, …).
+    RefreshNewTask {
+        project: String,
+    },
+    /// Load the model catalog for one runner.
+    RefreshModels {
+        runner: coducktor_contract::Runner,
+    },
+    /// Run the planner over a draft and show the resulting chain.
+    PlanTask {
+        project: String,
+        task: String,
+    },
+    /// Persist the (bumped) ui-state map.
+    PutUiState {
+        project: String,
+        state: coducktor_contract::UiState,
+    },
+    /// Change the project's configured base branch.
+    SetBaseBranch {
+        project: String,
+        base_branch: Option<String>,
+    },
     Quit,
 }
 
 /// A blocking question rendered over the shell; confirmed with `y`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ConfirmRequest {
     pub text: String,
     pub action: PendingAction,
@@ -418,6 +456,7 @@ pub struct App {
     pub now_epoch: i64,
     pub tasks_ui: crate::screens::tasks::TasksUi,
     pub global_ui: crate::screens::global_tasks::GlobalUi,
+    pub new_task_ui: crate::screens::new_task::NewTaskUi,
     pub pending: Vec<PendingAction>,
     pub filter_mode: bool,
     pub sort_picker_index: usize,
@@ -465,6 +504,7 @@ impl App {
             now_epoch: 0,
             tasks_ui: crate::screens::tasks::TasksUi::default(),
             global_ui: crate::screens::global_tasks::GlobalUi::default(),
+            new_task_ui: crate::screens::new_task::NewTaskUi::default(),
             pending: Vec::new(),
             filter_mode: false,
             sort_picker_index: 0,
@@ -937,6 +977,10 @@ impl App {
                 crate::screens::global_tasks::render(frame, area, self);
                 return;
             }
+            Route::NewTask { .. } => {
+                crate::screens::new_task::render(frame, area, self);
+                return;
+            }
             Route::Thread { project, id } => format!(
                 "{title}\n\nProject: {project}  Run: {id}\n\nThe task thread screen lands in A8."
             ),
@@ -1230,6 +1274,7 @@ impl App {
         match self.route().clone() {
             Route::Tasks { .. } if crate::screens::tasks::handle_key(self, key) => return,
             Route::GlobalTasks if crate::screens::global_tasks::handle_key(self, key) => return,
+            Route::NewTask { .. } if crate::screens::new_task::handle_key(self, key) => return,
             _ => {}
         }
         if let Some(action) = self.keymap.action_for(KeyMode::Normal, &key) {
@@ -1439,18 +1484,50 @@ impl App {
                 }
                 _ => {}
             },
+            HitAction::PickerRow(index) => {
+                if matches!(self.route(), Route::NewTask { .. }) {
+                    crate::screens::new_task::pick_index(self, index);
+                }
+            }
+            HitAction::ComposerAttach => {
+                if matches!(self.route(), Route::NewTask { .. }) {
+                    crate::screens::new_task::open_attach(self);
+                }
+            }
+            HitAction::ComposerRemoveAttachment(index) => {
+                if matches!(self.route(), Route::NewTask { .. }) {
+                    crate::screens::new_task::remove_attachment(self, index);
+                }
+            }
+            HitAction::NewTaskScreen(action) => {
+                if matches!(self.route(), Route::NewTask { .. }) {
+                    crate::screens::new_task::apply_hit(self, action);
+                }
+            }
         }
     }
 
     fn navigate(&mut self, nav: NavItem) {
         let project = self.current_project().to_owned();
-        if nav == NavItem::Tasks {
-            self.history.navigate(Route::Tasks {
-                project: project.clone(),
-            });
-            self.pending.push(PendingAction::RefreshTasks { project });
-        } else {
-            self.history.navigate(Route::Placeholder { project, nav });
+        match nav {
+            NavItem::Tasks => {
+                self.history.navigate(Route::Tasks {
+                    project: project.clone(),
+                });
+                self.pending.push(PendingAction::RefreshTasks { project });
+            }
+            NavItem::NewTask => {
+                self.history.navigate(Route::NewTask {
+                    project: project.clone(),
+                });
+                self.pending.push(PendingAction::RefreshNewTask { project });
+                // The hero auto-focuses the composer (spec §7.3).
+                self.new_task_ui.composer_focused = true;
+                self.new_task_ui.composer.focus();
+            }
+            _ => {
+                self.history.navigate(Route::Placeholder { project, nav });
+            }
         }
         self.notice = None;
     }
@@ -1459,6 +1536,7 @@ impl App {
         matches!(self.route(), Route::Placeholder { nav: current, .. } if *current == nav)
             || (nav == NavItem::Tasks
                 && matches!(self.route(), Route::Tasks { .. } | Route::Thread { .. }))
+            || (nav == NavItem::NewTask && matches!(self.route(), Route::NewTask { .. }))
     }
 
     fn toggle_sidebar(&mut self) {

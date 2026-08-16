@@ -188,6 +188,7 @@ dependencies = [
 name = "coducktor-tui"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "coducktor-client",
  "coducktor-contract",
  "crossterm",

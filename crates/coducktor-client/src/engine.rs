@@ -1,9 +1,10 @@
 use async_trait::async_trait;
 use coducktor_contract::{
-    ApiRun, ArchiveFinishedResponse, ConfigResponse, CreateRunInput, CreateRunResponse,
-    DeleteRunResponse, GithubData, HealthResponse, MarkAllReadResponse, ProjectsResponse,
-    ProviderStatusResponse, Runner, RunnerModelCatalogResponse, RunsIndexResponse, Skill,
-    WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUsageResponse,
+    AgentProfilesResponse, ApiRun, ArchiveFinishedResponse, ConfigResponse, CreateRunInput,
+    CreateRunResponse, DeleteRunResponse, GithubData, HealthResponse, MarkAllReadResponse,
+    PlanResponse, ProjectsResponse, ProviderStatusResponse, Runner, RunnerModelCatalogResponse,
+    RunsIndexResponse, SetConfigInput, Skill, UiState, WorkflowsResponse, WorkspaceConfigResponse,
+    WorkspaceUsageResponse,
 };
 use futures_core::stream::BoxStream;
 
@@ -58,9 +59,18 @@ pub trait Engine: Send + Sync {
     async fn workspace_config(&self) -> Result<WorkspaceConfigResponse, EngineError>;
     async fn workspace_usage(&self) -> Result<WorkspaceUsageResponse, EngineError>;
     async fn config(&self, scope: &Scope) -> Result<ConfigResponse, EngineError>;
+    async fn put_config(
+        &self,
+        scope: &Scope,
+        input: &SetConfigInput,
+    ) -> Result<ConfigResponse, EngineError>;
     async fn provider_status(&self) -> Result<ProviderStatusResponse, EngineError>;
     async fn models(&self, runner: Runner) -> Result<RunnerModelCatalogResponse, EngineError>;
     async fn github(&self, scope: &Scope) -> Result<GithubData, EngineError>;
+    async fn agent_profiles(&self) -> Result<AgentProfilesResponse, EngineError>;
+    async fn ui_state(&self, scope: &Scope) -> Result<UiState, EngineError>;
+    async fn put_ui_state(&self, scope: &Scope, state: &UiState) -> Result<UiState, EngineError>;
+    async fn plan(&self, scope: &Scope, task: &str) -> Result<PlanResponse, EngineError>;
     fn subscribe(&self, topic: Topic) -> BoxStream<'static, EngineEvent>;
 }
 
@@ -150,6 +160,14 @@ impl Engine for HttpEngine {
         HttpEngine::config(self, scope).await
     }
 
+    async fn put_config(
+        &self,
+        scope: &Scope,
+        input: &SetConfigInput,
+    ) -> Result<ConfigResponse, EngineError> {
+        HttpEngine::put_config(self, scope, input).await
+    }
+
     async fn provider_status(&self) -> Result<ProviderStatusResponse, EngineError> {
         HttpEngine::provider_status(self).await
     }
@@ -160,6 +178,22 @@ impl Engine for HttpEngine {
 
     async fn github(&self, scope: &Scope) -> Result<GithubData, EngineError> {
         HttpEngine::github(self, scope).await
+    }
+
+    async fn agent_profiles(&self) -> Result<AgentProfilesResponse, EngineError> {
+        HttpEngine::agent_profiles(self).await
+    }
+
+    async fn ui_state(&self, scope: &Scope) -> Result<UiState, EngineError> {
+        HttpEngine::ui_state(self, scope).await
+    }
+
+    async fn put_ui_state(&self, scope: &Scope, state: &UiState) -> Result<UiState, EngineError> {
+        HttpEngine::put_ui_state(self, scope, state).await
+    }
+
+    async fn plan(&self, scope: &Scope, task: &str) -> Result<PlanResponse, EngineError> {
+        HttpEngine::plan(self, scope, task).await
     }
 
     fn subscribe(&self, topic: Topic) -> BoxStream<'static, EngineEvent> {

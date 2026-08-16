@@ -1,0 +1,1846 @@
+//! New Task screen — `screens/new_task.rs`.
+//!
+//! Behavioral spec: `packages/web/src/routes/new-task.tsx` plus the pure helpers
+//! ported into `new_task_form` and `skills`. Layout (§8.3): a centered hero with
+//! "What should the agent work on?", the shared composer card (auto-growing text
+//! area, attachment row — no Dictation, per decision 2), a pill row —
+//! `skill/workflow ▾` · `runner ▾` · `model ▾` · `reasoning ▾` · `×N variants ▾` ·
+//! `base: <branch> ▾` · `agent account ▾` · `autonomous ☐` — then `Start` / `Plan
+//! first` and the send button, with prompt-template suggestion chips below.
+
+use coducktor_contract::{
+    AgentProfilesResponse, ImageInput, PlanResponse, ProviderStatusResponse, ReasoningEffort,
+    RepoInfo, Runner, RunnerModelCatalogResponse, RunnerSelection, Skill, TaskSource, UiState,
+    WorkflowDef, WorkspaceConfigResponse,
+};
+use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+
+use crate::app::{App, PendingAction};
+use crate::input::hitmap::{HitAction, NewTaskAction};
+use crate::new_task_form::{
+    self, ComposerConfig, CreateRunBodyOpts, ModelPreset, NewTaskDraft, ReasoningOption,
+};
+use crate::theme::Theme;
+use crate::widgets::composer::{Attachment, Composer, ComposerContext, ComposerEvent};
+use crate::widgets::picker::{Picker, PickerEvent, PickerItem};
+
+/// The pills on the composer's second row, in focus order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PillId {
+    Source,
+    Runner,
+    Model,
+    Reasoning,
+    Variants,
+    Base,
+    Account,
+    Autonomous,
+}
+
+impl PillId {
+    const ALL: [Self; 8] = [
+        Self::Source,
+        Self::Runner,
+        Self::Model,
+        Self::Reasoning,
+        Self::Variants,
+        Self::Base,
+        Self::Account,
+        Self::Autonomous,
+    ];
+
+    fn next(self) -> Self {
+        Self::ALL[(self.index() + 1) % Self::ALL.len()]
+    }
+
+    fn previous(self) -> Self {
+        Self::ALL[(self.index() + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+
+    fn index(self) -> usize {
+        Self::ALL.iter().position(|pill| *pill == self).unwrap_or(0)
+    }
+}
+
+/// The open pill picker, with its candidate list.
+#[derive(Debug, Clone)]
+pub enum PickerKind {
+    Source(Picker),
+    Runner(Picker),
+    Model(Picker),
+    Reasoning(Picker),
+    Variants(Picker),
+    Base(Picker),
+    Account(Picker),
+}
+
+impl PickerKind {
+    fn picker(&self) -> &Picker {
+        match self {
+            Self::Source(picker)
+            | Self::Runner(picker)
+            | Self::Model(picker)
+            | Self::Reasoning(picker)
+            | Self::Variants(picker)
+            | Self::Base(picker)
+            | Self::Account(picker) => picker,
+        }
+    }
+
+    fn picker_mut(&mut self) -> &mut Picker {
+        match self {
+            Self::Source(picker)
+            | Self::Runner(picker)
+            | Self::Model(picker)
+            | Self::Reasoning(picker)
+            | Self::Variants(picker)
+            | Self::Base(picker)
+            | Self::Account(picker) => picker,
+        }
+    }
+}
+
+/// The per-project data the screen reads.
+#[derive(Debug, Clone, Default)]
+pub struct NewTaskData {
+    pub skills: Vec<Skill>,
+    pub workflows: Vec<WorkflowDef>,
+    pub config: Option<ComposerConfig>,
+    pub workspace_config: Option<WorkspaceConfigResponse>,
+    pub provider_status: Option<ProviderStatusResponse>,
+    pub agent_profiles: Option<AgentProfilesResponse>,
+    pub ui_state: Option<UiState>,
+    pub model_catalog: Option<RunnerModelCatalogResponse>,
+    /// The runner the catalog was requested for; a runner change re-requests it.
+    pub models_requested_for: Option<Runner>,
+    pub repo: Option<RepoInfo>,
+}
+
+/// Screen-local state: the per-project draft, the shared composer, focus, and the
+/// open overlay (pill picker / plan).
+#[derive(Debug, Clone, Default)]
+pub struct NewTaskUi {
+    pub draft: NewTaskDraft,
+    pub draft_project: Option<String>,
+    pub composer: Composer,
+    pub composer_focused: bool,
+    pub pill_focus: Option<PillId>,
+    pub picker: Option<PickerKind>,
+    pub plan: Option<PlanResponse>,
+    pub plan_visible: bool,
+    pub data: NewTaskData,
+}
+
+/// The fully-resolved composer values (draft + config + catalogs), mirroring the
+/// web's derived state in `new-task.tsx`.
+pub struct Effective {
+    pub source: TaskSource,
+    pub runners: Vec<Runner>,
+    pub runner: RunnerSelection,
+    pub display_runner: Runner,
+    pub models: Vec<ModelPreset>,
+    pub model: String,
+    pub reasoning_options: Vec<ReasoningOption>,
+    pub reasoning_effort: ReasoningEffort,
+    pub variants: u64,
+    pub has_git: bool,
+    pub worktree_on: bool,
+    pub autonomous_on: bool,
+    pub generate_followups_on: bool,
+    pub followups_toggle_shown: bool,
+    pub base_branch: String,
+    pub account: Option<String>,
+    pub providers_ready: bool,
+}
+
+pub fn effective_values(draft: &NewTaskDraft, data: &NewTaskData) -> Effective {
+    let source = new_task_form::resolve_source(
+        &[
+            draft.source.clone(),
+            data.ui_state
+                .as_ref()
+                .and_then(|state| state.last_task.clone()),
+        ],
+        &data.skills,
+        &data.workflows,
+    );
+    let selected_skill = match &source {
+        TaskSource::Skill { reference } => data
+            .skills
+            .iter()
+            .find(|skill| skill.name == *reference)
+            .cloned(),
+        _ => None,
+    };
+
+    let runners = new_task_form::usable_runners(data.provider_status.as_ref());
+    let preferred = data
+        .config
+        .as_ref()
+        .map(|config| config.default_runner)
+        .unwrap_or(RunnerSelection::Claude);
+    let runner = if runners.is_empty() {
+        preferred
+    } else {
+        new_task_form::resolve_runner_selection(draft.runner, &runners, preferred)
+    };
+    let display_runner = match runner {
+        RunnerSelection::Auto => Runner::Claude,
+        RunnerSelection::Claude => Runner::Claude,
+        RunnerSelection::Codex => Runner::Codex,
+        RunnerSelection::OpenCode => Runner::OpenCode,
+        RunnerSelection::Pi => Runner::Pi,
+    };
+    let display_catalog = data
+        .model_catalog
+        .as_ref()
+        .filter(|catalog| catalog.runner == display_runner);
+
+    let models = new_task_form::models_for_runner(
+        display_runner,
+        display_catalog,
+        &[
+            draft.model.as_deref(),
+            data.config
+                .as_ref()
+                .and_then(|config| match display_runner {
+                    Runner::Claude => config.default_models.claude.as_deref(),
+                    Runner::Codex => config.default_models.codex.as_deref(),
+                    Runner::OpenCode => config.default_models.opencode.as_deref(),
+                    Runner::Pi => config.default_models.pi.as_deref(),
+                }),
+        ],
+    );
+    let models_locked = data
+        .config
+        .as_ref()
+        .map(|config| config.models_locked)
+        .unwrap_or(false);
+    let model = if models_locked {
+        String::new()
+    } else {
+        new_task_form::resolve_model(
+            draft.model.as_deref(),
+            display_runner,
+            data.config.as_ref().map(|config| &config.default_models),
+            display_catalog,
+        )
+    };
+    let reasoning_options = new_task_form::reasoning_options_for_model(&model, &models);
+    let draft_effort = draft.reasoning_effort.unwrap_or(ReasoningEffort::Auto);
+    let reasoning_effort = if reasoning_options
+        .iter()
+        .any(|option| option.value == draft_effort)
+    {
+        draft_effort
+    } else {
+        ReasoningEffort::Auto
+    };
+
+    let has_git = data.repo.is_some();
+    let variants = if has_git { draft.variants } else { 1 };
+    let workspace_defaults = data
+        .workspace_config
+        .as_ref()
+        .map(|config| &config.composer_defaults);
+    let configured_autonomous = draft.autonomous.or(workspace_defaults.and_then(|defaults| {
+        defaults.autonomous.or(match defaults.inherited_autonomous {
+            coducktor_contract::InheritedAutonomous::Value(value) => Some(value),
+            coducktor_contract::InheritedAutonomous::SourceDependent => None,
+        })
+    }));
+    let configured_worktree = workspace_defaults
+        .map(|defaults| defaults.worktree.unwrap_or(defaults.inherited_worktree))
+        .unwrap_or(true);
+    let (autonomous_on, worktree_on) = new_task_form::resolve_composer_run_mode(
+        has_git,
+        variants,
+        draft.worktree,
+        selected_skill
+            .as_ref()
+            .and_then(|skill| skill.interactive)
+            .unwrap_or(false),
+        configured_autonomous,
+        configured_worktree,
+    );
+
+    let followups_toggle_shown = true;
+    let generate_followups_on = draft
+        .generate_followups
+        .or_else(|| {
+            data.ui_state
+                .as_ref()
+                .and_then(|state| state.last_generate_followups)
+        })
+        .unwrap_or(true);
+
+    let base_branch = data
+        .config
+        .as_ref()
+        .and_then(|config| config.base_branch.clone())
+        .or_else(|| data.repo.as_ref().map(|repo| repo.branch.clone()))
+        .unwrap_or_else(|| "main".to_owned());
+
+    let account_choices = account_choices(data, display_runner);
+    let account = draft.agent_profile.clone().filter(|id| {
+        account_choices
+            .iter()
+            .any(|choice| choice.1.as_deref() == Some(id.as_str()))
+    });
+
+    Effective {
+        providers_ready: !runners.is_empty(),
+        source,
+        runners,
+        runner,
+        display_runner,
+        models,
+        model,
+        reasoning_options,
+        reasoning_effort,
+        variants,
+        has_git,
+        worktree_on,
+        autonomous_on,
+        generate_followups_on,
+        followups_toggle_shown,
+        base_branch,
+        account,
+    }
+}
+
+/// Every login for one runner: the agent row (`claude`) and any extra accounts
+/// (`claude · Klaudiusz`), as `(value, account_id)` pairs where `account_id` is
+/// `None` for the plain agent row.
+fn account_choices(data: &NewTaskData, runner: Runner) -> Vec<(String, Option<String>)> {
+    let mut choices = vec![(runner_label(runner).to_owned(), None)];
+    if let Some(profiles) = &data.agent_profiles {
+        for profile in profiles
+            .profiles
+            .iter()
+            .filter(|profile| profile.provider == runner)
+        {
+            let label = format!("{} · {}", runner_label(runner), profile.label);
+            choices.push((label, Some(profile.id.clone())));
+        }
+    }
+    choices
+}
+
+fn runner_label(runner: Runner) -> &'static str {
+    match runner {
+        Runner::Claude => "claude",
+        Runner::Codex => "codex",
+        Runner::OpenCode => "opencode",
+        Runner::Pi => "pi",
+    }
+}
+
+/// Keep the loaded draft in sync with the current project (drafts are per-project).
+fn sync_draft(app: &mut App) {
+    let project = app.current_project().to_owned();
+    if app.new_task_ui.draft_project.as_deref() != Some(project.as_str()) {
+        let draft = new_task_form::read_draft(&project);
+        app.new_task_ui.composer.set_text(&draft.text);
+        app.new_task_ui.draft = draft;
+        app.new_task_ui.draft_project = Some(project);
+    }
+}
+
+fn write_draft(app: &App) {
+    let project = app.current_project();
+    new_task_form::write_draft(project, &app.new_task_ui.draft);
+}
+
+fn composer_context<'a>(app: &'a App) -> ComposerContext<'a> {
+    let data = &app.new_task_ui.data;
+    ComposerContext {
+        skills: &data.skills,
+        skill_usage: data
+            .ui_state
+            .as_ref()
+            .and_then(|state| state.skill_usage.as_ref()),
+        mention_candidates: &[],
+    }
+}
+
+pub fn apply_hit(app: &mut App, action: NewTaskAction) {
+    match action {
+        NewTaskAction::SourcePill => open_pill(app, PillId::Source),
+        NewTaskAction::RunnerPill => open_pill(app, PillId::Runner),
+        NewTaskAction::ModelPill => open_pill(app, PillId::Model),
+        NewTaskAction::ReasoningPill => open_pill(app, PillId::Reasoning),
+        NewTaskAction::VariantsPill => open_pill(app, PillId::Variants),
+        NewTaskAction::BasePill => open_pill(app, PillId::Base),
+        NewTaskAction::AccountPill => open_pill(app, PillId::Account),
+        NewTaskAction::AutonomousPill => toggle_autonomous(app),
+        NewTaskAction::Start => request_start(app),
+        NewTaskAction::Plan => request_plan(app),
+        NewTaskAction::Suggestion(index) => {
+            const SUGGESTIONS: [&str; 3] = [
+                "Fix a failing or flaky test",
+                "Summarize recent commits on this branch",
+                "Update the README for recent changes",
+            ];
+            if let Some(suggestion) = SUGGESTIONS.get(index) {
+                app.new_task_ui.composer.set_text(suggestion);
+                app.new_task_ui.draft.text = suggestion.to_string();
+                write_draft(app);
+                app.new_task_ui.composer_focused = true;
+                app.new_task_ui.composer.focus();
+            }
+        }
+        NewTaskAction::Compose => {
+            app.new_task_ui.composer_focused = true;
+            app.new_task_ui.composer.focus();
+        }
+    }
+}
+
+pub fn pick_index(app: &mut App, index: usize) {
+    let Some(kind) = app.new_task_ui.picker.as_mut() else {
+        return;
+    };
+    kind.picker_mut().selected = index;
+    let picker = kind.picker().clone();
+    if let Some(item) = picker.items.get(index) {
+        let value = item.value.clone();
+        let pill = picker_pill(kind);
+        apply_pick(app, pill, &value);
+    }
+    app.new_task_ui.picker = None;
+}
+
+fn picker_pill(kind: &PickerKind) -> PillId {
+    match kind {
+        PickerKind::Source(_) => PillId::Source,
+        PickerKind::Runner(_) => PillId::Runner,
+        PickerKind::Model(_) => PillId::Model,
+        PickerKind::Reasoning(_) => PillId::Reasoning,
+        PickerKind::Variants(_) => PillId::Variants,
+        PickerKind::Base(_) => PillId::Base,
+        PickerKind::Account(_) => PillId::Account,
+    }
+}
+
+pub fn open_attach(app: &mut App) {
+    if app.new_task_ui.composer.attaching.is_none() {
+        app.new_task_ui.composer.attaching = Some(String::new());
+    }
+}
+
+pub fn remove_attachment(app: &mut App, index: usize) {
+    app.new_task_ui.composer.remove_attachment(index);
+}
+
+/// Main.rs calls this after a successful start: the text is spent, choices remain.
+pub fn clear_draft(app: &mut App) {
+    app.new_task_ui.composer.set_text("");
+    app.new_task_ui.draft.text.clear();
+    let project = app.current_project().to_owned();
+    new_task_form::clear_draft_text(&project);
+}
+
+/// The keyboard contract for the New Task screen. Returns true when consumed.
+pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
+    if app.new_task_ui.picker.is_some() {
+        return handle_picker_key(app, key);
+    }
+    if app.new_task_ui.plan_visible {
+        return handle_plan_key(app, key);
+    }
+    if app.new_task_ui.composer_focused {
+        return handle_composer_key(app, key);
+    }
+    match key.code {
+        KeyCode::Tab => {
+            app.new_task_ui.pill_focus = Some(
+                app.new_task_ui
+                    .pill_focus
+                    .map(PillId::next)
+                    .unwrap_or(PillId::Source),
+            );
+            true
+        }
+        KeyCode::BackTab => {
+            app.new_task_ui.pill_focus = Some(
+                app.new_task_ui
+                    .pill_focus
+                    .map(PillId::previous)
+                    .unwrap_or(PillId::Autonomous),
+            );
+            true
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            if let Some(pill) = app.new_task_ui.pill_focus {
+                app.new_task_ui.pill_focus = Some(pill.next());
+            }
+            true
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if let Some(pill) = app.new_task_ui.pill_focus {
+                app.new_task_ui.pill_focus = Some(pill.previous());
+            }
+            true
+        }
+        KeyCode::Char(' ') if app.new_task_ui.pill_focus == Some(PillId::Autonomous) => {
+            toggle_autonomous(app);
+            true
+        }
+        KeyCode::Enter if app.new_task_ui.pill_focus.is_some() => {
+            if let Some(pill) = app.new_task_ui.pill_focus {
+                open_pill(app, pill);
+            }
+            true
+        }
+        KeyCode::Char('i') | KeyCode::Enter => {
+            app.new_task_ui.composer_focused = true;
+            app.new_task_ui.composer.focus();
+            true
+        }
+        KeyCode::Char('n') | KeyCode::Char('s') => {
+            request_start(app);
+            true
+        }
+        KeyCode::Char('p') => {
+            request_plan(app);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn handle_composer_key(app: &mut App, key: KeyEvent) -> bool {
+    let ctx = composer_context(app);
+    let event = {
+        let mut composer = app.new_task_ui.composer.clone();
+        let event = composer.handle_key(key, &ctx);
+        app.new_task_ui.composer = composer;
+        event
+    };
+    match event {
+        ComposerEvent::Changed => {
+            app.new_task_ui.draft.text = app.new_task_ui.composer.text.clone();
+            write_draft(app);
+            true
+        }
+        ComposerEvent::Submit { text } if text.trim().is_empty() => {
+            app.notice = Some("describe a task first".to_owned());
+            true
+        }
+        ComposerEvent::Submit { .. } => {
+            request_start(app);
+            true
+        }
+        ComposerEvent::QuickReply { .. } => true,
+        ComposerEvent::PickedSkill { name } => {
+            bump_skill_usage(app, &name);
+            app.new_task_ui.draft.text = app.new_task_ui.composer.text.clone();
+            write_draft(app);
+            true
+        }
+        ComposerEvent::Blur => {
+            app.new_task_ui.composer_focused = false;
+            app.new_task_ui.draft.text = app.new_task_ui.composer.text.clone();
+            write_draft(app);
+            true
+        }
+    }
+}
+
+fn bump_skill_usage(app: &mut App, name: &str) {
+    let project = app.current_project().to_owned();
+    let mut state = app.new_task_ui.data.ui_state.clone().unwrap_or_default();
+    state.skill_usage = Some(crate::skills::bump_skill_usage(
+        state.skill_usage.as_ref(),
+        name,
+    ));
+    app.new_task_ui.data.ui_state = Some(state.clone());
+    app.pending
+        .push(PendingAction::PutUiState { project, state });
+}
+
+fn handle_picker_key(app: &mut App, key: KeyEvent) -> bool {
+    let Some(kind) = app.new_task_ui.picker.as_mut() else {
+        return true;
+    };
+    let event = kind.picker_mut().handle_key(key);
+    match event {
+        PickerEvent::Query(_) => {
+            refresh_picker_items(app);
+            true
+        }
+        PickerEvent::Select(index) => {
+            let (pill, value) = {
+                let ui = &app.new_task_ui;
+                let Some(kind) = ui.picker.as_ref() else {
+                    return true;
+                };
+                let picker = kind.picker();
+                let value = picker.items.get(index).map(|item| item.value.clone());
+                (picker_pill(kind), value)
+            };
+            app.new_task_ui.picker = None;
+            if let Some(value) = value {
+                apply_pick(app, pill, &value);
+            }
+            true
+        }
+        PickerEvent::Close => {
+            app.new_task_ui.picker = None;
+            true
+        }
+        PickerEvent::Noop => true,
+    }
+}
+
+fn handle_plan_key(app: &mut App, key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char('y') | KeyCode::Enter => {
+            let steps = app.new_task_ui.plan.as_ref().map(|plan| plan.steps.clone());
+            app.new_task_ui.plan_visible = false;
+            if let Some(steps) = steps {
+                start_with_steps(app, steps);
+            }
+            true
+        }
+        KeyCode::Char('n') | KeyCode::Esc => {
+            app.new_task_ui.plan_visible = false;
+            true
+        }
+        _ => true,
+    }
+}
+
+fn start_with_steps(app: &mut App, steps: Vec<coducktor_contract::WorkflowStepDef>) {
+    let effective = effective_values(&app.new_task_ui.draft, &app.new_task_ui.data);
+    if !effective.providers_ready {
+        app.notice = Some("connect an agent provider before starting a task".to_owned());
+        return;
+    }
+    let text = app.new_task_ui.composer.text.trim().to_owned();
+    if text.is_empty() {
+        app.notice = Some("describe a task first".to_owned());
+        return;
+    }
+    let project = app.current_project().to_owned();
+    let input = coducktor_contract::CreateRunInputBase {
+        workflow: None,
+        steps: Some(steps),
+        task: text,
+        model: None,
+        reasoning_effort: None,
+        runner: None,
+        agent_profile: None,
+        variants: None,
+        worktree: None,
+        autonomous: Some(effective.autonomous_on),
+        generate_followups: None,
+        system_prompt: None,
+        images: None,
+        todo_id: None,
+    };
+    app.new_task_ui.plan = None;
+    finish_submit(app, project, input, &effective);
+}
+
+fn request_plan(app: &mut App) {
+    let text = app.new_task_ui.composer.text.trim().to_owned();
+    if text.is_empty() {
+        app.notice = Some("describe a task first".to_owned());
+        return;
+    }
+    let project = app.current_project().to_owned();
+    app.new_task_ui.plan_visible = true;
+    app.pending.push(PendingAction::PlanTask {
+        project,
+        task: text,
+    });
+}
+
+fn toggle_autonomous(app: &mut App) {
+    let draft = &mut app.new_task_ui.draft;
+    let effective = effective_values(draft, &app.new_task_ui.data);
+    draft.autonomous = Some(!effective.autonomous_on);
+    write_draft(app);
+}
+
+fn open_pill(app: &mut App, pill: PillId) {
+    let mut picker = Picker::new(picker_title(pill));
+    picker.searchable = matches!(pill, PillId::Source);
+    app.new_task_ui.pill_focus = Some(pill);
+    app.new_task_ui.picker = Some(match pill {
+        PillId::Source => PickerKind::Source(picker),
+        PillId::Runner => PickerKind::Runner(picker),
+        PillId::Model => PickerKind::Model(picker),
+        PillId::Reasoning => PickerKind::Reasoning(picker),
+        PillId::Variants => PickerKind::Variants(picker),
+        PillId::Base => PickerKind::Base(picker),
+        PillId::Account => PickerKind::Account(picker),
+        PillId::Autonomous => PickerKind::Source(Picker::new("AUTONOMOUS")),
+    });
+    refresh_picker_items(app);
+}
+
+fn picker_title(pill: PillId) -> &'static str {
+    match pill {
+        PillId::Source => "SKILL / WORKFLOW",
+        PillId::Runner => "RUNNER",
+        PillId::Model => "MODEL",
+        PillId::Reasoning => "REASONING",
+        PillId::Variants => "VARIANTS",
+        PillId::Base => "BASE BRANCH",
+        PillId::Account => "AGENT ACCOUNT",
+        PillId::Autonomous => "AUTONOMOUS",
+    }
+}
+
+/// Recompute the open picker's candidates from its query (the source picker is
+/// searchable; the simple pills just re-offer their fixed lists).
+fn refresh_picker_items(app: &mut App) {
+    let Some(kind) = app.new_task_ui.picker.as_mut() else {
+        return;
+    };
+    let query = kind.picker().query.clone();
+    let items = match kind {
+        PickerKind::Source(picker) => {
+            let usage = app
+                .new_task_ui
+                .data
+                .ui_state
+                .as_ref()
+                .and_then(|state| state.skill_usage.as_ref());
+            let mut items = source_picker_items(&app.new_task_ui.data, &query, usage);
+            picker.set_items(std::mem::take(&mut items));
+            return;
+        }
+        PickerKind::Runner(_) => runner_picker_items(&app.new_task_ui.data),
+        PickerKind::Model(_) => model_picker_items(&app.new_task_ui.draft, &app.new_task_ui.data),
+        PickerKind::Reasoning(_) => {
+            reasoning_picker_items(&app.new_task_ui.draft, &app.new_task_ui.data)
+        }
+        PickerKind::Variants(_) => {
+            variants_picker_items(&app.new_task_ui.draft, &app.new_task_ui.data)
+        }
+        PickerKind::Base(_) => base_picker_items(&app.new_task_ui.draft, &app.new_task_ui.data),
+        PickerKind::Account(_) => {
+            account_picker_items(&app.new_task_ui.draft, &app.new_task_ui.data)
+        }
+    };
+    kind.picker_mut().set_items(items);
+}
+
+fn source_picker_items(
+    data: &NewTaskData,
+    query: &str,
+    usage: Option<&std::collections::BTreeMap<String, f64>>,
+) -> Vec<PickerItem> {
+    let mut items: Vec<PickerItem> = Vec::new();
+    let matched = crate::skills::search_skills(&data.skills, query, usage);
+    let tiers =
+        crate::skills::partition_skill_refs(&matched, usage, crate::skills::MOST_USED_LIMIT);
+    let baseline_matches = "baseline no skill plain task".contains(&query.trim().to_lowercase());
+    if baseline_matches {
+        items.push(PickerItem {
+            value: "baseline".to_owned(),
+            label: "Baseline".to_owned(),
+            description: Some("Run the task as written, without a skill or workflow".to_owned()),
+            group: Some("Task mode".to_owned()),
+            emphasized: false,
+        });
+    }
+    for (group, skills) in [
+        ("Most used", tiers.most_used),
+        ("Project skills", tiers.project),
+    ] {
+        for skill in skills {
+            items.push(PickerItem {
+                value: format!("skill:{}", skill.name),
+                label: skill.name.clone(),
+                description: skill.description.clone(),
+                group: Some(group.to_owned()),
+                emphasized: true,
+            });
+        }
+    }
+    let workflows = crate::skills::search_workflows(&data.workflows, query);
+    for workflow in workflows {
+        items.push(PickerItem {
+            value: format!("workflow:{}", workflow.name),
+            label: workflow.name.clone(),
+            description: workflow.description.clone(),
+            group: Some("Workflows".to_owned()),
+            emphasized: false,
+        });
+    }
+    for skill in tiers.global {
+        items.push(PickerItem {
+            value: format!("skill:{}", skill.name),
+            label: skill.name.clone(),
+            description: skill.description.clone(),
+            group: Some("Global".to_owned()),
+            emphasized: false,
+        });
+    }
+    items
+}
+
+fn runner_picker_items(data: &NewTaskData) -> Vec<PickerItem> {
+    let effective = effective_values(&NewTaskDraft::default(), data);
+    let runners = if effective.runners.is_empty() {
+        vec![Runner::Claude]
+    } else {
+        effective.runners.clone()
+    };
+    runners
+        .into_iter()
+        .map(|runner| {
+            PickerItem::simple(
+                format!("runner:{}", runner_label(runner)),
+                runner_label(runner).to_owned(),
+                Some(runner_desc(runner).to_owned()),
+            )
+        })
+        .collect()
+}
+
+fn runner_desc(runner: Runner) -> &'static str {
+    match runner {
+        Runner::Claude => "Claude Code CLI",
+        Runner::Codex => "OpenAI Codex (app-server)",
+        Runner::OpenCode => "OpenCode (serve)",
+        Runner::Pi => "pi CLI (provider/model)",
+    }
+}
+
+fn model_picker_items(draft: &NewTaskDraft, data: &NewTaskData) -> Vec<PickerItem> {
+    let effective = effective_values(draft, data);
+    effective
+        .models
+        .iter()
+        .map(|model| {
+            PickerItem::simple(
+                format!("model:{}", model.id),
+                model.label.clone(),
+                Some(model.desc.clone()),
+            )
+        })
+        .collect()
+}
+
+fn reasoning_picker_items(draft: &NewTaskDraft, data: &NewTaskData) -> Vec<PickerItem> {
+    let effective = effective_values(draft, data);
+    effective
+        .reasoning_options
+        .iter()
+        .map(|option| {
+            PickerItem::simple(
+                format!("reasoning:{}", reasoning_id(option.value)),
+                option.label.to_owned(),
+                Some(option.desc.to_owned()),
+            )
+        })
+        .collect()
+}
+
+fn reasoning_id(effort: ReasoningEffort) -> &'static str {
+    match effort {
+        ReasoningEffort::Auto => "auto",
+        ReasoningEffort::Low => "low",
+        ReasoningEffort::Medium => "medium",
+        ReasoningEffort::High => "high",
+        ReasoningEffort::XHigh => "xhigh",
+    }
+}
+
+fn variants_picker_items(draft: &NewTaskDraft, data: &NewTaskData) -> Vec<PickerItem> {
+    let effective = effective_values(draft, data);
+    let mut items = vec![
+        PickerItem::simple("variants:1", "×1", Some("One run".to_owned())),
+        PickerItem::simple(
+            "variants:2",
+            "×2 variants",
+            Some("Two competing runs — pick the diff you keep".to_owned()),
+        ),
+        PickerItem::simple(
+            "variants:3",
+            "×3 variants",
+            Some("Three competing runs — pick the diff you keep".to_owned()),
+        ),
+    ];
+    if !effective.has_git {
+        items.clear();
+    }
+    items
+}
+
+fn base_picker_items(_draft: &NewTaskDraft, data: &NewTaskData) -> Vec<PickerItem> {
+    let branch = data
+        .repo
+        .as_ref()
+        .map(|repo| repo.branch.clone())
+        .unwrap_or_else(|| "main".to_owned());
+    let mut items = vec![PickerItem::simple(
+        "base:",
+        "follow checked-out branch",
+        Some(format!("({branch})")),
+    )];
+    if data.repo.is_some() {
+        items.push(PickerItem::simple(
+            format!("base:{branch}"),
+            branch.clone(),
+            Some("Worktrees fork from this branch".to_owned()),
+        ));
+    }
+    items
+}
+
+fn account_picker_items(draft: &NewTaskDraft, data: &NewTaskData) -> Vec<PickerItem> {
+    let effective = effective_values(draft, data);
+    account_choices(data, effective.display_runner)
+        .into_iter()
+        .map(|(label, account)| {
+            PickerItem::simple(
+                format!("account:{}", account.unwrap_or_default()),
+                label,
+                Some("which login runs the task".to_owned()),
+            )
+        })
+        .collect()
+}
+
+fn apply_pick(app: &mut App, pill: PillId, value: &str) {
+    match pill {
+        PillId::Source => {
+            app.new_task_ui.draft.source = parse_source(value);
+        }
+        PillId::Runner => {
+            if let Some(selection) = parse_runner(value) {
+                app.new_task_ui.draft.runner = Some(selection);
+                app.new_task_ui.draft.model = None;
+                app.new_task_ui.draft.reasoning_effort = None;
+            }
+        }
+        PillId::Model => {
+            let id = value.strip_prefix("model:").unwrap_or(value).to_owned();
+            app.new_task_ui.draft.model = Some(id);
+            app.new_task_ui.draft.reasoning_effort = None;
+        }
+        PillId::Reasoning => {
+            if let Some(effort) = parse_reasoning(value) {
+                app.new_task_ui.draft.reasoning_effort = Some(effort);
+            }
+        }
+        PillId::Variants => {
+            if let Some(count) = value
+                .strip_prefix("variants:")
+                .and_then(|count| count.parse().ok())
+            {
+                app.new_task_ui.draft.variants = count;
+            }
+        }
+        PillId::Base => {
+            let base_branch = value
+                .strip_prefix("base:")
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned);
+            let project = app.current_project().to_owned();
+            app.pending.push(PendingAction::SetBaseBranch {
+                project,
+                base_branch,
+            });
+        }
+        PillId::Account => {
+            let account = value
+                .strip_prefix("account:")
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned);
+            app.new_task_ui.draft.agent_profile = account;
+        }
+        PillId::Autonomous => {}
+    }
+    write_draft(app);
+}
+
+fn parse_source(value: &str) -> Option<TaskSource> {
+    match value {
+        "baseline" => Some(new_task_form::BASELINE_SOURCE),
+        _ => value
+            .strip_prefix("skill:")
+            .map(|name| TaskSource::Skill {
+                reference: name.to_owned(),
+            })
+            .or_else(|| {
+                value
+                    .strip_prefix("workflow:")
+                    .map(|name| TaskSource::Workflow {
+                        reference: name.to_owned(),
+                    })
+            }),
+    }
+}
+
+fn parse_runner(value: &str) -> Option<RunnerSelection> {
+    match value.strip_prefix("runner:") {
+        Some("claude") => Some(RunnerSelection::Claude),
+        Some("codex") => Some(RunnerSelection::Codex),
+        Some("opencode") => Some(RunnerSelection::OpenCode),
+        Some("pi") => Some(RunnerSelection::Pi),
+        _ => None,
+    }
+}
+
+fn parse_reasoning(value: &str) -> Option<ReasoningEffort> {
+    match value.strip_prefix("reasoning:") {
+        Some("auto") => Some(ReasoningEffort::Auto),
+        Some("low") => Some(ReasoningEffort::Low),
+        Some("medium") => Some(ReasoningEffort::Medium),
+        Some("high") => Some(ReasoningEffort::High),
+        Some("xhigh") => Some(ReasoningEffort::XHigh),
+        _ => None,
+    }
+}
+
+fn request_start(app: &mut App) {
+    let effective = effective_values(&app.new_task_ui.draft, &app.new_task_ui.data);
+    if !effective.providers_ready {
+        app.notice = Some("connect an agent provider before starting a task".to_owned());
+        return;
+    }
+    let text = app.new_task_ui.composer.text.trim().to_owned();
+    if text.is_empty() {
+        app.notice = Some("describe a task first".to_owned());
+        return;
+    }
+    let images = read_attachments(&app.new_task_ui.composer.attachments);
+    let opts = CreateRunBodyOpts {
+        task: text,
+        source: effective.source.clone(),
+        model: effective.model.clone(),
+        reasoning_effort: Some(effective.reasoning_effort),
+        models_locked: app
+            .new_task_ui
+            .data
+            .config
+            .as_ref()
+            .map(|config| config.models_locked)
+            .unwrap_or(false),
+        runner: effective.runner,
+        runner_explicit: app.new_task_ui.draft.runner.is_some(),
+        default_runner: app
+            .new_task_ui
+            .data
+            .config
+            .as_ref()
+            .map(|config| config.default_runner),
+        agent_profile: effective.account.clone(),
+        variants: effective.variants,
+        images,
+        worktree: Some(effective.worktree_on),
+        autonomous: effective.autonomous_on,
+        generate_followups: effective.generate_followups_on,
+    };
+    let input = new_task_form::build_create_run_body(&opts);
+    let project = app.current_project().to_owned();
+    finish_submit(app, project, input, &effective);
+}
+
+/// Queue the start, spend the draft, and remember the source for the next visit.
+fn finish_submit(
+    app: &mut App,
+    project: String,
+    input: coducktor_contract::CreateRunInput,
+    effective: &Effective,
+) {
+    app.pending.push(PendingAction::StartRun {
+        project: project.clone(),
+        input,
+    });
+    clear_draft(app);
+    let mut state = app.new_task_ui.data.ui_state.clone().unwrap_or_default();
+    state.last_task = Some(effective.source.clone());
+    state.recent_sources = Some(new_task_form::push_recent_source(
+        state.recent_sources.as_deref(),
+        effective.source.clone(),
+        24,
+    ));
+    if let TaskSource::Skill { reference } = &effective.source {
+        state.skill_usage = Some(crate::skills::bump_skill_usage(
+            state.skill_usage.as_ref(),
+            reference,
+        ));
+    }
+    if effective.followups_toggle_shown {
+        state.last_generate_followups = Some(effective.generate_followups_on);
+    }
+    app.new_task_ui.data.ui_state = Some(state.clone());
+    app.pending
+        .push(PendingAction::PutUiState { project, state });
+}
+
+fn read_attachments(attachments: &[Attachment]) -> Vec<ImageInput> {
+    use base64::Engine;
+    attachments
+        .iter()
+        .filter_map(|attachment| {
+            let media_type = media_type_for_path(&attachment.path)?;
+            let data = std::fs::read(&attachment.path).ok()?;
+            Some(ImageInput {
+                media_type: media_type.to_owned(),
+                data: base64::engine::general_purpose::STANDARD.encode(data),
+            })
+        })
+        .collect()
+}
+
+fn media_type_for_path(path: &str) -> Option<&'static str> {
+    let extension = path.rsplit('.').next()?.to_ascii_lowercase();
+    match extension.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
+/// Render the whole screen: hero title, composer card, pill row, actions, chips,
+/// then the open picker/plan overlays.
+pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
+    sync_draft(app);
+    let theme = app.theme;
+    let effective = effective_values(&app.new_task_ui.draft, &app.new_task_ui.data);
+
+    // Model catalog is per-runner; request it once per runner change. A failed
+    // catalog degrades to the static presets — never a retry loop.
+    if app.new_task_ui.data.models_requested_for != Some(effective.display_runner) {
+        app.new_task_ui.data.models_requested_for = Some(effective.display_runner);
+        app.pending.push(PendingAction::RefreshModels {
+            runner: effective.display_runner,
+        });
+    }
+
+    let column_width = (area.width.saturating_sub(8)).min(72);
+    let column = Rect::new(
+        area.x + area.width.saturating_sub(column_width) / 2,
+        area.y,
+        column_width,
+        area.height,
+    );
+    let composer_height = app.new_task_ui.composer.height() + 2;
+    let pill_height = 1;
+    let action_height = 1;
+    let suggestion_height = 1;
+    let header = 2;
+    let constraints = [
+        Constraint::Length(header),
+        Constraint::Length(composer_height),
+        Constraint::Length(pill_height),
+        Constraint::Length(action_height),
+        Constraint::Length(suggestion_height),
+        Constraint::Min(1),
+    ];
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(column);
+
+    // Hero title + run-mode note.
+    let note = new_task_form::composer_run_mode_note(effective.worktree_on, effective.has_git);
+    frame.render_widget(
+        Paragraph::new(Text::from(vec![
+            Line::from(Span::styled(
+                "What should the agent work on?",
+                Style::default()
+                    .fg(theme.palette.fg)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                note,
+                Style::default().fg(theme.palette.soft_fg),
+            )),
+        ]))
+        .alignment(ratatui::layout::Alignment::Center)
+        .style(Style::default().bg(theme.palette.bg)),
+        rows[0],
+    );
+
+    // The composer card.
+    let composer_area = rows[1];
+    app.new_task_ui
+        .composer
+        .render(frame, composer_area, theme, &mut app.hitmap, 5);
+    app.hitmap.register(
+        composer_area,
+        4,
+        HitAction::NewTaskScreen(NewTaskAction::Compose),
+    );
+
+    // Pill row.
+    render_pills(frame, rows[2], app, &effective);
+
+    // Start / Plan first + suggestion chips.
+    render_actions(frame, rows[3], app, &effective);
+    render_suggestions(frame, rows[4], app);
+
+    // Overlays: open picker, then the plan.
+    if app.new_task_ui.picker.is_some() {
+        render_picker_overlay(frame, area, app);
+    } else if app.new_task_ui.plan_visible {
+        render_plan_overlay(frame, area, app);
+    }
+}
+
+fn render_pills(frame: &mut Frame<'_>, area: Rect, app: &mut App, effective: &Effective) {
+    let theme = app.theme;
+    let pills: Vec<(PillId, String)> = vec![
+        (
+            PillId::Source,
+            match &effective.source {
+                TaskSource::Baseline => "baseline".to_owned(),
+                TaskSource::Skill { reference } | TaskSource::Workflow { reference } => {
+                    reference.clone()
+                }
+            },
+        ),
+        (PillId::Runner, runner_selection_label(effective.runner)),
+        (
+            PillId::Model,
+            if effective.model.is_empty() {
+                "auto".to_owned()
+            } else {
+                effective.model.clone()
+            },
+        ),
+        (
+            PillId::Reasoning,
+            reasoning_label(effective.reasoning_effort),
+        ),
+        (PillId::Variants, format!("×{}", effective.variants)),
+        (PillId::Base, format!("base: {}", effective.base_branch)),
+        (
+            PillId::Account,
+            effective
+                .account
+                .clone()
+                .unwrap_or_else(|| "default".to_owned()),
+        ),
+    ];
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (pill, label) in &pills {
+        let focused = app.new_task_ui.pill_focus == Some(*pill);
+        let style = if focused {
+            Style::default()
+                .fg(theme.palette.bg)
+                .bg(theme.palette.accent)
+        } else {
+            Style::default().fg(theme.palette.soft_fg)
+        };
+        spans.push(Span::styled(format!(" {label} ▾ "), style));
+    }
+    let autonomous = if effective.autonomous_on {
+        "☑"
+    } else {
+        "☐"
+    };
+    let autonomous_style = if app.new_task_ui.pill_focus == Some(PillId::Autonomous) {
+        Style::default()
+            .fg(theme.palette.bg)
+            .bg(theme.palette.accent)
+    } else if effective.autonomous_on {
+        Style::default().fg(theme.palette.accent)
+    } else {
+        Style::default().fg(theme.palette.soft_fg)
+    };
+    spans.push(Span::styled(
+        format!(" autonomous {autonomous} "),
+        autonomous_style,
+    ));
+    frame.render_widget(
+        Paragraph::new(Line::from(spans.clone())).style(Style::default().bg(theme.palette.bg)),
+        area,
+    );
+    let mut column = area.x;
+    for (pill, label) in &pills {
+        let width = (label.len() + 4) as u16;
+        let action = match pill {
+            PillId::Source => NewTaskAction::SourcePill,
+            PillId::Runner => NewTaskAction::RunnerPill,
+            PillId::Model => NewTaskAction::ModelPill,
+            PillId::Reasoning => NewTaskAction::ReasoningPill,
+            PillId::Variants => NewTaskAction::VariantsPill,
+            PillId::Base => NewTaskAction::BasePill,
+            PillId::Account => NewTaskAction::AccountPill,
+            PillId::Autonomous => NewTaskAction::AutonomousPill,
+        };
+        app.hitmap.register(
+            Rect::new(column, area.y, width, area.height),
+            6,
+            HitAction::NewTaskScreen(action),
+        );
+        column += width;
+    }
+    let autonomous_width = 16;
+    app.hitmap.register(
+        Rect::new(column, area.y, autonomous_width, area.height),
+        6,
+        HitAction::NewTaskScreen(NewTaskAction::AutonomousPill),
+    );
+}
+
+fn render_actions(frame: &mut Frame<'_>, area: Rect, app: &mut App, effective: &Effective) {
+    let theme = app.theme;
+    let providers_ready = effective.providers_ready;
+    let start_style = if providers_ready {
+        Style::default()
+            .fg(theme.palette.accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.palette.soft_fg)
+    };
+    let plan_style = Style::default().fg(theme.palette.soft_fg);
+    let line = Line::from(vec![
+        Span::styled(" [Start]", start_style),
+        Span::styled(" [Plan first]", plan_style),
+        Span::styled(
+            "    Enter or Ctrl+Enter sends · Esc leaves the composer",
+            theme_soft(theme),
+        ),
+    ]);
+    frame.render_widget(
+        Paragraph::new(line).style(Style::default().bg(theme.palette.bg)),
+        area,
+    );
+    app.hitmap.register(
+        Rect::new(area.x, area.y, 8, area.height),
+        6,
+        HitAction::NewTaskScreen(NewTaskAction::Start),
+    );
+    app.hitmap.register(
+        Rect::new(area.x + 8, area.y, 13, area.height),
+        6,
+        HitAction::NewTaskScreen(NewTaskAction::Plan),
+    );
+}
+
+fn render_suggestions(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
+    let theme = app.theme;
+    let suggestions = [
+        "Fix a failing or flaky test",
+        "Summarize recent commits on this branch",
+        "Update the README for recent changes",
+    ];
+    let line = Line::from(
+        suggestions
+            .iter()
+            .flat_map(|suggestion| {
+                [
+                    Span::styled(
+                        format!("[{suggestion}]"),
+                        Style::default().fg(theme.palette.soft_fg),
+                    ),
+                    Span::raw("  "),
+                ]
+            })
+            .collect::<Vec<_>>(),
+    );
+    frame.render_widget(
+        Paragraph::new(line).style(Style::default().bg(theme.palette.bg)),
+        area,
+    );
+    let mut column = area.x;
+    for (index, suggestion) in suggestions.iter().enumerate() {
+        let width = (suggestion.len() + 2) as u16;
+        app.hitmap.register(
+            Rect::new(column, area.y, width, area.height),
+            6,
+            HitAction::NewTaskScreen(NewTaskAction::Suggestion(index)),
+        );
+        column += width + 2;
+    }
+}
+
+fn theme_soft(theme: Theme) -> Style {
+    Style::default().fg(theme.palette.soft_fg)
+}
+
+fn runner_selection_label(selection: RunnerSelection) -> String {
+    match selection {
+        RunnerSelection::Auto => "auto".to_owned(),
+        RunnerSelection::Claude => "claude".to_owned(),
+        RunnerSelection::Codex => "codex".to_owned(),
+        RunnerSelection::OpenCode => "opencode".to_owned(),
+        RunnerSelection::Pi => "pi".to_owned(),
+    }
+}
+
+fn reasoning_label(effort: ReasoningEffort) -> String {
+    match effort {
+        ReasoningEffort::Auto => "Auto".to_owned(),
+        ReasoningEffort::Low => "Low".to_owned(),
+        ReasoningEffort::Medium => "Medium".to_owned(),
+        ReasoningEffort::High => "High".to_owned(),
+        ReasoningEffort::XHigh => "Max".to_owned(),
+    }
+}
+
+fn render_picker_overlay(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
+    let Some(kind) = app.new_task_ui.picker.as_ref() else {
+        return;
+    };
+    let picker = kind.picker();
+    let theme = app.theme;
+    let hitmap = &mut app.hitmap;
+    picker.render(frame, area, theme, hitmap);
+}
+
+fn render_plan_overlay(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
+    let theme = app.theme;
+    let Some(plan) = app.new_task_ui.plan.as_ref() else {
+        return;
+    };
+    let mut lines: Vec<Line<'static>> = vec![Line::from(Span::styled(
+        format!(
+            " {} — {}",
+            plan.name.as_deref().unwrap_or("PLAN"),
+            plan.rationale
+        ),
+        Style::default().fg(theme.palette.soft_fg),
+    ))];
+    lines.push(Line::from(""));
+    for (index, step) in plan.steps.iter().enumerate() {
+        let name = step.name.as_deref().unwrap_or(&step.id);
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  {}. {} {}",
+                index + 1,
+                name,
+                step.skill.as_deref().unwrap_or("")
+            ),
+            Style::default().fg(theme.palette.fg),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  [y] start with this plan    [n] dismiss",
+        Style::default().fg(theme.palette.accent),
+    )));
+    let height = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
+    let width = area.width.min(60);
+    let rect = centered_rect(area, width, height);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title("PLAN FIRST"))
+            .style(
+                Style::default()
+                    .fg(theme.palette.fg)
+                    .bg(theme.palette.surface),
+            )
+            .wrap(Wrap { trim: false }),
+        rect,
+    );
+}
+
+fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use coducktor_contract::{
+        ProviderConnectionState, ProviderStatus, RepoInfo, RunStatus, RunnerModelCatalogResponse,
+    };
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use super::*;
+    use crate::app::App;
+    use crate::input::keymap::Keymap;
+
+    fn skill(name: &str, source: coducktor_contract::SkillSource) -> Skill {
+        Skill {
+            name: name.to_owned(),
+            description: None,
+            interactive: None,
+            body: String::new(),
+            path: format!("/skills/{name}.md"),
+            source,
+            team: None,
+        }
+    }
+
+    fn workflow(name: &str) -> WorkflowDef {
+        WorkflowDef {
+            name: name.to_owned(),
+            description: None,
+            steps: Vec::new(),
+            source: coducktor_contract::WorkflowSource::BuiltIn,
+            path: None,
+        }
+    }
+
+    fn connected_provider(runner: Runner) -> ProviderStatus {
+        ProviderStatus {
+            provider: runner,
+            status: ProviderConnectionState::Connected,
+            enabled: Some(true),
+            hint: None,
+            auth_failure_id: None,
+            profile_id: None,
+        }
+    }
+
+    fn open_new_task(app: &mut App, project: &str) {
+        app.history.navigate(crate::app::Route::NewTask {
+            project: project.to_owned(),
+        });
+        app.new_task_ui.composer_focused = true;
+        app.new_task_ui.composer.focus();
+    }
+
+    /// Each test uses its own project so the shared draft store never leaks across
+    /// the parallel test threads (drafts are per-project, exactly like the real app).
+    fn app_with_new_task(project: &str) -> App {
+        let mut app = App::new(project, Theme::detect(), Keymap::default());
+        open_new_task(&mut app, project);
+        app.new_task_ui.data.skills = vec![
+            skill("om-fix", coducktor_contract::SkillSource::Ai),
+            skill("om-open-pr", coducktor_contract::SkillSource::Global),
+        ];
+        app.new_task_ui.data.workflows = vec![workflow("quick-task")];
+        app.new_task_ui.data.provider_status = Some(ProviderStatusResponse {
+            providers: vec![connected_provider(Runner::Claude)],
+        });
+        app.new_task_ui.data.repo = Some(RepoInfo {
+            root: "/repo".to_owned(),
+            branch: "main".to_owned(),
+            remote: None,
+        });
+        app.new_task_ui.data.config = Some(ComposerConfig::default());
+        app
+    }
+
+    fn key(character: char) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(character),
+            crossterm::event::KeyModifiers::NONE,
+        )
+    }
+
+    fn enter_key() -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        )
+    }
+
+    fn render(app: &mut App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        buffer.content.iter().map(|cell| cell.symbol()).collect()
+    }
+
+    fn render_app(app: &mut App, width: u16, height: u16) {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+    }
+
+    #[test]
+    fn submitting_a_task_queues_start_run_with_the_web_shaped_body() {
+        let mut app = app_with_new_task("t-1");
+        assert!(
+            app.new_task_ui.composer_focused,
+            "hero auto-focuses the composer"
+        );
+        for character in "ship the shell".chars() {
+            app.handle_event(crossterm::event::Event::Key(key(character)));
+        }
+        assert_eq!(app.new_task_ui.draft.text, "ship the shell");
+        app.handle_event(crossterm::event::Event::Key(enter_key()));
+
+        let started = app
+            .pending
+            .iter()
+            .find(|action| matches!(action, PendingAction::StartRun { .. }));
+        let PendingAction::StartRun { project, input } = started.expect("a start is queued") else {
+            unreachable!()
+        };
+        assert_eq!(project, "t-1");
+        let json = serde_json::to_value(input).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "task": "ship the shell",
+                "steps": [{ "id": "task", "name": "Baseline", "prompt": "{{task}}" }],
+                "autonomous": true,
+            })
+        );
+        // The text is spent; the source is remembered for the next visit.
+        assert!(app.new_task_ui.composer.text.is_empty());
+        assert!(
+            app.pending
+                .iter()
+                .any(|action| matches!(action, PendingAction::PutUiState { .. }))
+        );
+    }
+
+    #[test]
+    fn submitting_with_a_skill_source_builds_the_inline_chain_and_bumps_usage() {
+        let mut app = app_with_new_task("t-2");
+        app.new_task_ui.draft.source = Some(coducktor_contract::TaskSource::Skill {
+            reference: "om-fix".to_owned(),
+        });
+        for character in "fix the flake".chars() {
+            app.handle_event(crossterm::event::Event::Key(key(character)));
+        }
+        app.handle_event(crossterm::event::Event::Key(enter_key()));
+
+        let PendingAction::StartRun { input, .. } = app
+            .pending
+            .iter()
+            .find(|action| matches!(action, PendingAction::StartRun { .. }))
+            .expect("a start is queued")
+        else {
+            unreachable!()
+        };
+        let json = serde_json::to_value(input).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "task": "fix the flake",
+                "steps": [{ "id": "task", "name": "om-fix", "skill": "om-fix", "prompt": "{{task}}" }],
+                "autonomous": true,
+            })
+        );
+        // The ui-state write remembers the skill pick AND bumps its usage count.
+        let PendingAction::PutUiState { state, .. } = app
+            .pending
+            .iter()
+            .find(|action| matches!(action, PendingAction::PutUiState { .. }))
+            .expect("a ui-state write is queued")
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            state
+                .skill_usage
+                .as_ref()
+                .and_then(|usage| usage.get("om-fix")),
+            Some(&1.0)
+        );
+        assert_eq!(
+            state.last_task.as_ref().unwrap(),
+            &coducktor_contract::TaskSource::Skill {
+                reference: "om-fix".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn empty_or_provider_less_submits_refuse_with_a_notice() {
+        let mut app = app_with_new_task("t-3");
+        app.handle_event(crossterm::event::Event::Key(enter_key()));
+        assert!(
+            app.pending
+                .iter()
+                .all(|action| !matches!(action, PendingAction::StartRun { .. })),
+            "empty draft must not start"
+        );
+        assert!(app.notice.is_some());
+
+        let mut app = app_with_new_task("t-4");
+        app.new_task_ui.data.provider_status = None;
+        for character in "ship".chars() {
+            app.handle_event(crossterm::event::Event::Key(key(character)));
+        }
+        app.handle_event(crossterm::event::Event::Key(enter_key()));
+        assert!(
+            app.pending
+                .iter()
+                .all(|action| !matches!(action, PendingAction::StartRun { .. }))
+        );
+        assert!(app.notice.as_deref().unwrap().contains("provider"));
+    }
+
+    #[test]
+    fn source_picker_groups_and_ranks_like_the_web() {
+        let mut app = app_with_new_task("t-5");
+        let mut usage = std::collections::BTreeMap::new();
+        usage.insert("om-open-pr".to_owned(), 3.0);
+        app.new_task_ui.data.ui_state = Some(UiState {
+            skill_usage: Some(usage),
+            ..UiState::default()
+        });
+        let items = source_picker_items(
+            &app.new_task_ui.data,
+            "",
+            app.new_task_ui
+                .data
+                .ui_state
+                .as_ref()
+                .and_then(|state| state.skill_usage.as_ref()),
+        );
+        let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+        // Baseline leads (the web shows it for the empty query), then Most used
+        // across localities, then project, then workflows, then global.
+        assert_eq!(labels, ["Baseline", "om-open-pr", "om-fix", "quick-task"]);
+
+        let tiers: Vec<&str> = items
+            .iter()
+            .map(|item| item.group.as_deref().unwrap_or(""))
+            .collect();
+        assert_eq!(
+            tiers,
+            ["Task mode", "Most used", "Project skills", "Workflows"]
+        );
+
+        // A typed query narrows and re-ranks: an exact name match beats the rest.
+        let filtered = source_picker_items(&app.new_task_ui.data, "om-fix", None);
+        let labels: Vec<&str> = filtered.iter().map(|item| item.label.as_str()).collect();
+        assert_eq!(labels, ["om-fix"]);
+    }
+
+    #[test]
+    fn effective_values_resolve_defaults_from_the_catalogs() {
+        let app = app_with_new_task("t-6");
+        let effective = effective_values(&app.new_task_ui.draft, &app.new_task_ui.data);
+        assert!(effective.providers_ready);
+        assert_eq!(effective.runner, RunnerSelection::Claude);
+        assert_eq!(effective.display_runner, Runner::Claude);
+        assert_eq!(effective.model, "", "untouched model resolves to auto");
+        assert!(effective.has_git);
+        assert_eq!(effective.variants, 1);
+        assert!(
+            effective.autonomous_on,
+            "autonomous is the zero-config default"
+        );
+        assert!(
+            effective.worktree_on,
+            "worktrees are the zero-config default"
+        );
+        assert_eq!(effective.base_branch, "main");
+    }
+
+    #[test]
+    fn the_source_pill_picker_selects_a_skill_into_the_draft() {
+        let mut app = app_with_new_task("t-7");
+        open_pill(&mut app, PillId::Source);
+        assert!(app.new_task_ui.picker.is_some());
+        app.new_task_ui
+            .picker
+            .as_mut()
+            .unwrap()
+            .picker_mut()
+            .selected = 1;
+        let kind = app.new_task_ui.picker.clone().unwrap();
+        let value = kind.picker().items[1].value.clone();
+        apply_pick(&mut app, PillId::Source, &value);
+        assert_eq!(
+            app.new_task_ui.draft.source,
+            Some(coducktor_contract::TaskSource::Skill {
+                reference: "om-fix".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_started_run_reaches_the_tasks_table_via_the_workspace_stream() {
+        let mut app = app_with_new_task("t-8");
+        for character in "ship the shell".chars() {
+            app.handle_event(crossterm::event::Event::Key(key(character)));
+        }
+        app.handle_event(crossterm::event::Event::Key(enter_key()));
+        assert!(
+            app.pending
+                .iter()
+                .any(|action| matches!(action, PendingAction::StartRun { .. }))
+        );
+
+        // The server answers: the SSE `run` event carries the queued run, and the
+        // shell's own task list picks it up in place.
+        let project = app.current_project().to_owned();
+        let run = crate::app::WorkspaceEvent::Run {
+            project: project.clone(),
+            run: coducktor_contract::ApiRun {
+                record: coducktor_contract::RunRecord {
+                    id: "run-1".to_owned(),
+                    title: "ship the shell".to_owned(),
+                    workflow: "quick-task".to_owned(),
+                    task: String::new(),
+                    status: RunStatus::Queued,
+                    created_at: "2026-08-15T00:00:00Z".to_owned(),
+                    tokens_used: 0.0,
+                    archived: false,
+                    seen_at: None,
+                    steps: Vec::new(),
+                    ..coducktor_contract::RunRecord::default()
+                },
+                usage: None,
+            },
+        };
+        app.apply_workspace_event(run);
+        assert!(app.tasks.iter().any(|run| run.record.id == "run-1"));
+
+        app.history.navigate(crate::app::Route::Tasks { project });
+        let content = render(&mut app, 160, 30);
+        assert!(
+            content.contains("ship the shell"),
+            "the row must appear, got: {content}"
+        );
+    }
+
+    #[test]
+    fn drafts_survive_switching_projects() {
+        let mut app = app_with_new_task("t-9");
+        for character in "half typed".chars() {
+            app.handle_event(crossterm::event::Event::Key(key(character)));
+        }
+        assert_eq!(app.new_task_ui.draft.text, "half typed");
+
+        // Navigate away and back: the draft store restores the text.
+        app.history.navigate(crate::app::Route::Tasks {
+            project: "main".to_owned(),
+        });
+        open_new_task(&mut app, "t-0");
+        assert_eq!(app.new_task_ui.draft.text, "half typed");
+        assert_eq!(app.new_task_ui.composer.text, "half typed");
+    }
+
+    #[test]
+    fn snapshot_new_task_at_three_sizes() {
+        let mut app = app_with_new_task("t-10");
+        app.new_task_ui.data.model_catalog = Some(RunnerModelCatalogResponse {
+            runner: Runner::Claude,
+            models: Vec::new(),
+            source: coducktor_contract::ModelCatalogSource::Live,
+            stale: false,
+            reason: None,
+        });
+        for character in "ship the shell".chars() {
+            app.handle_event(crossterm::event::Event::Key(key(character)));
+        }
+        for (width, height) in [(80, 24), (120, 40), (200, 60)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| app.render(frame)).unwrap();
+            insta::assert_debug_snapshot!(
+                format!("new_task_{width}x{height}"),
+                terminal.backend().buffer()
+            );
+        }
+        let _ = render_app;
+    }
+}

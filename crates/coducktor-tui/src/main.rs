@@ -1,7 +1,9 @@
 mod app;
 mod input;
+mod new_task_form;
 mod screens;
 mod service;
+mod skills;
 mod terminal;
 mod theme;
 mod widgets;
@@ -216,6 +218,7 @@ async fn prime_app(app: &mut App, engine: &HttpEngine) {
                 .into_iter()
                 .map(|check| (backend_check_name(check.name), check.available)),
         );
+        app.new_task_ui.data.repo = health.repo.clone();
     }
     let project = app.current_project().to_owned();
     if let Ok(runs) = engine.list_runs(&Scope::Project(project.clone())).await {
@@ -233,6 +236,8 @@ async fn prime_app(app: &mut App, engine: &HttpEngine) {
     if let Ok(index) = engine.runs_index().await {
         app.set_global_index(index);
     }
+    let project = app.current_project().to_owned();
+    refresh_new_task(engine, app, &project).await;
 }
 
 /// Run one pending action against the engine and reconcile the app with the
@@ -314,6 +319,72 @@ async fn execute_pending(engine: &HttpEngine, app: &mut App) {
                     app.set_global_index(index);
                 }
             }
+            PendingAction::StartRun { project, input } => {
+                let scope = Scope::Project(project.clone());
+                match engine.start_run(&scope, &input).await {
+                    Ok(response) => {
+                        if let Some(id) = crate::new_task_form::started_run_id(&response) {
+                            app.history.navigate(crate::app::Route::Thread {
+                                project: project.clone(),
+                                id,
+                            });
+                        }
+                        crate::screens::new_task::clear_draft(app);
+                        refresh_tasks(engine, app, &project).await;
+                        refresh_index_if_global(engine, app).await;
+                    }
+                    Err(error) => app.notice = Some(format!("start failed: {error}")),
+                }
+            }
+            PendingAction::RefreshNewTask { project } => {
+                refresh_new_task(engine, app, &project).await;
+            }
+            PendingAction::RefreshModels { runner } => match engine.models(runner).await {
+                Ok(catalog) => {
+                    app.new_task_ui.data.model_catalog = Some(catalog);
+                }
+                Err(error) => {
+                    app.notice = Some(format!("model catalog failed: {error}"));
+                }
+            },
+            PendingAction::PlanTask { project, task } => {
+                let scope = Scope::Project(project.clone());
+                match engine.plan(&scope, &task).await {
+                    Ok(plan) => {
+                        app.new_task_ui.plan = Some(plan);
+                    }
+                    Err(error) => {
+                        app.notice = Some(format!("plan failed: {error}"));
+                        app.new_task_ui.plan_visible = false;
+                    }
+                }
+            }
+            PendingAction::PutUiState { project, state } => {
+                let scope = Scope::Project(project.clone());
+                match engine.put_ui_state(&scope, &state).await {
+                    Ok(state) => {
+                        app.new_task_ui.data.ui_state = Some(state);
+                    }
+                    Err(error) => app.notice = Some(format!("ui-state write failed: {error}")),
+                }
+            }
+            PendingAction::SetBaseBranch {
+                project,
+                base_branch,
+            } => {
+                let scope = Scope::Project(project.clone());
+                let input = coducktor_contract::SetConfigInput {
+                    base_branch: Some(base_branch),
+                    ..coducktor_contract::SetConfigInput::default()
+                };
+                match engine.put_config(&scope, &input).await {
+                    Ok(config) => {
+                        app.new_task_ui.data.config =
+                            Some(crate::new_task_form::ComposerConfig::from_config(&config));
+                    }
+                    Err(error) => app.notice = Some(format!("base branch failed: {error}")),
+                }
+            }
             PendingAction::Quit => {}
         }
     }
@@ -337,6 +408,33 @@ async fn refresh_tasks(engine: &HttpEngine, app: &mut App, project: &str) {
                 .map(|run| QuickTask::from_api(project.to_owned(), run.clone()))
                 .collect::<Vec<_>>(),
         );
+    }
+}
+
+/// Load everything the New Task screen reads (§8.3), scoped to the active project.
+async fn refresh_new_task(engine: &HttpEngine, app: &mut App, project: &str) {
+    let scope = Scope::Project(project.to_owned());
+    if let Ok(config) = engine.config(&scope).await {
+        app.new_task_ui.data.config =
+            Some(crate::new_task_form::ComposerConfig::from_config(&config));
+    }
+    if let Ok(skills) = engine.skills(&scope).await {
+        app.new_task_ui.data.skills = skills;
+    }
+    if let Ok(workflows) = engine.workflows(&scope).await {
+        app.new_task_ui.data.workflows = workflows.workflows;
+    }
+    if let Ok(workspace_config) = engine.workspace_config().await {
+        app.new_task_ui.data.workspace_config = Some(workspace_config);
+    }
+    if let Ok(provider_status) = engine.provider_status().await {
+        app.new_task_ui.data.provider_status = Some(provider_status);
+    }
+    if let Ok(agent_profiles) = engine.agent_profiles().await {
+        app.new_task_ui.data.agent_profiles = Some(agent_profiles);
+    }
+    if let Ok(ui_state) = engine.ui_state(&scope).await {
+        app.new_task_ui.data.ui_state = Some(ui_state);
     }
 }
 
