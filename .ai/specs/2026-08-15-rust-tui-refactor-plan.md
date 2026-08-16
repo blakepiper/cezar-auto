@@ -520,7 +520,7 @@ deleted its screen (§8.10). There is nothing left to port at B8, so there is no
 chunk here and no commit — B9 follows directly after B7.
 **Commit:** none — intentionally removed from the plan by decision 7.
 
-### [ ] B9 — `cezar-server` ⚠ set up HTTP-suite reuse in the first commit
+### [x] B9 — `cezar-server` ⚠ set up HTTP-suite reuse in the first commit
 **Ships:** `axum` server, route by route, family by family. Handlers stay thin —
 parse-validate-delegate over `cezar-core`, no business logic (spec §11.3, this
 crate is temporary and deleted whole at C2).
@@ -532,10 +532,41 @@ highest-value verification move in the whole port — don't leave it for later i
 this step.
 **Accept:** those suites pass against the Rust server, route family by route
 family, as each lands.
-**Commit(s):** `feat(server): B9.0 harness — point HTTP suites at cezar-server`,
-then one commit per route family, e.g. `feat(server): B9.1 runs routes`, `B9.2
-workspace routes`, … (split by the same route families the spec's protected
-surfaces already group by, §1.4).
+**Commit(s):** `feat(server): B9.0 harness — point HTTP suites at cezar-server`
+— pushed as `a77acd19`; `B9.1 runs route family` — `622be9ad`; `B9.2 workspace
+routes` — `77c9a6fe`; `B9.3 skills and workflows routes` — `eed5daad`; `B9.4
+ui-state and todos routes` — `dd60f3a0`; `B9.5 per-repo config routes` —
+`79288186`; `B9.6 agent-config routes` — `4190815c`; `B9.7 IDE routes` —
+`64a9e1a5`; `B9.8 repo routes` — `25f31cfa`; `B9.9 worktree routes` —
+`f28a6d1d`; `B9.10 open-target routes` — `606e1429`; `B9.11 agent profile
+registry routes` — `f734d9dd`; `B9.12 agent profile account routes` —
+`86068a2f`; `B9.13 provider auth routes` — `ae08f10a`; `B9.14 host model
+catalog routes` — `3c2ae62a`; `B9.15 plan routes` — `54a15b95`; `B9.16 variant
+group routes` — `37baecf4`; `B9.17 SSE and event history routes` —
+`1f13d98a`; `B9.18 GitHub forge routes` — `4f31c060`; `B9.19 run artifact and
+git routes` — `69fcc85f`; `B9.20 run interaction routes` — `0ecc7971`; `B9.21
+workspace index and checkout routes` — `783d34e8`; `B9.22 WebSocket topic bus`
+— `ef6ea6a4`.
+**Note on the `⚠` harness instruction:** it was not followed literally. B9.0
+shipped `rust-server.testkit.ts` (a `DUCK_HTTP_BASE_URL`-selected transport
+seam) plus one new `rust-server.smoke.test.ts`, and `scripts/test-rust-server.mjs`
+to build+launch the Rust binary and run that smoke test against it — but the
+seven named suites (`route-parity`, `contract-parity.*`, `versioned-surface`,
+`bc-route-inventory`, `origin-guard`, `host-guard`, `sse-headers`) were never
+retargeted onto `selectedHttpTarget`; they still only exercise the Node `Hono`
+app. This was discovered at B9.22 (a full `rg`/route-diff against
+`BACKWARD_COMPATIBILITY.md` §2 found the WS gap, and checking why no test
+caught it led here) — it was not a documented decision by whichever earlier
+turn wrote B9.0. Each B9.N commit substituted its own hand-written Rust-native
+`#[tokio::test]` route-family suite instead (visible in
+`crates/coducktor-server/src/lib.rs`'s `mod tests`, 44 tests as of B9.22),
+which the B9.1–B9.21 Accept notes (this file's git history) treated as
+sufficient oracle-equivalence. Asked explicitly at B9.22 whether to retrofit
+the seven suites now, drop the idea and scope-cut it formally, or proceed to
+B10 and revisit later: **the owner chose to proceed to B10**, leaving the
+retrofit (or a formal scope-cut) as unclaimed follow-up work. A future agent
+should not assume `rust-server.testkit.ts`'s harness is exercised by anything
+beyond `rust-server.smoke.test.ts` and its own `rust-server.testkit.test.ts`.
 
 ### [ ] B10 — `cezar-cli`
 **Ships:** `serve`, `run`, `init`, `usage`, `projects` subcommands. `-p/--port` and
