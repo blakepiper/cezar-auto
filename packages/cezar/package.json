@@ -27,6 +27,7 @@
     "build": "tsc",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
+    "test:rust-server": "node scripts/test-rust-server.mjs",
     "test:watch": "vitest",
     "test:unit": "node --import tsx --test test/unit/*.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.test.json"

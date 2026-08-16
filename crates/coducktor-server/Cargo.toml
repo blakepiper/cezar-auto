@@ -1,0 +1,23 @@
+[package]
+name = "coducktor-server"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+axum.workspace = true
+coducktor-contract = { path = "../coducktor-contract" }
+http = "1"
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+
+[dev-dependencies]
+tower = "0.5"
+
+[[bin]]
+name = "coducktor-server"
+path = "src/main.rs"

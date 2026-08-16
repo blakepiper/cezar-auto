@@ -6,6 +6,7 @@ members = [
     "crates/coducktor-forge",
     "crates/coducktor-protocol",
     "crates/coducktor-runners",
+    "crates/coducktor-server",
     "crates/coducktor-tui",
 ]
 resolver = "3"
@@ -48,11 +49,13 @@ tokio = { version = "1.48", features = ["io-util", "macros", "net", "process", "
 tokio-stream = "0.1"
 async-stream = "0.3"
 async-trait = "0.1"
+axum = "0.8"
 bytes = "1.0"
 futures-core = "0.3"
 futures-util = { version = "0.3", features = ["sink"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect"] }
+tower-http = { version = "0.6", features = ["cors"] }
 toml = "0.8"
 url = "2.5"
 regex = "1"
