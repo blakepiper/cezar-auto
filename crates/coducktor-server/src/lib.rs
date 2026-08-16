@@ -34,12 +34,13 @@ use coducktor_contract::{
     IdeDirectoryResponse, IdeEntry, IdeEntryType, IdeFileInput, IdeFileQuery, IdeFileResponse,
     LogEntry, MarkAllReadResponse, MessageInput, ParseWorkflowInput, ParsedWorkflow, PatchRunInput,
     PresentRepoResponse, ProjectListEntry, ProjectSource, ProjectStatus, ProjectsResponse,
-    RegisterProjectInput, RegisterProjectResponse, RemoveProjectResponse, RepoBranchRequest,
-    RepoBranchResponse, RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse, RunRecord, Runner,
-    RunnerModels, RunnerSelection, SaveWorkflowInput, SaveWorkflowResponse, SetAgentConfigInput,
-    SetConfigInput, SetWorkspaceConfigInput, SetWorkspaceUiStateInput, StartTodoResponse,
-    StatusEntry, TodoItem, UiState, UpdateProjectInput, UpdateProjectResponse, UserMcpListing,
-    WorkflowStepDef, WorkflowsResponse, WorkspaceConfigResponse,
+    ReclaimWorktreesResponse, RegisterProjectInput, RegisterProjectResponse, RemoveProjectResponse,
+    RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse,
+    RunRecord, Runner, RunnerModels, RunnerSelection, SaveWorkflowInput, SaveWorkflowResponse,
+    SetAgentConfigInput, SetConfigInput, SetWorkspaceConfigInput, SetWorkspaceUiStateInput,
+    StartTodoResponse, StatusEntry, TodoItem, UiState, UpdateProjectInput, UpdateProjectResponse,
+    UserMcpListing, WorkflowStepDef, WorkflowsResponse, WorkspaceConfigResponse, WorktreeInfo,
+    WorktreeRunStatus, WorktreesResponse,
 };
 use coducktor_core::config::load_config;
 use coducktor_core::handoff::followups_enabled;
@@ -327,6 +328,16 @@ pub fn router_with_state(state: ServerState) -> Router {
         .route(
             "/api/v1/p/{project}/repo/branch",
             axum::routing::post(create_scoped_repo_branch),
+        )
+        .route("/api/v1/worktrees", get(list_worktrees))
+        .route("/api/v1/p/{project}/worktrees", get(list_scoped_worktrees))
+        .route(
+            "/api/v1/worktrees/reclaim",
+            axum::routing::post(reclaim_worktrees),
+        )
+        .route(
+            "/api/v1/p/{project}/worktrees/reclaim",
+            axum::routing::post(reclaim_scoped_worktrees),
         )
         .fallback(not_found)
         .with_state(state.clone())
@@ -2841,6 +2852,123 @@ async fn create_scoped_repo_branch(
     create_repo_branch(State(state), Json(input)).await
 }
 
+fn worktree_size_bytes(path: &Path) -> Option<u64> {
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if metadata.is_file() {
+        return Some(metadata.len());
+    }
+    if !metadata.is_dir() {
+        return Some(0);
+    }
+    let mut total = 0_u64;
+    for entry in fs::read_dir(path).ok()? {
+        total = total.checked_add(worktree_size_bytes(&entry.ok()?.path())?)?;
+    }
+    Some(total)
+}
+
+fn worktree_run_status(status: coducktor_contract::RunStatus) -> WorktreeRunStatus {
+    match status {
+        coducktor_contract::RunStatus::Queued => WorktreeRunStatus::Queued,
+        coducktor_contract::RunStatus::Running => WorktreeRunStatus::Running,
+        coducktor_contract::RunStatus::Waiting => WorktreeRunStatus::Waiting,
+        coducktor_contract::RunStatus::Review => WorktreeRunStatus::Review,
+        coducktor_contract::RunStatus::Done => WorktreeRunStatus::Done,
+        coducktor_contract::RunStatus::Failed => WorktreeRunStatus::Failed,
+        coducktor_contract::RunStatus::Cancelled => WorktreeRunStatus::Cancelled,
+    }
+}
+
+fn worktree_keep(state: &ServerState) -> u64 {
+    let workspace = workspace_config(state);
+    coducktor_core::config::resolve_worktree_retention(
+        &state.config.repo_root,
+        Some(workspace.resources.worktree_retention_default),
+    )
+}
+
+async fn list_worktrees(State(state): State<ServerState>) -> Response {
+    let Ok(manager) = state.manager.lock() else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run manager unavailable");
+    };
+    let mut worktrees = Vec::new();
+    let mut any_size_unavailable = false;
+    let mut total = 0_u64;
+    for run in manager.list_runs() {
+        let Some(path) = run.worktree_path.as_deref() else {
+            continue;
+        };
+        if !Path::new(path).exists() {
+            continue;
+        }
+        let size = worktree_size_bytes(Path::new(path));
+        if let Some(bytes) = size {
+            total = total.saturating_add(bytes);
+        } else {
+            any_size_unavailable = true;
+        }
+        let reclaimable = coducktor_core::runs::retention::is_reclaimable(&run);
+        let title = if run.title.is_empty() {
+            run.id.clone()
+        } else {
+            run.title.clone()
+        };
+        worktrees.push(WorktreeInfo {
+            run_id: run.id,
+            title,
+            status: worktree_run_status(run.status),
+            branch: run.branch,
+            size_bytes: size.map(|bytes| bytes as f64),
+            finished_at: run.finished_at,
+            reclaimable,
+        });
+    }
+    Json(WorktreesResponse {
+        worktrees,
+        total_bytes: (!any_size_unavailable).then_some(total),
+        keep: worktree_keep(&state),
+    })
+    .into_response()
+}
+
+async fn list_scoped_worktrees(
+    State(state): State<ServerState>,
+    AxumPath(_project): AxumPath<String>,
+) -> Response {
+    list_worktrees(State(state)).await
+}
+
+async fn reclaim_worktrees(State(state): State<ServerState>) -> Response {
+    let keep = worktree_keep(&state);
+    let Ok(mut manager) = state.manager.lock() else {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "run manager unavailable");
+    };
+    let runs = manager.list_runs();
+    let reclaimed = coducktor_core::runs::retention::reclaim_worktrees(
+        &state.config.repo_root,
+        &runs,
+        keep,
+        now_iso8601,
+    );
+    let mut ids = Vec::new();
+    for (id, timestamp) in reclaimed {
+        if manager
+            .edit_run(&id, |run| run.worktree_reclaimed_at = Some(timestamp))
+            .is_ok()
+        {
+            ids.push(id);
+        }
+    }
+    Json(ReclaimWorktreesResponse { reclaimed: ids }).into_response()
+}
+
+async fn reclaim_scoped_worktrees(
+    State(state): State<ServerState>,
+    AxumPath(_project): AxumPath<String>,
+) -> Response {
+    reclaim_worktrees(State(state)).await
+}
+
 async fn get_ui_state(State(state): State<ServerState>) -> Response {
     Json(Value::Object(read_repo_ui_state(&state))).into_response()
 }
@@ -4418,6 +4546,98 @@ mod tests {
         )
         .await;
         assert_eq!(invalid.status(), StatusCode::CONFLICT);
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test]
+    async fn worktree_routes_list_sizes_and_reclaim_finished_directories() {
+        let repo = test_repo();
+        let run_git = |args: &[&str]| {
+            let status = Command::new("git")
+                .current_dir(&repo)
+                .args(args)
+                .status()
+                .expect("git command");
+            assert!(status.success(), "git command failed: {args:?}");
+        };
+        run_git(&["init", "-q", "-b", "main"]);
+        run_git(&["config", "user.email", "test@example.com"]);
+        run_git(&["config", "user.name", "Test User"]);
+        fs::write(repo.join("base.txt"), "base\n").expect("base file");
+        run_git(&["add", "base.txt"]);
+        run_git(&["commit", "-qm", "base"]);
+        fs::create_dir_all(repo.join(".ai/coducktor")).expect("data directory");
+        fs::write(
+            repo.join(".ai/coducktor/config.json"),
+            serde_json::json!({ "worktreeRetention": 1 }).to_string(),
+        )
+        .expect("retention config");
+
+        let old = RunRecord {
+            id: "11111111-1111-4111-8111-111111111111".to_owned(),
+            title: "old".to_owned(),
+            status: coducktor_contract::RunStatus::Done,
+            created_at: "2026-07-01T00:00:00Z".to_owned(),
+            finished_at: Some("2026-07-01T00:00:00Z".to_owned()),
+            ..RunRecord::default()
+        };
+        let old_worktree = coducktor_core::git::worktree::create_worktree(&repo, &old.id, "main")
+            .expect("old worktree");
+        let mut old = old;
+        old.worktree_path = Some(old_worktree.path.clone());
+        old.branch = Some(old_worktree.branch.clone());
+        let recent = RunRecord {
+            id: "22222222-2222-4222-8222-222222222222".to_owned(),
+            title: "recent".to_owned(),
+            status: coducktor_contract::RunStatus::Done,
+            created_at: "2026-07-02T00:00:00Z".to_owned(),
+            finished_at: Some("2026-07-02T00:00:00Z".to_owned()),
+            ..RunRecord::default()
+        };
+        let recent_worktree =
+            coducktor_core::git::worktree::create_worktree(&repo, &recent.id, "main")
+                .expect("recent worktree");
+        let mut recent = recent;
+        recent.worktree_path = Some(recent_worktree.path.clone());
+        recent.branch = Some(recent_worktree.branch.clone());
+        let old_id = old.id.clone();
+        coducktor_core::runs::store::write_run_index(
+            &repo.join(".ai/coducktor/runs.json"),
+            &[old, recent],
+        )
+        .expect("run index");
+        let manager = RunManager::open(repo.join(".ai/coducktor"));
+        let router = router_with_state(ServerState::with_manager(
+            ServerConfig::new(&repo, "test"),
+            manager,
+        ));
+
+        let listing = send(&router, Method::GET, "/api/v1/worktrees", None).await;
+        assert_eq!(listing.status(), StatusCode::OK);
+        let listing_body = json_body(listing).await;
+        assert_eq!(listing_body["keep"], 1);
+        assert_eq!(listing_body["worktrees"].as_array().map(Vec::len), Some(2));
+        assert!(listing_body["totalBytes"].as_u64().is_some());
+
+        let reclaimed = send(
+            &router,
+            Method::POST,
+            "/api/v1/p/default/worktrees/reclaim",
+            None,
+        )
+        .await;
+        assert_eq!(reclaimed.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(reclaimed).await["reclaimed"],
+            serde_json::json!([old_id])
+        );
+        assert!(!Path::new(&old_worktree.path).exists());
+
+        let after = send(&router, Method::GET, "/api/v1/worktrees", None).await;
+        assert_eq!(
+            json_body(after).await["worktrees"].as_array().map(Vec::len),
+            Some(1)
+        );
         fs::remove_dir_all(repo).expect("remove test repo");
     }
 
