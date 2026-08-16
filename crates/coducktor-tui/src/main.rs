@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use coducktor_client::{HttpEngine, RunStreamEvent, Scope, SseFrame};
-use coducktor_contract::{ApiRun, BackendCheckName};
+use coducktor_contract::{ApiRun, BackendCheckName, TaskSource};
 use crossterm::event::{self, Event, MouseEventKind};
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -14,16 +14,27 @@ use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::task::JoinHandle;
 
 use coducktor_tui::app::{self, App, PendingAction, QuickTask, WorkspaceEvent};
+use coducktor_tui::cli::Cli;
 use coducktor_tui::input::keymap::Keymap;
 use coducktor_tui::service::{ServiceConfig, ServiceState, ServiceSupervisor};
 use coducktor_tui::terminal::AppTerminal;
 use coducktor_tui::theme::Theme;
-use coducktor_tui::{new_task_form, screens, terminal};
+use coducktor_tui::{cli, new_task_form, screens, terminal};
 
 const FRAME_BUDGET: Duration = Duration::from_millis(33);
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
+    let cli = Cli::parse_args();
+    // A bad `--repo` is a startup misconfiguration, not a runtime event — reject it
+    // before the alternate screen opens, same as a spawn failure (spec §7.7): the
+    // TUI never took the screen, so there is nothing to restore.
+    if let Some(repo) = &cli.repo
+        && !repo.is_dir()
+    {
+        eprintln!("coducktor: --repo {} is not a directory", repo.display());
+        std::process::exit(2);
+    }
     terminal::install_panic_hook();
     let mut terminal = terminal::setup()?;
     let user_keymap = Keymap::default_path();
@@ -42,6 +53,7 @@ async fn main() -> io::Result<()> {
         .map(|supervisor| supervisor.engine().clone())
     {
         prime_app(&mut app, &engine).await;
+        apply_launch_args(&engine, &mut app, &cli).await;
         workspace_listener = open_workspace_listener(engine).await;
     }
     let run_result = run(
@@ -237,6 +249,50 @@ async fn prime_app(app: &mut App, engine: &HttpEngine) {
     }
     let project = app.current_project().to_owned();
     refresh_new_task(engine, app, &project).await;
+}
+
+/// Apply `--repo`/`--workflow`/`--model` (spec §10 A13) once `prime_app` has loaded
+/// the project registry. `--repo` switches the active project — re-fetching its
+/// tasks and New Task data if it differs from the one `prime_app` already loaded —
+/// or leaves a clear notice if the directory isn't a registered project rather than
+/// silently staying put. `--workflow`/`--model` preselect the New Task screen,
+/// covering the same "hand a task to the agent from outside the TUI" use case the
+/// deleted bookmarklet used to (spec §9.3 point 2).
+async fn apply_launch_args(engine: &HttpEngine, app: &mut App, cli: &Cli) {
+    if let Some(repo) = &cli.repo {
+        match cli::resolve_repo(&app.project_registry, repo) {
+            Some(project) => {
+                if project != app.default_project {
+                    app.default_project = project.clone();
+                    refresh_tasks(engine, app, &project).await;
+                    refresh_new_task(engine, app, &project).await;
+                }
+                app.request_navigate(app::Route::Tasks { project });
+            }
+            None => {
+                app.notice = Some(format!(
+                    "{} is not a registered project — add it from the TUI's project switcher first",
+                    repo.display()
+                ));
+            }
+        }
+    }
+    if cli.workflow.is_some() || cli.model.is_some() {
+        if let Some(workflow) = &cli.workflow {
+            if cli::workflow_known(&app.new_task_ui.data.workflows, workflow) {
+                app.new_task_ui.draft.source = Some(TaskSource::Workflow {
+                    reference: workflow.clone(),
+                });
+            } else {
+                app.notice = Some(format!("workflow {workflow:?} not found for this project"));
+            }
+        }
+        if let Some(model) = &cli.model {
+            app.new_task_ui.draft.model = Some(model.clone());
+        }
+        let project = app.default_project.clone();
+        app.request_navigate(app::Route::NewTask { project });
+    }
 }
 
 /// Run one pending action against the engine and reconcile the app with the

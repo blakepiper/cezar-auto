@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 base64.workspace = true
+clap.workspace = true
 coducktor-client = { path = "../coducktor-client" }
 coducktor-contract = { path = "../coducktor-contract" }
 coducktor-protocol = { path = "../coducktor-protocol" }

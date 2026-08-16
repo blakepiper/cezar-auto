@@ -38,6 +38,8 @@ nucleo = "0.5"
 notify-rust = "4"
 # Open URLs in the OS default handler — external links from the GitHub screen (spec §6.3).
 open = "5"
+# CLI argument parsing for the TUI binary (spec §6.3, §10 A13).
+clap = { version = "4", features = ["derive"] }
 tokio = { version = "1.48", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 tokio-stream = "0.1"
 async-stream = "0.3"
