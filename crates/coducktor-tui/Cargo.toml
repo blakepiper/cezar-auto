@@ -18,6 +18,9 @@ coducktor-protocol = { path = "../coducktor-protocol" }
 crossterm.workspace = true
 futures-util.workspace = true
 image.workspace = true
+notify-rust.workspace = true
+nucleo.workspace = true
+open.workspace = true
 ratatui.workspace = true
 ratatui-image.workspace = true
 serde.workspace = true

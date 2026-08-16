@@ -1,21 +1,29 @@
 use std::pin::Pin;
 
 use coducktor_contract::{
+    AgentAccountDetailsResponse, AgentAccountStatusResponse, AgentConfigFileContent,
+    AgentConfigListing, AgentProfileResponse, AgentProfileSelectionsResponse,
     AgentProfilesResponse, ApiRun, ArchiveFinishedResponse, CancelAutoResumeResponse,
     CancelResponse, ChangesPayload, ConfigResponse, ContinueInput, ContinueResponse,
-    CreatePrResponse, CreateRunInput, CreateRunResponse, DeleteRunResponse, DeleteWorkflowResponse,
-    EditQueuedMessageResponse, FinishResponse, GitCommitInput, GitCommitResponse, GitPushResponse,
-    GithubChecksData, GithubCommentsData, GithubData, GithubMergeInput, GithubMergeResponse,
-    GithubPrChangesData, GithubPrMergeStateResponse, GithubRefStatusData, GroupResponse,
-    HealthResponse, IdeDirectoryResponse, IdeFileInput, IdeFileResponse, MarkAllReadResponse,
-    MessageInput, MessageResponse, OpenInCliResponse, OpenInInput, ParseWorkflowInput,
-    ParsedWorkflow, PatchRunInput, PickVariantRequest, PickVariantResponse, PlanResponse,
-    ProjectsResponse, ProviderStatusResponse, QueuedMessagePatchInput, RemoveQueuedMessageResponse,
-    RemoveTodoResponse, RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoResponse,
-    RunCommitsResponse, RunEvent, RunHistoryContext, RunHistoryPage, Runner,
-    RunnerModelCatalogResponse, RunsIndexResponse, SaveWorkflowInput, SaveWorkflowResponse,
-    SetConfigInput, Skill, StartTodoResponse, TodoItem, UiState, WorkflowsResponse,
-    WorkspaceConfigResponse, WorkspaceUsageResponse, WorktreeEntry,
+    CreateAgentProfileInput, CreatePrResponse, CreateRunInput, CreateRunResponse,
+    DeleteRunResponse, DeleteWorkflowResponse, EditQueuedMessageResponse, FinishResponse,
+    GitCommitInput, GitCommitResponse, GitPushResponse, GithubChecksData, GithubCommentsData,
+    GithubData, GithubMergeInput, GithubMergeResponse, GithubPrChangesData,
+    GithubPrMergeStateResponse, GithubRefStatusData, GroupResponse, HealthResponse,
+    IdeDirectoryResponse, IdeFileInput, IdeFileResponse, MarkAllReadResponse, MessageInput,
+    MessageResponse, OpenAgentAccountFileInput, OpenAgentAccountFileResponse, OpenInCliResponse,
+    OpenInInput, OpenProjectInResponse, OpenTargetsResponse, ParseWorkflowInput, ParsedWorkflow,
+    PatchRunInput, PickVariantRequest, PickVariantResponse, PlanResponse, ProjectsResponse,
+    ProviderStatusResponse, QueuedMessagePatchInput, ReclaimWorktreesResponse,
+    RemoveAgentProfileResponse, RemoveProjectResponse, RemoveQueuedMessageResponse,
+    RemoveTodoResponse, RemoveWorktreeResponse, RepoBranchRequest, RepoBranchResponse,
+    RepoCommitPayload, RepoResponse, RunCommitsResponse, RunEvent, RunHistoryContext,
+    RunHistoryPage, Runner, RunnerModelCatalogResponse, RunsIndexResponse, SaveWorkflowInput,
+    SaveWorkflowResponse, SelectAgentProfileInput, SetAgentConfigInput, SetConfigInput,
+    SetWorkspaceConfigInput, SetWorkspaceUiStateInput, Skill, StartTodoResponse, TodoItem, UiState,
+    UpdateAgentProfileInput, UpdateProjectInput, UpdateProjectResponse, WorkflowsResponse,
+    WorkspaceConfigResponse, WorkspaceUiState, WorkspaceUsageResponse, WorktreeEntry,
+    WorktreesResponse,
 };
 use futures_core::Stream;
 use futures_util::StreamExt;
@@ -799,6 +807,240 @@ impl HttpEngine {
             scope,
             &format!("/runs/{}/auto-resume", encode_path_segment(run_id)),
             Option::<&serde_json::Value>::None,
+        )
+        .await
+    }
+
+    // ---- Settings (spec §8.14, A12) ------------------------------------------------------
+
+    pub async fn put_workspace_config(
+        &self,
+        input: &SetWorkspaceConfigInput,
+    ) -> Result<WorkspaceConfigResponse, EngineError> {
+        self.send_json(
+            Method::PUT,
+            &Scope::Workspace,
+            "/workspace/config",
+            Some(input),
+        )
+        .await
+    }
+
+    pub async fn workspace_ui_state(&self) -> Result<WorkspaceUiState, EngineError> {
+        self.get_json(&Scope::Workspace, "/workspace/ui-state")
+            .await
+    }
+
+    pub async fn put_workspace_ui_state(
+        &self,
+        input: &SetWorkspaceUiStateInput,
+    ) -> Result<WorkspaceUiState, EngineError> {
+        self.send_json(
+            Method::PUT,
+            &Scope::Workspace,
+            "/workspace/ui-state",
+            Some(input),
+        )
+        .await
+    }
+
+    pub async fn agent_config(&self, scope: &Scope) -> Result<AgentConfigListing, EngineError> {
+        self.get_json(scope, "/agent-config").await
+    }
+
+    pub async fn agent_config_file(
+        &self,
+        scope: &Scope,
+        id: &str,
+    ) -> Result<AgentConfigFileContent, EngineError> {
+        self.get_json(scope, &format!("/agent-config/{}", encode_path_segment(id)))
+            .await
+    }
+
+    pub async fn put_agent_config_file(
+        &self,
+        scope: &Scope,
+        id: &str,
+        input: &SetAgentConfigInput,
+    ) -> Result<AgentConfigFileContent, EngineError> {
+        self.send_json(
+            Method::PUT,
+            scope,
+            &format!("/agent-config/{}", encode_path_segment(id)),
+            Some(input),
+        )
+        .await
+    }
+
+    pub async fn create_agent_profile(
+        &self,
+        input: &CreateAgentProfileInput,
+    ) -> Result<AgentProfileResponse, EngineError> {
+        self.send_json(
+            Method::POST,
+            &Scope::Workspace,
+            "/workspace/agent-profiles",
+            Some(input),
+        )
+        .await
+    }
+
+    pub async fn update_agent_profile(
+        &self,
+        id: &str,
+        input: &UpdateAgentProfileInput,
+    ) -> Result<AgentProfileResponse, EngineError> {
+        self.send_json(
+            Method::PATCH,
+            &Scope::Workspace,
+            &format!("/workspace/agent-profiles/{}", encode_path_segment(id)),
+            Some(input),
+        )
+        .await
+    }
+
+    pub async fn remove_agent_profile(
+        &self,
+        id: &str,
+    ) -> Result<RemoveAgentProfileResponse, EngineError> {
+        self.send_json(
+            Method::DELETE,
+            &Scope::Workspace,
+            &format!("/workspace/agent-profiles/{}", encode_path_segment(id)),
+            Option::<&serde_json::Value>::None,
+        )
+        .await
+    }
+
+    pub async fn agent_account_status(
+        &self,
+        id: &str,
+        refresh: bool,
+    ) -> Result<AgentAccountStatusResponse, EngineError> {
+        let suffix = if refresh { "?refresh=1" } else { "" };
+        self.get_json(
+            &Scope::Workspace,
+            &format!(
+                "/workspace/agent-profiles/{}/status{suffix}",
+                encode_path_segment(id)
+            ),
+        )
+        .await
+    }
+
+    pub async fn agent_account_details(
+        &self,
+        id: &str,
+    ) -> Result<AgentAccountDetailsResponse, EngineError> {
+        self.get_json(
+            &Scope::Workspace,
+            &format!(
+                "/workspace/agent-profiles/{}/details",
+                encode_path_segment(id)
+            ),
+        )
+        .await
+    }
+
+    pub async fn open_agent_account_file(
+        &self,
+        id: &str,
+        input: &OpenAgentAccountFileInput,
+    ) -> Result<OpenAgentAccountFileResponse, EngineError> {
+        self.send_json(
+            Method::POST,
+            &Scope::Workspace,
+            &format!("/workspace/agent-profiles/{}/open", encode_path_segment(id)),
+            Some(input),
+        )
+        .await
+    }
+
+    pub async fn select_agent_profile(
+        &self,
+        input: &SelectAgentProfileInput,
+    ) -> Result<AgentProfileSelectionsResponse, EngineError> {
+        self.send_json(
+            Method::PUT,
+            &Scope::Workspace,
+            "/workspace/agent-profiles/selection",
+            Some(input),
+        )
+        .await
+    }
+
+    pub async fn remove_project(
+        &self,
+        project_id: &str,
+    ) -> Result<RemoveProjectResponse, EngineError> {
+        self.send_json(
+            Method::DELETE,
+            &Scope::Workspace,
+            &format!("/projects/{}", encode_path_segment(project_id)),
+            Option::<&serde_json::Value>::None,
+        )
+        .await
+    }
+
+    pub async fn update_project(
+        &self,
+        project_id: &str,
+        input: &UpdateProjectInput,
+    ) -> Result<UpdateProjectResponse, EngineError> {
+        self.send_json(
+            Method::PATCH,
+            &Scope::Workspace,
+            &format!("/projects/{}", encode_path_segment(project_id)),
+            Some(input),
+        )
+        .await
+    }
+
+    pub async fn worktrees(&self, scope: &Scope) -> Result<WorktreesResponse, EngineError> {
+        self.get_json(scope, "/worktrees").await
+    }
+
+    pub async fn reclaim_worktrees(
+        &self,
+        scope: &Scope,
+    ) -> Result<ReclaimWorktreesResponse, EngineError> {
+        self.send_json(
+            Method::POST,
+            scope,
+            "/worktrees/reclaim",
+            Some(&serde_json::json!({})),
+        )
+        .await
+    }
+
+    pub async fn remove_run_worktree(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<RemoveWorktreeResponse, EngineError> {
+        self.send_json(
+            Method::POST,
+            scope,
+            &format!("/runs/{}/remove-worktree", encode_path_segment(run_id)),
+            Option::<&serde_json::Value>::None,
+        )
+        .await
+    }
+
+    pub async fn open_targets(&self, scope: &Scope) -> Result<OpenTargetsResponse, EngineError> {
+        self.get_json(scope, "/open-targets").await
+    }
+
+    pub async fn open_project_in(
+        &self,
+        scope: &Scope,
+        target: &str,
+    ) -> Result<OpenProjectInResponse, EngineError> {
+        self.send_json(
+            Method::POST,
+            scope,
+            "/open-in",
+            Some(&serde_json::json!({ "target": target })),
         )
         .await
     }

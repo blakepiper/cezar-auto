@@ -187,6 +187,9 @@ pub enum Route {
         project: String,
         group_id: String,
     },
+    Settings {
+        project: String,
+    },
     Placeholder {
         project: String,
         nav: NavItem,
@@ -243,6 +246,7 @@ impl Route {
                         .unwrap_or(RepoGitTab::Changes);
                     Some(Self::RepoGit { project, tab })
                 }
+                Some("settings") => Some(Self::Settings { project }),
                 Some(segment) => {
                     NavItem::parse(segment).map(|nav| Self::Placeholder { project, nav })
                 }
@@ -275,6 +279,7 @@ impl Route {
                 format!("/p/{project}/repo-git/{}", tab.path_segment())
             }
             Self::Compare { project, group_id } => format!("/p/{project}/compare/{group_id}"),
+            Self::Settings { project } => format!("/p/{project}/settings"),
             Self::Placeholder { project, nav } => {
                 format!("/p/{project}/{}", nav.path_segment())
             }
@@ -295,6 +300,7 @@ impl Route {
             Self::Workflows { .. } => "WORKFLOWS",
             Self::RepoGit { .. } => "REPO GIT",
             Self::Compare { .. } => "COMPARE",
+            Self::Settings { .. } => "SETTINGS",
             Self::Placeholder { nav, .. } => nav.uppercase_title(),
         }
     }
@@ -312,6 +318,7 @@ impl Route {
             | Self::Workflows { project }
             | Self::RepoGit { project, .. }
             | Self::Compare { project, .. }
+            | Self::Settings { project }
             | Self::Placeholder { project, .. } => Some(project),
             Self::GlobalTasks => None,
         }
@@ -431,6 +438,23 @@ impl QuickTask {
                 }
             }
         }
+    }
+}
+
+/// A run's status transition worth surfacing as a desktop notification (spec §9.2's
+/// "Browser tab title / favicon badge" → `notify-rust` mapping): "needs you" (waiting on an
+/// answer or a review) or "finished" (done/failed/cancelled) — but only the FIRST time a run
+/// enters one of those states, never on every SSE echo of the same status.
+fn notification_for_transition(old: RunStatus, task: &QuickTask) -> Option<(String, String)> {
+    if old == task.status {
+        return None;
+    }
+    match task.status {
+        RunStatus::Waiting => Some(("Needs your answer".to_owned(), task.title.clone())),
+        RunStatus::Review => Some(("Ready for review".to_owned(), task.title.clone())),
+        RunStatus::Done => Some(("Task finished".to_owned(), task.title.clone())),
+        RunStatus::Failed => Some(("Task failed".to_owned(), task.title.clone())),
+        _ => None,
     }
 }
 
@@ -728,6 +752,59 @@ pub enum PendingAction {
         project: String,
         yaml: String,
     },
+    /// Load every Settings data source for the current project + workspace (spec §8.14, A12).
+    LoadSettings {
+        project: String,
+    },
+    SettingsPutConfig {
+        project: String,
+        input: coducktor_contract::SetConfigInput,
+    },
+    SettingsPutWorkspaceConfig {
+        input: coducktor_contract::SetWorkspaceConfigInput,
+    },
+    SettingsPutWorkspaceUiState {
+        input: coducktor_contract::WorkspaceUiState,
+    },
+    /// Open one agent-config file's raw content into the settings editor.
+    SettingsLoadConfigFile {
+        project: String,
+        id: String,
+    },
+    SettingsPutConfigFile {
+        project: String,
+        id: String,
+        content: String,
+        version: Option<String>,
+    },
+    SettingsCreateAgentProfile {
+        provider: coducktor_contract::Runner,
+        config_dir: String,
+    },
+    SettingsUpdateAgentProfile {
+        id: String,
+        input: coducktor_contract::UpdateAgentProfileInput,
+    },
+    SettingsRemoveAgentProfile {
+        id: String,
+    },
+    SettingsSelectAgentProfile {
+        input: coducktor_contract::SelectAgentProfileInput,
+    },
+    SettingsReclaimWorktrees {
+        project: String,
+    },
+    SettingsRemoveWorktree {
+        project: String,
+        run_id: String,
+    },
+    SettingsRemoveProject {
+        id: String,
+    },
+    SettingsUpdateProject {
+        id: String,
+        input: coducktor_contract::UpdateProjectInput,
+    },
     Quit,
 }
 
@@ -816,6 +893,17 @@ pub struct App {
     pub skills_ui: crate::screens::skills::SkillsUi,
     pub inbox_ui: crate::screens::inbox::InboxUi,
     pub workflows_ui: crate::screens::workflows::WorkflowsUi,
+    pub settings_ui: crate::screens::settings::SettingsUi,
+    pub palette: crate::overlay::Palette,
+    pub logs_open: bool,
+    /// Settings → Notifications' toggle, loaded once at startup and kept live by every write
+    /// (spec §8.14). Gates `pending_notifications`, never the terminal-title update.
+    pub notifications_enabled: bool,
+    /// (summary, body) pairs main.rs drains once per tick and fires via `notify-rust`.
+    pub pending_notifications: Vec<(String, String)>,
+    /// The supervised `cezar serve` child's captured output (§7.7's `logs.rs` overlay),
+    /// refreshed from `ServiceSupervisor::logs()` by main.rs while `logs_open` is true.
+    pub service_logs: Vec<String>,
     pub pending: Vec<PendingAction>,
     /// The absolute path main.rs should hand to `$EDITOR` (set by the `OpenIdeInEditor`
     /// handler; consumed by the run loop, which owns the terminal).
@@ -876,6 +964,12 @@ impl App {
             skills_ui: crate::screens::skills::SkillsUi::default(),
             inbox_ui: crate::screens::inbox::InboxUi::default(),
             workflows_ui: crate::screens::workflows::WorkflowsUi::default(),
+            settings_ui: crate::screens::settings::SettingsUi::default(),
+            palette: crate::overlay::Palette::default(),
+            logs_open: false,
+            notifications_enabled: false,
+            pending_notifications: Vec::new(),
+            service_logs: Vec::new(),
             pending: Vec::new(),
             editor_handoff: None,
             filter_mode: false,
@@ -946,6 +1040,14 @@ impl App {
 
     pub fn take_pending(&mut self) -> Vec<PendingAction> {
         std::mem::take(&mut self.pending)
+    }
+
+    pub fn take_pending_notifications(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.pending_notifications)
+    }
+
+    pub fn set_service_logs(&mut self, lines: Vec<String>) {
+        self.service_logs = lines;
     }
 
     /// Navigate, guarding the IDE's unsaved draft (spec §8.8): leaving a dirty file asks
@@ -1026,27 +1128,11 @@ impl App {
     }
 
     /// Open a URL in the platform browser, best-effort.
+    /// Open a URL in the OS default handler — the `open` crate (spec §6.3), the one local
+    /// "external open" the whole app has no server round-trip for (unlike `open_in`/
+    /// `open_in_cli`, which are the Engine's server-side handoffs for a run's worktree).
     pub fn open_url(&mut self, url: &str) {
-        let opener = if cfg!(target_os = "macos") {
-            "open"
-        } else if cfg!(target_os = "windows") {
-            "cmd"
-        } else {
-            "xdg-open"
-        };
-        let mut command = std::process::Command::new(opener);
-        if cfg!(target_os = "windows") {
-            command.arg("/c").arg("start").arg("").arg(url);
-        } else {
-            command.arg(url);
-        }
-        let spawned = command
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .is_ok();
-        self.notice = if spawned {
+        self.notice = if open::that(url).is_ok() {
             None
         } else {
             Some(format!("no way to open {url}"))
@@ -1084,7 +1170,11 @@ impl App {
                     .iter_mut()
                     .find(|existing| existing.project == task.project && existing.id == task.id)
                 {
-                    *existing = task;
+                    let old_status = existing.status;
+                    *existing = task.clone();
+                    if let Some((summary, body)) = notification_for_transition(old_status, &task) {
+                        self.pending_notifications.push((summary, body));
+                    }
                 } else {
                     self.quick_tasks.push(task);
                 }
@@ -1436,6 +1526,10 @@ impl App {
                 crate::screens::compare::render(frame, area, self);
                 return;
             }
+            Route::Settings { .. } => {
+                crate::screens::settings::render(frame, area, self);
+                return;
+            }
             Route::Placeholder { nav, project } => format!(
                 "{title}\n\nProject: {project}\n\nThe shell route for {} is ready for its content screen in a later step.",
                 nav.label()
@@ -1545,7 +1639,40 @@ impl App {
             self.render_row_menu(frame, area, menu);
         } else if self.tasks_ui.sort_picker {
             self.render_sort_picker(frame, area);
+        } else if self.logs_open {
+            self.render_logs(frame, area);
         }
+        if self.palette.open {
+            crate::overlay::render(frame, area, self);
+        }
+    }
+
+    /// §7.7's `logs.rs` — tails the supervised service child's captured stdout/stderr
+    /// (`:logs`, `Ctrl+L`). Phases A/B only; deleted with the child process at Phase C.
+    fn render_logs(&self, frame: &mut Frame<'_>, area: Rect) {
+        let width = area.width.saturating_sub(6).max(20);
+        let height = area.height.saturating_sub(4).max(6);
+        let rect = Rect::new(
+            area.x + (area.width.saturating_sub(width)) / 2,
+            area.y + (area.height.saturating_sub(height)) / 2,
+            width,
+            height,
+        );
+        frame.render_widget(Clear, rect);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title("Service logs (Esc to close)");
+        let inner = block.inner(rect);
+        frame.render_widget(block, rect);
+        let tail_from = self
+            .service_logs
+            .len()
+            .saturating_sub(inner.height as usize);
+        let lines: Vec<Line<'static>> = self.service_logs[tail_from..]
+            .iter()
+            .map(|line| Line::from(line.clone()))
+            .collect();
+        frame.render_widget(Paragraph::new(lines), inner);
     }
 
     fn render_help(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -1716,6 +1843,16 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        if self.palette.open {
+            crate::overlay::handle_key(self, key);
+            return;
+        }
+        if self.logs_open {
+            if key.code == KeyCode::Esc {
+                self.logs_open = false;
+            }
+            return;
+        }
         if self.help_open {
             if matches!(key.code, KeyCode::Esc | KeyCode::Char('?')) {
                 self.help_open = false;
@@ -1752,6 +1889,7 @@ impl App {
             Route::Workflows { .. } if crate::screens::workflows::handle_key(self, key) => return,
             Route::RepoGit { .. } if crate::screens::repo_git::handle_key(self, key) => return,
             Route::Compare { .. } if crate::screens::compare::handle_key(self, key) => return,
+            Route::Settings { .. } if crate::screens::settings::handle_key(self, key) => return,
             _ => {}
         }
         if let Some(action) = self.keymap.action_for(KeyMode::Normal, &key) {
@@ -1845,7 +1983,7 @@ impl App {
         }
     }
 
-    fn execute_command(&mut self, command: &str) {
+    pub(crate) fn execute_command(&mut self, command: &str) {
         let mut parts = command.split_whitespace();
         match parts.next() {
             Some("open") => {
@@ -1874,6 +2012,7 @@ impl App {
             Some("new") => self.navigate(NavItem::NewTask),
             Some("help") => self.help_open = true,
             Some("sidebar") => self.toggle_sidebar(),
+            Some("logs") => self.logs_open = true,
             Some("quit") => self.request_quit(),
             Some(unknown) => self.notice = Some(format!("unknown command: {unknown}")),
             None => {}
@@ -1898,6 +2037,8 @@ impl App {
             ActionId::Settings => self.navigate(NavItem::Settings),
             ActionId::ToggleSidebar => self.toggle_sidebar(),
             ActionId::Help => self.help_open = true,
+            ActionId::Palette => crate::overlay::open(self),
+            ActionId::Logs => self.logs_open = true,
             ActionId::Back => {
                 self.request_back();
             }
@@ -2049,6 +2190,17 @@ impl App {
                     crate::screens::compare::apply_hit(self, action);
                 }
             }
+            HitAction::SettingsSection(index) => {
+                if matches!(self.route(), Route::Settings { .. }) {
+                    self.settings_ui.section = index;
+                    self.settings_ui.row = 0;
+                }
+            }
+            HitAction::SettingsRow(index) => {
+                if matches!(self.route(), Route::Settings { .. }) {
+                    self.settings_ui.row = index;
+                }
+            }
             HitAction::OpenCompare(group_id) => {
                 let project = self.current_project().to_owned();
                 crate::screens::compare::open(self, &project, &group_id);
@@ -2056,7 +2208,7 @@ impl App {
         }
     }
 
-    fn navigate(&mut self, nav: NavItem) {
+    pub(crate) fn navigate(&mut self, nav: NavItem) {
         let project = self.current_project().to_owned();
         match nav {
             NavItem::Tasks => {
@@ -2094,9 +2246,7 @@ impl App {
                 });
                 self.pending.push(PendingAction::LoadRepoGit { project });
             }
-            _ => {
-                self.request_navigate(Route::Placeholder { project, nav });
-            }
+            NavItem::Settings => crate::screens::settings::open(self, &project),
         }
         self.notice = None;
     }
@@ -2112,6 +2262,7 @@ impl App {
             || (nav == NavItem::Inbox && matches!(self.route(), Route::Inbox { .. }))
             || (nav == NavItem::Workflows && matches!(self.route(), Route::Workflows { .. }))
             || (nav == NavItem::RepoGit && matches!(self.route(), Route::RepoGit { .. }))
+            || (nav == NavItem::Settings && matches!(self.route(), Route::Settings { .. }))
     }
 
     fn toggle_sidebar(&mut self) {

@@ -877,6 +877,17 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             app.pending.push(PendingAction::LoadGithub { project });
             true
         }
+        // External open (spec §6.3, A12): a GitHub URL opens in the OS browser exactly
+        // like the web app's own plain `<a target="_blank">` — no server round-trip.
+        KeyCode::Char('o') => {
+            if let Some(url) = items(&app.github_ui)
+                .get(app.github_ui.list_selected)
+                .map(|item| item.url.clone())
+            {
+                app.open_url(&url);
+            }
+            true
+        }
         KeyCode::Esc => {
             app.request_back();
             true

@@ -6,6 +6,7 @@ pub mod inbox;
 pub mod new_task;
 pub mod repo_git;
 pub mod runs_util;
+pub mod settings;
 pub mod skills;
 pub mod task_git;
 pub mod tasks;

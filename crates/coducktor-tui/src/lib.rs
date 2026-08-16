@@ -10,6 +10,8 @@ pub mod image;
 pub mod input;
 pub mod markdown;
 pub mod new_task_form;
+pub mod notify;
+pub mod overlay;
 pub mod screens;
 pub mod service;
 pub mod skills;

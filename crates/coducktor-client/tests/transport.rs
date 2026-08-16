@@ -351,3 +351,192 @@ async fn runs_index_is_workspace_level() {
     assert_eq!(index.per_project_limit, 200);
     assert_eq!(index.truncated, vec!["coducktor".to_owned()]);
 }
+
+// ---- Settings (spec §8.14, A12) — route-shape coverage for every new Engine method --------
+
+#[tokio::test]
+async fn workspace_config_and_ui_state_write_to_the_unscoped_workspace_routes() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/api/v1/workspace/config"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "browseRoot": "/home",
+            "projectsDir": "/home/user/projects",
+            "effectiveSkillsAutoUpdate": false,
+            "composerDefaults": {"inheritedAutonomous": "source-dependent", "inheritedWorktree": false},
+            "resources": {
+                "maxParallel": 4, "maxMonitoringSessions": 2,
+                "autoResumeOnUsageLimit": false, "intelligentContextRefresh": false,
+                "worktreeRetentionDefault": 5
+            },
+            "agentDefaults": {}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/api/v1/workspace/ui-state"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"notifications": {"enabled": true}})),
+        )
+        .mount(&server)
+        .await;
+
+    let engine = HttpEngine::new(server.uri()).unwrap();
+    let config = engine
+        .put_workspace_config(&coducktor_contract::SetWorkspaceConfigInput {
+            projects_dir: Some("/home/user/projects".to_owned()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(config.projects_dir, "/home/user/projects");
+
+    let state = engine
+        .put_workspace_ui_state(&coducktor_contract::WorkspaceUiState::default())
+        .await
+        .unwrap();
+    assert_eq!(state.notifications.unwrap().enabled, Some(true));
+}
+
+#[tokio::test]
+async fn agent_config_routes_are_project_scoped() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/p/shop/agent-config"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "editable": true, "files": [], "userMcp": null
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/api/v1/p/shop/agent-config/claude-md"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "claude-md", "path": "CLAUDE.md", "exists": true, "content": "hi", "version": "v1"
+        })))
+        .mount(&server)
+        .await;
+
+    let engine = HttpEngine::new(server.uri()).unwrap();
+    let scope = Scope::Project("shop".into());
+    let listing = engine.agent_config(&scope).await.unwrap();
+    assert!(listing.editable);
+
+    let saved = engine
+        .put_agent_config_file(
+            &scope,
+            "claude-md",
+            &coducktor_contract::SetAgentConfigInput {
+                content: "hi".to_owned(),
+                version: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(saved.content, "hi");
+}
+
+#[tokio::test]
+async fn agent_profiles_write_routes_are_workspace_level() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/workspace/agent-profiles"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "profile": {
+                "id": "acct-1", "provider": "claude", "label": "Work", "configDir": "/tmp/x",
+                "path": "/tmp/x", "exists": true, "looksValid": true, "isDefault": false, "files": []
+            }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/v1/workspace/agent-profiles/acct-1"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"removed": true, "id": "acct-1"})),
+        )
+        .mount(&server)
+        .await;
+
+    let engine = HttpEngine::new(server.uri()).unwrap();
+    let created = engine
+        .create_agent_profile(&coducktor_contract::CreateAgentProfileInput {
+            provider: coducktor_contract::Runner::Claude,
+            label: None,
+            config_dir: "/tmp/x".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(created.profile.id, "acct-1");
+
+    let removed = engine.remove_agent_profile("acct-1").await.unwrap();
+    assert!(removed.removed);
+}
+
+#[tokio::test]
+async fn worktrees_and_open_in_routes_are_project_scoped() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/p/shop/worktrees"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "worktrees": [], "totalBytes": 0, "keep": 5
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/p/shop/open-targets"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"targets": []})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/p/shop/open-in"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"opened": true, "path": "/repo"})),
+        )
+        .mount(&server)
+        .await;
+
+    let engine = HttpEngine::new(server.uri()).unwrap();
+    let scope = Scope::Project("shop".into());
+    let worktrees = engine.worktrees(&scope).await.unwrap();
+    assert_eq!(worktrees.keep, 5);
+    let targets = engine.open_targets(&scope).await.unwrap();
+    assert!(targets.targets.is_empty());
+    let opened = engine.open_project_in(&scope, "vscode").await.unwrap();
+    assert!(opened.opened);
+}
+
+#[tokio::test]
+async fn remove_and_update_project_hit_the_workspace_projects_route() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/v1/projects/shop"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"removed": true, "id": "shop"})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/v1/projects/shop"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "project": {
+                "id": "shop", "name": "shop", "root": "/repo", "addedAt": "now",
+                "lastOpenedAt": "now", "source": "local", "status": "ok", "maxParallel": 3
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let engine = HttpEngine::new(server.uri()).unwrap();
+    let removed = engine.remove_project("shop").await.unwrap();
+    assert!(removed.removed);
+    let updated = engine
+        .update_project(
+            "shop",
+            &coducktor_contract::UpdateProjectInput {
+                max_parallel: Some(Some(3)),
+                tags: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.project.max_parallel, Some(3.0));
+}

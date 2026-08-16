@@ -1,20 +1,27 @@
 use async_trait::async_trait;
 use coducktor_contract::{
+    AgentAccountDetailsResponse, AgentAccountStatusResponse, AgentConfigFileContent,
+    AgentConfigListing, AgentProfileResponse, AgentProfileSelectionsResponse,
     AgentProfilesResponse, ApiRun, ArchiveFinishedResponse, CancelAutoResumeResponse,
     CancelResponse, ChangesPayload, ConfigResponse, ContinueInput, ContinueResponse,
-    CreatePrResponse, CreateRunInput, CreateRunResponse, DeleteRunResponse, DeleteWorkflowResponse,
-    EditQueuedMessageResponse, FinishResponse, GitCommitInput, GitCommitResponse, GitPushResponse,
-    GithubChecksData, GithubCommentsData, GithubData, GithubMergeInput, GithubMergeResponse,
-    GithubPrChangesData, GithubPrMergeStateResponse, GithubRefStatusData, GroupResponse,
-    HealthResponse, IdeDirectoryResponse, IdeFileResponse, MarkAllReadResponse, MessageInput,
-    MessageResponse, OpenInCliResponse, OpenInInput, ParsedWorkflow, PatchRunInput,
-    PickVariantRequest, PickVariantResponse, PlanResponse, ProjectsResponse,
-    ProviderStatusResponse, QueuedMessagePatchInput, RemoveQueuedMessageResponse,
-    RemoveTodoResponse, RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoResponse,
-    RunCommitsResponse, RunHistoryContext, RunHistoryPage, Runner, RunnerModelCatalogResponse,
-    RunsIndexResponse, SaveWorkflowInput, SaveWorkflowResponse, SetConfigInput, Skill,
-    StartTodoResponse, TodoItem, UiState, WorkflowsResponse, WorkspaceConfigResponse,
-    WorkspaceUsageResponse, WorktreeEntry,
+    CreateAgentProfileInput, CreatePrResponse, CreateRunInput, CreateRunResponse,
+    DeleteRunResponse, DeleteWorkflowResponse, EditQueuedMessageResponse, FinishResponse,
+    GitCommitInput, GitCommitResponse, GitPushResponse, GithubChecksData, GithubCommentsData,
+    GithubData, GithubMergeInput, GithubMergeResponse, GithubPrChangesData,
+    GithubPrMergeStateResponse, GithubRefStatusData, GroupResponse, HealthResponse,
+    IdeDirectoryResponse, IdeFileResponse, MarkAllReadResponse, MessageInput, MessageResponse,
+    OpenAgentAccountFileInput, OpenAgentAccountFileResponse, OpenInCliResponse, OpenInInput,
+    OpenProjectInResponse, OpenTargetsResponse, ParsedWorkflow, PatchRunInput, PickVariantRequest,
+    PickVariantResponse, PlanResponse, ProjectsResponse, ProviderStatusResponse,
+    QueuedMessagePatchInput, ReclaimWorktreesResponse, RemoveAgentProfileResponse,
+    RemoveProjectResponse, RemoveQueuedMessageResponse, RemoveTodoResponse, RemoveWorktreeResponse,
+    RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoResponse, RunCommitsResponse,
+    RunHistoryContext, RunHistoryPage, Runner, RunnerModelCatalogResponse, RunsIndexResponse,
+    SaveWorkflowInput, SaveWorkflowResponse, SelectAgentProfileInput, SetAgentConfigInput,
+    SetConfigInput, SetWorkspaceConfigInput, SetWorkspaceUiStateInput, Skill, StartTodoResponse,
+    TodoItem, UiState, UpdateAgentProfileInput, UpdateProjectInput, UpdateProjectResponse,
+    WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUiState, WorkspaceUsageResponse,
+    WorktreeEntry, WorktreesResponse,
 };
 use futures_core::stream::BoxStream;
 use serde_json::Value;
@@ -274,6 +281,103 @@ pub trait Engine: Send + Sync {
         scope: &Scope,
         run_id: &str,
     ) -> Result<CancelAutoResumeResponse, EngineError>;
+
+    // ---- Settings (spec §8.14, A12) ------------------------------------------------------
+    /// `PUT /workspace/config` — the global settings slice (Accounts defaults, Resources,
+    /// Projects' checkout root).
+    async fn put_workspace_config(
+        &self,
+        input: &SetWorkspaceConfigInput,
+    ) -> Result<WorkspaceConfigResponse, EngineError>;
+    /// `GET /workspace/ui-state` — the cross-project GUI state (Notifications, appearance).
+    async fn workspace_ui_state(&self) -> Result<WorkspaceUiState, EngineError>;
+    /// `PUT /workspace/ui-state` — shallow top-level merge, same semantics as `put_ui_state`.
+    async fn put_workspace_ui_state(
+        &self,
+        input: &SetWorkspaceUiStateInput,
+    ) -> Result<WorkspaceUiState, EngineError>;
+    /// `GET /agent-config` — the selected project's agent-owned config catalog.
+    async fn agent_config(&self, scope: &Scope) -> Result<AgentConfigListing, EngineError>;
+    /// `GET /agent-config/:id` — one config file's raw contents.
+    async fn agent_config_file(
+        &self,
+        scope: &Scope,
+        id: &str,
+    ) -> Result<AgentConfigFileContent, EngineError>;
+    /// `PUT /agent-config/:id` — save one config file.
+    async fn put_agent_config_file(
+        &self,
+        scope: &Scope,
+        id: &str,
+        input: &SetAgentConfigInput,
+    ) -> Result<AgentConfigFileContent, EngineError>;
+    /// `POST /workspace/agent-profiles` — register an extra config dir as an account.
+    async fn create_agent_profile(
+        &self,
+        input: &CreateAgentProfileInput,
+    ) -> Result<AgentProfileResponse, EngineError>;
+    /// `PATCH /workspace/agent-profiles/:id` — rename an account or repoint its folder.
+    async fn update_agent_profile(
+        &self,
+        id: &str,
+        input: &UpdateAgentProfileInput,
+    ) -> Result<AgentProfileResponse, EngineError>;
+    /// `DELETE /workspace/agent-profiles/:id` — deregister an account.
+    async fn remove_agent_profile(
+        &self,
+        id: &str,
+    ) -> Result<RemoveAgentProfileResponse, EngineError>;
+    /// `GET /workspace/agent-profiles/:id/status` — one account's auth state, probed for real.
+    async fn agent_account_status(
+        &self,
+        id: &str,
+        refresh: bool,
+    ) -> Result<AgentAccountStatusResponse, EngineError>;
+    /// `GET /workspace/agent-profiles/:id/details` — who an account is signed in as.
+    async fn agent_account_details(
+        &self,
+        id: &str,
+    ) -> Result<AgentAccountDetailsResponse, EngineError>;
+    /// `POST /workspace/agent-profiles/:id/open` — open one of an account's config files.
+    async fn open_agent_account_file(
+        &self,
+        id: &str,
+        input: &OpenAgentAccountFileInput,
+    ) -> Result<OpenAgentAccountFileResponse, EngineError>;
+    /// `PUT /workspace/agent-profiles/selection` — point one project's provider at an account.
+    async fn select_agent_profile(
+        &self,
+        input: &SelectAgentProfileInput,
+    ) -> Result<AgentProfileSelectionsResponse, EngineError>;
+    /// `DELETE /projects/:projectId` — deregister a project (registry-only).
+    async fn remove_project(&self, project_id: &str) -> Result<RemoveProjectResponse, EngineError>;
+    /// `PATCH /projects/:projectId` — the per-project concurrency ceiling and tags.
+    async fn update_project(
+        &self,
+        project_id: &str,
+        input: &UpdateProjectInput,
+    ) -> Result<UpdateProjectResponse, EngineError>;
+    /// `GET /worktrees` — every materialized task worktree, disk usage and retention state.
+    async fn worktrees(&self, scope: &Scope) -> Result<WorktreesResponse, EngineError>;
+    /// `POST /worktrees/reclaim` — force the retention enforcer to reclaim over-limit worktrees.
+    async fn reclaim_worktrees(
+        &self,
+        scope: &Scope,
+    ) -> Result<ReclaimWorktreesResponse, EngineError>;
+    /// `POST /runs/:id/remove-worktree` — reclaim one run's worktree and its branch.
+    async fn remove_run_worktree(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<RemoveWorktreeResponse, EngineError>;
+    /// `GET /open-targets` — the local editors/file-manager/terminal this machine can open.
+    async fn open_targets(&self, scope: &Scope) -> Result<OpenTargetsResponse, EngineError>;
+    /// `POST /open-in` — open the active project's own folder in the chosen local app.
+    async fn open_project_in(
+        &self,
+        scope: &Scope,
+        target: &str,
+    ) -> Result<OpenProjectInResponse, EngineError>;
 
     fn subscribe(&self, topic: Topic) -> BoxStream<'static, EngineEvent>;
 }
@@ -706,6 +810,140 @@ impl Engine for HttpEngine {
         run_id: &str,
     ) -> Result<CancelAutoResumeResponse, EngineError> {
         HttpEngine::cancel_auto_resume(self, scope, run_id).await
+    }
+
+    async fn put_workspace_config(
+        &self,
+        input: &SetWorkspaceConfigInput,
+    ) -> Result<WorkspaceConfigResponse, EngineError> {
+        HttpEngine::put_workspace_config(self, input).await
+    }
+
+    async fn workspace_ui_state(&self) -> Result<WorkspaceUiState, EngineError> {
+        HttpEngine::workspace_ui_state(self).await
+    }
+
+    async fn put_workspace_ui_state(
+        &self,
+        input: &SetWorkspaceUiStateInput,
+    ) -> Result<WorkspaceUiState, EngineError> {
+        HttpEngine::put_workspace_ui_state(self, input).await
+    }
+
+    async fn agent_config(&self, scope: &Scope) -> Result<AgentConfigListing, EngineError> {
+        HttpEngine::agent_config(self, scope).await
+    }
+
+    async fn agent_config_file(
+        &self,
+        scope: &Scope,
+        id: &str,
+    ) -> Result<AgentConfigFileContent, EngineError> {
+        HttpEngine::agent_config_file(self, scope, id).await
+    }
+
+    async fn put_agent_config_file(
+        &self,
+        scope: &Scope,
+        id: &str,
+        input: &SetAgentConfigInput,
+    ) -> Result<AgentConfigFileContent, EngineError> {
+        HttpEngine::put_agent_config_file(self, scope, id, input).await
+    }
+
+    async fn create_agent_profile(
+        &self,
+        input: &CreateAgentProfileInput,
+    ) -> Result<AgentProfileResponse, EngineError> {
+        HttpEngine::create_agent_profile(self, input).await
+    }
+
+    async fn update_agent_profile(
+        &self,
+        id: &str,
+        input: &UpdateAgentProfileInput,
+    ) -> Result<AgentProfileResponse, EngineError> {
+        HttpEngine::update_agent_profile(self, id, input).await
+    }
+
+    async fn remove_agent_profile(
+        &self,
+        id: &str,
+    ) -> Result<RemoveAgentProfileResponse, EngineError> {
+        HttpEngine::remove_agent_profile(self, id).await
+    }
+
+    async fn agent_account_status(
+        &self,
+        id: &str,
+        refresh: bool,
+    ) -> Result<AgentAccountStatusResponse, EngineError> {
+        HttpEngine::agent_account_status(self, id, refresh).await
+    }
+
+    async fn agent_account_details(
+        &self,
+        id: &str,
+    ) -> Result<AgentAccountDetailsResponse, EngineError> {
+        HttpEngine::agent_account_details(self, id).await
+    }
+
+    async fn open_agent_account_file(
+        &self,
+        id: &str,
+        input: &OpenAgentAccountFileInput,
+    ) -> Result<OpenAgentAccountFileResponse, EngineError> {
+        HttpEngine::open_agent_account_file(self, id, input).await
+    }
+
+    async fn select_agent_profile(
+        &self,
+        input: &SelectAgentProfileInput,
+    ) -> Result<AgentProfileSelectionsResponse, EngineError> {
+        HttpEngine::select_agent_profile(self, input).await
+    }
+
+    async fn remove_project(&self, project_id: &str) -> Result<RemoveProjectResponse, EngineError> {
+        HttpEngine::remove_project(self, project_id).await
+    }
+
+    async fn update_project(
+        &self,
+        project_id: &str,
+        input: &UpdateProjectInput,
+    ) -> Result<UpdateProjectResponse, EngineError> {
+        HttpEngine::update_project(self, project_id, input).await
+    }
+
+    async fn worktrees(&self, scope: &Scope) -> Result<WorktreesResponse, EngineError> {
+        HttpEngine::worktrees(self, scope).await
+    }
+
+    async fn reclaim_worktrees(
+        &self,
+        scope: &Scope,
+    ) -> Result<ReclaimWorktreesResponse, EngineError> {
+        HttpEngine::reclaim_worktrees(self, scope).await
+    }
+
+    async fn remove_run_worktree(
+        &self,
+        scope: &Scope,
+        run_id: &str,
+    ) -> Result<RemoveWorktreeResponse, EngineError> {
+        HttpEngine::remove_run_worktree(self, scope, run_id).await
+    }
+
+    async fn open_targets(&self, scope: &Scope) -> Result<OpenTargetsResponse, EngineError> {
+        HttpEngine::open_targets(self, scope).await
+    }
+
+    async fn open_project_in(
+        &self,
+        scope: &Scope,
+        target: &str,
+    ) -> Result<OpenProjectInResponse, EngineError> {
+        HttpEngine::open_project_in(self, scope, target).await
     }
 
     fn subscribe(&self, topic: Topic) -> BoxStream<'static, EngineEvent> {

@@ -32,6 +32,12 @@ two-face = "0.5"
 # Word-level intra-line diff for changed lines (spec §7.6 "Diffs").
 similar = "3.1"
 tui-markdown = "=0.3.6"
+# Fuzzy matching for the command palette (spec §6.1, §8.15).
+nucleo = "0.5"
+# Desktop notifications, replacing the web Notification API (spec §6.3, §8.14 Notifications).
+notify-rust = "4"
+# Open URLs in the OS default handler — external links from the GitHub screen (spec §6.3).
+open = "5"
 tokio = { version = "1.48", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 tokio-stream = "0.1"
 async-stream = "0.3"

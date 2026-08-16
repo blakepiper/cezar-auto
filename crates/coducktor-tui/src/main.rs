@@ -228,6 +228,13 @@ async fn prime_app(app: &mut App, engine: &HttpEngine) {
     if let Ok(index) = engine.runs_index().await {
         app.set_global_index(index);
     }
+    if let Ok(state) = engine.workspace_ui_state().await {
+        app.notifications_enabled = state
+            .notifications
+            .as_ref()
+            .and_then(|notifications| notifications.enabled)
+            .unwrap_or(false);
+    }
     let project = app.current_project().to_owned();
     refresh_new_task(engine, app, &project).await;
 }
@@ -854,8 +861,185 @@ async fn execute_pending(engine: &HttpEngine, app: &mut App) {
                     Err(error) => app.notice = Some(format!("import failed: {error}")),
                 }
             }
+            PendingAction::LoadSettings { project } => {
+                load_settings(engine, app, &project).await;
+            }
+            PendingAction::SettingsPutConfig { project, input } => {
+                let scope = Scope::Project(project.clone());
+                match engine.put_config(&scope, &input).await {
+                    Ok(config) => app.settings_ui.config = Some(config),
+                    Err(error) => app.notice = Some(format!("settings: {error}")),
+                }
+            }
+            PendingAction::SettingsPutWorkspaceConfig { input } => {
+                match engine.put_workspace_config(&input).await {
+                    Ok(config) => app.settings_ui.workspace_config = Some(config),
+                    Err(error) => app.notice = Some(format!("settings: {error}")),
+                }
+            }
+            PendingAction::SettingsPutWorkspaceUiState { input } => {
+                match engine.put_workspace_ui_state(&input).await {
+                    Ok(state) => {
+                        app.notifications_enabled = state
+                            .notifications
+                            .as_ref()
+                            .and_then(|notifications| notifications.enabled)
+                            .unwrap_or(false);
+                        app.settings_ui.workspace_ui_state = Some(state);
+                    }
+                    Err(error) => app.notice = Some(format!("settings: {error}")),
+                }
+            }
+            PendingAction::SettingsLoadConfigFile { project, id } => {
+                let scope = Scope::Project(project);
+                match engine.agent_config_file(&scope, &id).await {
+                    Ok(file) => {
+                        app.settings_ui.file_editor.set_text(&file.content);
+                        app.settings_ui.open_file = Some(file);
+                        app.settings_ui.file_editing = true;
+                    }
+                    Err(error) => app.notice = Some(format!("agent config: {error}")),
+                }
+            }
+            PendingAction::SettingsPutConfigFile {
+                project,
+                id,
+                content,
+                version,
+            } => {
+                let scope = Scope::Project(project.clone());
+                let input = coducktor_contract::SetAgentConfigInput { content, version };
+                match engine.put_agent_config_file(&scope, &id, &input).await {
+                    Ok(file) => {
+                        app.settings_ui.file_editor.set_text(&file.content);
+                        app.settings_ui.open_file = Some(file);
+                        app.settings_ui.file_editing = false;
+                        app.pending.push(PendingAction::LoadSettings { project });
+                    }
+                    Err(error) => app.notice = Some(format!("agent config save failed: {error}")),
+                }
+            }
+            PendingAction::SettingsCreateAgentProfile {
+                provider,
+                config_dir,
+            } => {
+                let input = coducktor_contract::CreateAgentProfileInput {
+                    provider,
+                    label: None,
+                    config_dir,
+                };
+                match engine.create_agent_profile(&input).await {
+                    Ok(_) => {
+                        app.pending.push(PendingAction::LoadSettings {
+                            project: app.settings_ui.project.clone(),
+                        });
+                    }
+                    Err(error) => app.notice = Some(format!("add account failed: {error}")),
+                }
+            }
+            PendingAction::SettingsUpdateAgentProfile { id, input } => {
+                match engine.update_agent_profile(&id, &input).await {
+                    Ok(_) => {
+                        app.pending.push(PendingAction::LoadSettings {
+                            project: app.settings_ui.project.clone(),
+                        });
+                    }
+                    Err(error) => app.notice = Some(format!("rename account failed: {error}")),
+                }
+            }
+            PendingAction::SettingsRemoveAgentProfile { id } => {
+                match engine.remove_agent_profile(&id).await {
+                    Ok(_) => {
+                        app.pending.push(PendingAction::LoadSettings {
+                            project: app.settings_ui.project.clone(),
+                        });
+                    }
+                    Err(error) => app.notice = Some(format!("remove account failed: {error}")),
+                }
+            }
+            PendingAction::SettingsSelectAgentProfile { input } => {
+                match engine.select_agent_profile(&input).await {
+                    Ok(_) => {
+                        app.pending.push(PendingAction::LoadSettings {
+                            project: app.settings_ui.project.clone(),
+                        });
+                    }
+                    Err(error) => app.notice = Some(format!("select account failed: {error}")),
+                }
+            }
+            PendingAction::SettingsReclaimWorktrees { project } => {
+                let scope = Scope::Project(project.clone());
+                match engine.reclaim_worktrees(&scope).await {
+                    Ok(response) => {
+                        app.notice = Some(format!(
+                            "reclaimed {} worktree(s)",
+                            response.reclaimed.len()
+                        ));
+                        app.pending.push(PendingAction::LoadSettings { project });
+                    }
+                    Err(error) => app.notice = Some(format!("reclaim failed: {error}")),
+                }
+            }
+            PendingAction::SettingsRemoveWorktree { project, run_id } => {
+                let scope = Scope::Project(project.clone());
+                match engine.remove_run_worktree(&scope, &run_id).await {
+                    Ok(_) => app.pending.push(PendingAction::LoadSettings { project }),
+                    Err(error) => app.notice = Some(format!("remove worktree failed: {error}")),
+                }
+            }
+            PendingAction::SettingsRemoveProject { id } => match engine.remove_project(&id).await {
+                Ok(_) => {
+                    if let Ok(projects) = engine.projects().await {
+                        app.set_project_registry(projects.projects);
+                    }
+                }
+                Err(error) => app.notice = Some(format!("remove project failed: {error}")),
+            },
+            PendingAction::SettingsUpdateProject { id, input } => {
+                match engine.update_project(&id, &input).await {
+                    Ok(_) => {
+                        if let Ok(projects) = engine.projects().await {
+                            app.set_project_registry(projects.projects);
+                        }
+                    }
+                    Err(error) => app.notice = Some(format!("update project failed: {error}")),
+                }
+            }
             PendingAction::Quit => {}
         }
+    }
+}
+
+/// Every Settings data source, in one place — the section list needs all of it at once
+/// rather than per-section lazy loads, since Tab cycling between sections must not each
+/// re-trigger a fetch.
+async fn load_settings(engine: &HttpEngine, app: &mut App, project: &str) {
+    let scope = Scope::Project(project.to_owned());
+    if let Ok(config) = engine.config(&scope).await {
+        app.settings_ui.config = Some(config);
+    }
+    if let Ok(config) = engine.workspace_config().await {
+        app.settings_ui.workspace_config = Some(config);
+    }
+    if let Ok(state) = engine.workspace_ui_state().await {
+        app.notifications_enabled = state
+            .notifications
+            .as_ref()
+            .and_then(|notifications| notifications.enabled)
+            .unwrap_or(false);
+        app.settings_ui.workspace_ui_state = Some(state);
+    }
+    if let Ok(state) = engine.ui_state(&scope).await {
+        app.settings_ui.ui_state = Some(state);
+    }
+    if let Ok(listing) = engine.agent_config(&scope).await {
+        app.settings_ui.agent_config = Some(listing);
+    }
+    if let Ok(profiles) = engine.agent_profiles().await {
+        app.settings_ui.agent_profiles = Some(profiles);
+    }
+    if let Ok(worktrees) = engine.worktrees(&scope).await {
+        app.settings_ui.worktrees = Some(worktrees);
     }
 }
 
@@ -1013,6 +1197,7 @@ async fn run(
 ) -> io::Result<()> {
     let mut workspace_events = workspace_events;
     let mut thread_listener: Option<ThreadListener> = None;
+    let mut last_needs_you = usize::MAX;
     while !app.should_quit() {
         let frame_started = Instant::now();
         app.now_epoch = current_epoch_seconds();
@@ -1062,10 +1247,21 @@ async fn run(
         if let Some(supervisor) = service.as_mut() {
             let _ = supervisor.monitor_once().await;
             app.set_service_state(supervisor.state());
+            if app.logs_open {
+                app.set_service_logs(supervisor.logs());
+            }
             let engine = supervisor.engine().clone();
             if !app.pending.is_empty() {
                 execute_pending(&engine, app).await;
             }
+        }
+        for (summary, body) in app.take_pending_notifications() {
+            coducktor_tui::notify::notify(app.notifications_enabled, &summary, &body);
+        }
+        let needs_you = app.needs_you_count();
+        if needs_you != last_needs_you {
+            coducktor_tui::notify::set_title(&coducktor_tui::notify::title_for(needs_you));
+            last_needs_you = needs_you;
         }
         // The IDE's `Ctrl+E` escape hatch (spec §8.8): main owns the terminal, so the
         // suspend → $EDITOR → resume dance lives here, not in the screen or the engine.

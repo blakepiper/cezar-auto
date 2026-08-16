@@ -141,6 +141,10 @@ pub enum HitAction {
     RepoGitScreen(RepoGitAction),
     /// A compare-variants screen control — routed by the screen.
     CompareScreen(CompareAction),
+    /// A Settings nav entry — click to switch section.
+    SettingsSection(usize),
+    /// A Settings row — click to select it.
+    SettingsRow(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
