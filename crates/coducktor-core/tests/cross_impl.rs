@@ -20,6 +20,8 @@ use coducktor_contract::{RunStatus, Runner, RunnerSelection, StepKind, StepStatu
 use coducktor_core::git::worktree;
 use coducktor_core::paths::EnvSource;
 use coducktor_core::runs::{events, store as run_store};
+use coducktor_core::todos;
+use coducktor_core::workflows::load as workflows_load;
 use coducktor_core::workspace::agent_accounts::{self, AgentAccountStore};
 use coducktor_core::workspace::config::{self, WorkspaceConfig};
 
@@ -550,4 +552,127 @@ fn create_worktree_reuse_agrees_between_node_and_rust() {
     assert_eq!(node_reused["path"], rust_created.path);
     assert_eq!(node_reused["branch"], rust_created.branch);
     assert_eq!(node_reused["baseBranch"], rust_created.base_branch);
+}
+
+// B4's fixtures, below: `todos.json` (a shared file both implementations read AND write
+// during Phase B, same as `runs.json`) and workflow YAML (not written by either
+// implementation at runtime — it's repo content — but parsed by two different YAML
+// libraries, `yaml` on the Node side and `serde_yaml_ng` here, which is exactly the kind of
+// place two "compliant" YAML parsers can quietly disagree).
+
+/// B4's accept criterion applied to `todos.json`: Node writes a realistic mix (a
+/// server-assigned id, a bare agent-written entry with no id at all, and one malformed
+/// entry with an empty `summary`), Rust reads it back and must salvage exactly what
+/// `readRaw`'s own per-entry `safeParse` would.
+#[test]
+fn node_writes_todos_and_rust_reads_them() {
+    let Some(tsx) = require_tsx() else { return };
+    let tsx = tsx.as_path();
+    let dir = tempfile::tempdir().unwrap();
+    run_fixture(tsx, "write_todos.ts", dir.path());
+
+    let data_dir = dir.path().join(".ai/coducktor");
+    let items = todos::read_todos(&data_dir);
+    assert_eq!(items.len(), 2, "the empty-summary entry is skipped");
+    let with_id = items.iter().find(|t| t.id == "node-1").unwrap();
+    assert_eq!(with_id.summary, "a real follow-up");
+    assert_eq!(with_id.runnable, Some(true));
+    let from_agent = items
+        .iter()
+        .find(|t| t.summary == "from an agent, no id yet")
+        .unwrap();
+    assert!(!from_agent.id.is_empty(), "Rust assigns a missing id too");
+    assert_eq!(
+        from_agent.pr_url.as_deref(),
+        Some("https://github.com/o/r/pull/1")
+    );
+}
+
+/// The other half: Rust writes `todos.json` (including an entry with no `startedTaskId`,
+/// the field Node's own "▶ Run" sets later), Node's real `readTodos` reads it back.
+#[test]
+fn rust_writes_todos_and_node_reads_them() {
+    let Some(tsx) = require_tsx() else { return };
+    let tsx = tsx.as_path();
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().join(".ai/coducktor");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(
+        todos::todos_path(&data_dir),
+        serde_json::to_string_pretty(&serde_json::json!([
+            { "id": "rust-1", "summary": "from rust", "runnable": false },
+        ]))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let stdout = run_fixture(tsx, "read_todos.ts", dir.path());
+    let node: serde_json::Value = serde_json::from_str(&stdout).expect("Node printed valid JSON");
+    assert_eq!(node[0]["id"], "rust-1");
+    assert_eq!(node[0]["summary"], "from rust");
+    assert_eq!(node[0]["runnable"], false);
+}
+
+/// B4's accept criterion applied to workflow YAML: the same on-disk `.ai/coducktor/
+/// workflows/*.yaml` — one plain-steps file, one `skills:` shorthand file, one file with an
+/// unresolvable `onFail.retry` — loaded by Node's `yaml`-backed loader and Rust's
+/// `serde_yaml_ng`-backed one, asserting they resolve to the same catalog and flag the same
+/// file as an issue.
+#[test]
+fn node_and_rust_agree_on_the_same_workflow_yaml() {
+    let Some(tsx) = require_tsx() else { return };
+    let tsx = tsx.as_path();
+    let dir = tempfile::tempdir().unwrap();
+    let workflows_dir = dir.path().join(".ai/coducktor/workflows");
+    std::fs::create_dir_all(&workflows_dir).unwrap();
+    std::fs::write(
+        workflows_dir.join("review.yaml"),
+        "name: review\ndescription: Review a PR\nsteps:\n  - id: check\n    command: npm test\n  - id: fix\n    prompt: '{{task}}'\n    onFail:\n      retry: check\n      max: 3\n",
+    )
+    .unwrap();
+    std::fs::write(
+        workflows_dir.join("stack.yml"),
+        "name: stack\nskills:\n  - \" om-a \"\n  - om-b\n",
+    )
+    .unwrap();
+    std::fs::write(
+        workflows_dir.join("broken.yaml"),
+        "name: broken\nsteps:\n  - id: a\n    prompt: '{{task}}'\n    onFail:\n      retry: nope\n",
+    )
+    .unwrap();
+
+    let stdout = run_fixture(tsx, "load_workflows.ts", dir.path());
+    let node: serde_json::Value = serde_json::from_str(&stdout).expect("Node printed valid JSON");
+    let node_names: Vec<&str> = node["workflows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["name"].as_str().unwrap())
+        .collect();
+
+    let (workflows, issues) = workflows_load::load_workflows(dir.path());
+    let rust_names: Vec<&str> = workflows.iter().map(|w| w.name.as_str()).collect();
+
+    assert_eq!(node_names, rust_names);
+    assert_eq!(node_names, ["quick-task", "review", "stack"]);
+    assert_eq!(node["issues"].as_array().map(Vec::len), Some(1));
+    assert_eq!(issues.len(), 1);
+    assert_eq!(node["issues"][0]["path"], issues[0].path);
+
+    let node_stack = node["workflows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["name"] == "stack")
+        .unwrap();
+    let rust_stack = workflows.iter().find(|w| w.name == "stack").unwrap();
+    assert_eq!(
+        node_stack["steps"][0]["id"], "om-a",
+        "both trim the skill name"
+    );
+    assert_eq!(rust_stack.steps[0].id, "om-a");
+    assert_eq!(
+        node_stack["steps"].as_array().unwrap().len(),
+        rust_stack.steps.len()
+    );
 }

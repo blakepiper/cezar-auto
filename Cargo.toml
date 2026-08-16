@@ -52,3 +52,6 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect"] }
 toml = "0.8"
 url = "2.5"
+regex = "1"
+# Workflow YAML (Phase B). Maintained fork of `serde_yaml` (spec §6.2).
+serde_yaml_ng = "0.10"

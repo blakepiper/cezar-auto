@@ -408,11 +408,52 @@ tab plumbing) were **not** ported here — neither is named in the spec's B3 shi
 (§11.1), and both are server-route-adjacent logic that belongs at B9 (`cezar-server`,
 "handlers stay thin, delegate to cezar-core").
 
-### [ ] B4 — Skills, workflows, handoff, todos, markers
+### [x] B4 — Skills, workflows, handoff, todos, markers
 **Ships:** `cezar-core::{skills, workflows::load, handoff, todos, task_markers,
 task_refs}`.
 **Accept:** existing behavior-equivalence tests pass against the ported module.
 **Commit:** `feat(core): B4 skills, workflows::load, handoff, todos, markers`
+— shipped as `crates/coducktor-core/src/{skills,handoff,todos}.rs`,
+`crates/coducktor-core/src/runs/{task_markers,task_refs}.rs`, and a new
+`crates/coducktor-core/src/workflows/{mod,load,types}.rs`. Every TS test file in this
+step's scope (`skills.test.ts`, `handoff.test.ts`, `todos.test.ts`,
+`runs/task-markers.test.ts`, `runs/task-refs.test.ts`) is re-proven inline, case for case;
+`workflows/load.ts` has no dedicated TS test file to port (it's exercised only indirectly
+through server routes today), so its Rust tests were authored fresh against the documented
+behavior in `load.ts`'s and `types.ts`'s own comments. Two new `tests/cross_impl.rs` checks
+extend the running suite to the two genuinely shared surfaces this step touches: `todos.json`
+(read both directions, including the "no id yet" agent-write shape and a malformed entry that
+must not evict its siblings) and workflow YAML (the same on-disk `.ai/coducktor/workflows/
+*.yaml` loaded by Node's `yaml` library and Rust's `serde_yaml_ng`, asserting the two parsers
+resolve the same catalog and flag the same file). Added `regex` and `serde_yaml_ng` (per spec
+§6.2) to the workspace dependency table.
+**Scope cuts, documented in each module's own doc comment:**
+- `todos.ts`'s `fs.watch`/`EventEmitter` change-notification plumbing
+  (`onTodosChanged`/`todosWatchActive`) is not ported — this crate has no `tokio` or
+  filesystem-watch dependency, and that machinery is runtime SSE-fan-out plumbing, not file
+  layer; it belongs with whichever crate ends up owning that fan-out (`cezar-server`, B9),
+  the same call B2 made for `runs::store`'s `EventEmitter` (deferred to the `RunManager`,
+  B6). Likewise `todos.ts`'s in-process `withLock` mutex is not reproduced: every write here
+  already goes through the same read-modify-write-atomic-rename sequence the lock exists to
+  serialize, so serializing concurrent callers is that future owner's job, not this
+  synchronous module's.
+- `workflows/types.ts`'s `skillStackOf`, `chainStepNote`, and `DEFAULT_ALLOWED_TOOLS` are not
+  ported — none are used by the file loader (`load.ts` imports only
+  `normalizeWorkflowDoc`/`stepsIssue`/`workflowFileSchema`/`QUICK_TASK_WORKFLOW`); the first
+  is compact-YAML-export UI logic already independently reimplemented in
+  `coducktor-tui`'s `screens/workflows.rs` back at Phase A (before this crate had a
+  `workflows` module to depend on), and the other two are consumed only at run EXECUTION
+  time — `workflows::run`, B6 territory.
+- `handoff.rs`'s `followups_enabled` reads `DUCK_FOLLOWUPS` before falling back to
+  `CEZ_FOLLOWUPS` — a real (if narrow) behavior improvement over a literal port: the A11 TUI
+  screen already tells the user to set `DUCK_FOLLOWUPS`, but a literal port would have honored
+  only `CEZ_FOLLOWUPS` (all `packages/cezar`'s server reads until B12), silently breaking that
+  on-screen instruction. Same dual-read precedent as B1's `paths::coducktor_home_dir`.
+**Accept, verified:** 170 unit tests + 11 `tests/cross_impl.rs` tests (3 new to this step) in
+`coducktor-core`, `cargo test --workspace` green across every crate,
+`cargo clippy --workspace --all-targets -D warnings` clean, `cargo fmt --check` clean (the
+one pre-existing `coducktor-client/tests/transport.rs` diff noted at B2 is untouched by this
+step).
 
 ### [ ] B5 — Agent runner mappers ⚠ do carefully, best oracle in the project
 **Ships:** `cezar-protocol` mappers → `cezar-runners`, one runner at a time (claude
