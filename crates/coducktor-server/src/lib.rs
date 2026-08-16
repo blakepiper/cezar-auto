@@ -7,6 +7,8 @@
 //! request-origin perimeter so subsequent route-family commits have one stable shell to
 //! extend.  The entire crate is deleted at C2 when the TUI switches to an in-process engine.
 
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -24,18 +26,22 @@ use axum::routing::get;
 use axum::{Json, Router};
 use coducktor_contract::{
     ApiRun, BackendCheck, BackendCheckName, Capabilities, ContinueInput, CreateRunInput,
-    CreateRunResponse, DeleteRunResponse, ForgeInfo, ForgeKind, HealthProject, HealthResponse,
-    MarkAllReadResponse, MessageInput, PatchRunInput, ProjectListEntry, ProjectSource,
-    ProjectStatus, ProjectsResponse, RegisterProjectInput, RegisterProjectResponse,
-    RemoveProjectResponse, RepoInfo, RunRecord, RunnerSelection, SetWorkspaceConfigInput,
-    SetWorkspaceUiStateInput, UpdateProjectInput, UpdateProjectResponse, WorkspaceConfigResponse,
+    CreateRunResponse, DeleteRunResponse, DeleteWorkflowResponse, ForgeInfo, ForgeKind,
+    HealthProject, HealthResponse, MarkAllReadResponse, MessageInput, ParseWorkflowInput,
+    ParsedWorkflow, PatchRunInput, ProjectListEntry, ProjectSource, ProjectStatus,
+    ProjectsResponse, RegisterProjectInput, RegisterProjectResponse, RemoveProjectResponse,
+    RepoInfo, RunRecord, RunnerSelection, SaveWorkflowInput, SaveWorkflowResponse,
+    SetWorkspaceConfigInput, SetWorkspaceUiStateInput, UpdateProjectInput, UpdateProjectResponse,
+    WorkflowStepDef, WorkflowsResponse, WorkspaceConfigResponse,
 };
 use coducktor_core::paths::{ProcessEnv, coducktor_home_dir};
+use coducktor_core::skills::discover_skills;
 use coducktor_core::time::now_iso8601;
 use coducktor_core::workflows::load::load_workflows;
 use coducktor_core::workflows::run::{
     ContinueOptions, RunManager, StartRunInput as CoreStartRunInput,
 };
+use coducktor_core::workflows::types::{parse_workflow_file_doc, skills_to_steps, steps_issue};
 use coducktor_core::workspace::config::{
     ProjectSource as CoreProjectSource, WorkspaceConfig, WorkspaceProject, load_workspace_config,
     merge_write_workspace_config,
@@ -220,6 +226,29 @@ pub fn router_with_state(state: ServerState) -> Router {
             get(get_workspace_ui_state).put(update_workspace_ui_state),
         )
         .route("/api/v1/workspace/usage", get(get_workspace_usage))
+        .route("/api/v1/skills", get(list_skills))
+        .route("/api/v1/p/{project}/skills", get(list_scoped_skills))
+        .route("/api/v1/workflows", get(list_workflows).post(save_workflow))
+        .route(
+            "/api/v1/p/{project}/workflows",
+            get(list_scoped_workflows).post(save_scoped_workflow),
+        )
+        .route(
+            "/api/v1/workflows/{name}",
+            axum::routing::delete(delete_workflow),
+        )
+        .route(
+            "/api/v1/p/{project}/workflows/{name}",
+            axum::routing::delete(delete_scoped_workflow),
+        )
+        .route(
+            "/api/v1/workflows/parse",
+            axum::routing::post(parse_workflow),
+        )
+        .route(
+            "/api/v1/p/{project}/workflows/parse",
+            axum::routing::post(parse_scoped_workflow),
+        )
         .fallback(not_found)
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state, request_origin_guard))
@@ -247,6 +276,300 @@ async fn health(State(state): State<ServerState>) -> Response {
 
 async fn not_found() -> Response {
     error_response(StatusCode::NOT_FOUND, "not found")
+}
+
+fn workflow_repo_root(state: &ServerState) -> PathBuf {
+    state.config.repo_root.clone()
+}
+
+fn workflow_slug(value: &str) -> String {
+    let mut slug = String::new();
+    let mut pending_dash = false;
+    for character in value.trim().chars() {
+        if character.is_ascii_alphanumeric() {
+            if pending_dash && !slug.is_empty() {
+                slug.push('-');
+            }
+            pending_dash = false;
+            slug.push(character.to_ascii_lowercase());
+        } else {
+            pending_dash = true;
+        }
+    }
+    if slug.is_empty() {
+        "chain".to_owned()
+    } else {
+        slug
+    }
+}
+
+fn workflow_step_issue(steps: &[WorkflowStepDef]) -> Option<String> {
+    for step in steps {
+        if step.id.is_empty() {
+            return Some("step id must not be empty".to_owned());
+        }
+        let has_command = step.command.as_ref().is_some_and(|value| !value.is_empty());
+        let has_agent = step.prompt.as_ref().is_some_and(|value| !value.is_empty())
+            || step.skill.as_ref().is_some_and(|value| !value.is_empty());
+        if has_command == has_agent {
+            return Some(format!(
+                "step \"{}\" is either an agent step or a check step",
+                step.id
+            ));
+        }
+        if let Some(on_fail) = &step.on_fail
+            && on_fail.max == 0
+        {
+            return Some(format!("step \"{}\": onFail.max must be positive", step.id));
+        }
+    }
+    steps_issue(steps)
+}
+
+fn workflow_input(
+    input: &SaveWorkflowInput,
+) -> Result<(String, Option<String>, Vec<WorkflowStepDef>, bool), String> {
+    let name = input.name.trim();
+    if name.is_empty() || name.chars().count() > 80 {
+        return Err("name must be between 1 and 80 characters".to_owned());
+    }
+    if input
+        .description
+        .as_ref()
+        .is_some_and(|value| value.chars().count() > 2_000)
+    {
+        return Err("description must be at most 2000 characters".to_owned());
+    }
+    if input.steps.is_some() == input.skills.is_some() {
+        return Err("provide either \"steps\" or \"skills\", not both".to_owned());
+    }
+    if input.steps.as_ref().is_some_and(|steps| steps.is_empty())
+        || input.steps.as_ref().is_some_and(|steps| steps.len() > 8)
+    {
+        return Err("steps must contain between 1 and 8 entries".to_owned());
+    }
+    if input
+        .skills
+        .as_ref()
+        .is_some_and(|skills| skills.is_empty())
+        || input.skills.as_ref().is_some_and(|skills| skills.len() > 8)
+    {
+        return Err("skills must contain between 1 and 8 entries".to_owned());
+    }
+    let (steps, compact) = if let Some(skills) = &input.skills {
+        let mut names = Vec::with_capacity(skills.len());
+        for skill in skills {
+            let skill = skill.trim();
+            if skill.is_empty() {
+                return Err("skills entries must not be empty".to_owned());
+            }
+            names.push(skill.to_owned());
+        }
+        (skills_to_steps(&names), true)
+    } else {
+        (input.steps.clone().unwrap_or_default(), false)
+    };
+    if let Some(issue) = workflow_step_issue(&steps) {
+        return Err(issue);
+    }
+    Ok((
+        name.to_owned(),
+        input
+            .description
+            .as_ref()
+            .filter(|value| !value.is_empty())
+            .cloned(),
+        steps,
+        compact,
+    ))
+}
+
+fn workflow_yaml(
+    name: &str,
+    description: Option<&str>,
+    steps: &[WorkflowStepDef],
+    compact: bool,
+) -> Result<String, String> {
+    let mut document = Map::new();
+    document.insert("name".to_owned(), Value::String(name.to_owned()));
+    if let Some(description) = description {
+        document.insert(
+            "description".to_owned(),
+            Value::String(description.to_owned()),
+        );
+    }
+    if compact {
+        let skills = steps
+            .iter()
+            .filter_map(|step| step.skill.clone())
+            .map(Value::String)
+            .collect::<Vec<_>>();
+        document.insert("skills".to_owned(), Value::Array(skills));
+    } else {
+        let steps = serde_json::to_value(steps).map_err(|error| error.to_string())?;
+        document.insert("steps".to_owned(), steps);
+    }
+    serde_yaml_ng::to_string(&Value::Object(document)).map_err(|error| error.to_string())
+}
+
+async fn list_skills(State(state): State<ServerState>) -> Response {
+    let skills = discover_skills(&workflow_repo_root(&state), &ProcessEnv);
+    Json(skills).into_response()
+}
+
+async fn list_scoped_skills(
+    State(state): State<ServerState>,
+    AxumPath(_project): AxumPath<String>,
+) -> Response {
+    list_skills(State(state)).await
+}
+
+async fn list_workflows(State(state): State<ServerState>) -> Response {
+    let (workflows, issues) = load_workflows(&workflow_repo_root(&state));
+    Json(WorkflowsResponse { workflows, issues }).into_response()
+}
+
+async fn list_scoped_workflows(
+    State(state): State<ServerState>,
+    AxumPath(_project): AxumPath<String>,
+) -> Response {
+    list_workflows(State(state)).await
+}
+
+async fn save_workflow_at(state: &ServerState, input: SaveWorkflowInput) -> Response {
+    let (name, description, steps, compact) = match workflow_input(&input) {
+        Ok(value) => value,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, &error),
+    };
+    let root = workflow_repo_root(state);
+    let directory = root.join(coducktor_core::workflows::load::WORKFLOWS_DIR);
+    let path = directory.join(format!("{}.yaml", workflow_slug(&name)));
+    let yaml = match workflow_yaml(&name, description.as_deref(), &steps, compact) {
+        Ok(yaml) => yaml,
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error),
+    };
+    if let Err(error) = fs::create_dir_all(&directory) {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string());
+    }
+    let mut options = OpenOptions::new();
+    options.write(true).create(true);
+    if input.overwrite.unwrap_or(false) {
+        options.truncate(true);
+    } else {
+        options.create_new(true);
+    }
+    let mut file = match options.open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "error": format!("workflow file already exists: {}", path.display()),
+                    "exists": true,
+                })),
+            )
+                .into_response();
+        }
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+    };
+    if let Err(error) = file.write_all(yaml.as_bytes()) {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string());
+    }
+    (
+        StatusCode::CREATED,
+        Json(SaveWorkflowResponse {
+            path: path.to_string_lossy().into_owned(),
+            name,
+        }),
+    )
+        .into_response()
+}
+
+async fn save_workflow(
+    State(state): State<ServerState>,
+    Json(input): Json<SaveWorkflowInput>,
+) -> Response {
+    save_workflow_at(&state, input).await
+}
+
+async fn save_scoped_workflow(
+    State(state): State<ServerState>,
+    AxumPath(_project): AxumPath<String>,
+    Json(input): Json<SaveWorkflowInput>,
+) -> Response {
+    save_workflow_at(&state, input).await
+}
+
+async fn delete_workflow_at(state: &ServerState, name: String) -> Response {
+    let root = workflow_repo_root(state);
+    let (workflows, _) = load_workflows(&root);
+    let Some(workflow) = workflows.into_iter().find(|workflow| workflow.name == name) else {
+        return error_response(StatusCode::NOT_FOUND, &format!("unknown workflow: {name}"));
+    };
+    let Some(path) = workflow.path else {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "built-in workflows cannot be deleted",
+        );
+    };
+    let directory = root.join(coducktor_core::workflows::load::WORKFLOWS_DIR);
+    let target = PathBuf::from(&path);
+    if !target.starts_with(&directory) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "refusing to delete a file outside the workflows dir",
+        );
+    }
+    if let Err(error) = fs::remove_file(&target) {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string());
+    }
+    Json(DeleteWorkflowResponse {
+        ok: true,
+        path: target.to_string_lossy().into_owned(),
+    })
+    .into_response()
+}
+
+async fn delete_workflow(
+    State(state): State<ServerState>,
+    AxumPath(name): AxumPath<String>,
+) -> Response {
+    delete_workflow_at(&state, name).await
+}
+
+async fn delete_scoped_workflow(
+    State(state): State<ServerState>,
+    AxumPath((_project, name)): AxumPath<(String, String)>,
+) -> Response {
+    delete_workflow_at(&state, name).await
+}
+
+fn parse_workflow_input(input: ParseWorkflowInput) -> Result<ParsedWorkflow, String> {
+    if input.yaml.trim().is_empty() || input.yaml.chars().count() > 100_000 {
+        return Err("yaml must be between 1 and 100000 characters".to_owned());
+    }
+    let value: Value =
+        serde_yaml_ng::from_str(&input.yaml).map_err(|error| format!("not valid YAML: {error}"))?;
+    let (name, description, steps) = parse_workflow_file_doc(&value)?;
+    Ok(ParsedWorkflow {
+        name,
+        description,
+        steps,
+    })
+}
+
+async fn parse_workflow(Json(input): Json<ParseWorkflowInput>) -> Response {
+    match parse_workflow_input(input) {
+        Ok(parsed) => Json(parsed).into_response(),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, &error),
+    }
+}
+
+async fn parse_scoped_workflow(
+    AxumPath(_project): AxumPath<String>,
+    Json(input): Json<ParseWorkflowInput>,
+) -> Response {
+    parse_workflow(Json(input)).await
 }
 
 fn workspace_config(state: &ServerState) -> WorkspaceConfig {
@@ -1673,6 +1996,98 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test]
+    async fn skills_and_workflows_routes_share_project_scope_aliases() {
+        let repo = test_repo();
+        let skills_dir = repo.join(".ai").join("skills");
+        fs::create_dir_all(&skills_dir).expect("skills directory");
+        fs::write(
+            skills_dir.join("guide.md"),
+            "---\nname: guide\ndescription: A guide\ninteractive: true\n---\nUse the guide.\n",
+        )
+        .expect("skill file");
+        let manager = RunManager::open(repo.join(".ai").join("coducktor"));
+        let router = router_with_state(ServerState::with_manager(
+            ServerConfig::new(&repo, "test"),
+            manager,
+        ));
+        let boot = repo
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("test repo name");
+
+        let skills = send(&router, Method::GET, "/api/v1/skills", None).await;
+        assert_eq!(skills.status(), StatusCode::OK);
+        let scoped_skills = send(
+            &router,
+            Method::GET,
+            &format!("/api/v1/p/{boot}/skills"),
+            None,
+        )
+        .await;
+        assert_eq!(scoped_skills.status(), StatusCode::OK);
+        assert_eq!(
+            response_body(skills).await,
+            response_body(scoped_skills).await
+        );
+
+        let workflows = send(&router, Method::GET, "/api/v1/workflows", None).await;
+        assert_eq!(workflows.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(workflows).await["workflows"][0]["name"],
+            "quick-task"
+        );
+
+        let response = send(
+            &router,
+            Method::POST,
+            "/api/v1/workflows",
+            Some(serde_json::json!({
+                "name": "Review",
+                "steps": [{ "id": "work", "prompt": "{{task}}" }]
+            })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(json_body(response).await["name"], "Review");
+
+        let scoped_workflows = send(
+            &router,
+            Method::GET,
+            &format!("/api/v1/p/{boot}/workflows"),
+            None,
+        )
+        .await;
+        assert_eq!(scoped_workflows.status(), StatusCode::OK);
+        assert!(
+            json_body(scoped_workflows).await["workflows"]
+                .as_array()
+                .is_some_and(|workflows| workflows
+                    .iter()
+                    .any(|workflow| workflow["name"] == "Review"))
+        );
+
+        let parsed = send(
+            &router,
+            Method::POST,
+            "/api/v1/workflows/parse",
+            Some(serde_json::json!({
+                "yaml": "name: parsed\nskills:\n  - guide\n"
+            })),
+        )
+        .await;
+        assert_eq!(parsed.status(), StatusCode::OK);
+        assert_eq!(json_body(parsed).await["steps"][0]["skill"], "guide");
+
+        let deleted = send(&router, Method::DELETE, "/api/v1/workflows/Review", None).await;
+        assert_eq!(deleted.status(), StatusCode::OK);
+        assert_eq!(json_body(deleted).await["ok"], true);
+
+        let missing = send(&router, Method::DELETE, "/api/v1/workflows/Review", None).await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
         fs::remove_dir_all(repo).expect("remove test repo");
     }
 

@@ -83,4 +83,39 @@ describe('Rust server HTTP harness', () => {
     const updatedUiStateBody = (await updatedUiState.json()) as { futurePreference: { enabled: boolean } };
     expect(updatedUiStateBody.futurePreference.enabled).toBe(true);
   });
+
+  it.skipIf(!baseUrl)('serves skills and workflows over a real listener', async () => {
+    const skills = await request('/api/v1/skills');
+    expect(skills.status).toBe(200);
+    expect(Array.isArray(await skills.json())).toBe(true);
+
+    const workflows = await request('/api/v1/workflows');
+    expect(workflows.status).toBe(200);
+    const workflowBody = (await workflows.json()) as { workflows: Array<{ name: string }> };
+    expect(workflowBody.workflows[0]?.name).toBe('quick-task');
+
+    const saved = await request('/api/v1/workflows', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Rust Smoke',
+        steps: [{ id: 'work', prompt: '{{task}}' }],
+      }),
+    });
+    expect(saved.status).toBe(201);
+
+    const parsed = await request('/api/v1/workflows/parse', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ yaml: 'name: parsed\nskills:\n  - guide\n' }),
+    });
+    expect(parsed.status).toBe(200);
+    const parsedBody = (await parsed.json()) as { steps: Array<{ skill?: string }> };
+    expect(parsedBody.steps[0]?.skill).toBe('guide');
+
+    const removed = await request('/api/v1/workflows/Rust%20Smoke', { method: 'DELETE' });
+    expect(removed.status).toBe(200);
+    const missing = await request('/api/v1/workflows/Rust%20Smoke', { method: 'DELETE' });
+    expect(missing.status).toBe(404);
+  });
 });
