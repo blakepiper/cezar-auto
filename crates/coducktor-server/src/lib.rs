@@ -11,7 +11,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -32,7 +32,8 @@ use coducktor_contract::{
     ContinueInput, CreateRunInput, CreateRunResponse, DeleteRunResponse, DeleteWorkflowResponse,
     EmptyRepoResponse, ForgeInfo, ForgeKind, HealthProject, HealthResponse, IdeDirectoryQuery,
     IdeDirectoryResponse, IdeEntry, IdeEntryType, IdeFileInput, IdeFileQuery, IdeFileResponse,
-    LogEntry, MarkAllReadResponse, MessageInput, ParseWorkflowInput, ParsedWorkflow, PatchRunInput,
+    LogEntry, MarkAllReadResponse, MessageInput, OpenProjectInRequest, OpenProjectInResponse,
+    OpenTarget, OpenTargetsResponse, ParseWorkflowInput, ParsedWorkflow, PatchRunInput,
     PresentRepoResponse, ProjectListEntry, ProjectSource, ProjectStatus, ProjectsResponse,
     ReclaimWorktreesResponse, RegisterProjectInput, RegisterProjectResponse, RemoveProjectResponse,
     RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse,
@@ -338,6 +339,16 @@ pub fn router_with_state(state: ServerState) -> Router {
         .route(
             "/api/v1/p/{project}/worktrees/reclaim",
             axum::routing::post(reclaim_scoped_worktrees),
+        )
+        .route("/api/v1/open-targets", get(list_open_targets))
+        .route(
+            "/api/v1/p/{project}/open-targets",
+            get(list_scoped_open_targets),
+        )
+        .route("/api/v1/open-in", axum::routing::post(open_project_in))
+        .route(
+            "/api/v1/p/{project}/open-in",
+            axum::routing::post(open_scoped_project_in),
         )
         .fallback(not_found)
         .with_state(state.clone())
@@ -2969,6 +2980,331 @@ async fn reclaim_scoped_worktrees(
     reclaim_worktrees(State(state)).await
 }
 
+fn executable_on_path(binary: &str) -> bool {
+    if binary.is_empty() {
+        return false;
+    }
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    for directory in std::env::split_paths(&path) {
+        let candidate = directory.join(binary);
+        let Ok(metadata) = fs::metadata(candidate) else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o111 == 0 {
+                continue;
+            }
+        }
+        return true;
+    }
+    false
+}
+
+fn configured_executable(provider: &str, default: &str) -> bool {
+    let duck_name = format!("DUCK_{}_BIN", provider.to_ascii_uppercase());
+    let cez_name = format!("CEZ_{}_BIN", provider.to_ascii_uppercase());
+    std::env::var(&duck_name)
+        .ok()
+        .or_else(|| std::env::var(&cez_name).ok())
+        .filter(|path| !path.trim().is_empty())
+        .is_some_and(|path| Path::new(&path).is_file())
+        || executable_on_path(default)
+}
+
+fn installed_mac_app(target: &str) -> Option<&'static str> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let names: &[&str] = match target {
+        "vscode" => &["Visual Studio Code"],
+        "cursor" => &["Cursor"],
+        "zed" => &["Zed"],
+        "windsurf" => &["Windsurf"],
+        "sublime" => &["Sublime Text"],
+        "idea" => &[
+            "IntelliJ IDEA",
+            "IntelliJ IDEA CE",
+            "IntelliJ IDEA Ultimate",
+        ],
+        "pycharm" => &["PyCharm", "PyCharm CE", "PyCharm Professional"],
+        "webstorm" => &["WebStorm"],
+        "goland" => &["GoLand"],
+        "rubymine" => &["RubyMine"],
+        "phpstorm" => &["PhpStorm"],
+        "clion" => &["CLion"],
+        "rider" => &["Rider"],
+        "android-studio" => &["Android Studio"],
+        "xcode" => &["Xcode"],
+        "warp" => &["Warp"],
+        _ => return None,
+    };
+    let mut roots = vec![
+        PathBuf::from("/Applications"),
+        PathBuf::from("/System/Applications"),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        roots.push(PathBuf::from(home).join("Applications"));
+    }
+    names
+        .iter()
+        .find(|name| {
+            roots
+                .iter()
+                .map(|root| root.join(format!("{name}.app")))
+                .any(|path| path.is_dir())
+        })
+        .copied()
+}
+
+fn open_targets() -> Vec<OpenTarget> {
+    let file_manager = if cfg!(target_os = "macos") {
+        "Finder"
+    } else if cfg!(target_os = "windows") {
+        "Explorer"
+    } else {
+        "Files"
+    };
+    let mut targets = vec![
+        OpenTarget {
+            id: "finder".to_owned(),
+            label: file_manager.to_owned(),
+            icon: Some("folder".to_owned()),
+        },
+        OpenTarget {
+            id: "terminal".to_owned(),
+            label: "Terminal".to_owned(),
+            icon: Some("terminal".to_owned()),
+        },
+    ];
+    for (id, label, icon, binary) in [
+        ("vscode", "VS Code", "vscode", "code"),
+        ("cursor", "Cursor", "cursor", "cursor"),
+        ("zed", "Zed", "zed", "zed"),
+        ("windsurf", "Windsurf", "windsurf", "windsurf"),
+        ("sublime", "Sublime Text", "sublime", "subl"),
+        ("idea", "IntelliJ IDEA", "idea", "idea"),
+        ("pycharm", "PyCharm", "pycharm", "pycharm"),
+        ("webstorm", "WebStorm", "webstorm", "webstorm"),
+        ("goland", "GoLand", "goland", "goland"),
+        ("rubymine", "RubyMine", "rubymine", "rubymine"),
+        ("phpstorm", "PhpStorm", "phpstorm", "phpstorm"),
+        ("clion", "CLion", "clion", "clion"),
+        ("rider", "Rider", "rider", "rider"),
+        (
+            "android-studio",
+            "Android Studio",
+            "android-studio",
+            "studio",
+        ),
+        ("warp", "Warp", "warp", "warp"),
+    ] {
+        if executable_on_path(binary) {
+            targets.push(OpenTarget {
+                id: id.to_owned(),
+                label: label.to_owned(),
+                icon: Some(icon.to_owned()),
+            });
+        }
+    }
+    for (id, label, icon) in [
+        ("vscode", "VS Code", "vscode"),
+        ("cursor", "Cursor", "cursor"),
+        ("zed", "Zed", "zed"),
+        ("windsurf", "Windsurf", "windsurf"),
+        ("sublime", "Sublime Text", "sublime"),
+        ("idea", "IntelliJ IDEA", "idea"),
+        ("pycharm", "PyCharm", "pycharm"),
+        ("webstorm", "WebStorm", "webstorm"),
+        ("goland", "GoLand", "goland"),
+        ("rubymine", "RubyMine", "rubymine"),
+        ("phpstorm", "PhpStorm", "phpstorm"),
+        ("clion", "CLion", "clion"),
+        ("rider", "Rider", "rider"),
+        ("android-studio", "Android Studio", "android-studio"),
+        ("xcode", "Xcode", "xcode"),
+        ("warp", "Warp", "warp"),
+    ] {
+        if installed_mac_app(id).is_some() && !targets.iter().any(|target| target.id == id) {
+            targets.push(OpenTarget {
+                id: id.to_owned(),
+                label: label.to_owned(),
+                icon: Some(icon.to_owned()),
+            });
+        }
+    }
+    for (provider, label, icon, binary) in [
+        ("claude", "Claude CLI", "claude", "claude"),
+        ("codex", "Codex CLI", "codex", "codex"),
+        ("opencode", "OpenCode", "opencode", "opencode"),
+        ("pi", "pi CLI", "pi", "pi"),
+    ] {
+        if configured_executable(provider, binary) {
+            targets.push(OpenTarget {
+                id: format!("cli:{provider}"),
+                label: label.to_owned(),
+                icon: Some(icon.to_owned()),
+            });
+        }
+    }
+    targets
+}
+
+fn open_target_command(target: &str, root: &Path) -> Option<(String, Vec<String>)> {
+    if target == "finder" {
+        if cfg!(target_os = "macos") {
+            return Some(("open".to_owned(), vec![root.to_string_lossy().into_owned()]));
+        }
+        if cfg!(target_os = "windows") {
+            return Some((
+                "explorer".to_owned(),
+                vec![root.to_string_lossy().into_owned()],
+            ));
+        }
+        return Some((
+            "xdg-open".to_owned(),
+            vec![root.to_string_lossy().into_owned()],
+        ));
+    }
+    if target == "terminal" {
+        if cfg!(target_os = "macos") {
+            return Some((
+                "open".to_owned(),
+                vec![
+                    "-a".to_owned(),
+                    "Terminal".to_owned(),
+                    root.to_string_lossy().into_owned(),
+                ],
+            ));
+        }
+        if cfg!(target_os = "windows") {
+            return Some((
+                "explorer".to_owned(),
+                vec![root.to_string_lossy().into_owned()],
+            ));
+        }
+        return Some((
+            "x-terminal-emulator".to_owned(),
+            vec![
+                "--working-directory".to_owned(),
+                root.to_string_lossy().into_owned(),
+            ],
+        ));
+    }
+    let binary = match target {
+        "vscode" => "code",
+        "cursor" => "cursor",
+        "zed" => "zed",
+        "windsurf" => "windsurf",
+        "sublime" => "subl",
+        "idea" => "idea",
+        "pycharm" => "pycharm",
+        "webstorm" => "webstorm",
+        "goland" => "goland",
+        "rubymine" => "rubymine",
+        "phpstorm" => "phpstorm",
+        "clion" => "clion",
+        "rider" => "rider",
+        "android-studio" => "studio",
+        "xcode" => "xcode",
+        "warp" => "warp",
+        _ => return None,
+    };
+    if !executable_on_path(binary)
+        && let Some(app) = installed_mac_app(target)
+    {
+        return Some((
+            "open".to_owned(),
+            vec![
+                "-a".to_owned(),
+                app.to_owned(),
+                root.to_string_lossy().into_owned(),
+            ],
+        ));
+    }
+    executable_on_path(binary)
+        .then(|| (binary.to_owned(), vec![root.to_string_lossy().into_owned()]))
+}
+
+fn open_target(root: &Path, target: &str) -> bool {
+    let Some((program, args)) = open_target_command(target, root) else {
+        return false;
+    };
+    Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .is_ok()
+}
+
+async fn list_open_targets() -> Response {
+    Json(OpenTargetsResponse {
+        targets: open_targets(),
+    })
+    .into_response()
+}
+
+async fn list_scoped_open_targets(AxumPath(_project): AxumPath<String>) -> Response {
+    list_open_targets().await
+}
+
+async fn open_project_in(
+    State(state): State<ServerState>,
+    input: Result<Json<OpenProjectInRequest>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Ok(Json(input)) = input else {
+        return error_response(StatusCode::BAD_REQUEST, "target required");
+    };
+    let target = input.target.trim();
+    if target.is_empty() || target.chars().count() > 200 {
+        return error_response(StatusCode::BAD_REQUEST, "target required");
+    }
+    if target.starts_with("cli:") {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "agent CLIs open a task worktree, not the project folder",
+        );
+    }
+    if !open_targets()
+        .iter()
+        .any(|candidate| candidate.id == target)
+    {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            &format!("no such app on this machine: {target}"),
+        );
+    }
+    if !open_target(&state.config.repo_root, target) {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": format!("could not open {target}"),
+                "path": state.config.repo_root,
+            })),
+        )
+            .into_response();
+    }
+    Json(OpenProjectInResponse {
+        opened: true,
+        path: state.config.repo_root.to_string_lossy().into_owned(),
+    })
+    .into_response()
+}
+
+async fn open_scoped_project_in(
+    State(state): State<ServerState>,
+    AxumPath(_project): AxumPath<String>,
+    input: Result<Json<OpenProjectInRequest>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    open_project_in(State(state), input).await
+}
+
 async fn get_ui_state(State(state): State<ServerState>) -> Response {
     Json(Value::Object(read_repo_ui_state(&state))).into_response()
 }
@@ -4639,6 +4975,62 @@ mod tests {
             Some(1)
         );
         fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test]
+    async fn open_target_routes_list_local_apps_and_reject_project_cli_handoffs() {
+        let router = test_router();
+
+        let response = send(&router, Method::GET, "/api/v1/open-targets", None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let targets = json_body(response).await["targets"]
+            .as_array()
+            .cloned()
+            .expect("target list");
+        assert_eq!(targets[0]["id"], "finder");
+        assert_eq!(targets[1]["id"], "terminal");
+
+        let response = send(&router, Method::GET, "/api/v1/p/default/open-targets", None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(response).await["targets"],
+            serde_json::Value::Array(targets.clone())
+        );
+
+        let response = send(
+            &router,
+            Method::POST,
+            "/api/v1/open-in",
+            Some(serde_json::json!({ "target": "cli:claude" })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(response).await["error"],
+            "agent CLIs open a task worktree, not the project folder"
+        );
+
+        let response = send(
+            &router,
+            Method::POST,
+            "/api/v1/p/default/open-in",
+            Some(serde_json::json!({ "target": "missing-editor" })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(response).await["error"],
+            "no such app on this machine: missing-editor"
+        );
+
+        let response = send(
+            &router,
+            Method::POST,
+            "/api/v1/open-in",
+            Some(serde_json::json!({})),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
