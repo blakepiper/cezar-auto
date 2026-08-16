@@ -7,6 +7,7 @@
 //! request-origin perimeter so subsequent route-family commits have one stable shell to
 //! extend.  The entire crate is deleted at C2 when the TUI switches to an in-process engine.
 
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::net::IpAddr;
@@ -26,26 +27,31 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use coducktor_contract::{
-    AgentConfigFile, AgentConfigFileContent, AgentConfigFormat, AgentConfigKind,
-    AgentConfigListing, AgentConfigScope, AgentConfigTracked, ApiRun, BackendCheck,
-    BackendCheckName, Capabilities, ChangedFile, ChangedFileStatus, ChangesPayload, ConfigResponse,
-    ContinueInput, CreateRunInput, CreateRunResponse, DeleteRunResponse, DeleteWorkflowResponse,
-    EmptyRepoResponse, ForgeInfo, ForgeKind, HealthProject, HealthResponse, IdeDirectoryQuery,
-    IdeDirectoryResponse, IdeEntry, IdeEntryType, IdeFileInput, IdeFileQuery, IdeFileResponse,
-    LogEntry, MarkAllReadResponse, MessageInput, OpenProjectInRequest, OpenProjectInResponse,
-    OpenTarget, OpenTargetsResponse, ParseWorkflowInput, ParsedWorkflow, PatchRunInput,
-    PresentRepoResponse, ProjectListEntry, ProjectSource, ProjectStatus, ProjectsResponse,
-    ReclaimWorktreesResponse, RegisterProjectInput, RegisterProjectResponse, RemoveProjectResponse,
-    RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse,
-    RunRecord, Runner, RunnerModels, RunnerSelection, SaveWorkflowInput, SaveWorkflowResponse,
-    SetAgentConfigInput, SetConfigInput, SetWorkspaceConfigInput, SetWorkspaceUiStateInput,
-    StartTodoResponse, StatusEntry, TodoItem, UiState, UpdateProjectInput, UpdateProjectResponse,
-    UserMcpListing, WorkflowStepDef, WorkflowsResponse, WorkspaceConfigResponse, WorktreeInfo,
-    WorktreeRunStatus, WorktreesResponse,
+    AgentAccountFile, AgentAccountSelection, AgentConfigFile, AgentConfigFileContent,
+    AgentConfigFormat, AgentConfigKind, AgentConfigListing, AgentConfigScope, AgentConfigTracked,
+    AgentProfile, AgentProfileResponse, AgentProfileSelectionsResponse, AgentProfilesResponse,
+    ApiRun, BackendCheck, BackendCheckName, Capabilities, ChangedFile, ChangedFileStatus,
+    ChangesPayload, ConfigResponse, ContinueInput, CreateAgentProfileInput, CreateRunInput,
+    CreateRunResponse, DeleteRunResponse, DeleteWorkflowResponse, EmptyRepoResponse, ForgeInfo,
+    ForgeKind, HealthProject, HealthResponse, IdeDirectoryQuery, IdeDirectoryResponse, IdeEntry,
+    IdeEntryType, IdeFileInput, IdeFileQuery, IdeFileResponse, LogEntry, MarkAllReadResponse,
+    MessageInput, OpenProjectInRequest, OpenProjectInResponse, OpenTarget, OpenTargetsResponse,
+    ParseWorkflowInput, ParsedWorkflow, PatchRunInput, PresentRepoResponse, ProjectListEntry,
+    ProjectSource, ProjectStatus, ProjectsResponse, ReclaimWorktreesResponse, RegisterProjectInput,
+    RegisterProjectResponse, RemoveAgentProfileResponse, RemoveProjectResponse, RepoBranchRequest,
+    RepoBranchResponse, RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse, RunRecord, Runner,
+    RunnerModels, RunnerSelection, SaveWorkflowInput, SaveWorkflowResponse,
+    SelectAgentProfileInput, SetAgentConfigInput, SetConfigInput, SetWorkspaceConfigInput,
+    SetWorkspaceUiStateInput, StartTodoResponse, StatusEntry, TodoItem, UiState,
+    UpdateAgentProfileInput, UpdateProjectInput, UpdateProjectResponse, UserMcpListing,
+    WorkflowStepDef, WorkflowsResponse, WorkspaceConfigResponse, WorktreeInfo, WorktreeRunStatus,
+    WorktreesResponse,
 };
 use coducktor_core::config::load_config;
 use coducktor_core::handoff::followups_enabled;
-use coducktor_core::paths::{ProcessEnv, coducktor_home_dir};
+use coducktor_core::paths::{
+    ProcessEnv, agent_home_paths, coducktor_home_dir, expand_tilde, is_absolute_config_dir,
+};
 use coducktor_core::skills::discover_skills;
 use coducktor_core::time::now_iso8601;
 use coducktor_core::workflows::load::load_workflows;
@@ -54,6 +60,10 @@ use coducktor_core::workflows::run::{
 };
 use coducktor_core::workflows::types::{
     parse_workflow_file_doc, quick_task_workflow, skills_to_steps, steps_issue,
+};
+use coducktor_core::workspace::agent_accounts::{
+    AgentAccount, AgentAccountSelection as CoreAgentAccountSelection, AgentAccountStore,
+    has_control_chars, is_valid_account_id, merge_write_agent_accounts, supports_profiles,
 };
 use coducktor_core::workspace::config::{
     ProjectSource as CoreProjectSource, WorkspaceConfig, WorkspaceProject, atomic_write_json_sync,
@@ -132,6 +142,10 @@ impl ServerState {
 
     fn workspace_ui_state_path(&self) -> PathBuf {
         self.workspace_dir.join("ui-state.json")
+    }
+
+    fn agent_accounts_path(&self) -> PathBuf {
+        self.workspace_dir.join("agent-accounts.json")
     }
 }
 
@@ -238,6 +252,18 @@ pub fn router_with_state(state: ServerState) -> Router {
         .route(
             "/api/v1/workspace/ui-state",
             get(get_workspace_ui_state).put(update_workspace_ui_state),
+        )
+        .route(
+            "/api/v1/workspace/agent-profiles",
+            get(list_agent_profiles).post(create_agent_profile),
+        )
+        .route(
+            "/api/v1/workspace/agent-profiles/{id}",
+            axum::routing::patch(update_agent_profile).delete(remove_agent_profile),
+        )
+        .route(
+            "/api/v1/workspace/agent-profiles/selection",
+            axum::routing::put(select_agent_profile),
         )
         .route("/api/v1/workspace/usage", get(get_workspace_usage))
         .route("/api/v1/skills", get(list_skills))
@@ -1853,6 +1879,482 @@ async fn update_workspace_ui_state(
         Ok(state) => Json(state).into_response(),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
     }
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedAgentProfile {
+    id: String,
+    provider: Runner,
+    label: String,
+    config_dir: String,
+    path: PathBuf,
+    is_default: bool,
+}
+
+fn default_agent_profile(provider: Runner) -> ResolvedAgentProfile {
+    let home = agent_home_paths(&ProcessEnv);
+    let path = match provider {
+        Runner::Claude => home.claude,
+        Runner::Codex => home.codex,
+        Runner::OpenCode => home.opencode_config,
+        Runner::Pi => PathBuf::new(),
+    };
+    ResolvedAgentProfile {
+        id: coducktor_contract::DEFAULT_AGENT_ACCOUNT_ID.to_owned(),
+        provider,
+        label: "Default".to_owned(),
+        config_dir: path.to_string_lossy().into_owned(),
+        path,
+        is_default: true,
+    }
+}
+
+fn resolved_agent_profile(account: &AgentAccount) -> ResolvedAgentProfile {
+    ResolvedAgentProfile {
+        id: account.id.clone(),
+        provider: account.provider,
+        label: if account.label.is_empty() {
+            account.id.clone()
+        } else {
+            account.label.clone()
+        },
+        config_dir: account.config_dir.clone(),
+        path: expand_tilde(&account.config_dir, &ProcessEnv),
+        is_default: false,
+    }
+}
+
+fn profile_file_defs(provider: Runner) -> &'static [(&'static str, &'static str)] {
+    match provider {
+        Runner::Claude => &[
+            ("claude.user.settings", "settings.json"),
+            ("claude.user.memory", "CLAUDE.md"),
+        ],
+        Runner::Codex => &[
+            ("codex.user.config", "config.toml"),
+            ("codex.user.memory", "AGENTS.md"),
+        ],
+        Runner::OpenCode => &[
+            ("opencode.user.config", "opencode.json"),
+            ("opencode.user.memory", "AGENTS.md"),
+        ],
+        Runner::Pi => &[],
+    }
+}
+
+fn profile_files(profile: &ResolvedAgentProfile) -> Vec<AgentAccountFile> {
+    profile_file_defs(profile.provider)
+        .iter()
+        .map(|(id, name)| {
+            let path = profile.path.join(name);
+            AgentAccountFile {
+                id: (*id).to_owned(),
+                label: (*name).to_owned(),
+                exists: fs::metadata(&path).is_ok(),
+                path: path.to_string_lossy().into_owned(),
+            }
+        })
+        .collect()
+}
+
+fn profile_dir_state(profile: &ResolvedAgentProfile) -> (bool, bool) {
+    let Ok(entries) = fs::read_dir(&profile.path) else {
+        return (false, false);
+    };
+    let names = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect::<std::collections::BTreeSet<_>>();
+    let markers: &[&str] = match profile.provider {
+        Runner::Claude => &[".claude.json", "settings.json", "projects", "sessions"],
+        Runner::Codex => &["auth.json", "config.toml"],
+        Runner::OpenCode | Runner::Pi => &[],
+    };
+    (true, markers.iter().any(|marker| names.contains(*marker)))
+}
+
+fn agent_profile_wire(profile: &ResolvedAgentProfile) -> AgentProfile {
+    let (exists, looks_valid) = profile_dir_state(profile);
+    AgentProfile {
+        id: profile.id.clone(),
+        provider: profile.provider,
+        label: profile.label.clone(),
+        config_dir: profile.config_dir.clone(),
+        path: profile.path.to_string_lossy().into_owned(),
+        exists,
+        looks_valid,
+        is_default: profile.is_default,
+        status: None,
+        files: profile_files(profile),
+    }
+}
+
+fn selection_wire(selection: &CoreAgentAccountSelection) -> AgentAccountSelection {
+    AgentAccountSelection {
+        claude: selection.claude.clone(),
+        codex: selection.codex.clone(),
+        opencode: selection.opencode.clone(),
+        pi: selection.pi.clone(),
+    }
+}
+
+fn selection_empty(selection: &CoreAgentAccountSelection) -> bool {
+    selection.claude.is_none()
+        && selection.codex.is_none()
+        && selection.opencode.is_none()
+        && selection.pi.is_none()
+        && selection.extra.is_empty()
+}
+
+fn set_profile_selection(
+    selection: &mut CoreAgentAccountSelection,
+    provider: Runner,
+    profile_id: Option<String>,
+) {
+    match provider {
+        Runner::Claude => selection.claude = profile_id,
+        Runner::Codex => selection.codex = profile_id,
+        Runner::OpenCode => selection.opencode = profile_id,
+        Runner::Pi => selection.pi = profile_id,
+    }
+}
+
+fn agent_profiles_response(state: &ServerState) -> AgentProfilesResponse {
+    let store = coducktor_core::workspace::agent_accounts::load_agent_accounts(
+        &state.agent_accounts_path(),
+    );
+    let mut profiles = Vec::new();
+    for provider in coducktor_core::workspace::config::PROVIDER_IDS {
+        profiles.push(agent_profile_wire(&default_agent_profile(provider)));
+        profiles.extend(
+            store
+                .accounts
+                .iter()
+                .filter(|account| account.provider == provider)
+                .map(|account| agent_profile_wire(&resolved_agent_profile(account))),
+        );
+    }
+    let selections = store
+        .selections
+        .iter()
+        .map(|(root, selection)| (root.clone(), selection_wire(selection)))
+        .collect::<BTreeMap<_, _>>();
+    AgentProfilesResponse {
+        editable: true,
+        profiles,
+        profile_capable_providers: vec![Runner::Claude, Runner::Codex],
+        selections,
+        defaults: selection_wire(&store.defaults),
+    }
+}
+
+fn profile_path_error(config_dir: &str) -> Option<String> {
+    if has_control_chars(config_dir) {
+        return Some("folder must not contain control characters".to_owned());
+    }
+    let expanded = expand_tilde(config_dir, &ProcessEnv);
+    if !is_absolute_config_dir(&expanded.to_string_lossy(), cfg!(windows)) {
+        return Some(format!("folder must be an absolute path: {config_dir}"));
+    }
+    None
+}
+
+fn same_profile_dir(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    left.canonicalize().ok() == right.canonicalize().ok() && left.exists() && right.exists()
+}
+
+fn profile_conflict(
+    store: &AgentAccountStore,
+    provider: Runner,
+    path: &Path,
+    except_id: Option<&str>,
+) -> Option<String> {
+    let default = default_agent_profile(provider);
+    if same_profile_dir(path, &default.path) {
+        return Some("that is already this agent's default folder".to_owned());
+    }
+    store
+        .accounts
+        .iter()
+        .filter(|account| account.provider == provider && Some(account.id.as_str()) != except_id)
+        .find_map(|account| {
+            let candidate = expand_tilde(&account.config_dir, &ProcessEnv);
+            same_profile_dir(path, &candidate)
+                .then(|| format!("that folder is already used by \"{}\"", account.label))
+        })
+}
+
+fn project_root_for_agent_selection(
+    state: &ServerState,
+    project_id: Option<&str>,
+) -> Option<PathBuf> {
+    match project_id {
+        None => None,
+        Some("default") => Some(
+            state
+                .config
+                .repo_root
+                .canonicalize()
+                .unwrap_or_else(|_| state.config.repo_root.clone()),
+        ),
+        Some(id) => workspace_config(state)
+            .projects
+            .iter()
+            .find(|project| project.id == id)
+            .map(|project| {
+                Path::new(&project.root)
+                    .canonicalize()
+                    .unwrap_or_else(|_| PathBuf::from(&project.root))
+            }),
+    }
+}
+
+async fn list_agent_profiles(State(state): State<ServerState>) -> Response {
+    Json(agent_profiles_response(&state)).into_response()
+}
+
+async fn create_agent_profile(
+    State(state): State<ServerState>,
+    input: Result<Json<CreateAgentProfileInput>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Ok(Json(input)) = input else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid agent profile");
+    };
+    if !supports_profiles(input.provider) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            &format!(
+                "{} cannot carry more than one account",
+                serde_json::to_string(&input.provider)
+                    .unwrap_or_default()
+                    .trim_matches('"')
+            ),
+        );
+    }
+    let config_dir = input.config_dir.trim().to_owned();
+    if let Some(error) = profile_path_error(&config_dir) {
+        return error_response(StatusCode::BAD_REQUEST, &error);
+    }
+    let path = expand_tilde(&config_dir, &ProcessEnv);
+    let store_path = state.agent_accounts_path();
+    let current = coducktor_core::workspace::agent_accounts::load_agent_accounts(&store_path);
+    if let Some(error) = profile_conflict(&current, input.provider, &path, None) {
+        return error_response(StatusCode::CONFLICT, &error);
+    }
+    let source = input
+        .label
+        .as_deref()
+        .filter(|label| !label.trim().is_empty())
+        .map(str::trim)
+        .or_else(|| path.file_name().and_then(|name| name.to_str()))
+        .unwrap_or("account");
+    let taken = current
+        .accounts
+        .iter()
+        .map(|account| account.id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let id = allocate_project_id(source, &taken);
+    if !is_valid_account_id(&id) {
+        return error_response(StatusCode::BAD_REQUEST, "invalid account id");
+    }
+    let label = input
+        .label
+        .map(|label| label.trim().to_owned())
+        .filter(|label| !label.is_empty())
+        .unwrap_or_else(|| id.clone());
+    let added = AgentAccount {
+        id,
+        provider: input.provider,
+        config_dir,
+        label,
+        added_at: now_iso8601(),
+        extra: Default::default(),
+    };
+    let added_id = added.id.clone();
+    let saved = match merge_write_agent_accounts(&store_path, |store| store.accounts.push(added)) {
+        Ok(store) => store,
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+    };
+    let Some(account) = saved.accounts.iter().find(|account| account.id == added_id) else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "account could not be saved",
+        );
+    };
+    (
+        StatusCode::CREATED,
+        Json(AgentProfileResponse {
+            profile: agent_profile_wire(&resolved_agent_profile(account)),
+        }),
+    )
+        .into_response()
+}
+
+async fn update_agent_profile(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+    input: Result<Json<UpdateAgentProfileInput>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Ok(Json(input)) = input else {
+        return error_response(StatusCode::BAD_REQUEST, "send label or configDir");
+    };
+    if input.label.is_none() && input.config_dir.is_none() {
+        return error_response(StatusCode::BAD_REQUEST, "send label or configDir");
+    }
+    let store_path = state.agent_accounts_path();
+    let current = coducktor_core::workspace::agent_accounts::load_agent_accounts(&store_path);
+    let Some(existing) = current.accounts.iter().find(|account| account.id == id) else {
+        return error_response(StatusCode::NOT_FOUND, &format!("unknown account: {id}"));
+    };
+    let new_path = if let Some(config_dir) = &input.config_dir {
+        let config_dir = config_dir.trim();
+        if let Some(error) = profile_path_error(config_dir) {
+            return error_response(StatusCode::BAD_REQUEST, &error);
+        }
+        Some(expand_tilde(config_dir, &ProcessEnv))
+    } else {
+        None
+    };
+    if let Some(path) = &new_path
+        && let Some(error) = profile_conflict(&current, existing.provider, path, Some(&id))
+    {
+        return error_response(StatusCode::CONFLICT, &error);
+    }
+    let mut updated = None;
+    let saved = match merge_write_agent_accounts(&store_path, |store| {
+        let Some(account) = store.accounts.iter_mut().find(|account| account.id == id) else {
+            return;
+        };
+        if let Some(label) = &input.label {
+            let label = label.trim();
+            account.label = if label.is_empty() {
+                account.id.clone()
+            } else {
+                label.to_owned()
+            };
+        }
+        if let Some(config_dir) = &input.config_dir {
+            account.config_dir = config_dir.trim().to_owned();
+        }
+        updated = Some(account.clone());
+    }) {
+        Ok(store) => store,
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+    };
+    let account = updated.or_else(|| saved.accounts.into_iter().find(|account| account.id == id));
+    let Some(account) = account else {
+        return error_response(StatusCode::NOT_FOUND, &format!("unknown account: {id}"));
+    };
+    Json(AgentProfileResponse {
+        profile: agent_profile_wire(&resolved_agent_profile(&account)),
+    })
+    .into_response()
+}
+
+async fn remove_agent_profile(
+    State(state): State<ServerState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let store_path = state.agent_accounts_path();
+    let current = coducktor_core::workspace::agent_accounts::load_agent_accounts(&store_path);
+    if !current.accounts.iter().any(|account| account.id == id) {
+        return error_response(StatusCode::NOT_FOUND, &format!("unknown account: {id}"));
+    }
+    let saved = match merge_write_agent_accounts(&store_path, |store| {
+        store.accounts.retain(|account| account.id != id);
+        for (root, selection) in &mut store.selections {
+            let _ = root;
+            if selection.claude.as_deref() == Some(&id) {
+                selection.claude = None;
+            }
+            if selection.codex.as_deref() == Some(&id) {
+                selection.codex = None;
+            }
+            if selection.opencode.as_deref() == Some(&id) {
+                selection.opencode = None;
+            }
+            if selection.pi.as_deref() == Some(&id) {
+                selection.pi = None;
+            }
+        }
+        store
+            .selections
+            .retain(|(_, selection)| !selection_empty(selection));
+    }) {
+        Ok(store) => store,
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+    };
+    let _ = saved;
+    Json(RemoveAgentProfileResponse { removed: true, id }).into_response()
+}
+
+async fn select_agent_profile(
+    State(state): State<ServerState>,
+    input: Result<Json<SelectAgentProfileInput>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Ok(Json(input)) = input else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid agent profile selection");
+    };
+    let root = project_root_for_agent_selection(&state, input.project_id.as_deref());
+    if input.project_id.is_some() && root.is_none() {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            &format!(
+                "unknown project: {}",
+                input.project_id.as_deref().unwrap_or_default()
+            ),
+        );
+    }
+    let store_path = state.agent_accounts_path();
+    let current = coducktor_core::workspace::agent_accounts::load_agent_accounts(&store_path);
+    if let Some(profile_id) = input.profile_id.as_deref()
+        && profile_id != coducktor_contract::DEFAULT_AGENT_ACCOUNT_ID
+        && !current
+            .accounts
+            .iter()
+            .any(|account| account.id == profile_id && account.provider == input.provider)
+    {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            &format!("unknown {:?} account: {profile_id}", input.provider).to_lowercase(),
+        );
+    }
+    let profile_id = input
+        .profile_id
+        .filter(|profile_id| profile_id != coducktor_contract::DEFAULT_AGENT_ACCOUNT_ID);
+    let root_key = root.map(|path| path.to_string_lossy().into_owned());
+    let saved = match merge_write_agent_accounts(&store_path, |store| {
+        if let Some(root) = &root_key {
+            if let Some((_, selection)) = store.selections.iter_mut().find(|(key, _)| key == root) {
+                set_profile_selection(selection, input.provider, profile_id.clone());
+                if selection_empty(selection) {
+                    store.selections.retain(|(key, _)| key != root);
+                }
+            } else if let Some(profile_id) = profile_id.clone() {
+                let mut selection = CoreAgentAccountSelection::default();
+                set_profile_selection(&mut selection, input.provider, Some(profile_id));
+                store.selections.push((root.clone(), selection));
+            }
+        } else {
+            set_profile_selection(&mut store.defaults, input.provider, profile_id.clone());
+        }
+    }) {
+        Ok(store) => store,
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+    };
+    let selections = saved
+        .selections
+        .iter()
+        .map(|(root, selection)| (root.clone(), selection_wire(selection)))
+        .collect();
+    Json(AgentProfileSelectionsResponse {
+        selections,
+        defaults: selection_wire(&saved.defaults),
+    })
+    .into_response()
 }
 
 async fn get_config(State(state): State<ServerState>) -> Response {
@@ -4374,6 +4876,114 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    #[tokio::test]
+    async fn agent_profile_routes_store_accounts_and_root_keyed_selections() {
+        let repo = test_repo();
+        let workspace = repo.join("workspace");
+        let manager = RunManager::open(repo.join(".ai").join("coducktor"));
+        let router = router_with_state(ServerState::with_manager_and_workspace_dir(
+            ServerConfig::new(&repo, "test"),
+            manager,
+            &workspace,
+        ));
+        let account_dir = repo.join("claude-work");
+
+        let listing = send(
+            &router,
+            Method::GET,
+            "/api/v1/workspace/agent-profiles",
+            None,
+        )
+        .await;
+        assert_eq!(listing.status(), StatusCode::OK);
+        let initial = json_body(listing).await;
+        assert_eq!(initial["editable"], true);
+        assert_eq!(
+            initial["profileCapableProviders"],
+            serde_json::json!(["claude", "codex"])
+        );
+        assert_eq!(initial["profiles"].as_array().map(Vec::len), Some(4));
+
+        let created = send(
+            &router,
+            Method::POST,
+            "/api/v1/workspace/agent-profiles",
+            Some(serde_json::json!({
+                "provider": "claude",
+                "label": "Work account",
+                "configDir": account_dir,
+            })),
+        )
+        .await;
+        assert_eq!(created.status(), StatusCode::CREATED);
+        assert_eq!(json_body(created).await["profile"]["id"], "work-account");
+
+        let invalid = send(
+            &router,
+            Method::POST,
+            "/api/v1/workspace/agent-profiles",
+            Some(serde_json::json!({ "provider": "opencode", "configDir": account_dir })),
+        )
+        .await;
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+
+        let selected = send(
+            &router,
+            Method::PUT,
+            "/api/v1/workspace/agent-profiles/selection",
+            Some(serde_json::json!({
+                "projectId": "default",
+                "provider": "claude",
+                "profileId": "work-account",
+            })),
+        )
+        .await;
+        assert_eq!(selected.status(), StatusCode::OK);
+        let selected_body = json_body(selected).await;
+        let root = repo.canonicalize().expect("canonical test repo");
+        let root_key = root.to_string_lossy().into_owned();
+        assert_eq!(
+            selected_body["selections"][&root_key]["claude"],
+            "work-account"
+        );
+
+        let patched = send(
+            &router,
+            Method::PATCH,
+            "/api/v1/workspace/agent-profiles/work-account",
+            Some(serde_json::json!({ "label": "Client A" })),
+        )
+        .await;
+        assert_eq!(patched.status(), StatusCode::OK);
+        assert_eq!(json_body(patched).await["profile"]["label"], "Client A");
+
+        let removed = send(
+            &router,
+            Method::DELETE,
+            "/api/v1/workspace/agent-profiles/work-account",
+            None,
+        )
+        .await;
+        assert_eq!(removed.status(), StatusCode::OK);
+        assert_eq!(json_body(removed).await["removed"], true);
+        let after = send(
+            &router,
+            Method::GET,
+            "/api/v1/workspace/agent-profiles",
+            None,
+        )
+        .await;
+        assert_eq!(after.status(), StatusCode::OK);
+        let after_body = json_body(after).await;
+        assert_eq!(after_body["profiles"].as_array().map(Vec::len), Some(4));
+        assert!(
+            !after_body["selections"]
+                .as_object()
+                .is_some_and(|selections| selections.contains_key(&root_key))
+        );
         fs::remove_dir_all(repo).expect("remove test repo");
     }
 
