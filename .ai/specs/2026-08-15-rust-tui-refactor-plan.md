@@ -345,11 +345,43 @@ workspace config/agent-accounts, Rust reads; Rust writes, Node reads — and pas
 tests total (51 unit + 4 cross-impl), `cargo clippy --workspace --all-targets -D
 warnings` clean, `cargo fmt --check` clean.
 
-### [ ] B2 — Runs store
+### [x] B2 — Runs store
 **Ships:** `cezar-core::runs::store` — `runs.json`, NDJSON log, atomic writes,
 `reconcileLoadedRun`, retention.
 **Accept:** tests against real files written by the Node version pass.
 **Commit:** `feat(core): B2 runs store`
+— shipped as `crates/coducktor-core/src/runs/{store,events,retention}.rs`. `RunRecord`
+itself is not redefined: `coducktor_contract::runs::RunRecord` (A1, kept parity-checked
+against `store.ts`'s own `runRecordSchema`) is reused directly, with `runs::store` applying
+only the zod behaviors a plain `#[derive(Deserialize)]` can't express — `archived`'s
+`.default(false)`, the legacy `claude-cli` runner fold (#547) on `runner`/`steps[].backend`,
+and the `.catch(undefined)` fields (`monitoringWakeAt`, `autoResumeAt`,
+`autoResumeAttempts`, `blockedReason.retryAt`, `workflowDef`) — by normalizing the raw
+`serde_json::Value` before handing it to that same derive, then discovering that
+`z.array(runRecordSchema).safeParse` is whole-array-fail (confirmed against
+`store.test.ts`'s own "does not let one claude-cli record evict the rest" /
+"rejects an unknown activity value" cases), which needs no per-entry salvage machinery at
+all. Added `crates/coducktor-core/src/time.rs` (`now_iso8601`/`is_zod_datetime`) since the
+workspace has no `chrono`/`time` dependency and none existed yet.
+**Scope cut, documented in `runs::retention`'s module doc:** `retention.ts`'s I/O enforcer
+(`reclaimWorktrees`) and re-materializer (`rematerializeReclaimedWorktree`) are not ported —
+both call into `git-worktree.ts`, which doesn't exist in Rust until **B3**. The pure
+selector (`select_reclaimable_worktrees`/`is_reclaimable`) — the half `retention.ts` itself
+keeps unit-testable and I/O-free — is ported now, matching every case in `retention.test.ts`,
+so B3 wires it straight into its own enforcer instead of re-deriving it. Similarly, `store.ts`
+class's `EventEmitter` fan-out, debounced saves, secret redaction, and the `createRun`/
+`updateRun`/`appendEvent` business logic (PR/issue janitor) stay with the `RunManager` that
+owns them — that's B6, not the file layer.
+**Accept, verified:** `crates/coducktor-core/tests/cross_impl.rs`'s two new tests shell out to
+the real `packages/cezar` `RunStore`/`readRunIndexFromDisk` via `tsx`: Node writes a run
+(patching in a hand-written legacy `claude-cli` id and leaving it `running` on a flushed,
+unclosed store) and two NDJSON events, Rust reads both and asserts the runner fold and
+`reconcile_loaded_run`'s interrupt-on-load; Rust writes a run left `running` plus one event,
+Node reads both back through its own real readers and asserts ITS OWN `reconcileLoadedRun`
+independently produces the same `failed`/interrupted-error outcome. 93 tests total in
+`coducktor-core` (87 unit + 6 cross-impl), `cargo clippy --workspace --all-targets -D
+warnings` clean, `cargo fmt --check` clean (the one remaining `cargo fmt` diff, in
+`coducktor-client/tests/transport.rs`, predates this step and is untouched by it).
 
 ### [ ] B3 — Git layer
 **Ships:** `cezar-core::git` — worktrees, base-ref resolution, autosave commits,

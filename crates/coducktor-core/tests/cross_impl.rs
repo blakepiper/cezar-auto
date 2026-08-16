@@ -14,7 +14,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use coducktor_contract::events::RunEvent;
+use coducktor_contract::runs::{RunRecord, StepState};
+use coducktor_contract::{RunStatus, Runner, RunnerSelection, StepKind, StepStatus};
 use coducktor_core::paths::EnvSource;
+use coducktor_core::runs::{events, store as run_store};
 use coducktor_core::workspace::agent_accounts::{self, AgentAccountStore};
 use coducktor_core::workspace::config::{self, WorkspaceConfig};
 
@@ -236,4 +240,149 @@ fn rust_writes_agent_accounts_and_node_reads_it() {
     assert_eq!(node["accounts"][0]["id"], "from-rust");
     assert_eq!(node["accounts"][0]["provider"], "codex");
     assert_eq!(node["defaults"]["codex"], "from-rust");
+}
+
+/// B2's accept criterion: "tests against real files written by the Node version pass."
+#[test]
+fn node_writes_a_run_and_events_and_rust_reads_them() {
+    let Some(tsx) = require_tsx() else { return };
+    let tsx = tsx.as_path();
+    let dir = tempfile::tempdir().unwrap();
+    let run_id = run_fixture(tsx, "write_runs_and_events.ts", dir.path())
+        .trim()
+        .to_owned();
+
+    // Node's fixture left the run `running` on a flushed-but-not-reopened store, and
+    // hand-patched the legacy `claude-cli` runner id (#547) onto the saved index — both
+    // exercise real Node output the Rust loader has to make sense of on its own.
+    let runs = run_store::load_run_index(&run_store::index_path(dir.path()), false);
+    assert_eq!(runs.len(), 1);
+    let run = &runs[0];
+    assert_eq!(run.id, run_id);
+    assert_eq!(run.title, "Cross-impl task");
+    assert_eq!(run.task, "do the cross-impl thing");
+    assert_eq!(
+        run.runner,
+        Some(Runner::Claude),
+        "the legacy claude-cli id folds to claude"
+    );
+    assert_eq!(run.requested_runner, Some(RunnerSelection::Auto));
+    assert_eq!(
+        run.status,
+        RunStatus::Failed,
+        "reconcile_loaded_run marks a live-looking status interrupted"
+    );
+    assert_eq!(
+        run.error.as_deref(),
+        Some("interrupted — cezar process exited during the run")
+    );
+    assert_eq!(run.steps.len(), 1);
+    assert_eq!(run.steps[0].backend, Some(Runner::Claude));
+    assert_eq!(
+        run.steps[0].status,
+        StepStatus::Failed,
+        "a running step is interrupted along with its run"
+    );
+
+    let events = events::read_events(&events::events_path(dir.path(), &run_id));
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].seq, 1.0);
+    assert_eq!(
+        events[0].extra.get("text").and_then(|v| v.as_str()),
+        Some("hello from node")
+    );
+    assert_eq!(
+        events[1].extra.get("text").and_then(|v| v.as_str()),
+        Some("a second line")
+    );
+}
+
+/// The other half of B2's accept criterion: files Rust writes parse identically under the
+/// real Node readers — `run-index.ts::readRunIndexFromDisk` and `RunStore::readEvents`.
+#[test]
+fn rust_writes_a_run_and_events_and_node_reads_them() {
+    let Some(tsx) = require_tsx() else { return };
+    let tsx = tsx.as_path();
+    let dir = tempfile::tempdir().unwrap();
+
+    let run = RunRecord {
+        id: "rust-run".to_owned(),
+        title: "From Rust".to_owned(),
+        workflow: "quick-task".to_owned(),
+        task: "do the rust thing".to_owned(),
+        runner: Some(Runner::Codex),
+        requested_runner: Some(RunnerSelection::Codex),
+        status: RunStatus::Running, // left live on purpose — Node's reconcile must catch it
+        created_at: "2026-08-16T00:00:00.000Z".to_owned(),
+        tokens_used: 12.0,
+        archived: false,
+        steps: vec![StepState {
+            id: "task".to_owned(),
+            name: "Do the task".to_owned(),
+            kind: StepKind::Agent,
+            status: StepStatus::Running,
+            iterations: 1.0,
+            tokens_used: 12.0,
+            input_tokens: None,
+            output_tokens: None,
+            usage_invocations_started: None,
+            usage_invocations_observed: None,
+            usage_turns_started: None,
+            usage_turns_recorded: None,
+            usage_invocation_epoch: None,
+            started_at: None,
+            finished_at: None,
+            error: None,
+            session_id: None,
+            backend: Some(Runner::Codex),
+            requested_runner: None,
+            profile_id: None,
+            reasoning_effort: None,
+            cost_usd: None,
+            model_identity: None,
+        }],
+        ..Default::default()
+    };
+    run_store::write_run_index(
+        &run_store::index_path(dir.path()),
+        std::slice::from_ref(&run),
+    )
+    .unwrap();
+
+    let events_path = events::events_path(dir.path(), "rust-run");
+    let mut extra = serde_json::Map::new();
+    extra.insert("text".to_owned(), serde_json::json!("hello from rust"));
+    events::append_event(
+        &events_path,
+        &RunEvent {
+            seq: 1.0,
+            ts: "2026-08-16T00:00:01.000Z".to_owned(),
+            step_id: Some("task".to_owned()),
+            event_type: "message".to_owned(),
+            extra,
+        },
+    )
+    .unwrap();
+
+    let stdout = run_fixture(tsx, "read_runs_index.ts", dir.path());
+    let node: serde_json::Value = serde_json::from_str(&stdout).expect("Node printed valid JSON");
+
+    assert_eq!(node["runs"].as_array().map(Vec::len), Some(1));
+    let node_run = &node["runs"][0];
+    assert_eq!(node_run["id"], "rust-run");
+    assert_eq!(node_run["title"], "From Rust");
+    assert_eq!(node_run["runner"], "codex");
+    assert_eq!(
+        node_run["status"], "failed",
+        "Node's own reconcileLoadedRun catches the live status Rust wrote"
+    );
+    assert_eq!(
+        node_run["error"], "interrupted — cezar process exited during the run",
+        "Node's reconcile message, produced by Node itself — not echoed by Rust"
+    );
+    assert_eq!(node_run["steps"][0]["status"], "failed");
+
+    assert_eq!(node["events"].as_array().map(Vec::len), Some(1));
+    assert_eq!(node["events"][0]["seq"], 1);
+    assert_eq!(node["events"][0]["text"], "hello from rust");
 }
