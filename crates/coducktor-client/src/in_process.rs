@@ -47,13 +47,15 @@ use coducktor_contract::{
     PatchRunInput, PickVariantRequest, PickVariantResponse, PlanResponse, PresentRepoResponse,
     ProjectListEntry, ProjectSource, ProjectStatus, ProjectsResponse, ProviderConnectionState,
     ProviderStatus, ProviderStatusResponse, ReclaimWorktreesResponse, RemoveAgentProfileResponse,
-    RemoveTodoResponse, RemoveWorktreeResponse, RepoBranchRequest, RepoBranchResponse,
-    RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse, RunIndexEntry, Runner,
-    RunnerModelCatalogResponse, RunnerModelOption, RunnerSelection, RunsIndexResponse,
+    RemoveProjectResponse, RemoveTodoResponse, RemoveWorktreeResponse, RepoBranchRequest,
+    RepoBranchResponse, RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse, RunIndexEntry,
+    Runner, RunnerModelCatalogResponse, RunnerModelOption, RunnerSelection, RunsIndexResponse,
     SaveWorkflowInput, SaveWorkflowResponse, SelectAgentProfileInput, SetAgentConfigInput,
-    SetConfigInput, Skill, StartTodoResponse, StatusEntry, TodoItem, UpdateAgentProfileInput,
-    UserMcpListing, WorkflowStepDef, WorkflowsResponse, WorkspaceUsageResponse, WorktreeDirEntry,
-    WorktreeEntry, WorktreeEntryType, WorktreeInfo, WorktreeRunStatus, WorktreesResponse,
+    SetConfigInput, SetWorkspaceConfigInput, SetWorkspaceUiStateInput, Skill, StartTodoResponse,
+    StatusEntry, TodoItem, UpdateAgentProfileInput, UpdateProjectInput, UpdateProjectResponse,
+    UserMcpListing, WorkflowStepDef, WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUiState,
+    WorkspaceUsageResponse, WorktreeDirEntry, WorktreeEntry, WorktreeEntryType, WorktreeInfo,
+    WorktreeRunStatus, WorktreesResponse,
 };
 use coducktor_core::config::load_config;
 use coducktor_core::handoff::followups_enabled;
@@ -72,7 +74,12 @@ use coducktor_core::workspace::agent_accounts::{
     AgentAccount, has_control_chars, is_valid_account_id, merge_write_agent_accounts,
     supports_profiles,
 };
-use coducktor_core::workspace::config::{PROVIDER_IDS, load_workspace_config};
+use coducktor_core::workspace::config::{
+    PROVIDER_IDS, load_workspace_config, merge_write_workspace_config,
+};
+use coducktor_core::workspace::ui_state::{
+    merge_write_workspace_ui_state, read_workspace_ui_state,
+};
 use coducktor_forge::{
     ForgeMergeInput, ForgeMergeResult, ForgePrDiffResult, ForgePrMergeStateResult, GithubDriver,
     resolve_forge,
@@ -1996,6 +2003,375 @@ impl InProcessEngine {
         .await
         .map_err(|error| EngineError::Transport(error.to_string()))
     }
+
+    // ---- remaining settings writes (ported from `coducktor-server`'s workspace_config/
+    // workspace_ui_state/remove_project/update_project handlers) ----------------------------
+
+    pub async fn workspace_config(&self) -> Result<WorkspaceConfigResponse, EngineError> {
+        Ok(workspace_config_response(&workspace_config_for(
+            &self.repo_root,
+        )))
+    }
+
+    pub async fn put_workspace_config(
+        &self,
+        input: &SetWorkspaceConfigInput,
+    ) -> Result<WorkspaceConfigResponse, EngineError> {
+        validate_workspace_config_input(input)
+            .map_err(|reason| EngineError::Conflict { reason })?;
+        let path = coducktor_core::paths::workspace_config_path(&ProcessEnv);
+        let input = input.clone();
+        let saved = merge_write_workspace_config(&path, &ProcessEnv, |config| {
+            apply_workspace_config_input(config, &input);
+        })
+        .map_err(io_err)?;
+        Ok(workspace_config_response(&saved))
+    }
+
+    pub async fn workspace_ui_state(&self) -> Result<WorkspaceUiState, EngineError> {
+        let path = coducktor_core::paths::workspace_ui_state_path(&ProcessEnv);
+        Ok(read_workspace_ui_state(&path))
+    }
+
+    pub async fn put_workspace_ui_state(
+        &self,
+        input: &SetWorkspaceUiStateInput,
+    ) -> Result<WorkspaceUiState, EngineError> {
+        let path = coducktor_core::paths::workspace_ui_state_path(&ProcessEnv);
+        let input = input.clone();
+        merge_write_workspace_ui_state(&path, |state| {
+            if input.sidebar.is_some() {
+                state.sidebar = input.sidebar.clone();
+            }
+            if input.dismissed_provider_auth_failures.is_some() {
+                state.dismissed_provider_auth_failures =
+                    input.dismissed_provider_auth_failures.clone();
+            }
+            if input.appearance.is_some() {
+                state.appearance = input.appearance.clone();
+            }
+            if input.notifications.is_some() {
+                state.notifications = input.notifications.clone();
+            }
+            if input.task_table.is_some() {
+                state.task_table = input.task_table.clone();
+            }
+            if input.last_location.is_some() {
+                state.last_location = input.last_location.clone();
+            }
+            if input.imported_skills.is_some() {
+                state.imported_skills = input.imported_skills.clone();
+            }
+            state.extra.extend(input.extra.clone());
+        })
+        .map_err(io_err)
+    }
+
+    pub async fn remove_project(
+        &self,
+        project_id: &str,
+    ) -> Result<RemoveProjectResponse, EngineError> {
+        let config_path = coducktor_core::paths::workspace_config_path(&ProcessEnv);
+        let config = load_workspace_config(&config_path, &ProcessEnv);
+        let boot_id = boot_project_id(&config, &self.repo_root);
+        let id = if project_id == "default" {
+            boot_id.clone()
+        } else {
+            project_id.to_owned()
+        };
+        if !config.projects.iter().any(|project| project.id == id) {
+            return Err(EngineError::NotFound);
+        }
+        if id == boot_id {
+            return Err(EngineError::Conflict {
+                reason: "cannot remove the boot project".to_owned(),
+            });
+        }
+        let removed_id = id.clone();
+        merge_write_workspace_config(&config_path, &ProcessEnv, move |config| {
+            config.projects.retain(|project| project.id != id);
+        })
+        .map_err(io_err)?;
+        Ok(RemoveProjectResponse {
+            removed: true,
+            id: removed_id,
+        })
+    }
+
+    pub async fn update_project(
+        &self,
+        project_id: &str,
+        input: &UpdateProjectInput,
+    ) -> Result<UpdateProjectResponse, EngineError> {
+        validate_project_update(input).map_err(|reason| EngineError::Conflict { reason })?;
+        let config_path = coducktor_core::paths::workspace_config_path(&ProcessEnv);
+        let config = load_workspace_config(&config_path, &ProcessEnv);
+        let boot_id = boot_project_id(&config, &self.repo_root);
+        let id = if project_id == "default" {
+            boot_id
+        } else {
+            project_id.to_owned()
+        };
+        if !config.projects.iter().any(|project| project.id == id) {
+            return Err(EngineError::NotFound);
+        }
+        let max_parallel = input.max_parallel;
+        let tags = input.tags.clone();
+        let target_id = id.clone();
+        let mut updated = None;
+        merge_write_workspace_config(&config_path, &ProcessEnv, |config| {
+            if let Some(project) = config
+                .projects
+                .iter_mut()
+                .find(|project| project.id == target_id)
+            {
+                if let Some(value) = max_parallel {
+                    project.max_parallel = value;
+                }
+                if let Some(value) = tags.clone() {
+                    project.tags = normalize_project_tags(value);
+                }
+                updated = Some(project.clone());
+            }
+        })
+        .map_err(io_err)?;
+        let Some(updated) = updated else {
+            return Err(EngineError::NotFound);
+        };
+        Ok(UpdateProjectResponse {
+            project: project_entry(&updated),
+        })
+    }
+}
+
+fn workspace_config_response(
+    config: &coducktor_core::workspace::config::WorkspaceConfig,
+) -> WorkspaceConfigResponse {
+    let models =
+        config
+            .agent_defaults
+            .models
+            .as_ref()
+            .map(|models| coducktor_contract::RunnerModels {
+                claude: models.claude.clone(),
+                codex: models.codex.clone(),
+                opencode: models.opencode.clone(),
+                pi: models.pi.clone(),
+            });
+    WorkspaceConfigResponse {
+        projects_dir: config.projects_dir.clone(),
+        composer_defaults: coducktor_contract::ComposerDefaults {
+            autonomous: config.composer_defaults.autonomous,
+            worktree: config.composer_defaults.worktree,
+            inherited_autonomous: coducktor_contract::InheritedAutonomous::Value(true),
+            inherited_worktree: true,
+        },
+        resources: coducktor_contract::WorkspaceResources {
+            max_parallel: config.resources.max_parallel,
+            max_monitoring_sessions: config.resources.max_monitoring_sessions,
+            monitoring_wake_interval_minutes: config.resources.monitoring_wake_interval_minutes,
+            auto_resume_on_usage_limit: config.resources.auto_resume_on_usage_limit,
+            intelligent_context_refresh: config.resources.intelligent_context_refresh,
+            memory_limit_mb: config.resources.memory_limit_mb,
+            worktree_retention_default: config.resources.worktree_retention_default,
+        },
+        quota_routing: config
+            .quota_routing
+            .enabled
+            .then_some(coducktor_contract::QuotaRouting {
+                enabled: true,
+                provider_order: config.quota_routing.provider_order,
+                unknown_usage_policy: config.quota_routing.unknown_usage_policy,
+            }),
+        agent_defaults: coducktor_contract::AgentDefaults {
+            runner: config.agent_defaults.runner,
+            models,
+        },
+    }
+}
+
+fn validate_workspace_config_input(input: &SetWorkspaceConfigInput) -> Result<(), String> {
+    if let Some(projects_dir) = &input.projects_dir {
+        let projects_dir = projects_dir.trim();
+        if projects_dir.is_empty() || projects_dir.chars().count() > 4096 {
+            return Err(
+                "projectsDir must be a non-empty path of at most 4096 characters".to_owned(),
+            );
+        }
+        if !projects_dir.starts_with('~') && !Path::new(projects_dir).is_absolute() {
+            return Err(format!(
+                "not writable: {projects_dir} is not an absolute path"
+            ));
+        }
+    }
+    if let Some(resources) = &input.resources {
+        if let Some(value) = resources.max_parallel
+            && !(1..=16).contains(&value)
+        {
+            return Err("maxParallel must be an integer from 1 to 16".to_owned());
+        }
+        if let Some(value) = resources.max_monitoring_sessions
+            && value > 16
+        {
+            return Err("maxMonitoringSessions must be an integer from 0 to 16".to_owned());
+        }
+        if let Some(Some(value)) = resources.monitoring_wake_interval_minutes
+            && !(1..=60).contains(&value)
+        {
+            return Err("monitoringWakeIntervalMinutes must be an integer from 1 to 60".to_owned());
+        }
+        if let Some(Some(value)) = resources.memory_limit_mb
+            && value > 1_048_576
+        {
+            return Err("memoryLimitMb must be an integer from 0 to 1048576".to_owned());
+        }
+        if let Some(value) = resources.worktree_retention_default
+            && value > 1000
+        {
+            return Err("worktreeRetentionDefault must be an integer from 0 to 1000".to_owned());
+        }
+    }
+    if let Some(agent) = &input.agent_defaults
+        && let Some(models) = &agent.models
+        && [
+            models.claude.as_ref(),
+            models.codex.as_ref(),
+            models.opencode.as_ref(),
+            models.pi.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|value| {
+            let value = value.trim();
+            value.is_empty() || value.chars().count() > 200
+        })
+    {
+        return Err("model names must be between 1 and 200 characters".to_owned());
+    }
+    Ok(())
+}
+
+fn apply_workspace_config_input(
+    config: &mut coducktor_core::workspace::config::WorkspaceConfig,
+    input: &SetWorkspaceConfigInput,
+) {
+    if let Some(projects_dir) = &input.projects_dir {
+        config.projects_dir = projects_dir.trim().to_owned();
+    }
+    if let Some(composer) = &input.composer_defaults {
+        if let Some(autonomous) = composer.autonomous {
+            config.composer_defaults.autonomous = autonomous;
+        }
+        if let Some(worktree) = composer.worktree {
+            config.composer_defaults.worktree = worktree;
+        }
+    }
+    if let Some(resources) = &input.resources {
+        if let Some(value) = resources.max_parallel {
+            config.resources.max_parallel = value;
+        }
+        if let Some(value) = resources.max_monitoring_sessions {
+            config.resources.max_monitoring_sessions = value;
+        }
+        if let Some(value) = resources.monitoring_wake_interval_minutes {
+            config.resources.monitoring_wake_interval_minutes = value;
+        }
+        if let Some(value) = resources.auto_resume_on_usage_limit {
+            config.resources.auto_resume_on_usage_limit = value;
+        }
+        if let Some(value) = resources.intelligent_context_refresh {
+            config.resources.intelligent_context_refresh = value;
+        }
+        if let Some(value) = resources.memory_limit_mb {
+            config.resources.memory_limit_mb = value;
+        }
+        if let Some(value) = resources.worktree_retention_default {
+            config.resources.worktree_retention_default = value;
+        }
+    }
+    if let Some(agent) = &input.agent_defaults {
+        if let Some(runner) = agent.runner {
+            config.agent_defaults.runner = runner;
+        }
+        if let Some(models) = &agent.models {
+            let has_patch = [&models.claude, &models.codex, &models.opencode, &models.pi]
+                .into_iter()
+                .any(Option::is_some);
+            if has_patch {
+                let target = config
+                    .agent_defaults
+                    .models
+                    .get_or_insert_with(Default::default);
+                if let Some(value) = &models.claude {
+                    target.claude = value.as_ref().map(|value| value.trim().to_owned());
+                }
+                if let Some(value) = &models.codex {
+                    target.codex = value.as_ref().map(|value| value.trim().to_owned());
+                }
+                if let Some(value) = &models.opencode {
+                    target.opencode = value.as_ref().map(|value| value.trim().to_owned());
+                }
+                if let Some(value) = &models.pi {
+                    target.pi = value.as_ref().map(|value| value.trim().to_owned());
+                }
+                if target.claude.is_none()
+                    && target.codex.is_none()
+                    && target.opencode.is_none()
+                    && target.pi.is_none()
+                    && target.extra.is_empty()
+                {
+                    config.agent_defaults.models = None;
+                }
+            }
+        }
+    }
+    if let Some(quota) = &input.quota_routing
+        && let Some(enabled) = quota.enabled
+    {
+        config.quota_routing.enabled = enabled;
+    }
+}
+
+fn normalize_project_tags(tags: Option<Vec<String>>) -> Option<Vec<String>> {
+    let mut tags = tags?
+        .into_iter()
+        .map(|tag| tag.trim().to_owned())
+        .collect::<Vec<_>>();
+    tags.retain(|tag| !tag.is_empty());
+    tags.sort_by_key(|tag| tag.to_ascii_lowercase());
+    tags.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    (!tags.is_empty()).then_some(tags)
+}
+
+fn validate_project_update(input: &UpdateProjectInput) -> Result<(), String> {
+    if input.max_parallel.is_none() && input.tags.is_none() {
+        return Err("specify maxParallel or tags".to_owned());
+    }
+    if let Some(Some(max_parallel)) = input.max_parallel
+        && !(1..=16).contains(&max_parallel)
+    {
+        return Err("maxParallel must be an integer from 1 to 16".to_owned());
+    }
+    if let Some(Some(tags)) = &input.tags {
+        if tags.len() > coducktor_contract::PROJECT_TAGS_MAX {
+            return Err(format!(
+                "tags must have at most {} entries",
+                coducktor_contract::PROJECT_TAGS_MAX
+            ));
+        }
+        if tags.iter().any(|tag| {
+            let trimmed = tag.trim();
+            trimmed.is_empty()
+                || trimmed.chars().count() > coducktor_contract::PROJECT_TAG_MAX_LENGTH
+        }) {
+            return Err(format!(
+                "tags must contain non-empty values of at most {} characters",
+                coducktor_contract::PROJECT_TAG_MAX_LENGTH
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn fallback_plan() -> PlanResponse {
@@ -7103,5 +7479,104 @@ mod tests {
             }
             GithubPrChangesData::Available(_) => panic!("expected Unavailable"),
         }
+    }
+
+    // ---- remaining settings writes ---------------------------------------------------------
+    // `workspace_config`/`workspace_ui_state` read the real host `~/.coducktor/` state (this
+    // module has no injectable `EnvSource` seam to isolate it — `coducktor-core`'s own
+    // `paths::test_env::FixedEnv` is `pub(crate)`, not exported), so only read paths and
+    // validation-rejection paths (which return before any file I/O) are exercised here — the
+    // same restraint this file's agent-accounts family already documents for the identical
+    // reason. `put_workspace_ui_state` has no validation branch at all (it always writes), so
+    // it is not called here for real at any input — calling it would mutate the developer's own
+    // `~/.coducktor/ui-state.json`, which a unit test must never do.
+
+    #[tokio::test]
+    async fn workspace_config_reads_without_error() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        engine.workspace_config().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn workspace_ui_state_reads_without_error() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        engine.workspace_ui_state().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn put_workspace_config_rejects_a_relative_projects_dir() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let input = SetWorkspaceConfigInput {
+            projects_dir: Some("relative/path".to_owned()),
+            ..Default::default()
+        };
+        let error = engine.put_workspace_config(&input).await.unwrap_err();
+        assert!(matches!(error, EngineError::Conflict { .. }));
+    }
+
+    #[tokio::test]
+    async fn put_workspace_config_rejects_an_out_of_range_max_parallel() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let input = SetWorkspaceConfigInput {
+            resources: Some(coducktor_contract::WorkspaceResourcesPatch {
+                max_parallel: Some(0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let error = engine.put_workspace_config(&input).await.unwrap_err();
+        assert_eq!(
+            error,
+            EngineError::Conflict {
+                reason: "maxParallel must be an integer from 1 to 16".to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_project_reports_not_found_for_an_unregistered_project() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine
+            .remove_project("definitely-not-a-registered-project-id")
+            .await
+            .unwrap_err();
+        assert_eq!(error, EngineError::NotFound);
+    }
+
+    #[tokio::test]
+    async fn update_project_rejects_an_input_with_neither_field_set() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let input = UpdateProjectInput {
+            max_parallel: None,
+            tags: None,
+        };
+        let error = engine.update_project("anything", &input).await.unwrap_err();
+        assert_eq!(
+            error,
+            EngineError::Conflict {
+                reason: "specify maxParallel or tags".to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn update_project_reports_not_found_for_an_unregistered_project() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let input = UpdateProjectInput {
+            max_parallel: Some(Some(4)),
+            tags: None,
+        };
+        let error = engine
+            .update_project("definitely-not-a-registered-project-id", &input)
+            .await
+            .unwrap_err();
+        assert_eq!(error, EngineError::NotFound);
     }
 }
