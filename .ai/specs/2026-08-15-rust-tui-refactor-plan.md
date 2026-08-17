@@ -1256,6 +1256,56 @@ long-standing note is now stale).
 **Commit:** `feat(engine): C1.1 InProcessEngine — health, runs, workflows/skills,
 ui-state, todos, projects, live events` — pushed as `7bb0ee84`.
 
+**Status (C1.2):** partial, continuing C1.1. Adds `workspace_usage` (ported from
+`get_workspace_usage` verbatim — that route already just answers
+`WorkspaceUsageResponse { providers: vec![] }` since B10's quota-telemetry scope
+cut, so this is a one-line port, not a new gap) and the workflow builder writes
+(`save_workflow`/`delete_workflow`/`parse_workflow`, ported from
+`save_workflow_at`/`delete_workflow_at`/`parse_workflow_input`). The builder writes
+needed four small private helpers (`workflow_slug`/`workflow_step_issue`/
+`workflow_input`/`workflow_yaml`) that `coducktor-server` never made `pub` —
+duplicated into `in_process.rs` rather than shared, per this module's own stated
+principle (`coducktor-server` is deleted whole at C2, so sharing across an
+axum-shaped and a non-axum-shaped caller now would be wasted engineering); the
+XOR/step-shape validation and YAML generation itself is copied byte-for-byte, not
+re-derived. `skills_to_steps`/`steps_issue`/`parse_workflow_file_doc` themselves
+were already `pub` in `coducktor-core::workflows::types` and are called directly,
+not duplicated.
+**Investigated and explicitly deferred this round, so a future continuation
+doesn't re-discover the same complexity from scratch:** `provider_status`/
+`models`/`agent_profiles` all looked like natural next candidates but each pulls
+in a cluster of `coducktor-server`-private, non-`pub` support types and functions
+(`ResolvedAgentProfile`, `default_agent_profile`, `provider_status_for_profile`,
+`agent_profile_wire`, `selection_wire`, `resolved_agent_profile`,
+`provider_executable`, plus `get_models`'s own TTL cache keyed on
+`state.model_catalog`) that don't exist anywhere `coducktor-client` can reach
+without either a larger duplication pass than this round's budget allowed or a
+real `coducktor-core` extraction (arguably the more correct home for
+`ResolvedAgentProfile` and friends, since none of it is axum-specific — worth
+doing as its own small prerequisite step rather than duplicating it a second time
+inside `coducktor-client`). `config`/`put_config` (per-repo settings) were also
+skipped: `update_config`'s handler carries real model-lock/base-branch/system-
+prompt merge logic worth porting carefully, not rushed. None of these are done —
+still listed as remaining below.
+**Still remaining** (unchanged from C1.1's list, minus what C1.2 just closed):
+IDE, repo git browsing/diff/compare, agent-config, provider/account probing
+(`provider_status`, `models`, agent-profile CRUD, account status/details),
+GitHub forge detail reads, worktree management, open-targets, per-repo
+`config`/`put_config`, the remaining settings write paths
+(`put_workspace_config`/`workspace_config`/`workspace_ui_state`/
+`put_workspace_ui_state`/`update_project`/`remove_project`), task-thread write
+paths (`send_message`/`edit_queued_message`/`remove_queued_message`/
+`continue_run`/`cancel_auto_resume`/`git_commit`/`git_push`/`run_commits`/
+`create_pr`/`open_in_cli`/`open_in`), `agent_profiles`, `plan`, and closing the
+`impl Engine for InProcessEngine` block itself.
+**Accept, verified (C1.2's own scope only):** 12 new tests (4 for
+`save_workflow`, 3 for `delete_workflow`, 3 for `parse_workflow`, 1 for
+`workspace_usage`) — 37 total in `in_process::tests`. Full workspace: 717 tests
+green (705 + 12), `cargo clippy --workspace --all-targets -- -D warnings` clean,
+`cargo fmt --check` clean.
+**Commit:** `feat(engine): C1.2 InProcessEngine — workspace_usage, workflow
+builder writes` — pushed as `25f890d6`.
+
 ### [ ] C2 — Switch default backend, delete `cezar-server`
 **Ships:** `cezar-tui`'s default backend becomes `InProcess`; then **delete
 `cezar-server` entirely** — the `axum` dependency, every handler, SSE/WS
