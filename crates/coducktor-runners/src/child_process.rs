@@ -132,6 +132,18 @@ impl ChildProcess {
         self.stdin = None;
     }
 
+    /// Stop caring about further stdout content — for a backend (opencode) that only needs
+    /// stdout briefly at startup (to read back a bound URL) and communicates over some other
+    /// channel afterward. Moves the live channel to a background thread that keeps draining it
+    /// (discarding each line) so neither the channel nor the underlying OS pipe backs up over a
+    /// long session; `self`'s own receiver is replaced with an already-disconnected one, so a
+    /// stray later call to `next_line` returns `Closed` rather than reading stale/interleaved
+    /// output.
+    pub fn discard_stdout(&mut self) {
+        let rx = std::mem::replace(&mut self.stdout_rx, mpsc::channel().1);
+        thread::spawn(move || while rx.recv().is_ok() {});
+    }
+
     /// Block for the next stdout line, honoring an optional deadline. `Ok(NextLine::Closed)`
     /// means the process's stdout has closed (it exited or crashed) — not a timeout.
     pub fn next_line(&mut self, deadline: Option<Instant>) -> Result<NextLine, TimedOut> {
@@ -230,6 +242,18 @@ impl ChildProcess {
         self.signal_kill();
     }
 
+    /// A stop sequence with no earlier EOF opportunity to wait out first: signal SIGTERM right
+    /// away, wait `grace`, then escalate to SIGKILL if still alive. For a backend whose process
+    /// reads nothing that would make it exit gracefully on its own — an HTTP server with no
+    /// stdin protocol (opencode's `finish()`), unlike claude/codex where closing stdin itself is
+    /// a signal worth waiting on first.
+    pub fn escalate_immediately(&mut self, grace: Duration) {
+        self.signal_term();
+        if !self.wait_exited_within(grace) {
+            self.signal_kill();
+        }
+    }
+
     /// The wall-clock kill switch a live turn's read loop arms when its deadline elapses.
     /// Leaves the child reaped (`wait_for_exit` already called) before returning.
     pub fn escalate_after_timeout(&mut self) {
@@ -240,6 +264,18 @@ impl ChildProcess {
             self.signal_kill();
         }
         self.wait_for_exit();
+    }
+}
+
+impl Drop for ChildProcess {
+    /// A best-effort safety net, not a substitute for a backend's own `finish()`/`cancel()`: if
+    /// this value is dropped while the child is still running — a panic unwinding past a normal
+    /// teardown call being the main way that happens — request a hard kill so the process doesn't
+    /// outlive the session that owned it. Never blocks waiting for it to actually exit.
+    fn drop(&mut self) {
+        if !self.has_exited() {
+            self.signal_kill();
+        }
     }
 }
 

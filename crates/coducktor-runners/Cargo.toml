@@ -12,6 +12,9 @@ coducktor-core = { path = "../coducktor-core" }
 coducktor-protocol = { path = "../coducktor-protocol" }
 libc.workspace = true
 regex.workspace = true
+# Only the blocking client (its own internal tokio runtime, no async runtime needed in this
+# crate) — the opencode backend's HTTP+SSE transport (B9a.2d).
+reqwest = { workspace = true, features = ["blocking"] }
 serde.workspace = true
 serde_json.workspace = true
 

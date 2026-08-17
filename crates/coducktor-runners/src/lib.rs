@@ -15,6 +15,7 @@ pub mod codex;
 pub mod codex_runner;
 pub mod model_identity;
 pub mod opencode;
+pub mod opencode_runner;
 pub mod pi;
 pub mod usage;
 pub mod v1_text_coalescer;
