@@ -8,7 +8,6 @@
     "node": ">=20"
   },
   "workspaces": [
-    "packages/contract",
     "packages/cezar"
   ],
   "scripts": {
@@ -21,9 +20,8 @@
     "test:unit": "npm run test:unit -w @open-mercato/cezar",
     "test:e2e": "sh .ai/scripts/e2e.sh",
     "pretypecheck": "npm run build:server",
-    "typecheck": "npm run typecheck:contract && npm run typecheck:server",
-    "typecheck:server": "npm run typecheck -w @open-mercato/cezar",
-    "typecheck:contract": "npm run typecheck -w @open-mercato/cezar-contract"
+    "typecheck": "npm run typecheck:server",
+    "typecheck:server": "npm run typecheck -w @open-mercato/cezar"
   },
   "devDependencies": {
     "tsx": "^4.19.0",
