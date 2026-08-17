@@ -87,25 +87,11 @@ impl IdeUi {
     }
 }
 
-/// Navigate to the IDE and queue the root listing.
+/// Navigate to the IDE; `navigate_route` owns the project sync and the root
+/// listing queue, so this is just the route hop.
 pub fn open(app: &mut App, project: &str) {
-    if app.ide_ui.project != project {
-        app.ide_ui = IdeUi {
-            project: project.to_owned(),
-            ..IdeUi::default()
-        };
-    }
     app.request_navigate(Route::Ide {
         project: project.to_owned(),
-    });
-    let path = if app.ide_ui.directory_path.is_empty() {
-        None
-    } else {
-        Some(app.ide_ui.directory_path.clone())
-    };
-    app.pending.push(PendingAction::LoadIdeDirectory {
-        project: project.to_owned(),
-        path,
     });
 }
 

@@ -1111,8 +1111,30 @@ impl App {
 
     /// Navigate and re-anchor the sidebar selector on the destination's row, so
     /// the arrow selector and the current-route highlight never sit on two rows.
+    /// Every entry point into the IDE converges here (sidebar, palette, `:open`,
+    /// deferred discard-confirms), so the project sync and the root listing
+    /// queue live with the navigation, not with one caller.
     pub(crate) fn navigate_route(&mut self, route: Route) {
+        if let Route::Ide { project } = &route
+            && self.ide_ui.project != *project
+        {
+            self.ide_ui = crate::screens::ide::IdeUi {
+                project: project.clone(),
+                ..crate::screens::ide::IdeUi::default()
+            };
+        }
         self.history.navigate(route);
+        if let Route::Ide { project } = self.route() {
+            let path = if self.ide_ui.directory_path.is_empty() {
+                None
+            } else {
+                Some(self.ide_ui.directory_path.clone())
+            };
+            self.pending.push(PendingAction::LoadIdeDirectory {
+                project: project.clone(),
+                path,
+            });
+        }
         self.anchor_sidebar_selection();
     }
 
@@ -1931,12 +1953,12 @@ impl App {
             self.handle_command_key(key);
             return;
         }
-        if key.code == KeyCode::Left
-            && key
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL)
+        if key
+            .modifiers
+            .contains(crossterm::event::KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Left | KeyCode::Right)
         {
-            self.focus_sidebar();
+            self.focus_step(key.code);
             return;
         }
         if !self.sidebar_focus
@@ -2385,6 +2407,34 @@ impl App {
             self.sidebar_collapsed = false;
         }
         self.sidebar_focus = true;
+    }
+
+    /// Move keyboard focus one section left or right (`Ctrl+Left` / `Ctrl+Right`).
+    /// Sections run left to right: the sidebar, then the screen. The IDE's explorer
+    /// sits between them, so its order is sidebar → tree → editor, and every press
+    /// moves exactly one step — no jump across the sections.
+    fn focus_step(&mut self, dir: KeyCode) {
+        let on_ide = matches!(self.route(), Route::Ide { .. });
+        match (dir, self.sidebar_focus) {
+            (KeyCode::Left, false)
+                if on_ide && self.ide_ui.focus == crate::screens::ide::IdeFocus::Editor =>
+            {
+                self.ide_ui.focus = crate::screens::ide::IdeFocus::Tree;
+            }
+            (KeyCode::Left, false) => self.focus_sidebar(),
+            (KeyCode::Right, true) => {
+                self.sidebar_focus = false;
+                if on_ide {
+                    self.ide_ui.focus = crate::screens::ide::IdeFocus::Tree;
+                }
+            }
+            (KeyCode::Right, false)
+                if on_ide && self.ide_ui.focus == crate::screens::ide::IdeFocus::Tree =>
+            {
+                self.ide_ui.focus = crate::screens::ide::IdeFocus::Editor;
+            }
+            _ => {}
+        }
     }
 
     fn handle_sidebar_key(&mut self, key: KeyEvent) -> bool {
@@ -3016,6 +3066,96 @@ mod tests {
         )));
 
         assert_eq!(app.route(), &Route::GlobalSettings);
+    }
+
+    #[test]
+    fn open_command_to_the_ide_queues_the_root_listing_for_its_project() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        app.ide_ui.project = "blarchy".to_owned();
+        app.execute_command("open /p/coducktor/ide");
+
+        assert!(matches!(
+            app.route(),
+            Route::Ide { project } if project == "coducktor"
+        ));
+        assert_eq!(
+            app.ide_ui.project, "coducktor",
+            "project switch resets the IDE"
+        );
+        assert!(app.pending.iter().any(|action| matches!(
+            action,
+            PendingAction::LoadIdeDirectory { project, path: None } if project == "coducktor"
+        )));
+    }
+
+    #[test]
+    fn ctrl_left_and_right_step_one_ide_section_at_a_time() {
+        fn ctrl(app: &mut App, code: KeyCode) {
+            app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::CONTROL)));
+        }
+
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        ctrl(&mut app, KeyCode::Left);
+        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert!(matches!(app.route(), Route::Ide { project } if project == "main"));
+
+        // Starts in the tree: Ctrl+Right steps into the editor, one section only.
+        assert_eq!(app.ide_ui.focus, crate::screens::ide::IdeFocus::Tree);
+        ctrl(&mut app, KeyCode::Right);
+        assert_eq!(app.ide_ui.focus, crate::screens::ide::IdeFocus::Editor);
+        assert!(!app.sidebar_focus);
+        // Already at the rightmost section: no-op.
+        ctrl(&mut app, KeyCode::Right);
+        assert_eq!(app.ide_ui.focus, crate::screens::ide::IdeFocus::Editor);
+
+        // Ctrl+Left walks back: editor → tree → sidebar, one section per press.
+        ctrl(&mut app, KeyCode::Left);
+        assert_eq!(app.ide_ui.focus, crate::screens::ide::IdeFocus::Tree);
+        ctrl(&mut app, KeyCode::Left);
+        assert!(app.sidebar_focus);
+        // Leftmost: no-op.
+        ctrl(&mut app, KeyCode::Left);
+        assert!(app.sidebar_focus);
+
+        // And forward again: sidebar → tree → editor.
+        ctrl(&mut app, KeyCode::Right);
+        assert!(!app.sidebar_focus);
+        assert_eq!(app.ide_ui.focus, crate::screens::ide::IdeFocus::Tree);
+        ctrl(&mut app, KeyCode::Right);
+        assert_eq!(app.ide_ui.focus, crate::screens::ide::IdeFocus::Editor);
+    }
+
+    #[test]
+    fn ctrl_left_and_right_move_one_section_between_sidebar_and_screen() {
+        fn ctrl(app: &mut App, code: KeyCode) {
+            app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::CONTROL)));
+        }
+
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        assert!(!app.sidebar_focus);
+        ctrl(&mut app, KeyCode::Left);
+        assert!(app.sidebar_focus);
+        ctrl(&mut app, KeyCode::Left);
+        assert!(app.sidebar_focus, "already leftmost, no-op");
+        ctrl(&mut app, KeyCode::Right);
+        assert!(!app.sidebar_focus);
+        ctrl(&mut app, KeyCode::Right);
+        assert!(!app.sidebar_focus, "already rightmost, no-op");
     }
 
     #[test]

@@ -17,7 +17,7 @@ user bindings are merged over these defaults, key by key.
 | `g` | Jump to global (cross-project) Tasks |
 | `c` | New task |
 | `Ctrl+B` | Toggle sidebar |
-| `Ctrl+Left` | Move keyboard focus into the left navigation panel; `j`/`k` or `Up`/`Down` move, `Enter` opens, `Esc` returns |
+| `Ctrl+Left` / `Ctrl+Right` | Move keyboard focus one section left or right — sidebar → screen (and, in the IDE, sidebar → file tree → editor). Each press steps exactly one section; `j`/`k` or `Up`/`Down` move in the panel, `Enter` opens, `Esc` returns |
 
 | `Up` / `Down` on Tasks | Move into and cycle the left navigation panel; `Enter` opens the highlighted destination |
 | `?` | Help overlay (context-filtered) |
@@ -26,15 +26,21 @@ user bindings are merged over these defaults, key by key.
 | `Ctrl+I` | Navigate forward |
 | `Ctrl+K` | Command palette |
 
+`Ctrl+Left` / `Ctrl+Right` are handled before the keymap (they move between
+focus sections, so they are not rebindable).
+
 The left navigation panel shows a persistent arrow selector that the keyboard and
 the mouse share: clicking a sidebar row with the mouse moves it there and activates
 it, and `j`/`k`/`Up`/`Down` move it once the panel has focus (`Ctrl+Left`, or
-`Up`/`Down` from the Tasks screens). The selector starts on the current project
-row and follows every navigation, so the highlighted row always matches the screen
-you are on. `Enter` opens the highlighted row (a project row switches to that
-project, a nav row opens its screen, and the Active/Archived rows switch the task
-filter). `Esc` (or `Right`) returns focus to the screen. The command palette
-(`Ctrl+K`) and `:open <route>` remain available too.
+`Up`/`Down` from the Tasks screens). `Ctrl+Left`/`Ctrl+Right` step the keyboard
+focus one section at a time (sidebar → screen, with the IDE's file tree between
+them), so `Ctrl+Left` from a file in the IDE lands on the file tree and `Ctrl+Right`
+from the sidebar lands back on it, never skipping a section. The selector starts on
+the current project row and follows every navigation, so the highlighted row always
+matches the screen you are on. `Enter` opens the highlighted row (a project row
+switches to that project, a nav row opens its screen, and the Active/Archived rows
+switch the task filter). `Esc` (or `Right`) returns focus to the screen. The
+command palette (`Ctrl+K`) and `:open <route>` remain available too.
 
 Clicking a non-active project row switches the sidebar context to that registered project and
 refreshes its tasks. Clicking the active project row still expands or collapses its navigation.
@@ -163,6 +169,8 @@ Sort picker: `j`/`k`/`Down`/`Up` to move, `Enter` to apply, `Esc` to cancel.
 | `Enter` / `Right` | Open the selected entry |
 | `h` / `u` / `Left` | Go up a directory |
 | `Tab` | Move focus to the editor |
+| `Ctrl+Left` | One section left: editor → file tree, file tree → sidebar |
+| `Ctrl+Right` | One section right: sidebar → file tree, file tree → editor |
 | `Esc` | Back |
 | `Ctrl+S` (editor) | Save |
 
