@@ -655,8 +655,9 @@ clippy / fmt stay green throughout.
 **Commit(s):** `feat(runners): B9a.2a agent-runner seam (spawn/signal/termination
 helpers)` — pushed as `01a15b45`; `B9a.2b.1 ask-marker validation` — `f912a552`;
 `B9a.2b.2 least-privilege child env` — `95b4968c`; `B9a.2b claude backend` —
-`0653a0bf`; then `B9a.2c codex backend`, `B9a.2d opencode backend`, `B9a.2e pi
-backend` — none of these are done yet.
+`0653a0bf`; `B9a.2c.0 extract shared child-process plumbing` — `2ed6b976`;
+`B9a.2c.1 v1 text coalescer` — `5ef2944b`; `B9a.2c codex backend` — `0213ad30`;
+then `B9a.2d opencode backend`, `B9a.2e pi backend` — none of these are done yet.
 **B9a.2a note:** shipped as `crates/coducktor-runners/src/agent_runner.rs` — the four
 primitives `agent-runner.ts` actually exports: `is_signal_termination_exit`,
 `prepend_system_prompt`, `ContentBlock`/`ImageSource` (the outbound Anthropic-shaped
@@ -735,6 +736,56 @@ and a friendly error for a missing binary. 53 tests in `coducktor-runners` (up f
 `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, and
 `cargo fmt --check` all green (the one pre-existing `coducktor-client/tests/
 transport.rs` drift noted since B2 is untouched).
+
+**B9a.2c notes:** one prerequisite discovered mid-step shipped first, own commit per this
+section's own convention:
+- `B9a.2c.1` ports `packages/cezar/src/core/v1-text-coalescer.ts` to
+  `crates/coducktor-runners/src/v1_text_coalescer.rs` — codex (and later opencode) stream
+  assistant text as deltas, and the v1 `text` event contract needs whole blocks, not one
+  event per delta (a turn-end marker split across deltas would slip past per-event
+  stripping otherwise). 10 tests port `v1-text-coalescer.test.ts` case for case.
+
+Also, discovered while writing the claude backend's SECOND real use of the exact same
+spawn/escalation shape: `B9a.2c.0` (own commit, before `B9a.2c` itself) extracted
+`crates/coducktor-runners/src/child_process.rs` — the `ChildProcess` type owning spawn,
+the stdout line channel, stderr collection, and SIGTERM→SIGKILL escalation, pulled out of
+`claude_runner.rs` (B9a.2b) once codex needed the identical plumbing a second time.
+`claude_runner.rs` was refactored onto it with no behavior change (same 14 tests). This
+is proven duplication driving the extraction, not a speculative abstraction ahead of need.
+
+The backend itself (`crates/coducktor-runners/src/codex_runner.rs`) ships
+`CodexSpawnConfig`/`open_codex_session`/`CodexSession` over codex's JSON-RPC 2.0
+(newline-delimited) `app-server` transport, built on `ChildProcess` plus a shared
+`drive()` read/dispatch loop used both for RPC request/response roundtrips
+(`initialize`, `thread/start|resume`, `turn/start|steer`) and "read until the turn ends"
+— both need the same live notification dispatch interleaved with whatever they're
+specifically waiting for.
+**Architecture notes (documented in the module doc), not scope cuts:** because this
+session is turn-scoped where the TS source is session-scoped (B9a.2b's own architecture
+note applies here too), bootstrap (the whole `initialize`/`thread`/`turn` handshake) is
+deferred into the first `turn()` call — `open_codex_session` has no event sink to
+dispatch through yet, unlike claude's fire-and-forget opening write. A native
+`item/tool/requestUserInput` ends the read loop with `decision: Ask` (bypassing
+text-marker detection — a structured RPC request outranks a trailing marker), where TS
+just keeps its one session-spanning loop running and answers in place; the next
+`send_message()` answers the pending request via RPC instead of starting a new turn.
+Sub-agent child-thread turn lifecycle (#600) is filtered so a spawned skill's own
+`turn/completed` can't end the parent's turn, while its item events still render.
+`codexAskQuestions` reuses `coducktor_core::runs::ask::parse_ask_request` directly
+(B9a.2b.1) — one schema validates an ask regardless of which backend delivered it.
+**Scope cut:** same as B9a.2b — wiring a real `SessionFactory` into `coducktor-server` is
+deferred.
+**Accept, verified:** real subprocess tests run `packages/cezar/src/core/__fixtures__/
+codex/mock-codex-app-server.mjs` and the already-committed `stub-ignores-eof-exits-143.mjs`-
+shaped codex fixture via `node` — a first turn's full event stream
+(session/text/tool-call/tool-result/token-usage/turn-end) with per-turn (not cumulative)
+token usage read from the app-server's own `tokenUsage.last`, a failed turn settling as
+an error event rather than a hard `Err`, a native ask round-trip (request → park as
+Waiting/Ask → answered follow-up → turn completes), the #600 sub-agent thread-filtering
+fixture proving the parent's turn survives a child thread's full turn lifecycle, and
+`finish()`'s SIGTERM escalation against an app-server that ignores EOF. 8 new tests, 73
+total in `coducktor-runners`, full workspace test/clippy/fmt green (the one pre-existing
+`coducktor-client/tests/transport.rs` drift noted since B2 is untouched).
 
 ### [ ] B10 — `cezar-cli`
 **Ships:** `serve`, `run`, `init`, `usage`, `projects` subcommands. `-p/--port` and
