@@ -186,8 +186,6 @@ pub struct RunRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub generate_followups: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autonomous: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automation: Option<AutomationProvenance>,
@@ -589,13 +587,9 @@ pub struct CreateRunInputBase {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autonomous: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub generate_followups: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub images: Option<Vec<ImageInput>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub todo_id: Option<String>,
 }
 
 /// The refined create-run input has the same wire fields as its base schema.

@@ -150,8 +150,6 @@ pub struct Effective {
     pub has_git: bool,
     pub worktree_on: bool,
     pub autonomous_on: bool,
-    pub generate_followups_on: bool,
-    pub followups_toggle_shown: bool,
     pub base_branch: String,
     pub account: Option<String>,
     pub providers_ready: bool,
@@ -268,16 +266,6 @@ pub fn effective_values(draft: &NewTaskDraft, data: &NewTaskData) -> Effective {
         configured_worktree,
     );
 
-    let followups_toggle_shown = true;
-    let generate_followups_on = draft
-        .generate_followups
-        .or_else(|| {
-            data.ui_state
-                .as_ref()
-                .and_then(|state| state.last_generate_followups)
-        })
-        .unwrap_or(true);
-
     let base_branch = data
         .config
         .as_ref()
@@ -306,8 +294,6 @@ pub fn effective_values(draft: &NewTaskDraft, data: &NewTaskData) -> Effective {
         has_git,
         worktree_on,
         autonomous_on,
-        generate_followups_on,
-        followups_toggle_shown,
         base_branch,
         account,
     }
@@ -643,10 +629,8 @@ fn start_with_steps(app: &mut App, steps: Vec<coducktor_contract::WorkflowStepDe
         variants: None,
         worktree: None,
         autonomous: Some(effective.autonomous_on),
-        generate_followups: None,
         system_prompt: None,
         images: None,
-        todo_id: None,
     };
     app.new_task_ui.plan = None;
     finish_submit(app, project, input, &effective);
@@ -1046,7 +1030,6 @@ fn request_start(app: &mut App) {
         images,
         worktree: Some(effective.worktree_on),
         autonomous: effective.autonomous_on,
-        generate_followups: effective.generate_followups_on,
     };
     let input = new_task_form::build_create_run_body(&opts);
     let project = app.current_project().to_owned();
@@ -1077,9 +1060,6 @@ fn finish_submit(
             state.skill_usage.as_ref(),
             reference,
         ));
-    }
-    if effective.followups_toggle_shown {
-        state.last_generate_followups = Some(effective.generate_followups_on);
     }
     app.new_task_ui.data.ui_state = Some(state.clone());
     app.pending

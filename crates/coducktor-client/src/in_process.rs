@@ -35,19 +35,18 @@ use coducktor_contract::{
     ProjectsResponse, ProviderConnectionState, ProviderStatus, ProviderStatusResponse,
     QueuedMessagePatchInput, RUN_HISTORY_PAGE_ITEMS, ReclaimWorktreesResponse,
     RegisterProjectInput, RegisterProjectResponse, RemoveAgentProfileResponse,
-    RemoveProjectResponse, RemoveQueuedMessageResponse, RemoveTodoResponse, RemoveWorktreeResponse,
-    RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse,
-    RunCommit, RunCommitsResponse, RunEvent, RunHistoryContext, RunHistoryEvent, RunHistoryPage,
+    RemoveProjectResponse, RemoveQueuedMessageResponse, RemoveWorktreeResponse, RepoBranchRequest,
+    RepoBranchResponse, RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse, RunCommit,
+    RunCommitsResponse, RunEvent, RunHistoryContext, RunHistoryEvent, RunHistoryPage,
     RunIndexEntry, Runner, RunnerModelCatalogResponse, RunnerModelOption, RunnerSelection,
     RunsIndexResponse, SaveWorkflowInput, SaveWorkflowResponse, SelectAgentProfileInput,
     SetAgentConfigInput, SetConfigInput, SetWorkspaceConfigInput, SetWorkspaceUiStateInput, Skill,
-    StartTodoResponse, StatusEntry, TodoItem, UpdateAgentProfileInput, UpdateProjectInput,
-    UpdateProjectResponse, UserMcpListing, WorkflowStepDef, WorkflowsResponse,
-    WorkspaceConfigResponse, WorkspaceUiState, WorkspaceUsageResponse, WorktreeDirEntry,
-    WorktreeEntry, WorktreeEntryType, WorktreeInfo, WorktreeRunStatus, WorktreesResponse,
+    StatusEntry, UpdateAgentProfileInput, UpdateProjectInput, UpdateProjectResponse,
+    UserMcpListing, WorkflowStepDef, WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUiState,
+    WorkspaceUsageResponse, WorktreeDirEntry, WorktreeEntry, WorktreeEntryType, WorktreeInfo,
+    WorktreeRunStatus, WorktreesResponse,
 };
 use coducktor_core::config::load_config;
-use coducktor_core::handoff::followups_enabled;
 use coducktor_core::handoff::{append_handoff_heartbeat, handoff_progress_excerpt, read_handoff};
 use coducktor_core::paths::{
     ProcessEnv, agent_accounts_path, agent_home_paths, expand_tilde, is_absolute_config_dir,
@@ -58,7 +57,7 @@ use coducktor_core::workflows::load::{WORKFLOWS_DIR, load_workflows};
 use coducktor_core::workflows::run::{
     EventInput, RunManager, StartRunInput as CoreStartRunInput, review_gate_enabled,
 };
-use coducktor_core::workflows::types::{parse_workflow_file_doc, quick_task_workflow, steps_issue};
+use coducktor_core::workflows::types::{parse_workflow_file_doc, steps_issue};
 use coducktor_core::workspace::agent_accounts::{
     AgentAccount, has_control_chars, is_valid_account_id, merge_write_agent_accounts,
     supports_profiles,
@@ -270,7 +269,6 @@ impl InProcessEngine {
             runner: input.runner,
             agent_profile: input.agent_profile,
             system_prompt: input.system_prompt,
-            generate_followups: input.generate_followups,
             autonomous: input.autonomous,
             worktree: input.worktree,
         };
@@ -566,76 +564,6 @@ impl InProcessEngine {
         }
         std::fs::write(&path, serialized).map_err(io_err)?;
         Ok(Value::Object(current))
-    }
-
-    // ---- follow-up inbox --------------------------------------------------------------------
-
-    pub async fn todos(&self) -> Result<Vec<TodoItem>, EngineError> {
-        if !followups_enabled(&ProcessEnv) {
-            return Ok(Vec::new());
-        }
-        Ok(coducktor_core::todos::read_todos(&data_dir(
-            &self.repo_root,
-        )))
-    }
-
-    pub async fn delete_todo(&self, id: &str) -> Result<RemoveTodoResponse, EngineError> {
-        if !followups_enabled(&ProcessEnv) {
-            return Err(EngineError::Conflict {
-                reason: "the follow-up inbox is disabled — set DUCK_FOLLOWUPS=1 to enable it"
-                    .to_owned(),
-            });
-        }
-        let removed =
-            coducktor_core::todos::remove_todo(&data_dir(&self.repo_root), id).map_err(io_err)?;
-        if !removed {
-            return Err(EngineError::NotFound);
-        }
-        Ok(RemoveTodoResponse { removed: true })
-    }
-
-    /// Runs the todo's own suggested skill (or a bare quick-task) with its saved prompt.
-    /// The `Engine` trait intentionally exposes no runner/model override for this action, so
-    /// the saved todo workflow supplies those choices.
-    pub async fn start_todo(&self, id: &str) -> Result<StartTodoResponse, EngineError> {
-        if !followups_enabled(&ProcessEnv) {
-            return Err(EngineError::Conflict {
-                reason: "the follow-up inbox is disabled — set DUCK_FOLLOWUPS=1 to enable it"
-                    .to_owned(),
-            });
-        }
-        let data_dir = data_dir(&self.repo_root);
-        let todos = coducktor_core::todos::read_todos(&data_dir);
-        let todo = todos
-            .into_iter()
-            .find(|todo| todo.id == id)
-            .ok_or(EngineError::NotFound)?;
-        if todo.started_task_id.is_some() {
-            return Err(EngineError::Conflict {
-                reason: "already started".to_owned(),
-            });
-        }
-        let task = coducktor_core::todos::todo_task_text(
-            &todo.summary,
-            todo.suggested_prompt.as_deref(),
-            todo.suggested_args.as_deref(),
-        );
-        let workflow = todo_workflow(&self.repo_root, &todo);
-        let core_input = CoreStartRunInput {
-            task,
-            ..CoreStartRunInput::default()
-        };
-        let run = {
-            let mut manager = self.manager.lock().map_err(|_| lock_err())?;
-            manager.start_run(&workflow, core_input).map_err(io_err)?
-        };
-        match coducktor_core::todos::mark_started(&data_dir, id, &run.id) {
-            Ok(true) => Ok(StartTodoResponse { run }),
-            Ok(false) => Err(EngineError::Conflict {
-                reason: "already started".to_owned(),
-            }),
-            Err(error) => Err(io_err(error)),
-        }
     }
 
     // ---- workspace: projects ----------------------------------------------------------------
@@ -1053,7 +981,6 @@ impl InProcessEngine {
     pub fn subscribe(&self, topic: Topic) -> futures_core::stream::BoxStream<'static, EngineEvent> {
         let topic_str = match topic {
             Topic::Health => "health".to_owned(),
-            Topic::Todos => "todos".to_owned(),
             Topic::Run { id } => format!("run:{id}"),
             Topic::Named(topic) => topic,
         };
@@ -6265,33 +6192,6 @@ fn run_index_entry(project_id: &str, run: coducktor_contract::RunRecord) -> RunI
     }
 }
 
-fn todo_workflow(repo_root: &Path, todo: &TodoItem) -> coducktor_contract::WorkflowDef {
-    if let Some(skill_name) = todo.suggested_skill.as_deref() {
-        let skills = discover_skills(repo_root, &ProcessEnv);
-        if skills.iter().any(|skill| skill.name == skill_name) {
-            return coducktor_contract::WorkflowDef {
-                name: "(inbox)".to_owned(),
-                description: Some(format!("Follow-up from the inbox — skill \"{skill_name}\"")),
-                steps: vec![coducktor_contract::WorkflowStepDef {
-                    id: "task".to_owned(),
-                    name: Some("Do the task".to_owned()),
-                    prompt: Some("{{task}}".to_owned()),
-                    skill: Some(skill_name.to_owned()),
-                    model: None,
-                    runner: None,
-                    allowed_tools: None,
-                    bash_allowlist: None,
-                    command: None,
-                    on_fail: None,
-                }],
-                source: coducktor_contract::WorkflowSource::BuiltIn,
-                path: None,
-            };
-        }
-    }
-    quick_task_workflow()
-}
-
 fn boot_project_id(
     config: &coducktor_core::workspace::config::WorkspaceConfig,
     repo_root: &Path,
@@ -6416,9 +6316,7 @@ fn health_payload(repo_root: &Path, version: &str, probe_backends: bool) -> Heal
             reason: (!forge_available)
                 .then(|| "GitHub is unavailable for this repository".to_owned()),
         }),
-        capabilities: Capabilities {
-            followups: followups_enabled(&ProcessEnv),
-        },
+        capabilities: Capabilities {},
         projects: vec![HealthProject {
             id: "default".to_owned(),
             name: repo_root
@@ -6627,10 +6525,8 @@ mod tests {
             variants: None,
             worktree: Some(false),
             autonomous: None,
-            generate_followups: None,
             system_prompt: None,
             images: None,
-            todo_id: None,
         }
     }
 
@@ -6815,21 +6711,6 @@ mod tests {
         );
 
         assert_eq!(engine.ui_state().await.unwrap(), merged_again);
-    }
-
-    #[tokio::test]
-    async fn todos_are_empty_when_followups_are_disabled() {
-        let dir = TempDir::new().unwrap();
-        let engine = engine(&dir);
-        // DUCK_FOLLOWUPS is unset in the test process by default.
-        assert!(engine.todos().await.unwrap().is_empty());
-        assert_eq!(
-            engine.delete_todo("anything").await,
-            Err(EngineError::Conflict {
-                reason: "the follow-up inbox is disabled — set DUCK_FOLLOWUPS=1 to enable it"
-                    .to_owned()
-            })
-        );
     }
 
     #[tokio::test]

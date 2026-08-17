@@ -219,15 +219,7 @@ pub fn init_command(repo_root: &Path) {
 
 /// Keep run data out of the user's repo history; workflows and skills stay committable.
 fn ensure_data_gitignore(repo_root: &Path) {
-    const WANTED: &[&str] = &[
-        "runs.json",
-        "runs.json.tmp",
-        "runs/",
-        "worktrees/",
-        "tmp/",
-        "todos.json",
-        "todos.json.tmp",
-    ];
+    const WANTED: &[&str] = &["runs.json", "runs.json.tmp", "runs/", "worktrees/", "tmp/"];
     let dir = repo_root.join(".ai/coducktor");
     let path = dir.join(".gitignore");
     if std::fs::create_dir_all(&dir).is_err() {
@@ -510,7 +502,7 @@ mod tests {
 
         let gitignore =
             std::fs::read_to_string(repo.path().join(".ai/coducktor/.gitignore")).unwrap();
-        for wanted in ["runs.json", "worktrees/", "todos.json"] {
+        for wanted in ["runs.json", "worktrees/"] {
             assert!(gitignore.contains(wanted), "gitignore missing {wanted:?}");
         }
 

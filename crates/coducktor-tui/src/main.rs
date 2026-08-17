@@ -825,39 +825,6 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
                     Err(error) => app.notice = Some(format!("start failed: {error}")),
                 }
             }
-            PendingAction::LoadInbox { project } => {
-                let scope = Scope::Project(project.clone());
-                match engine.health().await {
-                    Ok(health) => {
-                        app.inbox_ui.followups_enabled = Some(health.capabilities.followups);
-                    }
-                    Err(error) => app.notice = Some(format!("load health failed: {error}")),
-                }
-                match engine.todos(&scope).await {
-                    Ok(todos) => app.inbox_ui.todos = Some(todos),
-                    Err(error) => app.notice = Some(format!("load inbox failed: {error}")),
-                }
-            }
-            PendingAction::StartTodo { project, id } => {
-                let scope = Scope::Project(project.clone());
-                match engine.start_todo(&scope, &id).await {
-                    Ok(_) => {
-                        app.notice = Some("todo started — see Tasks".to_owned());
-                        refresh_tasks(engine, app, &project).await;
-                        app.pending.push(PendingAction::LoadInbox { project });
-                    }
-                    Err(error) => app.notice = Some(format!("start failed: {error}")),
-                }
-            }
-            PendingAction::DismissTodo { project, id } => {
-                let scope = Scope::Project(project.clone());
-                match engine.delete_todo(&scope, &id).await {
-                    Ok(_) => {
-                        app.pending.push(PendingAction::LoadInbox { project });
-                    }
-                    Err(error) => app.notice = Some(format!("dismiss failed: {error}")),
-                }
-            }
             PendingAction::LoadSkills { project } => {
                 let scope = Scope::Project(project.clone());
                 match engine.skills(&scope).await {

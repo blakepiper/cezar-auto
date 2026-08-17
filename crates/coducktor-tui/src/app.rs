@@ -24,7 +24,6 @@ const SIDEBAR_MAX_WIDTH: u16 = 44;
 pub enum NavItem {
     NewTask,
     Tasks,
-    Inbox,
     Ide,
     RepoGit,
     Github,
@@ -34,10 +33,9 @@ pub enum NavItem {
 }
 
 impl NavItem {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 8] = [
         Self::NewTask,
         Self::Tasks,
-        Self::Inbox,
         Self::Ide,
         Self::RepoGit,
         Self::Github,
@@ -50,7 +48,6 @@ impl NavItem {
         match self {
             Self::NewTask => "New task",
             Self::Tasks => "Tasks",
-            Self::Inbox => "Inbox",
             Self::Ide => "IDE",
             Self::RepoGit => "Git",
             Self::Github => "GitHub",
@@ -64,7 +61,6 @@ impl NavItem {
         match self {
             Self::NewTask => "new",
             Self::Tasks => "tasks",
-            Self::Inbox => "inbox",
             Self::Ide => "ide",
             Self::RepoGit => "repo-git",
             Self::Github => "github",
@@ -78,7 +74,6 @@ impl NavItem {
         match segment {
             "new" | "new-task" => Some(Self::NewTask),
             "tasks" => Some(Self::Tasks),
-            "inbox" => Some(Self::Inbox),
             "ide" => Some(Self::Ide),
             "git" | "repo-git" => Some(Self::RepoGit),
             "github" => Some(Self::Github),
@@ -97,10 +92,9 @@ enum SidebarItem {
     GlobalSettings,
 }
 
-const SIDEBAR_ITEMS: [SidebarItem; 11] = [
+const SIDEBAR_ITEMS: [SidebarItem; 10] = [
     SidebarItem::Project(NavItem::NewTask),
     SidebarItem::Project(NavItem::Tasks),
-    SidebarItem::Project(NavItem::Inbox),
     SidebarItem::Project(NavItem::Ide),
     SidebarItem::Project(NavItem::RepoGit),
     SidebarItem::Project(NavItem::Github),
@@ -194,9 +188,6 @@ pub enum Route {
     Skills {
         project: String,
     },
-    Inbox {
-        project: String,
-    },
     Workflows {
         project: String,
     },
@@ -261,7 +252,6 @@ impl Route {
                 Some("ide") => Some(Self::Ide { project }),
                 Some("github") => Some(Self::Github { project }),
                 Some("skills") => Some(Self::Skills { project }),
-                Some("inbox") => Some(Self::Inbox { project }),
                 Some("workflows") => Some(Self::Workflows { project }),
                 Some("git" | "repo-git") => {
                     let tab = parts
@@ -298,7 +288,6 @@ impl Route {
             Self::Ide { project } => format!("/p/{project}/ide"),
             Self::Github { project } => format!("/p/{project}/github"),
             Self::Skills { project } => format!("/p/{project}/skills"),
-            Self::Inbox { project } => format!("/p/{project}/inbox"),
             Self::Workflows { project } => format!("/p/{project}/workflows"),
             Self::RepoGit { project, tab } => {
                 format!("/p/{project}/repo-git/{}", tab.path_segment())
@@ -322,7 +311,6 @@ impl Route {
             Self::Ide { .. } => "IDE",
             Self::Github { .. } => "GITHUB",
             Self::Skills { .. } => "SKILLS",
-            Self::Inbox { .. } => "INBOX",
             Self::Workflows { .. } => "WORKFLOWS",
             Self::RepoGit { .. } => "REPO GIT",
             Self::Compare { .. } => "COMPARE",
@@ -340,7 +328,6 @@ impl Route {
             | Self::Ide { project }
             | Self::Github { project }
             | Self::Skills { project }
-            | Self::Inbox { project }
             | Self::Workflows { project }
             | Self::RepoGit { project, .. }
             | Self::Compare { project, .. }
@@ -496,10 +483,6 @@ pub enum WorkspaceEvent {
     RunDeleted {
         project: String,
         id: String,
-    },
-    Todos {
-        project: String,
-        count: usize,
     },
     Usage {
         project: String,
@@ -742,18 +725,6 @@ pub enum PendingAction {
         project: String,
         input: coducktor_contract::CreateRunInput,
     },
-    /// Load the Inbox's capability status and follow-ups.
-    LoadInbox {
-        project: String,
-    },
-    StartTodo {
-        project: String,
-        id: String,
-    },
-    DismissTodo {
-        project: String,
-        id: String,
-    },
     LoadSkills {
         project: String,
     },
@@ -897,7 +868,6 @@ pub struct App {
     pub default_project: String,
     pub projects: Vec<ProjectEntry>,
     quick_tasks: Vec<QuickTask>,
-    todo_counts: BTreeMap<String, usize>,
     pub task_filter: TaskFilter,
     sidebar_width: u16,
     sidebar_collapsed: bool,
@@ -923,7 +893,6 @@ pub struct App {
     pub ide_ui: crate::screens::ide::IdeUi,
     pub github_ui: crate::screens::github::GithubUi,
     pub skills_ui: crate::screens::skills::SkillsUi,
-    pub inbox_ui: crate::screens::inbox::InboxUi,
     pub workflows_ui: crate::screens::workflows::WorkflowsUi,
     pub settings_ui: crate::screens::settings::SettingsUi,
     pub palette: crate::overlay::Palette,
@@ -969,7 +938,6 @@ impl App {
                 collapsed: false,
             }],
             quick_tasks: Vec::new(),
-            todo_counts: BTreeMap::new(),
             task_filter: TaskFilter::Active,
             sidebar_width: SIDEBAR_DEFAULT_WIDTH,
             sidebar_collapsed: false,
@@ -993,7 +961,6 @@ impl App {
             ide_ui: crate::screens::ide::IdeUi::default(),
             github_ui: crate::screens::github::GithubUi::default(),
             skills_ui: crate::screens::skills::SkillsUi::default(),
-            inbox_ui: crate::screens::inbox::InboxUi::default(),
             workflows_ui: crate::screens::workflows::WorkflowsUi::default(),
             settings_ui: crate::screens::settings::SettingsUi::default(),
             palette: crate::overlay::Palette::default(),
@@ -1205,9 +1172,6 @@ impl App {
                     .retain(|task| task.project != project || task.id != id);
                 self.tasks.retain(|run| run.record.id != id);
             }
-            WorkspaceEvent::Todos { project, count } => {
-                self.todo_counts.insert(project, count);
-            }
             WorkspaceEvent::Usage { project, usage } => {
                 if project == self.current_project() {
                     for (id, sample) in usage {
@@ -1249,10 +1213,6 @@ impl App {
             .iter()
             .filter(|task| !task.archived && task.group() == TaskGroup::NeedsYou)
             .count()
-    }
-
-    pub fn inbox_count(&self) -> usize {
-        self.todo_counts.values().sum()
     }
 
     pub fn sidebar_width(&self) -> u16 {
@@ -1392,17 +1352,7 @@ impl App {
                     ),
                     Some(HitAction::Tasks),
                 ));
-                rows.push((
-                    sidebar_nav_line(
-                        "Inbox",
-                        Some(self.inbox_count()),
-                        self.route_is(NavItem::Inbox),
-                        self.sidebar_item_focused(NavItem::Inbox),
-                        self.nav_style(self.route_is(NavItem::Inbox)),
-                    ),
-                    Some(HitAction::Inbox),
-                ));
-                for nav in NavItem::ALL.into_iter().skip(3) {
+                for nav in NavItem::ALL.into_iter().skip(2) {
                     rows.push((
                         sidebar_nav_line(
                             nav.label(),
@@ -1550,10 +1500,6 @@ impl App {
             }
             Route::Skills { .. } => {
                 crate::screens::skills::render(frame, area, self);
-                return;
-            }
-            Route::Inbox { .. } => {
-                crate::screens::inbox::render(frame, area, self);
                 return;
             }
             Route::Workflows { .. } => {
@@ -1910,7 +1856,6 @@ impl App {
             Route::Ide { .. } if crate::screens::ide::handle_key(self, key) => return,
             Route::Github { .. } if crate::screens::github::handle_key(self, key) => return,
             Route::Skills { .. } if crate::screens::skills::handle_key(self, key) => return,
-            Route::Inbox { .. } if crate::screens::inbox::handle_key(self, key) => return,
             Route::Workflows { .. } if crate::screens::workflows::handle_key(self, key) => return,
             Route::RepoGit { .. } if crate::screens::repo_git::handle_key(self, key) => return,
             Route::Compare { .. } if crate::screens::compare::handle_key(self, key) => return,
@@ -2056,7 +2001,6 @@ impl App {
                 self.pending.push(PendingAction::RefreshIndex);
             }
             ActionId::NewTask => self.navigate(NavItem::NewTask),
-            ActionId::Inbox => self.navigate(NavItem::Inbox),
             ActionId::Ide => self.navigate(NavItem::Ide),
             ActionId::RepoGit => self.navigate(NavItem::RepoGit),
             ActionId::Github => self.navigate(NavItem::Github),
@@ -2090,7 +2034,6 @@ impl App {
             }
             HitAction::GlobalSettings => crate::screens::settings::open_global(self),
             HitAction::NewTask => self.navigate(NavItem::NewTask),
-            HitAction::Inbox => self.navigate(NavItem::Inbox),
             HitAction::Ide => self.navigate(NavItem::Ide),
             HitAction::RepoGit => self.navigate(NavItem::RepoGit),
             HitAction::Github => self.navigate(NavItem::Github),
@@ -2180,11 +2123,6 @@ impl App {
                     crate::screens::github::apply_hit(self, action);
                 }
             }
-            HitAction::InboxSelect(index) => {
-                if matches!(self.route(), Route::Inbox { .. }) {
-                    self.inbox_ui.selected = index;
-                }
-            }
             HitAction::SkillsScreen(index) => {
                 if matches!(self.route(), Route::Skills { .. }) {
                     self.skills_ui.selected = index;
@@ -2254,7 +2192,6 @@ impl App {
             NavItem::Ide => crate::screens::ide::open(self, &project),
             NavItem::Github => crate::screens::github::open(self, &project),
             NavItem::Skills => crate::screens::skills::open(self, &project),
-            NavItem::Inbox => crate::screens::inbox::open(self, &project),
             NavItem::Workflows => crate::screens::workflows::open(self, &project),
             NavItem::RepoGit => {
                 self.request_navigate(Route::RepoGit {
@@ -2313,7 +2250,6 @@ impl App {
             || (nav == NavItem::Ide && matches!(self.route(), Route::Ide { .. }))
             || (nav == NavItem::Github && matches!(self.route(), Route::Github { .. }))
             || (nav == NavItem::Skills && matches!(self.route(), Route::Skills { .. }))
-            || (nav == NavItem::Inbox && matches!(self.route(), Route::Inbox { .. }))
             || (nav == NavItem::Workflows && matches!(self.route(), Route::Workflows { .. }))
             || (nav == NavItem::RepoGit && matches!(self.route(), Route::RepoGit { .. }))
             || (nav == NavItem::Settings && matches!(self.route(), Route::Settings { .. }))
@@ -2455,7 +2391,6 @@ fn nav_hit_action(nav: NavItem) -> HitAction {
     match nav {
         NavItem::NewTask => HitAction::NewTask,
         NavItem::Tasks => HitAction::Tasks,
-        NavItem::Inbox => HitAction::Inbox,
         NavItem::Ide => HitAction::Ide,
         NavItem::RepoGit => HitAction::RepoGit,
         NavItem::Github => HitAction::Github,
@@ -2702,7 +2637,6 @@ impl UppercaseTitle for NavItem {
         match self {
             Self::NewTask => "NEW TASK",
             Self::Tasks => "TASKS",
-            Self::Inbox => "INBOX",
             Self::Ide => "IDE",
             Self::RepoGit => "GIT",
             Self::Github => "GITHUB",
@@ -2812,12 +2746,7 @@ mod tests {
             RunStatus::Running,
             None,
         ));
-        app.apply_workspace_event(WorkspaceEvent::Todos {
-            project: "main".to_owned(),
-            count: 3,
-        });
         assert_eq!(app.running_count(), 1);
-        assert_eq!(app.inbox_count(), 3);
 
         app.apply_workspace_event(run_event(
             "main",
@@ -2923,7 +2852,7 @@ mod tests {
             KeyModifiers::NONE,
         )));
 
-        assert!(matches!(app.route(), Route::Inbox { project } if project == "main"));
+        assert!(matches!(app.route(), Route::Ide { project } if project == "main"));
     }
 
     #[test]
@@ -2953,7 +2882,6 @@ mod tests {
             KeyModifiers::CONTROL,
         )));
         app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
-        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
         app.handle_event(Event::Key(KeyEvent::new(
             KeyCode::Enter,
             KeyModifiers::NONE,
@@ -2977,7 +2905,7 @@ mod tests {
             KeyCode::Left,
             KeyModifiers::CONTROL,
         )));
-        for _ in 0..9 {
+        for _ in 0..8 {
             app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
         }
         app.handle_event(Event::Key(KeyEvent::new(

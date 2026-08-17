@@ -16,7 +16,6 @@ user bindings are merged over these defaults, key by key.
 | `t` | Jump to Tasks |
 | `g` | Jump to global (cross-project) Tasks |
 | `c` | New task |
-| `i` | Inbox |
 | `Ctrl+B` | Toggle sidebar |
 | `Ctrl+Left` | Focus the left navigation panel; `j`/`k` or `Up`/`Down` move, `Enter` opens, `Esc` returns |
 
@@ -185,15 +184,6 @@ Sort picker: `j`/`k`/`Down`/`Up` to move, `Enter` to apply, `Esc` to cancel.
 | `/` | Filter |
 | `j`/`Down`, `k`/`Up` | Move selection |
 | `Esc` | Close filter / back |
-
-### Inbox (`screens/inbox.rs`)
-
-| Key | Action |
-|---|---|
-| `j`/`Down`, `k`/`Up` | Move selection |
-| `Enter` | Start the todo's suggested task |
-| `x` / `Delete` | Dismiss |
-| `Esc` | Back |
 
 ### Settings (`screens/settings/mod.rs`)
 

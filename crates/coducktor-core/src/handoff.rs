@@ -9,7 +9,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::paths::EnvSource;
 use crate::time::now_iso8601;
 
 pub fn handoff_path(data_dir: &Path, run_id: &str) -> PathBuf {
@@ -115,23 +114,8 @@ pub fn delete_handoff(data_dir: &Path, run_id: &str) {
     let _ = fs::remove_file(handoff_path(data_dir, run_id)); // best effort
 }
 
-/// Is the global follow-up inbox on? (#471)
-///
-/// Opt-in, off by default: agents kept hanging on stale, pre-saved follow-ups, which made
-/// skill behavior unpredictable. This is the single source of truth — `resolveCapabilities`
-/// reports it to the UI and `RunManager` enforces it on every run.
-///
-/// `DUCK_FOLLOWUPS` — the TUI's own Inbox screen tells the user to set this. An exact `"1"`
-/// opts in — the house spelling.
-///
-pub fn followups_enabled(env: &dyn EnvSource) -> bool {
-    env.get("DUCK_FOLLOWUPS").as_deref() == Some("1")
-}
-
 /// Appended to every agent step's `--append-system-prompt`. The matching
-/// handoff/task env vars are set on every agent process; `DUCK_TODOS_FILE` carries a usable
-/// path only when follow-up generation is enabled (#444, #471) — opted-out runs get it
-/// empty, never absent, so an inherited value from a parent coducktor cannot shine through.
+/// handoff/task env vars are set on every agent process.
 pub const HANDOFF_ONLY_INSTRUCTIONS: &str = "## Handoff (coducktor)
 
 DUCK_HANDOFF_FILE (env) is the absolute path to this task's rolling handoff file. Treat it like a HANDOFF.md:
@@ -150,22 +134,9 @@ Task reference markers: as soon as you know which GitHub pull request or issue t
 ## Pasted attachments
 User-pasted screenshots/files are saved as real files; their absolute paths are listed in the message that carries them. Use those paths when a task needs the file itself (saving, uploading, attaching to issues/PRs); the inline image is for viewing only.";
 
-pub const FOLLOWUP_INSTRUCTIONS: &str = "## Follow-ups (coducktor)
-
-DUCK_TODOS_FILE (env) is the absolute path to the user's follow-up inbox — a JSON array. Only append an entry when a genuinely actionable follow-up remains: something concrete a human or the next agent still needs to decide or do (a review nit worth a dedicated pass, a manual step you cannot take yourself, a decision blocked on the user, a known next task). Do NOT append filler — a restated summary of what you just finished, a congratulatory note, or \"no further action needed\" is not a follow-up; when the task is simply done, skip this file entirely. When (and only when) a real follow-up exists, read the file (treat a missing file as []), append ONE object and write the whole array back:
-{ \"ts\": \"<ISO 8601>\", \"taskId\": \"<value of DUCK_TASK_ID>\", \"summary\": \"<one sentence: the concrete next action, not a status report>\", \"action\": \"<imperative user action, optional>\", \"prUrl\": \"<optional>\", \"suggestedSkill\": \"<optional skill name for the follow-up>\", \"suggestedArgs\": \"<optional>\", \"suggestedPrompt\": \"<optional freeform prompt for the follow-up task>\", \"runnable\": <true when an agent can execute this follow-up, false when it is a note> }
-Set \"runnable\": false for anything a human must do or merely read — manual QA, \"remember to…\", informational notes — and leave out suggestedSkill/suggestedPrompt for those; the inbox then offers \"Acknowledge\" instead of \"Run\". Set \"runnable\": true only when suggestedSkill or suggestedPrompt says what to actually execute.
-Never modify or remove existing entries — append only.";
-
-/// Default-on combined contract retained for old callers and runs.
-pub fn handoff_instructions() -> String {
-    format!("{HANDOFF_ONLY_INSTRUCTIONS}\n\n{FOLLOWUP_INSTRUCTIONS}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::paths::test_env::FixedEnv;
 
     #[test]
     fn seed_is_idempotent_and_never_overwrites_an_existing_file() {
@@ -246,46 +217,5 @@ mod tests {
         delete_handoff(dir.path(), "r1");
         assert!(!path.exists());
         delete_handoff(dir.path(), "r1"); // no-op
-    }
-
-    #[test]
-    fn followups_enabled_requires_an_exact_duck_followups_of_one() {
-        let none = FixedEnv::new(&[]);
-        assert!(!followups_enabled(&none));
-
-        let off = FixedEnv::new(&[("DUCK_FOLLOWUPS", "0")]);
-        assert!(!followups_enabled(&off));
-
-        let on = FixedEnv::new(&[("DUCK_FOLLOWUPS", "1")]);
-        assert!(followups_enabled(&on));
-    }
-
-    #[test]
-    fn handoff_instructions_documents_every_agent_writable_todo_field() {
-        // HANDOFF_INSTRUCTIONS is the only thing that tells an
-        // agent what to append to todos.json, so a field can be added to the schema and
-        // still never be written by anyone.
-        let server_managed = ["id", "startedTaskId"];
-        let combined = handoff_instructions();
-        for field in [
-            "ts",
-            "taskId",
-            "summary",
-            "action",
-            "prUrl",
-            "suggestedSkill",
-            "suggestedArgs",
-            "suggestedPrompt",
-            "runnable",
-        ] {
-            assert!(!server_managed.contains(&field));
-            assert!(
-                combined.contains(&format!("\"{field}\"")),
-                "missing {field} in HANDOFF_INSTRUCTIONS"
-            );
-        }
-        assert!(combined.contains("\"runnable\": false"));
-        assert!(combined.contains("\"runnable\": true"));
-        assert!(combined.contains("Acknowledge"));
     }
 }

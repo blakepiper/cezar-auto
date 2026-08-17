@@ -143,7 +143,6 @@ The global keymap is intentionally small:
 | `c` | New task |
 | `t` | Project tasks |
 | `g` | All tasks across registered projects |
-| `i` | Follow-up inbox |
 | `Ctrl+K` | Command palette |
 | `?` | Contextual help |
 | `:` | Command line |
@@ -314,7 +313,7 @@ automatically.
 ## Local state and optional capabilities
 
 Per-project data lives under `.ai/coducktor/`, including configuration, run records, normalized event
-history, UI state, workflows, skills, follow-ups, and managed worktrees. Runtime files are ignored
+history, UI state, workflows, skills, and managed worktrees. Runtime files are ignored
 by the `.ai/coducktor/.gitignore` created by `duck init`; workflows and skills can be committed to
 share them with a project.
 
@@ -330,8 +329,6 @@ treated as a degraded capability rather than a reason to prevent startup.
 The following features are opt-in or limited in this build:
 
 - Intelligent context refresh is disabled by default and can be enabled in Settings -> Resources.
-- The follow-up Inbox is disabled by default. Start Coducktor with `DUCK_FOLLOWUPS=1` to ask agents
-  to leave actionable follow-ups in `.ai/coducktor/todos.json`.
 - Provider quota dashboards and the `usage` command are not implemented. Run-local usage remains
   available when the backend reports it.
 - Coducktor itself opens no listening socket and no browser. OpenCode may start its own short-lived

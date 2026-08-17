@@ -112,7 +112,6 @@ pub struct CreateRunInput {
     pub requested_runner: Option<RunnerSelection>,
     pub agent_profile: Option<String>,
     pub system_prompt: Option<String>,
-    pub generate_followups: Option<bool>,
     pub autonomous: Option<bool>,
     pub worktree: Option<bool>,
     pub group_id: Option<String>,
@@ -430,7 +429,6 @@ pub struct StartRunInput {
     pub runner: Option<RunnerSelection>,
     pub agent_profile: Option<String>,
     pub system_prompt: Option<String>,
-    pub generate_followups: Option<bool>,
     pub autonomous: Option<bool>,
     pub worktree: Option<bool>,
 }
@@ -883,7 +881,6 @@ impl RunManager {
             requested_runner: input.requested_runner,
             agent_profile: input.agent_profile,
             system_prompt: input.system_prompt,
-            generate_followups: input.generate_followups,
             autonomous: input.autonomous,
             worktree: input.worktree,
             group_id: input.group_id,
@@ -927,7 +924,6 @@ impl RunManager {
         create.requested_runner = input.runner;
         create.agent_profile = input.agent_profile;
         create.system_prompt = input.system_prompt;
-        create.generate_followups = input.generate_followups;
         create.autonomous = input.autonomous;
         create.worktree = input.worktree;
         let run = self.create_run(create)?;
@@ -966,7 +962,6 @@ impl RunManager {
             create.requested_runner = variant_input.runner;
             create.agent_profile = variant_input.agent_profile;
             create.system_prompt = variant_input.system_prompt;
-            create.generate_followups = variant_input.generate_followups;
             create.autonomous = variant_input.autonomous;
             create.worktree = (!variant.isolated).then_some(false);
             create.group_id = Some(group_id.clone());

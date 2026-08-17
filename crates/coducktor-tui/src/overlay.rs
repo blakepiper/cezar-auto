@@ -36,10 +36,9 @@ pub struct Palette {
     matcher: Matcher,
 }
 
-const VIEWS: [(NavItem, &str); 9] = [
+const VIEWS: [(NavItem, &str); 8] = [
     (NavItem::NewTask, "New task"),
     (NavItem::Tasks, "Tasks"),
-    (NavItem::Inbox, "Inbox"),
     (NavItem::Ide, "IDE"),
     (NavItem::RepoGit, "Repo git"),
     (NavItem::Github, "GitHub"),

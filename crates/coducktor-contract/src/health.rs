@@ -76,9 +76,7 @@ pub enum ForgeKind {
 /// `Capabilities` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Capabilities {
-    pub followups: bool,
-}
+pub struct Capabilities {}
 
 /// A health response.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

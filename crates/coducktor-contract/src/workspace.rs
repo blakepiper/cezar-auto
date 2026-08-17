@@ -359,8 +359,6 @@ pub struct UiState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_autonomous: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_generate_followups: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_usage: Option<BTreeMap<String, f64>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runs_view: Option<RunsView>,

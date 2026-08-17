@@ -3,8 +3,6 @@ use std::fmt;
 use serde::de::{Error, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::runs::RunRecord;
-
 /// Skill source, without introducing the legacy product spelling into new Rust identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillSource {
@@ -97,42 +95,4 @@ pub struct ImportableSkill {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-}
-
-/// `TodoItem` contract shape.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TodoItem {
-    pub id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ts: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<String>,
-    pub summary: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub action: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pr_url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub suggested_skill: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub suggested_args: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub suggested_prompt: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runnable: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub started_task_id: Option<String>,
-}
-
-/// `RemoveTodoResponse` contract shape.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RemoveTodoResponse {
-    pub removed: bool,
-}
-
-/// `StartTodoResponse` contract shape.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct StartTodoResponse {
-    pub run: RunRecord,
 }

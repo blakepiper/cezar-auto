@@ -15,14 +15,13 @@ use coducktor_contract::{
     PickVariantResponse, PlanResponse, ProjectsResponse, ProviderStatusResponse,
     QueuedMessagePatchInput, ReclaimWorktreesResponse, RegisterProjectInput,
     RegisterProjectResponse, RemoveAgentProfileResponse, RemoveProjectResponse,
-    RemoveQueuedMessageResponse, RemoveTodoResponse, RemoveWorktreeResponse, RepoBranchRequest,
-    RepoBranchResponse, RepoCommitPayload, RepoResponse, RunCommitsResponse, RunHistoryContext,
-    RunHistoryPage, Runner, RunnerModelCatalogResponse, RunsIndexResponse, SaveWorkflowInput,
-    SaveWorkflowResponse, SelectAgentProfileInput, SetAgentConfigInput, SetConfigInput,
-    SetWorkspaceConfigInput, SetWorkspaceUiStateInput, Skill, StartTodoResponse, TodoItem, UiState,
-    UpdateAgentProfileInput, UpdateProjectInput, UpdateProjectResponse, WorkflowsResponse,
-    WorkspaceConfigResponse, WorkspaceUiState, WorkspaceUsageResponse, WorktreeEntry,
-    WorktreesResponse,
+    RemoveQueuedMessageResponse, RemoveWorktreeResponse, RepoBranchRequest, RepoBranchResponse,
+    RepoCommitPayload, RepoResponse, RunCommitsResponse, RunHistoryContext, RunHistoryPage, Runner,
+    RunnerModelCatalogResponse, RunsIndexResponse, SaveWorkflowInput, SaveWorkflowResponse,
+    SelectAgentProfileInput, SetAgentConfigInput, SetConfigInput, SetWorkspaceConfigInput,
+    SetWorkspaceUiStateInput, Skill, UiState, UpdateAgentProfileInput, UpdateProjectInput,
+    UpdateProjectResponse, WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUiState,
+    WorkspaceUsageResponse, WorktreeEntry, WorktreesResponse,
 };
 use futures_core::stream::BoxStream;
 use serde_json::Value;
@@ -39,7 +38,6 @@ pub type StartRunInput = CreateRunInput;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Topic {
     Health,
-    Todos,
     Run { id: String },
     Named(String),
 }
@@ -131,13 +129,6 @@ pub trait Engine: Send + Sync {
         scope: &Scope,
         number: u64,
     ) -> Result<GithubPrChangesData, EngineError>;
-
-    // ---- follow-up inbox -------------------------------------------------------------------
-    async fn todos(&self, scope: &Scope) -> Result<Vec<TodoItem>, EngineError>;
-    async fn delete_todo(&self, scope: &Scope, id: &str)
-    -> Result<RemoveTodoResponse, EngineError>;
-    /// Start the todo's suggested task.
-    async fn start_todo(&self, scope: &Scope, id: &str) -> Result<StartTodoResponse, EngineError>;
 
     // ---- workflow builder writes -----------------------------------------------------------
     async fn save_workflow(
@@ -561,22 +552,6 @@ impl Engine for InProcessEngine {
         number: u64,
     ) -> Result<GithubPrChangesData, EngineError> {
         InProcessEngine::github_pr_changes(self, number).await
-    }
-
-    async fn todos(&self, _scope: &Scope) -> Result<Vec<TodoItem>, EngineError> {
-        InProcessEngine::todos(self).await
-    }
-
-    async fn delete_todo(
-        &self,
-        _scope: &Scope,
-        id: &str,
-    ) -> Result<RemoveTodoResponse, EngineError> {
-        InProcessEngine::delete_todo(self, id).await
-    }
-
-    async fn start_todo(&self, _scope: &Scope, id: &str) -> Result<StartTodoResponse, EngineError> {
-        InProcessEngine::start_todo(self, id).await
     }
 
     async fn save_workflow(

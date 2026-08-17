@@ -404,7 +404,6 @@ pub struct CreateRunBodyOpts {
     /// Resolved worktree flag: `false` → run in the repo working tree (single runs only).
     pub worktree: Option<bool>,
     pub autonomous: bool,
-    pub generate_followups: bool,
 }
 
 fn task_step(id: &str, name: &str, skill: Option<&str>) -> WorkflowStepDef {
@@ -456,14 +455,12 @@ pub fn build_create_run_body(opts: &CreateRunBodyOpts) -> CreateRunInput {
             _ => None,
         },
         autonomous: opts.autonomous.then_some(true),
-        generate_followups: (!opts.generate_followups).then_some(false),
         system_prompt: None,
         images: if opts.images.is_empty() {
             None
         } else {
             Some(opts.images.clone())
         },
-        todo_id: None,
     }
 }
 
@@ -555,7 +552,6 @@ pub struct NewTaskDraft {
     pub worktree: Option<bool>,
     /// TUI-only override: pin autonomous on/off; `None` follows the workspace default.
     pub autonomous: Option<bool>,
-    pub generate_followups: Option<bool>,
 }
 
 impl Default for NewTaskDraft {
@@ -570,7 +566,6 @@ impl Default for NewTaskDraft {
             variants: 1,
             worktree: None,
             autonomous: None,
-            generate_followups: None,
         }
     }
 }
@@ -843,7 +838,6 @@ mod tests {
             images: Vec::new(),
             worktree: None,
             autonomous: false,
-            generate_followups: true,
         }
     }
 
@@ -931,15 +925,6 @@ mod tests {
         opts.worktree = Some(false);
         opts.variants = 2;
         assert!(build_create_run_body(&opts).worktree.is_none());
-    }
-
-    #[test]
-    fn generate_followups_false_is_sent_only_when_disabled() {
-        let mut opts = base_opts();
-        opts.generate_followups = false;
-        assert_eq!(build_create_run_body(&opts).generate_followups, Some(false));
-        opts.generate_followups = true;
-        assert!(build_create_run_body(&opts).generate_followups.is_none());
     }
 
     #[test]

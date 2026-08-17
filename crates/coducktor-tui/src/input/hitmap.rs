@@ -86,7 +86,6 @@ pub enum HitAction {
     Tasks,
     GlobalTasks,
     NewTask,
-    Inbox,
     Ide,
     RepoGit,
     Github,
@@ -128,8 +127,6 @@ pub enum HitAction {
     IdeScreen(IdeAction),
     /// A GitHub screen control — routed by the screen.
     GithubScreen(GithubAction),
-    /// An inbox row — click to select.
-    InboxSelect(usize),
     /// A skills row — click to select.
     SkillsScreen(usize),
     /// A workflows tab — click to select.

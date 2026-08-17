@@ -209,10 +209,10 @@ pub fn format_diff(stat: Option<&DiffStat>) -> String {
     }
 }
 
-/// The workflow cell's text: a `(planned)`/`(inbox)` chain reads as its first
+/// The workflow cell's text: a `(planned)` chain reads as its first
 /// agent step's name.
 pub fn workflow_label(run: &ApiRun) -> String {
-    if (run.record.workflow == "(planned)" || run.record.workflow == "(inbox)")
+    if run.record.workflow == "(planned)"
         && let Some(step) = run
             .record
             .steps
