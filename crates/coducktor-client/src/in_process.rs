@@ -38,16 +38,16 @@ use coducktor_contract::{
     DeleteRunResponse, DeleteWorkflowResponse, EmptyRepoResponse, FinishResponse, ForgeInfo,
     ForgeKind, HealthProject, HealthResponse, IdeDirectoryResponse, IdeEntry, IdeEntryType,
     IdeFileResponse, LogEntry, MarkAllReadResponse, OpenAgentAccountFileInput,
-    OpenAgentAccountFileResponse, ParsedWorkflow, PatchRunInput, PresentRepoResponse,
-    ProjectListEntry, ProjectSource, ProjectStatus, ProjectsResponse, ProviderConnectionState,
-    ProviderStatus, ProviderStatusResponse, ReclaimWorktreesResponse, RemoveAgentProfileResponse,
-    RemoveTodoResponse, RemoveWorktreeResponse, RepoBranchRequest, RepoBranchResponse,
-    RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse, RunIndexEntry, Runner,
-    RunnerSelection, RunsIndexResponse, SaveWorkflowInput, SaveWorkflowResponse,
-    SelectAgentProfileInput, SetAgentConfigInput, SetConfigInput, Skill, StartTodoResponse,
-    StatusEntry, TodoItem, UpdateAgentProfileInput, UserMcpListing, WorkflowStepDef,
-    WorkflowsResponse, WorkspaceUsageResponse, WorktreeDirEntry, WorktreeEntry, WorktreeEntryType,
-    WorktreeInfo, WorktreeRunStatus, WorktreesResponse,
+    OpenAgentAccountFileResponse, OpenProjectInResponse, OpenTargetsResponse, ParsedWorkflow,
+    PatchRunInput, PresentRepoResponse, ProjectListEntry, ProjectSource, ProjectStatus,
+    ProjectsResponse, ProviderConnectionState, ProviderStatus, ProviderStatusResponse,
+    ReclaimWorktreesResponse, RemoveAgentProfileResponse, RemoveTodoResponse,
+    RemoveWorktreeResponse, RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoDiffStat,
+    RepoInfo, RepoResponse, RunIndexEntry, Runner, RunnerSelection, RunsIndexResponse,
+    SaveWorkflowInput, SaveWorkflowResponse, SelectAgentProfileInput, SetAgentConfigInput,
+    SetConfigInput, Skill, StartTodoResponse, StatusEntry, TodoItem, UpdateAgentProfileInput,
+    UserMcpListing, WorkflowStepDef, WorkflowsResponse, WorkspaceUsageResponse, WorktreeDirEntry,
+    WorktreeEntry, WorktreeEntryType, WorktreeInfo, WorktreeRunStatus, WorktreesResponse,
 };
 use coducktor_core::handoff::followups_enabled;
 use coducktor_core::paths::{
@@ -1346,6 +1346,328 @@ impl InProcessEngine {
             .map_err(io_err)?;
         Ok(RemoveWorktreeResponse { removed: true })
     }
+
+    // ---- open-targets (spec §8.7 "open in") -------------------------------------------------
+    // Ported from `coducktor-server`'s `list_open_targets`/`open_project_in` handlers,
+    // duplicating their private `open_targets`/`open_target_command`/`open_target`/
+    // `executable_on_path`/`configured_executable`/`installed_mac_app` helpers byte-for-byte —
+    // none were `pub`. `open_project_in` here takes `target: &str` directly (the `Engine`
+    // trait's own signature), so there's no `OpenProjectInRequest` JSON body to parse/validate
+    // the way the HTTP handler does.
+
+    pub async fn open_targets(&self) -> Result<OpenTargetsResponse, EngineError> {
+        tokio::task::spawn_blocking(|| OpenTargetsResponse {
+            targets: open_targets_list(),
+        })
+        .await
+        .map_err(|error| EngineError::Transport(error.to_string()))
+    }
+
+    pub async fn open_project_in(
+        &self,
+        target: &str,
+    ) -> Result<OpenProjectInResponse, EngineError> {
+        let target = target.trim();
+        if target.is_empty() || target.chars().count() > 200 {
+            return Err(EngineError::Conflict {
+                reason: "target required".to_owned(),
+            });
+        }
+        if target.starts_with("cli:") {
+            return Err(EngineError::Conflict {
+                reason: "agent CLIs open a task worktree, not the project folder".to_owned(),
+            });
+        }
+        if !open_targets_list()
+            .iter()
+            .any(|candidate| candidate.id == target)
+        {
+            return Err(EngineError::Conflict {
+                reason: format!("no such app on this machine: {target}"),
+            });
+        }
+        let repo_root = self.repo_root.clone();
+        let target = target.to_owned();
+        let target_for_error = target.clone();
+        let opened = tokio::task::spawn_blocking(move || open_target(&repo_root, &target))
+            .await
+            .map_err(|error| EngineError::Transport(error.to_string()))?;
+        if !opened {
+            return Err(EngineError::Conflict {
+                reason: format!("could not open {target_for_error}"),
+            });
+        }
+        Ok(OpenProjectInResponse {
+            opened: true,
+            path: self.repo_root.to_string_lossy().into_owned(),
+        })
+    }
+}
+
+// ---- open-targets helpers, duplicated from `coducktor-server`'s private functions of the same
+// name (renamed `open_targets` -> `open_targets_list` to avoid colliding with the method above)
+
+fn executable_on_path(binary: &str) -> bool {
+    if binary.is_empty() {
+        return false;
+    }
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    for directory in std::env::split_paths(&path) {
+        let candidate = directory.join(binary);
+        let Ok(metadata) = std::fs::metadata(candidate) else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o111 == 0 {
+                continue;
+            }
+        }
+        return true;
+    }
+    false
+}
+
+fn configured_executable(provider: &str, default: &str) -> bool {
+    let duck_name = format!("DUCK_{}_BIN", provider.to_ascii_uppercase());
+    let cez_name = format!("CEZ_{}_BIN", provider.to_ascii_uppercase());
+    std::env::var(&duck_name)
+        .ok()
+        .or_else(|| std::env::var(&cez_name).ok())
+        .filter(|path| !path.trim().is_empty())
+        .is_some_and(|path| Path::new(&path).is_file())
+        || executable_on_path(default)
+}
+
+fn installed_mac_app(target: &str) -> Option<&'static str> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let names: &[&str] = match target {
+        "vscode" => &["Visual Studio Code"],
+        "cursor" => &["Cursor"],
+        "zed" => &["Zed"],
+        "windsurf" => &["Windsurf"],
+        "sublime" => &["Sublime Text"],
+        "idea" => &[
+            "IntelliJ IDEA",
+            "IntelliJ IDEA CE",
+            "IntelliJ IDEA Ultimate",
+        ],
+        "pycharm" => &["PyCharm", "PyCharm CE", "PyCharm Professional"],
+        "webstorm" => &["WebStorm"],
+        "goland" => &["GoLand"],
+        "rubymine" => &["RubyMine"],
+        "phpstorm" => &["PhpStorm"],
+        "clion" => &["CLion"],
+        "rider" => &["Rider"],
+        "android-studio" => &["Android Studio"],
+        "xcode" => &["Xcode"],
+        "warp" => &["Warp"],
+        _ => return None,
+    };
+    let mut roots = vec![
+        PathBuf::from("/Applications"),
+        PathBuf::from("/System/Applications"),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        roots.push(PathBuf::from(home).join("Applications"));
+    }
+    names
+        .iter()
+        .find(|name| {
+            roots
+                .iter()
+                .map(|root| root.join(format!("{name}.app")))
+                .any(|path| path.is_dir())
+        })
+        .copied()
+}
+
+fn open_targets_list() -> Vec<coducktor_contract::OpenTarget> {
+    let file_manager = if cfg!(target_os = "macos") {
+        "Finder"
+    } else if cfg!(target_os = "windows") {
+        "Explorer"
+    } else {
+        "Files"
+    };
+    let mut targets = vec![
+        coducktor_contract::OpenTarget {
+            id: "finder".to_owned(),
+            label: file_manager.to_owned(),
+            icon: Some("folder".to_owned()),
+        },
+        coducktor_contract::OpenTarget {
+            id: "terminal".to_owned(),
+            label: "Terminal".to_owned(),
+            icon: Some("terminal".to_owned()),
+        },
+    ];
+    for (id, label, icon, binary) in [
+        ("vscode", "VS Code", "vscode", "code"),
+        ("cursor", "Cursor", "cursor", "cursor"),
+        ("zed", "Zed", "zed", "zed"),
+        ("windsurf", "Windsurf", "windsurf", "windsurf"),
+        ("sublime", "Sublime Text", "sublime", "subl"),
+        ("idea", "IntelliJ IDEA", "idea", "idea"),
+        ("pycharm", "PyCharm", "pycharm", "pycharm"),
+        ("webstorm", "WebStorm", "webstorm", "webstorm"),
+        ("goland", "GoLand", "goland", "goland"),
+        ("rubymine", "RubyMine", "rubymine", "rubymine"),
+        ("phpstorm", "PhpStorm", "phpstorm", "phpstorm"),
+        ("clion", "CLion", "clion", "clion"),
+        ("rider", "Rider", "rider", "rider"),
+        (
+            "android-studio",
+            "Android Studio",
+            "android-studio",
+            "studio",
+        ),
+        ("warp", "Warp", "warp", "warp"),
+    ] {
+        if executable_on_path(binary) {
+            targets.push(coducktor_contract::OpenTarget {
+                id: id.to_owned(),
+                label: label.to_owned(),
+                icon: Some(icon.to_owned()),
+            });
+        }
+    }
+    for (id, label, icon) in [
+        ("vscode", "VS Code", "vscode"),
+        ("cursor", "Cursor", "cursor"),
+        ("zed", "Zed", "zed"),
+        ("windsurf", "Windsurf", "windsurf"),
+        ("sublime", "Sublime Text", "sublime"),
+        ("idea", "IntelliJ IDEA", "idea"),
+        ("pycharm", "PyCharm", "pycharm"),
+        ("webstorm", "WebStorm", "webstorm"),
+        ("goland", "GoLand", "goland"),
+        ("rubymine", "RubyMine", "rubymine"),
+        ("phpstorm", "PhpStorm", "phpstorm"),
+        ("clion", "CLion", "clion"),
+        ("rider", "Rider", "rider"),
+        ("android-studio", "Android Studio", "android-studio"),
+        ("xcode", "Xcode", "xcode"),
+        ("warp", "Warp", "warp"),
+    ] {
+        if installed_mac_app(id).is_some() && !targets.iter().any(|target| target.id == id) {
+            targets.push(coducktor_contract::OpenTarget {
+                id: id.to_owned(),
+                label: label.to_owned(),
+                icon: Some(icon.to_owned()),
+            });
+        }
+    }
+    for (provider, label, icon, binary) in [
+        ("claude", "Claude CLI", "claude", "claude"),
+        ("codex", "Codex CLI", "codex", "codex"),
+        ("opencode", "OpenCode", "opencode", "opencode"),
+        ("pi", "pi CLI", "pi", "pi"),
+    ] {
+        if configured_executable(provider, binary) {
+            targets.push(coducktor_contract::OpenTarget {
+                id: format!("cli:{provider}"),
+                label: label.to_owned(),
+                icon: Some(icon.to_owned()),
+            });
+        }
+    }
+    targets
+}
+
+fn open_target_command(target: &str, root: &Path) -> Option<(String, Vec<String>)> {
+    if target == "finder" {
+        if cfg!(target_os = "macos") {
+            return Some(("open".to_owned(), vec![root.to_string_lossy().into_owned()]));
+        }
+        if cfg!(target_os = "windows") {
+            return Some((
+                "explorer".to_owned(),
+                vec![root.to_string_lossy().into_owned()],
+            ));
+        }
+        return Some((
+            "xdg-open".to_owned(),
+            vec![root.to_string_lossy().into_owned()],
+        ));
+    }
+    if target == "terminal" {
+        if cfg!(target_os = "macos") {
+            return Some((
+                "open".to_owned(),
+                vec![
+                    "-a".to_owned(),
+                    "Terminal".to_owned(),
+                    root.to_string_lossy().into_owned(),
+                ],
+            ));
+        }
+        if cfg!(target_os = "windows") {
+            return Some((
+                "explorer".to_owned(),
+                vec![root.to_string_lossy().into_owned()],
+            ));
+        }
+        return Some((
+            "x-terminal-emulator".to_owned(),
+            vec![
+                "--working-directory".to_owned(),
+                root.to_string_lossy().into_owned(),
+            ],
+        ));
+    }
+    let binary = match target {
+        "vscode" => "code",
+        "cursor" => "cursor",
+        "zed" => "zed",
+        "windsurf" => "windsurf",
+        "sublime" => "subl",
+        "idea" => "idea",
+        "pycharm" => "pycharm",
+        "webstorm" => "webstorm",
+        "goland" => "goland",
+        "rubymine" => "rubymine",
+        "phpstorm" => "phpstorm",
+        "clion" => "clion",
+        "rider" => "rider",
+        "android-studio" => "studio",
+        "xcode" => "xcode",
+        "warp" => "warp",
+        _ => return None,
+    };
+    if !executable_on_path(binary)
+        && let Some(app) = installed_mac_app(target)
+    {
+        return Some((
+            "open".to_owned(),
+            vec![
+                "-a".to_owned(),
+                app.to_owned(),
+                root.to_string_lossy().into_owned(),
+            ],
+        ));
+    }
+    executable_on_path(binary)
+        .then(|| (binary.to_owned(), vec![root.to_string_lossy().into_owned()]))
+}
+
+fn open_target(root: &Path, target: &str) -> bool {
+    let Some((program, args)) = open_target_command(target, root) else {
+        return false;
+    };
+    Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .is_ok()
 }
 
 // ---- worktree helpers, duplicated from `coducktor-server`'s private functions of the same name
@@ -5308,5 +5630,99 @@ mod tests {
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         std::fs::write(dir.path().join("sub/b.txt"), b"12345678").unwrap();
         assert_eq!(worktree_size_bytes(dir.path()), Some(12));
+    }
+
+    // ---- open-targets (mirrors coducktor-server's
+    // `open_target_routes_list_local_apps_and_reject_project_cli_handoffs`) --------------------
+
+    #[tokio::test]
+    async fn open_targets_always_lists_the_file_manager_and_terminal_first() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let response = engine.open_targets().await.unwrap();
+        assert_eq!(response.targets[0].id, "finder");
+        assert_eq!(response.targets[1].id, "terminal");
+    }
+
+    #[tokio::test]
+    async fn open_project_in_rejects_an_empty_target() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine.open_project_in("").await.unwrap_err();
+        assert_eq!(
+            error,
+            EngineError::Conflict {
+                reason: "target required".to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn open_project_in_rejects_an_overlong_target() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let overlong = "x".repeat(201);
+        let error = engine.open_project_in(&overlong).await.unwrap_err();
+        assert_eq!(
+            error,
+            EngineError::Conflict {
+                reason: "target required".to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn open_project_in_rejects_agent_cli_handoffs() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine.open_project_in("cli:claude").await.unwrap_err();
+        assert_eq!(
+            error,
+            EngineError::Conflict {
+                reason: "agent CLIs open a task worktree, not the project folder".to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn open_project_in_rejects_an_app_not_present_on_this_machine() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine.open_project_in("missing-editor").await.unwrap_err();
+        assert_eq!(
+            error,
+            EngineError::Conflict {
+                reason: "no such app on this machine: missing-editor".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn executable_on_path_rejects_an_empty_binary_name() {
+        assert!(!executable_on_path(""));
+    }
+
+    #[test]
+    fn executable_on_path_rejects_a_binary_that_does_not_exist_anywhere_on_path() {
+        assert!(!executable_on_path("coducktor-test-nonexistent-binary-xyz"));
+    }
+
+    #[test]
+    fn open_target_command_returns_none_for_an_unrecognized_target() {
+        let dir = TempDir::new().unwrap();
+        assert!(open_target_command("not-a-real-target", dir.path()).is_none());
+    }
+
+    #[test]
+    fn open_target_command_points_finder_and_terminal_at_the_repo_root_on_every_platform() {
+        let dir = TempDir::new().unwrap();
+        for target in ["finder", "terminal"] {
+            let (_program, args) = open_target_command(target, dir.path())
+                .unwrap_or_else(|| panic!("{target} should always resolve to a command"));
+            assert!(
+                args.iter().any(|arg| arg == &dir.path().to_string_lossy()),
+                "{target}'s args should carry the repo root: {args:?}"
+            );
+        }
     }
 }
