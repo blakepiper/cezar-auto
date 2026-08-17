@@ -1210,7 +1210,7 @@ and a listening port. Phase C is what removes those.
 Source: spec §12. This is the phase that produces "the completed Rust TUI" as the
 user means it: one binary, nothing listening, no Node, no browser, ever.
 
-### [ ] C1 — `InProcessEngine`
+### [ ] C1 — `InProcessEngine` ⚠ in progress, not complete
 **Ships:** `InProcessEngine` in `cezar-core` against the `Engine` trait defined
 back at A2. Because the trait predates the server, this is an implementation, not
 an extraction — the A2 review gates (no HTTP leakage into screens) guarantee no
@@ -1218,6 +1218,43 @@ surprises here.
 **Accept:** `InProcessEngine` passes the same `Engine`-trait test suite `HttpEngine`
 passes.
 **Commit:** `feat(engine): C1 InProcessEngine`
+**Status (C1.1):** partial. Shipped as `crates/coducktor-client/src/in_process.rs`,
+**not** `cezar-core` — `coducktor-core`/`coducktor-runners`/`coducktor-forge` have no
+dependency back on `coducktor-client` today, and putting `InProcessEngine` in
+`coducktor-core` would require importing the `Engine` trait FROM `coducktor-client`
+for a type whose only job is satisfying that trait; `coducktor-client` (already
+`HttpEngine`'s home) keeps the dependency edge one-way. `InProcessEngine` calls
+straight into `RunManager`/`DefaultSessionFactory` (B10) instead of over HTTP for:
+health, the runs family (list/get/start/archive/delete/read/unread/
+archive_finished/mark_all_read/patch_run/cancel_run/finish_run/runs_index),
+workflows, skills, ui-state, the follow-up inbox (todos/delete_todo/start_todo), a
+read-only workspace-projects snapshot, and live events (`Topic` →
+`tokio::sync::broadcast`, fed by `RunManager::subscribe_events`/`subscribe_runs` —
+no WS/SSE JSON round-trip at all, this already delivers C2's own "event streams
+become in-process broadcast channels" text for this backend).
+**Discovered mid-step, the reason this isn't `[x]` yet:** a large fraction of
+`coducktor-server`'s own handlers hold real business logic directly — git
+shelling, IDE file read/write, agent-config file listing/writing, provider
+CLI probing, GitHub forge detail reads, worktree management, open-targets
+detection, diff/compare, the settings write paths — not the thin
+"parse-validate-delegate over cezar-core" wrappers that crate's own module doc
+promises and this step's plan text assumes. Porting the FULL ~85-method `Engine`
+trait is a materially bigger lift than "an implementation, not an extraction"
+implies. `InProcessEngine` deliberately does **not** `impl Engine` yet — an
+`Err`-stubbed trait impl claiming completeness would be worse than an honest
+partial struct. A follow-up commit ports the remaining families (named above) and
+closes the trait impl; only then does C1 become `[x]` and C2 (switch the TUI's
+default backend, delete `cezar-server`) become unblocked.
+**Accept, verified (C1.1's own scope only, not the full step):** 13 new tests in
+`in_process::tests` (a `FakeSession`/`FakeFactory` pair proves the wiring without a
+real agent CLI — the four real backends already have dedicated subprocess tests in
+`coducktor-runners`), covering the full round-trip of every family shipped here.
+705 total workspace tests green, `cargo clippy --workspace --all-targets -- -D
+warnings` clean, `cargo fmt --check` clean (an unscoped `cargo fmt` run incidentally
+fixed the one `coducktor-client/tests/transport.rs` drift noted since B2 — that
+long-standing note is now stale).
+**Commit:** `feat(engine): C1.1 InProcessEngine — health, runs, workflows/skills,
+ui-state, todos, projects, live events` — pushed as `7bb0ee84`.
 
 ### [ ] C2 — Switch default backend, delete `cezar-server`
 **Ships:** `cezar-tui`'s default backend becomes `InProcess`; then **delete
