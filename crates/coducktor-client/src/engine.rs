@@ -783,28 +783,32 @@ impl Engine for InProcessEngine {
         InProcessEngine::run_file_raw(self, run_id, path).await
     }
 
-    async fn repo(&self, _scope: &Scope) -> Result<RepoResponse, EngineError> {
-        InProcessEngine::repo(self).await
+    async fn repo(&self, scope: &Scope) -> Result<RepoResponse, EngineError> {
+        let root = self.root_for_scope(scope)?;
+        InProcessEngine::repo_at(root).await
     }
 
-    async fn repo_changes(&self, _scope: &Scope) -> Result<ChangesPayload, EngineError> {
-        InProcessEngine::repo_changes(self).await
+    async fn repo_changes(&self, scope: &Scope) -> Result<ChangesPayload, EngineError> {
+        let root = self.root_for_scope(scope)?;
+        InProcessEngine::repo_changes_at(root).await
     }
 
     async fn repo_commit(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         sha: &str,
     ) -> Result<RepoCommitPayload, EngineError> {
-        InProcessEngine::repo_commit(self, sha).await
+        let root = self.root_for_scope(scope)?;
+        InProcessEngine::repo_commit_at(root, sha).await
     }
 
     async fn repo_branch(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         input: &RepoBranchRequest,
     ) -> Result<RepoBranchResponse, EngineError> {
-        InProcessEngine::repo_branch(self, input).await
+        let root = self.root_for_scope(scope)?;
+        InProcessEngine::repo_branch_at(root, input).await
     }
 
     async fn group(&self, _scope: &Scope, group_id: &str) -> Result<GroupResponse, EngineError> {
@@ -822,23 +826,26 @@ impl Engine for InProcessEngine {
 
     async fn ide_tree(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         path: Option<&str>,
     ) -> Result<IdeDirectoryResponse, EngineError> {
-        InProcessEngine::ide_tree(self, path).await
+        let root = self.root_for_scope(scope)?;
+        InProcessEngine::ide_tree_at(root, path).await
     }
 
-    async fn ide_file(&self, _scope: &Scope, path: &str) -> Result<IdeFileResponse, EngineError> {
-        InProcessEngine::ide_file(self, path).await
+    async fn ide_file(&self, scope: &Scope, path: &str) -> Result<IdeFileResponse, EngineError> {
+        let root = self.root_for_scope(scope)?;
+        InProcessEngine::ide_file_at(root, path).await
     }
 
     async fn ide_save(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         path: &str,
         content: &str,
     ) -> Result<IdeFileResponse, EngineError> {
-        InProcessEngine::ide_save(self, path, content).await
+        let root = self.root_for_scope(scope)?;
+        InProcessEngine::ide_save_at(root, path, content).await
     }
 
     async fn cancel_auto_resume(

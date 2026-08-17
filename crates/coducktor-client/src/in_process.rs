@@ -80,9 +80,9 @@ use tokio::sync::broadcast;
 use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::BroadcastStream;
 
-use crate::Topic;
 use crate::error::EngineError;
 use crate::events::EngineEvent;
+use crate::{Scope, Topic};
 
 /// Version string this engine reports through `health()`, set once at construction.
 pub struct InProcessEngine {
@@ -183,6 +183,14 @@ impl InProcessEngine {
 
     pub fn repo_root(&self) -> &Path {
         &self.repo_root
+    }
+
+    pub(crate) fn root_for_scope(&self, scope: &Scope) -> Result<PathBuf, EngineError> {
+        let config = load_workspace_config(
+            &coducktor_core::paths::workspace_config_path(&ProcessEnv),
+            &ProcessEnv,
+        );
+        resolve_scope_root(&self.repo_root, scope, &config.projects)
     }
 
     // ---- health -----------------------------------------------------------------------------
@@ -1058,10 +1066,16 @@ impl InProcessEngine {
     }
 
     // ---- IDE: project file browser + editor ------------------------------------------------
-    // Paths are always resolved against this engine's configured repository root.
+    // Paths are resolved against the selected project's registered repository root.
 
     pub async fn ide_tree(&self, path: Option<&str>) -> Result<IdeDirectoryResponse, EngineError> {
-        let repo_root = self.repo_root.clone();
+        Self::ide_tree_at(self.repo_root.clone(), path).await
+    }
+
+    pub(crate) async fn ide_tree_at(
+        repo_root: PathBuf,
+        path: Option<&str>,
+    ) -> Result<IdeDirectoryResponse, EngineError> {
         let path = path.unwrap_or_default().to_owned();
         tokio::task::spawn_blocking(move || ide_list_directory(&repo_root, &path))
             .await
@@ -1069,7 +1083,13 @@ impl InProcessEngine {
     }
 
     pub async fn ide_file(&self, path: &str) -> Result<IdeFileResponse, EngineError> {
-        let repo_root = self.repo_root.clone();
+        Self::ide_file_at(self.repo_root.clone(), path).await
+    }
+
+    pub(crate) async fn ide_file_at(
+        repo_root: PathBuf,
+        path: &str,
+    ) -> Result<IdeFileResponse, EngineError> {
         let path = path.to_owned();
         tokio::task::spawn_blocking(move || ide_read_file(&repo_root, &path))
             .await
@@ -1081,7 +1101,14 @@ impl InProcessEngine {
         path: &str,
         content: &str,
     ) -> Result<IdeFileResponse, EngineError> {
-        let repo_root = self.repo_root.clone();
+        Self::ide_save_at(self.repo_root.clone(), path, content).await
+    }
+
+    pub(crate) async fn ide_save_at(
+        repo_root: PathBuf,
+        path: &str,
+        content: &str,
+    ) -> Result<IdeFileResponse, EngineError> {
         let path = path.to_owned();
         let content = content.to_owned();
         tokio::task::spawn_blocking(move || ide_write_file(&repo_root, &path, &content))
@@ -1208,14 +1235,20 @@ impl InProcessEngine {
     }
 
     pub async fn repo(&self) -> Result<RepoResponse, EngineError> {
-        let repo_root = self.repo_root.clone();
+        Self::repo_at(self.repo_root.clone()).await
+    }
+
+    pub(crate) async fn repo_at(repo_root: PathBuf) -> Result<RepoResponse, EngineError> {
         tokio::task::spawn_blocking(move || repo_response(&repo_root))
             .await
             .map_err(|error| EngineError::Transport(error.to_string()))
     }
 
     pub async fn repo_changes(&self) -> Result<ChangesPayload, EngineError> {
-        let repo_root = self.repo_root.clone();
+        Self::repo_changes_at(self.repo_root.clone()).await
+    }
+
+    pub(crate) async fn repo_changes_at(repo_root: PathBuf) -> Result<ChangesPayload, EngineError> {
         tokio::task::spawn_blocking(move || {
             let Some(info) = repo_info_at(&repo_root) else {
                 return Err(EngineError::Conflict {
@@ -1230,7 +1263,13 @@ impl InProcessEngine {
     }
 
     pub async fn repo_commit(&self, sha: &str) -> Result<RepoCommitPayload, EngineError> {
-        let repo_root = self.repo_root.clone();
+        Self::repo_commit_at(self.repo_root.clone(), sha).await
+    }
+
+    pub(crate) async fn repo_commit_at(
+        repo_root: PathBuf,
+        sha: &str,
+    ) -> Result<RepoCommitPayload, EngineError> {
         let sha = sha.to_owned();
         tokio::task::spawn_blocking(move || {
             let Some(info) = repo_info_at(&repo_root) else {
@@ -1249,7 +1288,13 @@ impl InProcessEngine {
         &self,
         input: &RepoBranchRequest,
     ) -> Result<RepoBranchResponse, EngineError> {
-        let repo_root = self.repo_root.clone();
+        Self::repo_branch_at(self.repo_root.clone(), input).await
+    }
+
+    pub(crate) async fn repo_branch_at(
+        repo_root: PathBuf,
+        input: &RepoBranchRequest,
+    ) -> Result<RepoBranchResponse, EngineError> {
         let input = input.clone();
         tokio::task::spawn_blocking(move || create_repo_branch(&repo_root, &input))
             .await
@@ -6266,6 +6311,22 @@ fn boot_project_id(
 
 /// Resolve each project's live Git status/
 /// branch on every call; this view deliberately does not cache Git status.
+fn resolve_scope_root(
+    repo_root: &Path,
+    scope: &Scope,
+    projects: &[coducktor_core::workspace::config::WorkspaceProject],
+) -> Result<PathBuf, EngineError> {
+    match scope {
+        Scope::Workspace => Ok(repo_root.to_owned()),
+        Scope::Project(id) if id == "default" => Ok(repo_root.to_owned()),
+        Scope::Project(id) => projects
+            .iter()
+            .find(|project| project.id == *id)
+            .map(|project| PathBuf::from(&project.root))
+            .ok_or(EngineError::NotFound),
+    }
+}
+
 fn project_entry(
     project: &coducktor_core::workspace::config::WorkspaceProject,
 ) -> ProjectListEntry {
@@ -6797,6 +6858,28 @@ mod tests {
                 reason: "repository path cannot be empty".to_owned()
             }
         );
+    }
+
+    #[test]
+    fn project_scope_resolves_the_registered_root() {
+        let project = coducktor_core::workspace::config::WorkspaceProject {
+            id: "blarchy".to_owned(),
+            root: "/home/przvl/blarchy".to_owned(),
+            name: "blarchy".to_owned(),
+            added_at: String::new(),
+            last_opened_at: String::new(),
+            source: coducktor_core::workspace::config::ProjectSource::Local,
+            max_parallel: None,
+            tags: None,
+            extra: Map::new(),
+        };
+        let root = resolve_scope_root(
+            Path::new("/home/przvl"),
+            &Scope::Project("blarchy".to_owned()),
+            &[project],
+        )
+        .unwrap();
+        assert_eq!(root, PathBuf::from("/home/przvl/blarchy"));
     }
 
     #[tokio::test]
