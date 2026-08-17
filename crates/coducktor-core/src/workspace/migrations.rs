@@ -38,6 +38,8 @@ struct MigrationContext<'a> {
 }
 
 const LEGACY_STATE_DIR: &str = concat!(".", "ce", "zar");
+const LEGACY_PROJECTS_DIR: &str = "~/cezar/projects";
+const CURRENT_PROJECTS_DIR: &str = "~/coducktor/projects";
 
 /// All known migrations, in ascending `to` order.
 const WORKSPACE_MIGRATIONS: &[Migration] = &[
@@ -50,6 +52,11 @@ const WORKSPACE_MIGRATIONS: &[Migration] = &[
         to: 2,
         id: "002-coducktor-state-dirs",
         run: migration_002,
+    },
+    Migration {
+        to: 3,
+        id: "003-coducktor-projects-dir",
+        run: migration_003,
     },
 ];
 
@@ -218,6 +225,18 @@ fn migration_002(ctx: &MigrationContext) -> io::Result<()> {
     Ok(())
 }
 
+/// Migration 003 — replace the old product's default checkout root. The exact legacy default is
+/// the only value rewritten; arbitrary project roots remain durable user configuration.
+fn migration_003(ctx: &MigrationContext) -> io::Result<()> {
+    let config_path = paths::workspace_config_path(ctx.env);
+    merge_write_workspace_config(&config_path, ctx.env, |config| {
+        if config.projects_dir == LEGACY_PROJECTS_DIR {
+            config.projects_dir = CURRENT_PROJECTS_DIR.to_owned();
+        }
+    })?;
+    Ok(())
+}
+
 /// What [`run_migrations`] did — the final `schema_version` and every diagnostic message
 /// collected along the way (state-dir rename notes, or the one message a failing
 /// migration produces before the chain stops).
@@ -292,21 +311,21 @@ mod tests {
     }
 
     #[test]
-    fn the_migration_list_is_frozen_at_one_and_two() {
+    fn the_migration_list_is_frozen_at_one_through_three() {
         // Pinned deliberately: a purely-additive schema key
         // does not get a reflexive no-op migration.
         let versions: Vec<u32> = WORKSPACE_MIGRATIONS.iter().map(|m| m.to).collect();
-        assert_eq!(versions, vec![1, 2]);
+        assert_eq!(versions, vec![1, 2, 3]);
     }
 
     #[test]
-    fn a_fresh_home_ends_at_schema_version_two_with_defaults() {
+    fn a_fresh_home_ends_at_schema_version_three_with_defaults() {
         let dir = tempfile::tempdir().unwrap();
         let env = env_for(dir.path());
         let outcome = run_migrations(None, &env);
-        assert_eq!(outcome.schema_version, 2);
+        assert_eq!(outcome.schema_version, 3);
         let config = load_workspace_config(&dir.path().join("config.json"), &env);
-        assert_eq!(config.schema_version, 2);
+        assert_eq!(config.schema_version, 3);
     }
 
     #[test]
@@ -315,7 +334,7 @@ mod tests {
         let env = env_for(dir.path());
         run_migrations(None, &env);
         let outcome = run_migrations(None, &env);
-        assert_eq!(outcome.schema_version, 2);
+        assert_eq!(outcome.schema_version, 3);
         assert!(outcome.messages.is_empty());
     }
 
@@ -350,7 +369,7 @@ mod tests {
 
         run_migrations(Some(repo.path()), &env);
         // Simulate the repo's own config changing between runs — schema_version already
-        // 2, but even a hypothetical re-import must not clobber the imported value.
+        // 3, but even a hypothetical re-import must not clobber the imported value.
         fs::write(
             repo.path().join(".ai/coducktor/config.json"),
             r#"{"maxParallel": 3}"#,
@@ -374,7 +393,7 @@ mod tests {
         .unwrap();
 
         let outcome = run_migrations(None, &env);
-        assert_eq!(outcome.schema_version, 2);
+        assert_eq!(outcome.schema_version, 3);
         assert!(!old_dir.exists(), "the old dir is renamed, not copied");
         let config = load_workspace_config(&real_home.path().join(".coducktor/config.json"), &env);
         assert_eq!(
@@ -401,7 +420,7 @@ mod tests {
 
         let outcome = run_migrations(Some(repo.path()), &env);
 
-        assert_eq!(outcome.schema_version, 2);
+        assert_eq!(outcome.schema_version, 3);
         assert!(!old_home.exists());
         assert!(!old_repo.exists());
         assert_eq!(
@@ -420,5 +439,24 @@ mod tests {
         let env = env_for(dir.path());
         let messages = migrate_state_dirs(None, &env);
         assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn legacy_checkout_root_migrates_to_the_current_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = env_for(dir.path());
+        fs::write(
+            dir.path().join("config.json"),
+            r#"{"schemaVersion":2,"projectsDir":"~/cezar/projects"}"#,
+        )
+        .unwrap();
+
+        let outcome = run_migrations(None, &env);
+
+        assert_eq!(outcome.schema_version, 3);
+        assert_eq!(
+            load_workspace_config(&dir.path().join("config.json"), &env).projects_dir,
+            "~/coducktor/projects"
+        );
     }
 }

@@ -203,6 +203,12 @@ fn apply_prime_snapshot(app: &mut App, snapshot: PrimeSnapshot) {
         );
     }
     if let Some(projects) = snapshot.projects {
+        app.set_projects(
+            projects
+                .projects
+                .iter()
+                .map(|project| (project.id.clone(), project.name.clone())),
+        );
         app.set_project_registry(projects.projects);
     }
     if let Some(index) = snapshot.index {
@@ -733,6 +739,7 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
             PendingAction::IdeDiscardThenNavigate(_) => unreachable!("resolved in app.rs"),
             PendingAction::IdeDiscardThenBack => unreachable!("resolved in app.rs"),
             PendingAction::IdeDiscardThenForward => unreachable!("resolved in app.rs"),
+            PendingAction::SwitchProject(_) => unreachable!("resolved in app.rs"),
             PendingAction::LoadGithub { project } => {
                 let scope = Scope::Project(project.clone());
                 match engine.github(&scope).await {
@@ -1539,5 +1546,41 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn project_prime_populates_the_sidebar_from_the_full_registry() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        apply_prime_snapshot(
+            &mut app,
+            PrimeSnapshot {
+                health: None,
+                runs: None,
+                projects: Some(coducktor_contract::ProjectsResponse {
+                    projects: vec![coducktor_contract::ProjectListEntry {
+                        id: "blarchy".to_owned(),
+                        name: "blarchy".to_owned(),
+                        root: "/home/przvl/blarchy".to_owned(),
+                        ..Default::default()
+                    }],
+                    boot_project: "blarchy".to_owned(),
+                    projects_dir: "~/coducktor/projects".to_owned(),
+                }),
+                index: None,
+                workspace_ui_state: None,
+                new_task: PrimeNewTaskSnapshot {
+                    config: None,
+                    skills: None,
+                    workflows: None,
+                    workspace_config: None,
+                    provider_status: None,
+                    agent_profiles: None,
+                    ui_state: None,
+                },
+            },
+        );
+
+        assert_eq!(app.projects[0].id, "blarchy");
+        assert_eq!(app.project_registry[0].root, "/home/przvl/blarchy");
     }
 }

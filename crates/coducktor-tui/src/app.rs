@@ -705,6 +705,8 @@ pub enum PendingAction {
     IdeDiscardThenNavigate(Box<Route>),
     IdeDiscardThenBack,
     IdeDiscardThenForward,
+    /// Switch the active project after the IDE's unsaved-changes guard is confirmed.
+    SwitchProject(String),
     /// Load the GitHub screen's aggregate data.
     LoadGithub {
         project: String,
@@ -1947,6 +1949,10 @@ impl App {
                         self.ide_ui.discard();
                         self.history.forward();
                     }
+                    PendingAction::SwitchProject(project) => {
+                        self.ide_ui.discard();
+                        self.apply_project_switch(project);
+                    }
                     other => self.pending.push(other),
                 }
             }
@@ -2087,11 +2093,7 @@ impl App {
             HitAction::ArchivedTasks => self.task_filter = TaskFilter::Archived,
             HitAction::ToggleSidebar => self.toggle_sidebar(),
             HitAction::Help => self.help_open = true,
-            HitAction::ProjectToggle(project) => {
-                if let Some(entry) = self.projects.iter_mut().find(|entry| entry.id == project) {
-                    entry.collapsed = !entry.collapsed;
-                }
-            }
+            HitAction::ProjectToggle(project) => self.select_project(project),
             HitAction::SidebarEdge => self.sidebar_dragging = true,
             HitAction::Back => {
                 self.request_back();
@@ -2263,6 +2265,43 @@ impl App {
             }
             NavItem::Settings => crate::screens::settings::open(self, &project),
         }
+        self.notice = None;
+    }
+
+    /// Select a project from the sidebar. Clicking the active project's row retains its old
+    /// collapse behavior; clicking another project opens its Tasks route and refreshes the
+    /// project-scoped data before the next frame.
+    fn select_project(&mut self, project: String) {
+        if project == self.current_project() && self.route().project().is_some() {
+            if let Some(entry) = self.projects.iter_mut().find(|entry| entry.id == project) {
+                entry.collapsed = !entry.collapsed;
+            }
+            return;
+        }
+        self.switch_project(project);
+    }
+
+    /// Switch projects from the command palette or another non-sidebar caller.
+    pub(crate) fn switch_project(&mut self, project: String) {
+        if self.ide_ui.dirty {
+            self.confirm = Some(ConfirmRequest {
+                text: "Discard unsaved changes and switch projects?".to_owned(),
+                action: PendingAction::SwitchProject(project),
+            });
+        } else {
+            self.apply_project_switch(project);
+        }
+    }
+
+    fn apply_project_switch(&mut self, project: String) {
+        self.default_project = project.clone();
+        self.request_navigate(Route::Tasks {
+            project: project.clone(),
+        });
+        self.pending.push(PendingAction::RefreshTasks {
+            project: project.clone(),
+        });
+        self.pending.push(PendingAction::RefreshNewTask { project });
         self.notice = None;
     }
 
@@ -2906,6 +2945,36 @@ mod tests {
         )));
 
         assert_eq!(app.route(), &Route::GlobalSettings);
+    }
+
+    #[test]
+    fn clicking_another_project_switches_the_sidebar_context() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.set_projects([
+            ("blarchy".to_owned(), "blarchy".to_owned()),
+            ("main".to_owned(), "main".to_owned()),
+        ]);
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        app.handle_event(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 2,
+            row: 2,
+            modifiers: KeyModifiers::NONE,
+        }));
+
+        assert_eq!(app.default_project, "blarchy");
+        assert_eq!(
+            app.route(),
+            &Route::Tasks {
+                project: "blarchy".to_owned()
+            }
+        );
+        assert!(app.pending.iter().any(|action| matches!(
+            action,
+            PendingAction::RefreshNewTask { project } if project == "blarchy"
+        )));
     }
 
     #[test]

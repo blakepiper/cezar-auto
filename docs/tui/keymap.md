@@ -29,6 +29,9 @@ The left navigation panel is keyboard-accessible with `Ctrl+Left`; use `j`/`k` o
 to move through its destinations and `Enter` to open one. The command palette (`Ctrl+K`) and
 `:open <route>` remain available too.
 
+Clicking a non-active project row switches the sidebar context to that registered project and
+refreshes its tasks. Clicking the active project row still expands or collapses its navigation.
+
 ### Command line (`:`)
 
 | Command | Effect |

@@ -10,7 +10,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::app::{App, NavItem, PendingAction, Route};
+use crate::app::{App, NavItem};
 
 #[derive(Clone)]
 enum PaletteAction {
@@ -169,12 +169,7 @@ fn activate(app: &mut App, action: PaletteAction) {
         PaletteAction::GlobalSettings => crate::screens::settings::open_global(app),
         PaletteAction::Command(command) => app.execute_command(command),
         PaletteAction::OpenTask { project, id } => crate::screens::thread::open(app, &project, &id),
-        PaletteAction::SwitchProject(project) => {
-            app.request_navigate(Route::Tasks {
-                project: project.clone(),
-            });
-            app.pending.push(PendingAction::RefreshTasks { project });
-        }
+        PaletteAction::SwitchProject(project) => app.switch_project(project),
     }
 }
 
@@ -224,6 +219,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 
 #[cfg(test)]
 mod tests {
+    use crate::app::Route;
+
     use super::*;
     use crate::input::keymap::Keymap;
     use crate::theme::Theme;
