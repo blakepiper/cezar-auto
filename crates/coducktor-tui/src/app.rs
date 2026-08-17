@@ -90,6 +90,27 @@ impl NavItem {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SidebarItem {
+    Project(NavItem),
+    GlobalTasks,
+    GlobalSettings,
+}
+
+const SIDEBAR_ITEMS: [SidebarItem; 11] = [
+    SidebarItem::Project(NavItem::NewTask),
+    SidebarItem::Project(NavItem::Tasks),
+    SidebarItem::Project(NavItem::Inbox),
+    SidebarItem::Project(NavItem::Ide),
+    SidebarItem::Project(NavItem::RepoGit),
+    SidebarItem::Project(NavItem::Github),
+    SidebarItem::Project(NavItem::Skills),
+    SidebarItem::Project(NavItem::Workflows),
+    SidebarItem::Project(NavItem::Settings),
+    SidebarItem::GlobalTasks,
+    SidebarItem::GlobalSettings,
+];
+
 /// The routed identity used by the TUI. Routes retain a stable URL-shaped seam for navigation.
 /// A `screens/task_git` sub-tab — Changes / Files / Commits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,6 +172,7 @@ pub enum Route {
         project: String,
     },
     GlobalTasks,
+    GlobalSettings,
     NewTask {
         project: String,
     },
@@ -205,6 +227,9 @@ impl Route {
         }
         if path == "/tasks" {
             return Some(Self::GlobalTasks);
+        }
+        if path == "/settings" {
+            return Some(Self::GlobalSettings);
         }
         if path == "/new" {
             return Some(Self::NewTask {
@@ -264,6 +289,7 @@ impl Route {
         match self {
             Self::Tasks { project } => format!("/p/{project}"),
             Self::GlobalTasks => "/tasks".to_owned(),
+            Self::GlobalSettings => "/settings".to_owned(),
             Self::NewTask { project } => format!("/p/{project}/new"),
             Self::Thread { project, id } => format!("/p/{project}/tasks/{id}"),
             Self::TaskGit { project, id, tab } => {
@@ -289,6 +315,7 @@ impl Route {
         match self {
             Self::Tasks { .. } => "TASKS",
             Self::GlobalTasks => "GLOBAL TASKS",
+            Self::GlobalSettings => "GLOBAL SETTINGS",
             Self::NewTask { .. } => "NEW TASK",
             Self::Thread { .. } => "TASK THREAD",
             Self::TaskGit { .. } => "TASK GIT",
@@ -319,7 +346,7 @@ impl Route {
             | Self::Compare { project, .. }
             | Self::Settings { project }
             | Self::Placeholder { project, .. } => Some(project),
-            Self::GlobalTasks => None,
+            Self::GlobalTasks | Self::GlobalSettings => None,
         }
     }
 }
@@ -788,6 +815,9 @@ pub enum PendingAction {
     },
     SettingsSelectAgentProfile {
         input: coducktor_contract::SelectAgentProfileInput,
+    },
+    SettingsRegisterProject {
+        root: String,
     },
     SettingsReclaimWorktrees {
         project: String,
@@ -1391,10 +1421,20 @@ impl App {
                 "All tasks",
                 None,
                 matches!(self.route(), Route::GlobalTasks),
-                false,
+                self.sidebar_workspace_item_focused(SidebarItem::GlobalTasks),
                 self.nav_style(matches!(self.route(), Route::GlobalTasks)),
             ),
             Some(HitAction::GlobalTasks),
+        ));
+        rows.push((
+            sidebar_nav_line(
+                "Settings",
+                None,
+                matches!(self.route(), Route::GlobalSettings),
+                self.sidebar_global_settings_focused(),
+                self.nav_style(matches!(self.route(), Route::GlobalSettings)),
+            ),
+            Some(HitAction::GlobalSettings),
         ));
         rows.push((sidebar_line("", self.soft_style()), None));
         rows.push((sidebar_line("  TASKS", self.soft_style()), None));
@@ -1480,6 +1520,10 @@ impl App {
             }
             Route::GlobalTasks => {
                 crate::screens::global_tasks::render(frame, area, self);
+                return;
+            }
+            Route::GlobalSettings => {
+                crate::screens::settings::render(frame, area, self);
                 return;
             }
             Route::NewTask { .. } => {
@@ -1849,6 +1893,7 @@ impl App {
         match self.route().clone() {
             Route::Tasks { .. } if crate::screens::tasks::handle_key(self, key) => return,
             Route::GlobalTasks if crate::screens::global_tasks::handle_key(self, key) => return,
+            Route::GlobalSettings if crate::screens::settings::handle_key(self, key) => return,
             Route::NewTask { .. } if crate::screens::new_task::handle_key(self, key) => return,
             Route::Thread { .. } if crate::screens::thread::handle_key(self, key) => return,
             Route::TaskGit { .. } if crate::screens::task_git::handle_key(self, key) => return,
@@ -2029,6 +2074,7 @@ impl App {
                 self.request_navigate(Route::GlobalTasks);
                 self.pending.push(PendingAction::RefreshIndex);
             }
+            HitAction::GlobalSettings => crate::screens::settings::open_global(self),
             HitAction::NewTask => self.navigate(NavItem::NewTask),
             HitAction::Inbox => self.navigate(NavItem::Inbox),
             HitAction::Ide => self.navigate(NavItem::Ide),
@@ -2160,13 +2206,13 @@ impl App {
                 }
             }
             HitAction::SettingsSection(index) => {
-                if matches!(self.route(), Route::Settings { .. }) {
+                if matches!(self.route(), Route::Settings { .. } | Route::GlobalSettings) {
                     self.settings_ui.section = index;
                     self.settings_ui.row = 0;
                 }
             }
             HitAction::SettingsRow(index) => {
-                if matches!(self.route(), Route::Settings { .. }) {
+                if matches!(self.route(), Route::Settings { .. } | Route::GlobalSettings) {
                     self.settings_ui.row = index;
                 }
             }
@@ -2249,9 +2295,13 @@ impl App {
         } else if self.last_width >= SIDEBAR_BREAKPOINT {
             self.sidebar_collapsed = false;
         }
-        self.sidebar_selected = NavItem::ALL
+        self.sidebar_selected = SIDEBAR_ITEMS
             .iter()
-            .position(|nav| self.route_is(*nav))
+            .position(|item| match item {
+                SidebarItem::Project(nav) => self.route_is(*nav),
+                SidebarItem::GlobalTasks => matches!(self.route(), Route::GlobalTasks),
+                SidebarItem::GlobalSettings => matches!(self.route(), Route::GlobalSettings),
+            })
             .unwrap_or(0);
         self.sidebar_focus = true;
     }
@@ -2259,18 +2309,25 @@ impl App {
     fn handle_sidebar_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
-                self.sidebar_selected = (self.sidebar_selected + 1) % NavItem::ALL.len();
+                self.sidebar_selected = (self.sidebar_selected + 1) % SIDEBAR_ITEMS.len();
                 true
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.sidebar_selected =
-                    (self.sidebar_selected + NavItem::ALL.len() - 1) % NavItem::ALL.len();
+                    (self.sidebar_selected + SIDEBAR_ITEMS.len() - 1) % SIDEBAR_ITEMS.len();
                 true
             }
             KeyCode::Enter => {
-                let nav = NavItem::ALL[self.sidebar_selected];
+                let item = SIDEBAR_ITEMS[self.sidebar_selected];
                 self.sidebar_focus = false;
-                self.navigate(nav);
+                match item {
+                    SidebarItem::Project(nav) => self.navigate(nav),
+                    SidebarItem::GlobalTasks => {
+                        self.request_navigate(Route::GlobalTasks);
+                        self.pending.push(PendingAction::RefreshIndex);
+                    }
+                    SidebarItem::GlobalSettings => crate::screens::settings::open_global(self),
+                }
                 true
             }
             KeyCode::Esc | KeyCode::Right => {
@@ -2282,7 +2339,21 @@ impl App {
     }
 
     fn sidebar_item_focused(&self, nav: NavItem) -> bool {
-        self.sidebar_focus && NavItem::ALL[self.sidebar_selected] == nav
+        self.sidebar_focus
+            && SIDEBAR_ITEMS
+                .get(self.sidebar_selected)
+                .is_some_and(|item| *item == SidebarItem::Project(nav))
+    }
+
+    fn sidebar_global_settings_focused(&self) -> bool {
+        self.sidebar_workspace_item_focused(SidebarItem::GlobalSettings)
+    }
+
+    fn sidebar_workspace_item_focused(&self, item: SidebarItem) -> bool {
+        self.sidebar_focus
+            && SIDEBAR_ITEMS
+                .get(self.sidebar_selected)
+                .is_some_and(|selected| *selected == item)
     }
 
     fn request_quit(&mut self) {
@@ -2639,6 +2710,11 @@ mod tests {
         assert_eq!(history.current(), &initial);
         assert!(history.forward());
         assert_eq!(history.current(), &Route::GlobalTasks);
+        assert_eq!(
+            Route::parse("/settings", "main"),
+            Some(Route::GlobalSettings)
+        );
+        assert_eq!(Route::GlobalSettings.path(), "/settings");
     }
 
     #[test]
@@ -2809,6 +2885,27 @@ mod tests {
         )));
 
         assert!(matches!(app.route(), Route::Inbox { project } if project == "main"));
+    }
+
+    #[test]
+    fn workspace_settings_is_reachable_from_sidebar_keyboard_navigation() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Left,
+            KeyModifiers::CONTROL,
+        )));
+        for _ in 0..9 {
+            app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        }
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+
+        assert_eq!(app.route(), &Route::GlobalSettings);
     }
 
     #[test]

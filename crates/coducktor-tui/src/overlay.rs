@@ -15,6 +15,7 @@ use crate::app::{App, NavItem, PendingAction, Route};
 #[derive(Clone)]
 enum PaletteAction {
     Nav(NavItem),
+    GlobalSettings,
     Command(&'static str),
     OpenTask { project: String, id: String },
     SwitchProject(String),
@@ -76,6 +77,11 @@ fn candidates(app: &App) -> Vec<Entry> {
             action: PaletteAction::Nav(nav),
         });
     }
+    entries.push(Entry {
+        group: "Views",
+        label: "Global settings".to_owned(),
+        action: PaletteAction::GlobalSettings,
+    });
     for project in &app.projects {
         entries.push(Entry {
             group: "Projects",
@@ -160,6 +166,7 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
 fn activate(app: &mut App, action: PaletteAction) {
     match action {
         PaletteAction::Nav(nav) => app.navigate(nav),
+        PaletteAction::GlobalSettings => crate::screens::settings::open_global(app),
         PaletteAction::Command(command) => app.execute_command(command),
         PaletteAction::OpenTask { project, id } => crate::screens::thread::open(app, &project, &id),
         PaletteAction::SwitchProject(project) => {
@@ -230,6 +237,7 @@ mod tests {
         open(&mut app);
         let entries = ranked(&mut app);
         assert!(entries.iter().any(|entry| entry.label == "Settings"));
+        assert!(entries.iter().any(|entry| entry.label == "Global settings"));
         assert!(entries.iter().any(|entry| entry.label == "Quit"));
     }
 
@@ -261,6 +269,21 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(!app.palette.open);
         assert!(matches!(app.route(), Route::Settings { .. }));
+    }
+
+    #[test]
+    fn enter_on_global_settings_navigates_to_the_workspace_route() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        open(&mut app);
+        for character in "global settings".chars() {
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
+            );
+        }
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!app.palette.open);
+        assert_eq!(app.route(), &Route::GlobalSettings);
     }
 
     #[test]

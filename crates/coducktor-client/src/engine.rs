@@ -13,15 +13,16 @@ use coducktor_contract::{
     OpenAgentAccountFileInput, OpenAgentAccountFileResponse, OpenInCliResponse, OpenInInput,
     OpenProjectInResponse, OpenTargetsResponse, ParsedWorkflow, PatchRunInput, PickVariantRequest,
     PickVariantResponse, PlanResponse, ProjectsResponse, ProviderStatusResponse,
-    QueuedMessagePatchInput, ReclaimWorktreesResponse, RemoveAgentProfileResponse,
-    RemoveProjectResponse, RemoveQueuedMessageResponse, RemoveTodoResponse, RemoveWorktreeResponse,
-    RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoResponse, RunCommitsResponse,
-    RunHistoryContext, RunHistoryPage, Runner, RunnerModelCatalogResponse, RunsIndexResponse,
-    SaveWorkflowInput, SaveWorkflowResponse, SelectAgentProfileInput, SetAgentConfigInput,
-    SetConfigInput, SetWorkspaceConfigInput, SetWorkspaceUiStateInput, Skill, StartTodoResponse,
-    TodoItem, UiState, UpdateAgentProfileInput, UpdateProjectInput, UpdateProjectResponse,
-    WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUiState, WorkspaceUsageResponse,
-    WorktreeEntry, WorktreesResponse,
+    QueuedMessagePatchInput, ReclaimWorktreesResponse, RegisterProjectInput,
+    RegisterProjectResponse, RemoveAgentProfileResponse, RemoveProjectResponse,
+    RemoveQueuedMessageResponse, RemoveTodoResponse, RemoveWorktreeResponse, RepoBranchRequest,
+    RepoBranchResponse, RepoCommitPayload, RepoResponse, RunCommitsResponse, RunHistoryContext,
+    RunHistoryPage, Runner, RunnerModelCatalogResponse, RunsIndexResponse, SaveWorkflowInput,
+    SaveWorkflowResponse, SelectAgentProfileInput, SetAgentConfigInput, SetConfigInput,
+    SetWorkspaceConfigInput, SetWorkspaceUiStateInput, Skill, StartTodoResponse, TodoItem, UiState,
+    UpdateAgentProfileInput, UpdateProjectInput, UpdateProjectResponse, WorkflowsResponse,
+    WorkspaceConfigResponse, WorkspaceUiState, WorkspaceUsageResponse, WorktreeEntry,
+    WorktreesResponse,
 };
 use futures_core::stream::BoxStream;
 use serde_json::Value;
@@ -74,6 +75,10 @@ pub trait Engine: Send + Sync {
     async fn workflows(&self, scope: &Scope) -> Result<WorkflowsResponse, EngineError>;
     async fn skills(&self, scope: &Scope) -> Result<Vec<Skill>, EngineError>;
     async fn projects(&self) -> Result<ProjectsResponse, EngineError>;
+    async fn register_project(
+        &self,
+        input: &RegisterProjectInput,
+    ) -> Result<RegisterProjectResponse, EngineError>;
     async fn workspace_config(&self) -> Result<WorkspaceConfigResponse, EngineError>;
     async fn workspace_usage(&self) -> Result<WorkspaceUsageResponse, EngineError>;
     async fn config(&self, scope: &Scope) -> Result<ConfigResponse, EngineError>;
@@ -463,6 +468,13 @@ impl Engine for InProcessEngine {
 
     async fn projects(&self) -> Result<ProjectsResponse, EngineError> {
         InProcessEngine::projects(self).await
+    }
+
+    async fn register_project(
+        &self,
+        input: &RegisterProjectInput,
+    ) -> Result<RegisterProjectResponse, EngineError> {
+        InProcessEngine::register_project(self, input).await
     }
 
     async fn workspace_config(&self) -> Result<WorkspaceConfigResponse, EngineError> {

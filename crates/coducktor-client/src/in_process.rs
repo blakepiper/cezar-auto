@@ -34,17 +34,17 @@ use coducktor_contract::{
     PlanResponse, PresentRepoResponse, ProjectListEntry, ProjectSource, ProjectStatus,
     ProjectsResponse, ProviderConnectionState, ProviderStatus, ProviderStatusResponse,
     QueuedMessagePatchInput, RUN_HISTORY_PAGE_ITEMS, ReclaimWorktreesResponse,
-    RemoveAgentProfileResponse, RemoveProjectResponse, RemoveQueuedMessageResponse,
-    RemoveTodoResponse, RemoveWorktreeResponse, RepoBranchRequest, RepoBranchResponse,
-    RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse, RunCommit, RunCommitsResponse,
-    RunEvent, RunHistoryContext, RunHistoryEvent, RunHistoryPage, RunIndexEntry, Runner,
-    RunnerModelCatalogResponse, RunnerModelOption, RunnerSelection, RunsIndexResponse,
-    SaveWorkflowInput, SaveWorkflowResponse, SelectAgentProfileInput, SetAgentConfigInput,
-    SetConfigInput, SetWorkspaceConfigInput, SetWorkspaceUiStateInput, Skill, StartTodoResponse,
-    StatusEntry, TodoItem, UpdateAgentProfileInput, UpdateProjectInput, UpdateProjectResponse,
-    UserMcpListing, WorkflowStepDef, WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUiState,
-    WorkspaceUsageResponse, WorktreeDirEntry, WorktreeEntry, WorktreeEntryType, WorktreeInfo,
-    WorktreeRunStatus, WorktreesResponse,
+    RegisterProjectInput, RegisterProjectResponse, RemoveAgentProfileResponse,
+    RemoveProjectResponse, RemoveQueuedMessageResponse, RemoveTodoResponse, RemoveWorktreeResponse,
+    RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse,
+    RunCommit, RunCommitsResponse, RunEvent, RunHistoryContext, RunHistoryEvent, RunHistoryPage,
+    RunIndexEntry, Runner, RunnerModelCatalogResponse, RunnerModelOption, RunnerSelection,
+    RunsIndexResponse, SaveWorkflowInput, SaveWorkflowResponse, SelectAgentProfileInput,
+    SetAgentConfigInput, SetConfigInput, SetWorkspaceConfigInput, SetWorkspaceUiStateInput, Skill,
+    StartTodoResponse, StatusEntry, TodoItem, UpdateAgentProfileInput, UpdateProjectInput,
+    UpdateProjectResponse, UserMcpListing, WorkflowStepDef, WorkflowsResponse,
+    WorkspaceConfigResponse, WorkspaceUiState, WorkspaceUsageResponse, WorktreeDirEntry,
+    WorktreeEntry, WorktreeEntryType, WorktreeInfo, WorktreeRunStatus, WorktreesResponse,
 };
 use coducktor_core::config::load_config;
 use coducktor_core::handoff::followups_enabled;
@@ -643,6 +643,41 @@ impl InProcessEngine {
             projects,
             boot_project,
             projects_dir: config.projects_dir,
+        })
+    }
+
+    pub async fn register_project(
+        &self,
+        input: &RegisterProjectInput,
+    ) -> Result<RegisterProjectResponse, EngineError> {
+        let root_text = input.root.trim();
+        if root_text.is_empty() {
+            return Err(EngineError::Conflict {
+                reason: "repository path cannot be empty".to_owned(),
+            });
+        }
+        let root = expand_tilde(root_text, &ProcessEnv);
+        if !root.is_dir() {
+            return Err(EngineError::Conflict {
+                reason: format!("not a directory: {}", root.display()),
+            });
+        }
+        if !coducktor_core::workspace::projects::should_register_project(&root, &ProcessEnv) {
+            return Err(EngineError::Conflict {
+                reason: format!("refusing to register {}", root.display()),
+            });
+        }
+        let config_path = coducktor_core::paths::workspace_config_path(&ProcessEnv);
+        let project = coducktor_core::workspace::projects::register_project(
+            &config_path,
+            &ProcessEnv,
+            &root,
+            coducktor_core::workspace::config::ProjectSource::Local,
+        )
+        .map_err(io_err)?;
+        Ok(RegisterProjectResponse {
+            project: project_entry(&project),
+            error: None,
         })
     }
 
@@ -6744,6 +6779,24 @@ mod tests {
         // the call must succeed with an empty (or real) registry, never error.
         let projects = engine.projects().await.unwrap();
         assert!(projects.projects.iter().all(|p| !p.id.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn register_project_rejects_an_empty_path() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine
+            .register_project(&RegisterProjectInput {
+                root: "  ".to_owned(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            EngineError::Conflict {
+                reason: "repository path cannot be empty".to_owned()
+            }
+        );
     }
 
     #[tokio::test]

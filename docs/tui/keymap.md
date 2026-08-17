@@ -191,6 +191,10 @@ Sort picker: `j`/`k`/`Down`/`Up` to move, `Enter` to apply, `Esc` to cancel.
 
 ### Settings (`screens/settings/mod.rs`)
 
+The Workspace sidebar's **Settings** entry opens the global route (`/settings`) with Projects,
+Appearance, Accounts, Notifications, and Resources. The Settings entry under a project keeps the
+project-scoped sections available.
+
 | Key | Action |
 |---|---|
 | `Tab` / `Shift+Tab` | Switch section |

@@ -1009,6 +1009,21 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
                     Err(error) => app.notice = Some(format!("select account failed: {error}")),
                 }
             }
+            PendingAction::SettingsRegisterProject { root } => {
+                let input = coducktor_contract::RegisterProjectInput { root };
+                match engine.register_project(&input).await {
+                    Ok(response) => {
+                        app.settings_ui.notice = Some(format!(
+                            "registered {} — {}",
+                            response.project.name, response.project.root
+                        ));
+                        refresh_project_registry(engine, app).await;
+                    }
+                    Err(error) => {
+                        app.settings_ui.notice = Some(format!("add repository failed: {error}"));
+                    }
+                }
+            }
             PendingAction::SettingsReclaimWorktrees { project } => {
                 let scope = Scope::Project(project.clone());
                 match engine.reclaim_worktrees(&scope).await {
@@ -1031,18 +1046,14 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
             }
             PendingAction::SettingsRemoveProject { id } => match engine.remove_project(&id).await {
                 Ok(_) => {
-                    if let Ok(projects) = engine.projects().await {
-                        app.set_project_registry(projects.projects);
-                    }
+                    refresh_project_registry(engine, app).await;
                 }
                 Err(error) => app.notice = Some(format!("remove project failed: {error}")),
             },
             PendingAction::SettingsUpdateProject { id, input } => {
                 match engine.update_project(&id, &input).await {
                     Ok(_) => {
-                        if let Ok(projects) = engine.projects().await {
-                            app.set_project_registry(projects.projects);
-                        }
+                        refresh_project_registry(engine, app).await;
                     }
                     Err(error) => app.notice = Some(format!("update project failed: {error}")),
                 }
@@ -1050,6 +1061,19 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
             PendingAction::Quit => {}
         }
     }
+}
+
+async fn refresh_project_registry(engine: &dyn Engine, app: &mut App) {
+    let Ok(projects) = engine.projects().await else {
+        return;
+    };
+    app.set_projects(
+        projects
+            .projects
+            .iter()
+            .map(|project| (project.id.clone(), project.name.clone())),
+    );
+    app.set_project_registry(projects.projects);
 }
 
 /// Every Settings data source, in one place — the section list needs all of it at once

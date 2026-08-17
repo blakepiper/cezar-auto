@@ -1,9 +1,8 @@
-//! The Settings screen. A registry-driven
-//! nav over nine sections; four describe THIS project (Agents, Agent config, Worktrees,
-//! Prompt templates), five describe the user/machine (Accounts, Appearance, Notifications,
-//! Resources, Projects). Writes go through the in-process engine and durable workspace files.
+//! The Settings screens. The project route exposes all nine sections; the global route exposes
+//! the five workspace sections (Projects, Appearance, Accounts, Notifications, Resources).
+//! Writes go through the in-process engine and durable workspace files.
 //!
-//! The screen contains only the nine sections listed above. Terminal-only concerns such as
+//! The screen contains only the sections listed above. Terminal-only concerns such as
 //! keymaps and external-link safety stay in their owning screens or local configuration. The
 //! Theme control changes `app.theme` for the running session only.
 //! Provider usage graphs are not rendered in Resources — only the
@@ -67,6 +66,14 @@ const SECTIONS: [SettingsSection; 9] = [
     SettingsSection::Projects,
 ];
 
+const GLOBAL_SECTIONS: [SettingsSection; 5] = [
+    SettingsSection::Projects,
+    SettingsSection::Appearance,
+    SettingsSection::Accounts,
+    SettingsSection::Notifications,
+    SettingsSection::Resources,
+];
+
 impl SettingsSection {
     fn title(self) -> &'static str {
         match self {
@@ -111,6 +118,7 @@ pub enum EditTarget {
     ChecksoutRoot,
     AccountNewDir(Runner),
     AccountRename(String),
+    ProjectRoot,
     ProjectMaxParallel(String),
     /// Prompt-template edit: `index` is `None` for a new entry; `stage` 0 edits the label,
     /// 1 edits the body (the label typed at stage 0 travels in `label`).
@@ -181,6 +189,8 @@ pub fn open(app: &mut App, project: &str) {
             ..SettingsUi::default()
         };
     }
+    app.settings_ui.section = 0;
+    app.settings_ui.row = 0;
     app.settings_ui.edit = None;
     app.settings_ui.file_editing = false;
     app.request_navigate(Route::Settings {
@@ -191,8 +201,27 @@ pub fn open(app: &mut App, project: &str) {
     });
 }
 
+pub fn open_global(app: &mut App) {
+    let project = app.current_project().to_owned();
+    app.settings_ui = SettingsUi {
+        project: project.clone(),
+        ..SettingsUi::default()
+    };
+    app.request_navigate(Route::GlobalSettings);
+    app.pending.push(PendingAction::LoadSettings { project });
+}
+
+fn visible_sections(app: &App) -> &'static [SettingsSection] {
+    if matches!(app.route(), Route::GlobalSettings) {
+        &GLOBAL_SECTIONS
+    } else {
+        &SECTIONS
+    }
+}
+
 fn current_section(app: &App) -> SettingsSection {
-    SECTIONS[app.settings_ui.section.min(SECTIONS.len() - 1)]
+    let sections = visible_sections(app);
+    sections[app.settings_ui.section.min(sections.len() - 1)]
 }
 
 // ---- row model -----------------------------------------------------------------------------
@@ -506,6 +535,7 @@ fn rows_resources(app: &App) -> Vec<Row> {
 
 fn rows_projects(app: &App) -> Vec<Row> {
     let mut rows = Vec::new();
+    rows.push(row("+ Add repository", "Enter path, then Enter"));
     let root = app
         .settings_ui
         .workspace_config
@@ -517,7 +547,8 @@ fn rows_projects(app: &App) -> Vec<Row> {
         rows.push(row(
             format!("{}  [{:?}]", project.name, project.status),
             format!(
-                "max-parallel={}  tags={}",
+                "{}  max-parallel={}  tags={}",
+                project.root,
                 project
                     .max_parallel
                     .map(|n| (n as u64).to_string())
@@ -545,12 +576,17 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 }
 
 fn render_nav(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
-    let block = Block::default().borders(Borders::ALL).title("Settings");
+    let title = if matches!(app.route(), Route::GlobalSettings) {
+        "Global settings"
+    } else {
+        "Settings"
+    };
+    let block = Block::default().borders(Borders::ALL).title(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut current_scope = "";
-    for (index, section) in SECTIONS.iter().enumerate() {
+    for (index, section) in visible_sections(app).iter().enumerate() {
         if section.scope_label() != current_scope {
             current_scope = section.scope_label();
             lines.push(Line::from(Span::styled(
@@ -676,13 +712,15 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     }
     match key.code {
         KeyCode::Tab => {
-            app.settings_ui.section = (app.settings_ui.section + 1) % SECTIONS.len();
+            let sections = visible_sections(app);
+            app.settings_ui.section = (app.settings_ui.section + 1) % sections.len();
             app.settings_ui.row = 0;
             true
         }
         KeyCode::BackTab => {
+            let sections = visible_sections(app);
             app.settings_ui.section =
-                (app.settings_ui.section + SECTIONS.len() - 1) % SECTIONS.len();
+                (app.settings_ui.section + sections.len() - 1) % sections.len();
             app.settings_ui.row = 0;
             true
         }
@@ -1148,6 +1186,10 @@ fn activate_accounts(app: &mut App, row: usize) {
 
 fn activate_projects(app: &mut App, row: usize) {
     if row == 0 {
+        start_edit(app, EditTarget::ProjectRoot, "");
+        return;
+    }
+    if row == 1 {
         let current = app
             .settings_ui
             .workspace_config
@@ -1157,7 +1199,7 @@ fn activate_projects(app: &mut App, row: usize) {
         start_edit(app, EditTarget::ChecksoutRoot, current);
         return;
     }
-    let Some(project) = app.project_registry.get(row - 1) else {
+    let Some(project) = app.project_registry.get(row - 2) else {
         return;
     };
     start_edit(
@@ -1212,8 +1254,8 @@ fn delete_row(app: &mut App) {
             }
         }
         SettingsSection::Worktrees => activate_worktrees(app, row),
-        SettingsSection::Projects if row > 0 => {
-            if let Some(project) = app.project_registry.get(row - 1) {
+        SettingsSection::Projects if row > 1 => {
+            if let Some(project) = app.project_registry.get(row - 2) {
                 app.confirm = Some(ConfirmRequest {
                     text: format!("Remove \"{}\" from the project registry?", project.name),
                     action: PendingAction::SettingsRemoveProject {
@@ -1306,6 +1348,12 @@ fn submit_edit(app: &mut App, edit: SettingsEdit) {
                         config_dir: None,
                     },
                 });
+            }
+        }
+        EditTarget::ProjectRoot => {
+            if !text.is_empty() {
+                app.pending
+                    .push(PendingAction::SettingsRegisterProject { root: text });
             }
         }
         EditTarget::ProjectMaxParallel(id) => {
@@ -1412,6 +1460,21 @@ mod tests {
         app
     }
 
+    fn app_with_global_settings() -> App {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        open_global(&mut app);
+        app.settings_ui.workspace_config = Some(sample_workspace_config());
+        app.set_project_registry(vec![coducktor_contract::ProjectListEntry {
+            id: "main".to_owned(),
+            name: "main".to_owned(),
+            root: "/home/user/main".to_owned(),
+            status: coducktor_contract::ProjectStatus::Ok,
+            ..Default::default()
+        }]);
+        app.take_pending();
+        app
+    }
+
     fn render_text(app: &mut App, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| app.render(frame)).unwrap();
@@ -1444,6 +1507,44 @@ mod tests {
         }
         handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(current_section(&app), SettingsSection::Agents);
+    }
+
+    #[test]
+    fn global_settings_starts_with_projects_and_renders_workspace_sections() {
+        let mut app = app_with_global_settings();
+        let content = render_text(&mut app, 120, 40);
+        assert_eq!(current_section(&app), SettingsSection::Projects);
+        assert!(content.contains("Global settings"));
+        assert!(content.contains("Projects"));
+        assert!(content.contains("+ Add repository"));
+        assert!(content.contains("Appearance"));
+    }
+
+    #[test]
+    fn global_settings_theme_control_changes_the_session_theme() {
+        let mut app = app_with_global_settings();
+        handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(current_section(&app), SettingsSection::Appearance);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.theme.name, ThemeName::LazyVim);
+    }
+
+    #[test]
+    fn global_projects_add_row_queues_registration() {
+        let mut app = app_with_global_settings();
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        for character in "/tmp/another-repo".chars() {
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
+            );
+        }
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let pending = app.take_pending();
+        assert!(pending.iter().any(|action| matches!(
+            action,
+            PendingAction::SettingsRegisterProject { root } if root == "/tmp/another-repo"
+        )));
     }
 
     #[test]

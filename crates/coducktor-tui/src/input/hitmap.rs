@@ -93,6 +93,7 @@ pub enum HitAction {
     Skills,
     Workflows,
     Settings,
+    GlobalSettings,
     ActiveTasks,
     ArchivedTasks,
     ToggleSidebar,
