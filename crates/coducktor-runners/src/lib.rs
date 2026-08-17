@@ -13,6 +13,7 @@ pub mod claude;
 pub mod claude_runner;
 pub mod codex;
 pub mod codex_runner;
+pub mod model_identity;
 pub mod opencode;
 pub mod pi;
 pub mod usage;
