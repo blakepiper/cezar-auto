@@ -19,6 +19,7 @@ use coducktor_tui::cli::{Cli, Command};
 use coducktor_tui::input::keymap::Keymap;
 use coducktor_tui::terminal::AppTerminal;
 use coducktor_tui::theme::Theme;
+use coducktor_tui::welcome::WelcomeAnimation;
 use coducktor_tui::{cli, headless, new_task_form, screens, terminal};
 
 const FRAME_BUDGET: Duration = Duration::from_millis(33);
@@ -1225,6 +1226,7 @@ async fn run(
     let mut workspace_events = workspace_events;
     let mut thread_listener: Option<ThreadListener> = None;
     let mut bootstrap: Option<(JoinHandle<()>, UnboundedReceiver<PrimeSnapshot>)> = None;
+    let mut welcome = WelcomeAnimation::new();
     let mut last_needs_you = usize::MAX;
     let mut bootstrap_applied = false;
     let mut launch_args_applied =
@@ -1251,15 +1253,23 @@ async fn run(
             launch_args_applied = true;
         }
         let mut pending_mouse = None;
+        let welcome_was_active = welcome.is_active();
         while event::poll(Duration::ZERO)? {
             match event::read()? {
                 Event::Mouse(mouse) if mouse.kind == MouseEventKind::Moved => {
                     pending_mouse = Some(Event::Mouse(mouse));
                 }
+                event if welcome_was_active => {
+                    if welcome.handle_event(&event) {
+                        app.handle_event(event);
+                    }
+                }
                 event => app.handle_event(event),
             }
         }
-        if let Some(mouse) = pending_mouse {
+        if let Some(mouse) = pending_mouse
+            && !welcome_was_active
+        {
             app.handle_event(mouse);
         }
         if let Some(events) = workspace_events.as_deref_mut() {
@@ -1323,7 +1333,13 @@ async fn run(
                 });
             }
         }
-        terminal.draw(|frame| app.render(frame))?;
+        terminal.draw(|frame| {
+            if welcome.is_active() {
+                welcome.render(frame, &app.theme);
+            } else {
+                app.render(frame);
+            }
+        })?;
         if bootstrap.is_none() && !app.should_quit() {
             bootstrap = Some(spawn_prime(engine.clone()));
         }

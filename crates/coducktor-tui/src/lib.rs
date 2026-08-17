@@ -18,4 +18,5 @@ pub mod screens;
 pub mod skills;
 pub mod terminal;
 pub mod theme;
+pub mod welcome;
 pub mod widgets;
