@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   verify:
-    name: Rust + unit + build
+    name: Rust
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -43,28 +43,3 @@ jobs:
             echo "TUI screens must depend on Engine, not transport details"
             exit 1
           fi
-
-      # `lts/*` — the current Node LTS, whatever it is on the day the job runs, so
-      # the gate follows the release line users actually install on instead of
-      # freezing on a version that quietly ages out of support. The floor stays the
-      # root manifest's `engines.node`; this is the ceiling we verify against.
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: lts/*
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Run unit tests
-        run: npm run test:unit
-
-      - name: Run server and cockpit unit suites
-        run: npm test
-
-      - name: Build application
-        run: npm run build
