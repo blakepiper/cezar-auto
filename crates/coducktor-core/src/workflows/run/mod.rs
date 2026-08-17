@@ -2598,8 +2598,10 @@ impl RunManager {
         Ok(())
     }
 
-    /// Cancel queued work or an injected active session. Terminal cleanup removes all process-local
-    /// queue/job/usage state while leaving the durable record as the source of truth.
+    /// Cancel queued work, an injected active session, or a live-status record
+    /// with no process-local runtime (a run loaded from disk after a restart).
+    /// Terminal cleanup removes all process-local queue/job/usage state while
+    /// leaving the durable record as the source of truth.
     pub fn cancel(&mut self, run_id: &str) -> io::Result<bool> {
         if self.queue.is_queued(run_id) || self.jobs.contains_key(run_id) {
             self.cleanup_runtime(run_id);
@@ -2622,6 +2624,28 @@ impl RunManager {
             return Ok(true);
         }
         let Some(mut active) = self.active.remove(run_id) else {
+            if self.get_run(run_id).is_some_and(|run| {
+                matches!(
+                    run.status,
+                    RunStatus::Queued | RunStatus::Running | RunStatus::Waiting
+                )
+            }) {
+                self.settle_steps(run_id, StepStatus::Cancelled)?;
+                let finished_at = now_iso8601();
+                self.update_run(
+                    run_id,
+                    RunPatch::new()
+                        .set("status", RunStatus::Cancelled)
+                        .set("finishedAt", finished_at)
+                        .clear("currentStepId"),
+                )?;
+                self.append_event(
+                    run_id,
+                    EventInput::new("lifecycle").field("message", "run cancelled"),
+                )?;
+                self.cleanup_runtime(run_id);
+                return Ok(true);
+            }
             return Ok(false);
         };
         active.session.cancel();
@@ -2630,8 +2654,34 @@ impl RunManager {
         Ok(true)
     }
 
-    /// Finish a parked session. A successful finish continues any remaining workflow steps, or
-    /// performs the same review-gate settlement as a naturally completed workflow.
+    /// Settle every in-flight step of a run, so a settled record has no dangling
+    /// live steps.
+    fn settle_steps(&mut self, run_id: &str, status: StepStatus) -> io::Result<()> {
+        let finished_at = now_iso8601();
+        let Some(run) = self.get_run(run_id).cloned() else {
+            return Ok(());
+        };
+        for step in &run.steps {
+            if matches!(
+                step.status,
+                StepStatus::Pending | StepStatus::Waiting | StepStatus::Running
+            ) {
+                self.update_step(
+                    run_id,
+                    &step.id,
+                    StepPatch::new()
+                        .set("status", status)
+                        .set("finishedAt", finished_at.clone()),
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Finish a parked session, an accepted review, or a waiting record with no
+    /// process-local runtime. A successful finish continues any remaining
+    /// workflow steps, or performs the same review-gate settlement as a
+    /// naturally completed workflow.
     pub fn finish(&mut self, run_id: &str) -> io::Result<bool> {
         let Some(mut active) = self.active.remove(run_id) else {
             if self
@@ -2645,6 +2695,15 @@ impl RunManager {
                         .field("message", "review accepted — finished without a PR"),
                 )?;
                 self.cleanup_runtime(run_id);
+                self.pump()?;
+                return Ok(true);
+            }
+            if self
+                .get_run(run_id)
+                .is_some_and(|run| run.status == RunStatus::Waiting)
+            {
+                self.settle_steps(run_id, StepStatus::Done)?;
+                self.settle_success(run_id)?;
                 self.pump()?;
                 return Ok(true);
             }
@@ -4425,6 +4484,96 @@ mod tests {
             StepStatus::Done
         );
         assert!(!recovered.is_active(&run.id));
+    }
+
+    #[test]
+    fn cancel_settles_a_loaded_waiting_run_without_a_live_session() {
+        let dir = tempdir().unwrap();
+        let workflow = workflow_with_steps(vec![agent_workflow_step("work")]);
+        let mut first = RunManager::open(dir.path());
+        let run = first
+            .create_workflow_run(&workflow, "cancel waiting")
+            .unwrap();
+        first
+            .update_step(
+                &run.id,
+                "work",
+                StepPatch::new()
+                    .set("status", StepStatus::Waiting)
+                    .set("iterations", 1.0)
+                    .set("sessionId", "waiting-session")
+                    .set("backend", Runner::Claude),
+            )
+            .unwrap();
+        first
+            .update_run(&run.id, RunPatch::new().set("status", RunStatus::Waiting))
+            .unwrap();
+        drop(first);
+
+        let mut reopened = RunManager::open(dir.path());
+        assert!(!reopened.is_active(&run.id));
+        assert!(reopened.cancel(&run.id).unwrap());
+        let settled = reopened.get_run(&run.id).unwrap();
+        assert_eq!(settled.status, RunStatus::Cancelled);
+        assert_eq!(settled.steps[0].status, StepStatus::Cancelled);
+        assert!(settled.finished_at.is_some());
+        assert!(!reopened.is_active(&run.id));
+    }
+
+    #[test]
+    fn cancel_settles_a_loaded_queued_run_without_a_live_session() {
+        let dir = tempdir().unwrap();
+        let workflow = workflow_with_steps(vec![agent_workflow_step("work")]);
+        let mut first = RunManager::open(dir.path());
+        let run = first
+            .create_workflow_run(&workflow, "cancel queued")
+            .unwrap();
+        first
+            .update_run(&run.id, RunPatch::new().set("status", RunStatus::Queued))
+            .unwrap();
+        drop(first);
+
+        let mut reopened = RunManager::open(dir.path());
+        assert!(!reopened.is_active(&run.id));
+        assert!(reopened.cancel(&run.id).unwrap());
+        let settled = reopened.get_run(&run.id).unwrap();
+        assert_eq!(settled.status, RunStatus::Cancelled);
+        assert!(settled.finished_at.is_some());
+        assert!(!reopened.is_active(&run.id));
+    }
+
+    #[test]
+    fn finish_settles_a_loaded_waiting_run_without_a_live_session() {
+        let dir = tempdir().unwrap();
+        let workflow = workflow_with_steps(vec![agent_workflow_step("work")]);
+        let mut first = RunManager::open(dir.path());
+        let run = first
+            .create_workflow_run(&workflow, "finish waiting")
+            .unwrap();
+        first
+            .update_step(
+                &run.id,
+                "work",
+                StepPatch::new()
+                    .set("status", StepStatus::Waiting)
+                    .set("iterations", 1.0)
+                    .set("sessionId", "waiting-session")
+                    .set("backend", Runner::Claude),
+            )
+            .unwrap();
+        first
+            .update_run(&run.id, RunPatch::new().set("status", RunStatus::Waiting))
+            .unwrap();
+        drop(first);
+
+        let mut reopened = RunManager::open(dir.path());
+        assert!(!reopened.is_active(&run.id));
+        assert!(reopened.finish(&run.id).unwrap());
+        let settled = reopened.get_run(&run.id).unwrap();
+        assert_eq!(settled.status, RunStatus::Done);
+        assert_eq!(settled.steps[0].status, StepStatus::Done);
+        assert!(settled.finished_at.is_some());
+        assert!(!reopened.is_active(&run.id));
     }
 
     #[test]

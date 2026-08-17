@@ -851,6 +851,30 @@ mod tests {
     }
 
     #[test]
+    fn delete_refuses_a_waiting_run_and_confirms_a_cancelled_one() {
+        let mut app = app_with_tasks(vec![api_run(1, RunStatus::Waiting, None)]);
+        render(&mut app, 160, 30);
+        app.tasks_ui.table.move_selection(1);
+        request_delete(&mut app);
+        assert!(app.confirm.is_none());
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("run is active — cancel it first")
+        );
+
+        let mut app = app_with_tasks(vec![api_run(2, RunStatus::Cancelled, None)]);
+        render(&mut app, 160, 30);
+        app.tasks_ui.table.move_selection(1);
+        request_delete(&mut app);
+        let confirm = app.confirm.as_ref().expect("delete confirm expected");
+        assert!(matches!(
+            confirm.action,
+            crate::app::PendingAction::Delete { ref id, .. } if id == "run-2"
+        ));
+        assert!(app.notice.is_none());
+    }
+
+    #[test]
     fn snapshot_tasks_table_at_three_sizes() {
         let mut app = app_with_tasks(vec![
             api_run(1, RunStatus::Running, Some("feat/shell")),
