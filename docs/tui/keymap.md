@@ -19,7 +19,7 @@ user bindings are merged over these defaults, key by key.
 | `i` | Inbox |
 | `Ctrl+B` | Toggle sidebar |
 | `Ctrl+Left` | Focus the left navigation panel; `j`/`k` or `Up`/`Down` move, `Enter` opens, `Esc` returns |
-| `F6` | Return focus to the left navigation panel |
+
 | `Up` / `Down` on Tasks | Focus and cycle the left navigation panel; `Enter` opens the highlighted destination |
 | `?` | Help overlay (context-filtered) |
 | `:` | Open the command line |
