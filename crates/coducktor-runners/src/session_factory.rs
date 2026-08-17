@@ -1,0 +1,332 @@
+//! A concrete `coducktor_core::workflows::run::SessionFactory` dispatching to the four real
+//! backends (claude/codex/opencode/pi) by `RunnerSelection`. This is the wiring the B9a.2 module
+//! docs each deferred to "coducktor-server's job" / B10 — every backend's `open_*_session` has
+//! existed since B9a.2, but nothing before B10 constructed one from a live [`SessionRequest`].
+//!
+//! Binary resolution mirrors each TS runner's own constructor exactly, not a symmetric
+//! convention invented here:
+//! - claude/pi: `CEZ_CLAUDE_BIN`/`CEZ_PI_BIN` override, else — when `CEZ_DRY_RUN=1` — the bundled
+//!   Node mock script, else the bare binary name on PATH. (`claude-cli-runner.ts`'s
+//!   `mockClaudePath()`/`pi-runner.ts`'s `mockPiPath()`.)
+//! - codex/opencode: `CEZ_CODEX_BIN`/`CEZ_OPENCODE_BIN` override, else the bare binary name on
+//!   PATH — **no** `CEZ_DRY_RUN` fallback. `codex-app-server-transport.ts`'s
+//!   `resolveCodexExecutable` and `opencode-server-runner.ts`'s constructor really do skip it;
+//!   this is not an oversight to "fix" here, it is the oracle.
+//!
+//! The dry-run mock scripts live in the still-live Node tree (`packages/cezar/scripts/`), so
+//! resolving them relative to `SessionRequest.cwd` (the repo root a run operates in) rather than
+//! this binary's own install location is deliberate — `CEZ_DRY_RUN=1` is a development/testing
+//! affordance that only makes sense run from inside this monorepo checkout in the first place,
+//! same phase Phase A/B's dual-implementation testing already assumes throughout.
+
+use std::collections::BTreeMap;
+use std::path::Path;
+
+use coducktor_contract::{Runner, RunnerSelection};
+use coducktor_core::workflows::run::{AgentSession, SessionFactory, SessionRequest};
+
+use crate::agent_runner::AgentRunSpec;
+use crate::claude_runner::{self, ClaudeSpawnConfig};
+use crate::codex_runner::{self, CodexSpawnConfig};
+use crate::opencode_runner::{self, OpencodeSpawnConfig};
+use crate::pi_runner::{self, PiSpawnConfig};
+
+const MOCK_CLAUDE_RELATIVE: &str = "packages/cezar/scripts/mock-claude.mjs";
+const MOCK_PI_RELATIVE: &str = "packages/cezar/scripts/mock-pi-rpc.mjs";
+
+/// Production `SessionFactory`: spawns the real agent CLI (or, for claude/pi under
+/// `CEZ_DRY_RUN=1`, the bundled mock) for whichever backend a [`SessionRequest`] names.
+pub struct DefaultSessionFactory {
+    host_env: BTreeMap<String, String>,
+}
+
+impl DefaultSessionFactory {
+    /// Captures the current process environment once — every backend spawn reads from this
+    /// snapshot rather than re-querying `std::env` per session, matching how every backend's own
+    /// test suite already passes a fixed `host_env` map rather than the live environment.
+    pub fn new() -> Self {
+        Self {
+            host_env: std::env::vars().collect(),
+        }
+    }
+
+    fn dry_run(&self) -> bool {
+        self.host_env.get("CEZ_DRY_RUN").map(String::as_str) == Some("1")
+    }
+
+    fn mock_node_config(&self, repo_root: &Path, relative: &str) -> (String, Vec<String>) {
+        let script = repo_root.join(relative);
+        (
+            "node".to_owned(),
+            vec![script.to_string_lossy().into_owned()],
+        )
+    }
+
+    fn claude_config(&self, repo_root: &Path) -> ClaudeSpawnConfig {
+        let mut config = ClaudeSpawnConfig::default();
+        if let Some(bin) = self.host_env.get("CEZ_CLAUDE_BIN") {
+            config.program = bin.clone();
+        } else if self.dry_run() {
+            let (program, args) = self.mock_node_config(repo_root, MOCK_CLAUDE_RELATIVE);
+            config.program = program;
+            config.prefix_args = args;
+        }
+        config
+    }
+
+    fn codex_config(&self) -> CodexSpawnConfig {
+        let mut config = CodexSpawnConfig::default();
+        if let Some(bin) = self.host_env.get("CEZ_CODEX_BIN") {
+            config.program = bin.clone();
+        }
+        config
+    }
+
+    fn opencode_config(&self) -> OpencodeSpawnConfig {
+        let mut config = OpencodeSpawnConfig::default();
+        if let Some(bin) = self.host_env.get("CEZ_OPENCODE_BIN") {
+            config.program = bin.clone();
+        }
+        config
+    }
+
+    fn pi_config(&self, repo_root: &Path) -> PiSpawnConfig {
+        let mut config = PiSpawnConfig::default();
+        if let Some(bin) = self.host_env.get("CEZ_PI_BIN") {
+            config.program = bin.clone();
+        } else if self.dry_run() {
+            let (program, args) = self.mock_node_config(repo_root, MOCK_PI_RELATIVE);
+            config.program = program;
+            config.prefix_args = args;
+        }
+        config
+    }
+}
+
+impl Default for DefaultSessionFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// `RunnerSelection::Auto` falls back to claude — the same default `RunManager::execute_job`
+/// itself already applies (`.unwrap_or(RunnerSelection::Claude)`) when nothing more specific was
+/// requested; a factory should never actually observe `Auto` in practice; this exists so `open`
+/// is total rather than failing on it.
+fn resolve_runner(selection: RunnerSelection) -> Runner {
+    match selection {
+        RunnerSelection::Claude | RunnerSelection::Auto => Runner::Claude,
+        RunnerSelection::Codex => Runner::Codex,
+        RunnerSelection::OpenCode => Runner::OpenCode,
+        RunnerSelection::Pi => Runner::Pi,
+    }
+}
+
+fn to_agent_run_spec(request: &SessionRequest) -> AgentRunSpec {
+    AgentRunSpec {
+        system_prompt: request.system_prompt.clone(),
+        user_prompt: request.prompt.clone(),
+        images: Vec::new(),
+        cwd: request.cwd.clone(),
+        allowed_tools: request.allowed_tools.clone(),
+        bash_allowlist: request.bash_allowlist.clone(),
+        additional_directories: Vec::new(),
+        env: BTreeMap::new(),
+        model: request.model.clone(),
+        reasoning_effort: request.reasoning_effort,
+        timeout_ms: None,
+        session_id: request.session_id.clone(),
+        resume: request.continuation,
+    }
+}
+
+impl SessionFactory for DefaultSessionFactory {
+    fn open(&mut self, request: SessionRequest) -> Result<Box<dyn AgentSession + Send>, String> {
+        let repo_root = request.cwd.clone();
+        let spec = to_agent_run_spec(&request);
+        match resolve_runner(request.runner) {
+            Runner::Claude => {
+                let config = self.claude_config(&repo_root);
+                let session = claude_runner::open_claude_session(&config, &spec, &self.host_env)?;
+                Ok(Box::new(session))
+            }
+            Runner::Codex => {
+                let config = self.codex_config();
+                let session = codex_runner::open_codex_session(&config, spec, &self.host_env)?;
+                Ok(Box::new(session))
+            }
+            Runner::OpenCode => {
+                let config = self.opencode_config();
+                let session =
+                    opencode_runner::open_opencode_session(&config, spec, &self.host_env)?;
+                Ok(Box::new(session))
+            }
+            Runner::Pi => {
+                let config = self.pi_config(&repo_root);
+                let session = pi_runner::open_pi_session(&config, &spec, &self.host_env)?;
+                Ok(Box::new(session))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn factory_with_env(pairs: &[(&str, &str)]) -> DefaultSessionFactory {
+        DefaultSessionFactory {
+            host_env: pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn resolve_runner_defaults_auto_to_claude() {
+        assert_eq!(resolve_runner(RunnerSelection::Auto), Runner::Claude);
+        assert_eq!(resolve_runner(RunnerSelection::Claude), Runner::Claude);
+        assert_eq!(resolve_runner(RunnerSelection::Codex), Runner::Codex);
+        assert_eq!(resolve_runner(RunnerSelection::OpenCode), Runner::OpenCode);
+        assert_eq!(resolve_runner(RunnerSelection::Pi), Runner::Pi);
+    }
+
+    #[test]
+    fn claude_config_prefers_the_env_override_over_dry_run() {
+        let factory = factory_with_env(&[("CEZ_CLAUDE_BIN", "/opt/claude"), ("CEZ_DRY_RUN", "1")]);
+        let config = factory.claude_config(Path::new("/repo"));
+        assert_eq!(config.program, "/opt/claude");
+        assert!(config.prefix_args.is_empty());
+    }
+
+    #[test]
+    fn claude_config_falls_back_to_the_bundled_mock_under_dry_run() {
+        let factory = factory_with_env(&[("CEZ_DRY_RUN", "1")]);
+        let config = factory.claude_config(Path::new("/repo"));
+        assert_eq!(config.program, "node");
+        assert_eq!(
+            config.prefix_args,
+            vec!["/repo/packages/cezar/scripts/mock-claude.mjs".to_owned()]
+        );
+    }
+
+    #[test]
+    fn claude_config_defaults_to_the_bare_binary_name_outside_dry_run() {
+        let factory = factory_with_env(&[]);
+        let config = factory.claude_config(Path::new("/repo"));
+        assert_eq!(config.program, "claude");
+        assert!(config.prefix_args.is_empty());
+    }
+
+    #[test]
+    fn pi_config_follows_the_same_dry_run_convention_as_claude() {
+        let factory = factory_with_env(&[("CEZ_DRY_RUN", "1")]);
+        let config = factory.pi_config(Path::new("/repo"));
+        assert_eq!(config.program, "node");
+        assert_eq!(
+            config.prefix_args,
+            vec!["/repo/packages/cezar/scripts/mock-pi-rpc.mjs".to_owned()]
+        );
+    }
+
+    #[test]
+    fn codex_config_has_no_dry_run_fallback_matching_the_ts_oracle() {
+        let factory = factory_with_env(&[("CEZ_DRY_RUN", "1")]);
+        let config = factory.codex_config();
+        assert_eq!(config.program, "codex");
+        assert!(config.prefix_args.is_empty());
+    }
+
+    #[test]
+    fn opencode_config_has_no_dry_run_fallback_matching_the_ts_oracle() {
+        let factory = factory_with_env(&[("CEZ_DRY_RUN", "1")]);
+        let config = factory.opencode_config();
+        assert_eq!(config.program, "opencode");
+        assert!(config.prefix_args.is_empty());
+    }
+
+    #[test]
+    fn codex_config_honors_its_own_env_override() {
+        let factory = factory_with_env(&[("CEZ_CODEX_BIN", "/opt/codex")]);
+        assert_eq!(factory.codex_config().program, "/opt/codex");
+    }
+
+    #[test]
+    fn opencode_config_honors_its_own_env_override() {
+        let factory = factory_with_env(&[("CEZ_OPENCODE_BIN", "/opt/opencode")]);
+        assert_eq!(factory.opencode_config().program, "/opt/opencode");
+    }
+
+    #[test]
+    fn to_agent_run_spec_carries_the_session_request_fields_through() {
+        let request = SessionRequest {
+            run_id: "run-1".to_owned(),
+            step_id: "step-1".to_owned(),
+            prompt: "do the thing".to_owned(),
+            runner: RunnerSelection::Claude,
+            model: Some("sonnet".to_owned()),
+            session_id: Some("sess-1".to_owned()),
+            continuation: true,
+            cwd: PathBuf::from("/repo"),
+            allowed_tools: vec!["Read".to_owned()],
+            bash_allowlist: vec!["npm test".to_owned()],
+            system_prompt: Some("Be careful.".to_owned()),
+            reasoning_effort: Some(coducktor_contract::ConcreteReasoningEffort::High),
+        };
+        let spec = to_agent_run_spec(&request);
+        assert_eq!(spec.user_prompt, "do the thing");
+        assert_eq!(spec.cwd, PathBuf::from("/repo"));
+        assert_eq!(spec.allowed_tools, vec!["Read".to_owned()]);
+        assert_eq!(spec.bash_allowlist, vec!["npm test".to_owned()]);
+        assert_eq!(spec.system_prompt.as_deref(), Some("Be careful."));
+        assert_eq!(spec.model.as_deref(), Some("sonnet"));
+        assert_eq!(spec.session_id.as_deref(), Some("sess-1"));
+        assert!(spec.resume);
+        assert_eq!(
+            spec.reasoning_effort,
+            Some(coducktor_contract::ConcreteReasoningEffort::High)
+        );
+    }
+
+    /// End-to-end proof that the factory's dry-run path resolution actually finds the real
+    /// `mock-claude.mjs` in this checkout and opens a working session through it — not just that
+    /// the string-building helpers above compute the right path.
+    #[test]
+    fn open_spawns_a_working_claude_session_under_dry_run() {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap();
+        let mut factory = factory_with_env(&[("CEZ_DRY_RUN", "1")]);
+        let request = SessionRequest {
+            run_id: "run-1".to_owned(),
+            step_id: "step-1".to_owned(),
+            prompt: "investigate the login redirect bug mock:done".to_owned(),
+            runner: RunnerSelection::Claude,
+            model: None,
+            session_id: None,
+            continuation: false,
+            cwd: repo_root,
+            allowed_tools: vec!["Read".to_owned(), "Bash".to_owned()],
+            bash_allowlist: Vec::new(),
+            system_prompt: None,
+            reasoning_effort: None,
+        };
+        let mut session = factory.open(request).unwrap();
+        let mut event_types = Vec::new();
+        let outcome = session
+            .turn(&mut |event| {
+                event_types.push(event.event_type.clone());
+                Ok(())
+            })
+            .unwrap();
+        assert!(event_types.contains(&"text".to_owned()));
+        assert!(matches!(
+            outcome,
+            coducktor_core::workflows::run::SessionOutcome::Completed(_)
+        ));
+        session.finish(&mut |_| Ok(())).unwrap();
+    }
+}
