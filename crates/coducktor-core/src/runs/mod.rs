@@ -3,6 +3,7 @@
 //! `packages/cezar/src/runs/{store,retention}.ts` — see `store`'s module doc for exactly
 //! which slice of `store.ts` this crate owns at this step versus what's deferred to B3/B6.
 
+pub mod ask;
 pub mod events;
 pub mod retention;
 pub mod store;
