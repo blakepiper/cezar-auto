@@ -48,7 +48,7 @@ open = "5"
 # CLI argument parsing for the TUI binary (spec §6.3, §10 A13).
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1.48", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
-tokio-stream = "0.1"
+tokio-stream = { version = "0.1", features = ["sync"] }
 async-stream = "0.3"
 async-trait = "0.1"
 axum = "0.8"

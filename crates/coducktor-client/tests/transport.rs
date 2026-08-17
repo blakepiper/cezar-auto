@@ -286,11 +286,9 @@ async fn workflow_save_parse_and_delete_round_trip() {
         .await;
     Mock::given(method("DELETE"))
         .and(path("/api/v1/p/shop/workflows/my-chain"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(
-                json!({"ok": true, "path": "/repo/.ai/coducktor/workflows/my-chain.yaml"}),
-            ),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"ok": true, "path": "/repo/.ai/coducktor/workflows/my-chain.yaml"}),
+        ))
         .mount(&server)
         .await;
 

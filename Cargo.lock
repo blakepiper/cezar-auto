@@ -713,12 +713,16 @@ dependencies = [
  "async-trait",
  "bytes",
  "coducktor-contract",
+ "coducktor-core",
+ "coducktor-forge",
  "coducktor-protocol",
+ "coducktor-runners",
  "futures-core",
  "futures-util",
  "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "tokio-tungstenite 0.26.2",
@@ -3741,6 +3745,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

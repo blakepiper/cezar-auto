@@ -11,7 +11,10 @@ async-stream.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 coducktor-contract = { path = "../coducktor-contract" }
+coducktor-core = { path = "../coducktor-core" }
+coducktor-forge = { path = "../coducktor-forge" }
 coducktor-protocol = { path = "../coducktor-protocol" }
+coducktor-runners = { path = "../coducktor-runners" }
 futures-core.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true
@@ -23,5 +26,6 @@ tokio-tungstenite.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+tempfile = "3"
 tokio-tungstenite.workspace = true
 wiremock = "0.6"
