@@ -6,6 +6,7 @@
 
 mod wire;
 
+pub mod agent_runner;
 pub mod claude;
 pub mod codex;
 pub mod opencode;
