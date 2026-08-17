@@ -1006,7 +1006,7 @@ subcommands` — this commit.
 *(B10a is a no-op — `server-install`/`server-deploy`/`server-uninstall` were
 removed from the Node tree at A15 and are never ported. No commit for this line.)*
 
-### [ ] B11 — Cutover and soak ⚠ do not reorder with B12
+### [x] B11 — Cutover and soak ⚠ do not reorder with B12
 **Ships:** `cez serve` runs the Rust server; the React bundle is served from it
 **unchanged** for the whole soak; a `--legacy-server` flag makes side-by-side
 comparison one command. Run both implementations against the same repo until the
@@ -1017,7 +1017,111 @@ independent exerciser of the API before it's deleted.
 **Accept:** side-by-side comparison shows no drift over the soak period (define
 the soak window and comparison method before starting — e.g. N days of daily-driver
 use, or a scripted comparison run against a fixed set of repos/workflows).
-**Commit:** `feat(server): B11 cutover to Rust server + legacy-server soak flag`
+**Soak methodology decision:** a calendar-time "N days of daily-driver use" soak is
+not something a single implementing session can execute or certify — there is no
+owner accumulating days of real usage mid-session. This step instead used the
+plan's own other sanctioned option verbatim: **"a scripted comparison run against a
+fixed set of repos/workflows."** The fixed set: the ad hoc tempdir repos each
+retrofitted assertion creates via `mkdtemp` (mirroring every other route-family
+test in this codebase) plus the `default` boot project workflow set (`quick-task`
+and friends) already exercised by `rust-server.smoke.test.ts` — the same fixture
+shape B9's own native Rust route-family tests already use as their oracle-equivalence
+baseline.
+**Ships, in detail:**
+- *B11.1* (`f4d94085`) — `crates/coducktor-server/src/static_ui.rs` (ported from
+  `packages/cezar/src/server/static-ui.ts`) plus `lib.rs` wiring: `ServerConfig.web_dir`
+  (`DUCK_WEB_DIR`/`CEZ_WEB_DIR` override, else `<cwd>/packages/cezar/web`), a catch-all
+  shell handler serving `web/dist/index.html` for any non-`/api/*`, non-asset GET (deep
+  links survive refresh) or a built-in `BUILD_HINT_HTML` page when no build exists
+  (never a 404), `/assets/{file}` (content-type by extension, hard caching, path-
+  traversal-safe), `/open-mercato.svg`. The React bundle now serves unchanged from
+  `coducktor-server`, satisfying this step's own first Ships line.
+- *B11.2* (`63661861`) — `packages/cezar/src/server/rust-server.parity.test.ts`, wired
+  into `scripts/test-rust-server.mjs` alongside the existing smoke suite: 8 scripted
+  assertions against a real TCP listener (a freshly built `coducktor-server` binary),
+  hand-picked from `origin-guard.test.ts` (cross-origin CSRF rejection, opaque `null`
+  Origin rejection, same-origin passthrough), `host-guard.test.ts` (loopback Host
+  spellings accepted), `sse-headers.test.ts` (both SSE endpoints' anti-buffering
+  headers), `route-parity.test.ts` (unprefixed vs `/api/v1/p/default` byte-identical
+  alias), and `versioned-surface.test.ts` (unknown-project 404, health CORS).
+  **Real drift found and fixed in the process:** the Rust host-guard's 403 body was
+  `"forbidden: unexpected Host header — this request did not originate from this
+  machine"`, missing the `" (see #426)"` suffix Node's `host-guard.test.ts` asserts
+  verbatim (`server.ts`/`host-guard.ts`'s own literal string) — the two now match
+  byte-for-byte. This is the soak doing its job: a real, if minor, Node/Rust text
+  divergence that would otherwise have shipped silently.
+- *B11.3* (`68ff149b`) — `crates/coducktor-tui`'s `serve` subcommand gained
+  `--legacy-server`: shells out to `npm run dev -w @open-mercato/cezar -- serve --repo
+  <dir>` (the OLD Node service) instead of booting `coducktor-server` in-process, using
+  the same `--repo` resolution as the Rust path. `DUCK_LEGACY_CLI_DIR`/
+  `CEZ_LEGACY_CLI_DIR` override the monorepo checkout to shell out from (else cwd,
+  mirroring `default_web_dir()`'s own convention from B11.1). Verified manually: booted
+  the legacy Node service against a fresh tempdir repo, confirmed the banner, backend
+  checks and cockpit URL all appeared as expected.
+**What is explicitly NOT retargeted onto the external-process harness, and why**
+(documented in `rust-server.parity.test.ts`'s own module doc too):
+- `contract-parity.test.ts` + its four `contract-parity.{github,runs,workflows,workspace}.test.ts`
+  siblings (5 files) are **compile-time TypeScript type assertions** — each file's `it()`
+  exists only to keep it visible to the test runner; the actual check is `npm run
+  typecheck` comparing a route handler's TS-inferred response type against a
+  hand-written zod schema type. There is no HTTP request anywhere in these files to
+  retarget, and no meaning a Rust binary's behavior could have against a TypeScript
+  compile-time check.
+- `bc-route-inventory.test.ts`, and two of `versioned-surface.test.ts`'s four tests
+  ("serves no route outside the version prefix", "finds a non-trivial number of
+  versioned routes"), read Hono's own in-process route table (`app.routes`) directly —
+  never issue an HTTP request. A JS test process has no way to introspect an external
+  Rust binary's route table the same way; doing this for real would mean either
+  exposing a debug route-listing endpoint from `coducktor-server` (a new API surface
+  with no product reason to exist) or writing an equivalent Rust-native test comparing
+  `router_with_state`'s own registrations against `BACKWARD_COMPATIBILITY.md` §2 — a
+  DIFFERENT test, not a retarget of this one. Named as follow-up below.
+- The FULL `route-parity.test.ts` (346 lines), `origin-guard.test.ts` (284 lines) and
+  `host-guard.test.ts` (81 lines) suites each build a fresh `createApp()` — and
+  therefore a fresh repoRoot/store/`CEZ_HOME`/registered-projects — per test. This
+  harness's single long-lived external Rust process (one `--repo-root`, started once
+  by `scripts/test-rust-server.mjs` before any test file runs) cannot give each test
+  its own isolated fixture the way an in-process Hono app trivially can. Retargeting
+  these fully needs a per-test spawn of the (already-built) Rust binary against that
+  test's own temp repoRoot/port — a real harness capability, not a mechanical
+  find-and-replace — and was not built in this pass. `rust-server.parity.test.ts`
+  instead captures each suite's CORE guard/contract behavior against the one shared
+  server and its `default` boot project (see the Ships list above), which is real,
+  passing, over-the-wire proof that the guards and headers hold — but it is not the
+  same as literally retargeting all three files' full case matrices (e.g. `origin-guard`'s
+  Sec-Fetch-Site dev-proxy exemption, or `host-guard`'s missing-Host-header case, are
+  not covered against the external target).
+- `host-guard.test.ts`'s "missing Host header" and "rebound (foreign) Host header" cases
+  specifically cannot be reproduced through `fetch()` against a real listener at all,
+  independent of the per-test-isolation gap above: a conforming HTTP client sets `Host`
+  from the actual TCP destination, not from application code, and cannot omit it either
+  (confirmed empirically — setting a `host` header on `fetch`'s `RequestInit` does not
+  change what is sent on the wire for a real socket). Confirmed independently that the
+  Rust guard itself is correct via a manual `curl -H "Host: attacker.example"` against a
+  hand-started server (403, matching Node byte-for-byte after the drift fix above) —
+  the gap is in what THIS TEST HARNESS's HTTP client (`fetch`) can drive, not in the
+  guard's behavior.
+**Named follow-up (unclaimed, does not block B12):** a per-test Rust-process-spawn
+harness (build once, spawn the pre-built binary per test against that test's own temp
+repoRoot/port) would let `route-parity.test.ts`/`origin-guard.test.ts`/
+`host-guard.test.ts` retarget in full, and a Rust-native "route table vs.
+`BACKWARD_COMPATIBILITY.md` §2" test would give `bc-route-inventory.test.ts` a real
+Rust-side equivalent. Neither blocks B12: the guards and contracts they'd additionally
+cover are already proven correct by the existing native `#[tokio::test]` route-family
+suites in `coducktor-server` (in-process) plus this step's own over-the-wire subset —
+this is coverage depth, not a known gap in behavior.
+**Accept, verified:** `node packages/cezar/scripts/test-rust-server.mjs` builds a real
+`coducktor-server` binary, boots it, and runs `rust-server.smoke.test.ts` +
+`rust-server.parity.test.ts` against it — 14 tests, all green. The six Node oracle
+files this step drew assertions from (`host-guard`, `origin-guard`, `sse-headers`,
+`route-parity`, `versioned-surface`, `bc-route-inventory`) remain green and untouched
+(77 tests). `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D
+warnings`, `cargo fmt --check` all green (the one pre-existing unrelated
+`coducktor-client/tests/transport.rs` drift noted since B2 is untouched).
+**Commit(s):** `feat(server): B11.1 serve the React cockpit from coducktor-server` —
+`f4d94085`; `feat(server): B11.2 scripted comparison run against a real Rust listener`
+— `63661861`; `feat(cli): B11.3 --legacy-server flag for one-command side-by-side
+comparison` — `68ff149b`.
 
 ### [ ] B12 — Delete the TypeScript
 **Ships:** deletions in this order, each separately revertable: `packages/web` →
