@@ -68,7 +68,7 @@ pub fn open(app: &mut App, project: &str, tab: RepoGitTab) {
         };
     }
     app.repo_git_ui.tab = tab;
-    app.history.navigate(Route::RepoGit {
+    app.navigate_route(Route::RepoGit {
         project: project.to_owned(),
         tab,
     });

@@ -942,7 +942,7 @@ mod tests {
             truncated: Vec::new(),
             reference_statuses: Default::default(),
         });
-        app.history.navigate(crate::app::Route::GlobalTasks);
+        app.navigate_route(crate::app::Route::GlobalTasks);
         app
     }
 

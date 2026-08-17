@@ -96,7 +96,7 @@ pub fn open(app: &mut App, project: &str, id: &str, tab: TaskGitTab) {
         };
     }
     app.task_git_ui.tab = tab;
-    app.history.navigate(Route::TaskGit {
+    app.navigate_route(Route::TaskGit {
         project: project.to_owned(),
         id: id.to_owned(),
         tab,

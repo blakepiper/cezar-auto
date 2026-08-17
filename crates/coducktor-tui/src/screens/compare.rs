@@ -53,7 +53,7 @@ pub fn open(app: &mut App, project: &str, group_id: &str) {
             ..CompareUi::default()
         };
     }
-    app.history.navigate(Route::Compare {
+    app.navigate_route(Route::Compare {
         project: project.to_owned(),
         group_id: group_id.to_owned(),
     });

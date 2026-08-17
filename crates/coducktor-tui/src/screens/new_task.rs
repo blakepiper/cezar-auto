@@ -1558,7 +1558,7 @@ mod tests {
     }
 
     fn open_new_task(app: &mut App, project: &str) {
-        app.history.navigate(crate::app::Route::NewTask {
+        app.navigate_route(crate::app::Route::NewTask {
             project: project.to_owned(),
         });
         app.new_task_ui.composer_focused = true;
@@ -1934,7 +1934,7 @@ mod tests {
         app.apply_workspace_event(run);
         assert!(app.tasks.iter().any(|run| run.record.id == "run-1"));
 
-        app.history.navigate(crate::app::Route::Tasks { project });
+        app.navigate_route(crate::app::Route::Tasks { project });
         let content = render(&mut app, 160, 30);
         assert!(
             content.contains("ship the shell"),
@@ -1951,7 +1951,7 @@ mod tests {
         assert_eq!(app.new_task_ui.draft.text, "half typed");
 
         // Navigate away and back: the draft store restores the text.
-        app.history.navigate(crate::app::Route::Tasks {
+        app.navigate_route(crate::app::Route::Tasks {
             project: "main".to_owned(),
         });
         open_new_task(&mut app, "t-0");

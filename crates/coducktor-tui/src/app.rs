@@ -1105,8 +1105,15 @@ impl App {
                 action: PendingAction::IdeDiscardThenNavigate(Box::new(route)),
             });
         } else {
-            self.history.navigate(route);
+            self.navigate_route(route);
         }
+    }
+
+    /// Navigate and re-anchor the sidebar selector on the destination's row, so
+    /// the arrow selector and the current-route highlight never sit on two rows.
+    pub(crate) fn navigate_route(&mut self, route: Route) {
+        self.history.navigate(route);
+        self.anchor_sidebar_selection();
     }
 
     /// Back, guarding the IDE's unsaved draft like `request_navigate`.
@@ -1117,7 +1124,13 @@ impl App {
                 action: PendingAction::IdeDiscardThenBack,
             });
         } else {
-            self.history.back();
+            self.go_back();
+        }
+    }
+
+    fn go_back(&mut self) {
+        if self.history.back() {
+            self.anchor_sidebar_selection();
         }
     }
 
@@ -1129,7 +1142,36 @@ impl App {
                 action: PendingAction::IdeDiscardThenForward,
             });
         } else {
-            self.history.forward();
+            self.go_forward();
+        }
+    }
+
+    fn go_forward(&mut self) {
+        if self.history.forward() {
+            self.anchor_sidebar_selection();
+        }
+    }
+
+    /// Snap the sidebar selector to the current route's sidebar row after a
+    /// navigation. Routes without a sidebar row (task Git tabs, compare) leave
+    /// the selector where it is.
+    fn anchor_sidebar_selection(&mut self) {
+        let row = match self.route() {
+            Route::Placeholder { nav, .. } => SidebarRow::Nav(*nav),
+            Route::Tasks { .. } | Route::Thread { .. } => SidebarRow::Nav(NavItem::Tasks),
+            Route::NewTask { .. } => SidebarRow::Nav(NavItem::NewTask),
+            Route::Ide { .. } => SidebarRow::Nav(NavItem::Ide),
+            Route::Github { .. } => SidebarRow::Nav(NavItem::Github),
+            Route::Skills { .. } => SidebarRow::Nav(NavItem::Skills),
+            Route::Workflows { .. } => SidebarRow::Nav(NavItem::Workflows),
+            Route::RepoGit { .. } => SidebarRow::Nav(NavItem::RepoGit),
+            Route::Settings { .. } => SidebarRow::Nav(NavItem::Settings),
+            Route::GlobalTasks => SidebarRow::GlobalTasks,
+            Route::GlobalSettings => SidebarRow::GlobalSettings,
+            Route::TaskGit { .. } | Route::Compare { .. } => return,
+        };
+        if let Some(index) = self.sidebar_position(row) {
+            self.sidebar_selected = index;
         }
     }
 
@@ -1804,14 +1846,6 @@ impl App {
     fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
         self.hover = Some((mouse.column, mouse.row));
         match mouse.kind {
-            MouseEventKind::Moved => {
-                if let Some(action) = self.hitmap.hit(mouse.column, mouse.row)
-                    && let Some(row) = self.sidebar_row_for_hit(&action)
-                    && let Some(index) = self.sidebar_position(row)
-                {
-                    self.sidebar_selected = index;
-                }
-            }
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(action) = self.hitmap.hit(mouse.column, mouse.row) {
                     if let Some(row) = self.sidebar_row_for_hit(&action)
@@ -1945,7 +1979,7 @@ impl App {
             KeyCode::Char('?') => self.help_open = true,
             KeyCode::Esc if self.sidebar_overlay_open => self.sidebar_overlay_open = false,
             KeyCode::Esc => {
-                self.history.back();
+                self.go_back();
             }
             _ => {}
         }
@@ -1962,15 +1996,15 @@ impl App {
                     PendingAction::Quit => self.quit = true,
                     PendingAction::IdeDiscardThenNavigate(route) => {
                         self.ide_ui.discard();
-                        self.history.navigate(*route);
+                        self.navigate_route(*route);
                     }
                     PendingAction::IdeDiscardThenBack => {
                         self.ide_ui.discard();
-                        self.history.back();
+                        self.go_back();
                     }
                     PendingAction::IdeDiscardThenForward => {
                         self.ide_ui.discard();
-                        self.history.forward();
+                        self.go_forward();
                     }
                     PendingAction::SwitchProject(project) => {
                         self.ide_ui.discard();
@@ -2307,12 +2341,14 @@ impl App {
 
     fn apply_project_switch(&mut self, project: String) {
         self.default_project = project.clone();
+        // The switch is the resolution of the IDE-dirty guard, so navigate
+        // directly here and keep the selector on the new project's row.
+        self.history.navigate(Route::Tasks {
+            project: project.clone(),
+        });
         if let Some(index) = self.projects.iter().position(|entry| entry.id == project) {
             self.sidebar_selected = index;
         }
-        self.request_navigate(Route::Tasks {
-            project: project.clone(),
-        });
         self.pending.push(PendingAction::RefreshTasks {
             project: project.clone(),
         });
@@ -3012,6 +3048,73 @@ mod tests {
     }
 
     #[test]
+    fn navigation_reanchors_the_sidebar_selector_on_the_destination_row() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        assert_eq!(app.sidebar_selected, 2);
+
+        app.request_navigate(Route::RepoGit {
+            project: "main".to_owned(),
+            tab: RepoGitTab::Changes,
+        });
+        assert_eq!(app.sidebar_selected, 4);
+
+        app.request_navigate(Route::NewTask {
+            project: "main".to_owned(),
+        });
+        assert_eq!(app.sidebar_selected, 1);
+
+        app.request_back();
+        assert_eq!(app.sidebar_selected, 4);
+
+        app.request_back();
+        assert_eq!(app.sidebar_selected, 2);
+    }
+
+    #[test]
+    fn route_changes_leave_a_single_highlighted_sidebar_row() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.set_projects([
+            ("blarchy".to_owned(), "blarchy".to_owned()),
+            ("main".to_owned(), "main".to_owned()),
+        ]);
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        // The selector starts on the current project row (main, index 1).
+        assert_eq!(app.sidebar_selected, 1);
+        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        assert_eq!(app.sidebar_selected, 3);
+
+        app.request_navigate(Route::RepoGit {
+            project: "main".to_owned(),
+            tab: RepoGitTab::Changes,
+        });
+        let selected = app.sidebar_selected_row();
+        assert_eq!(selected, Some(SidebarRow::Nav(NavItem::RepoGit)));
+
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let cell = |x: usize, y: usize| &buffer.content[y * 120 + x];
+        // The Git row (sidebar row 7) shows the selector; the Tasks row (row 5) does not.
+        assert!(
+            cell(2, 7)
+                .modifier
+                .contains(ratatui::style::Modifier::REVERSED)
+        );
+        assert!(
+            !cell(2, 5)
+                .modifier
+                .contains(ratatui::style::Modifier::REVERSED)
+        );
+    }
+
+    #[test]
     fn clicking_another_project_switches_the_sidebar_context() {
         let mut app = App::new("main", Theme::detect(), Keymap::default());
         app.set_projects([
@@ -3039,23 +3142,6 @@ mod tests {
             action,
             PendingAction::RefreshNewTask { project } if project == "blarchy"
         )));
-    }
-
-    #[test]
-    fn mouse_hover_moves_the_shared_sidebar_selector() {
-        let mut app = App::new("main", Theme::detect(), Keymap::default());
-        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
-        terminal.draw(|frame| app.render(frame)).unwrap();
-
-        app.handle_event(Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Moved,
-            column: 2,
-            row: 5,
-            modifiers: KeyModifiers::NONE,
-        }));
-
-        assert_eq!(app.sidebar_selected, 3);
-        assert!(!app.sidebar_focus);
     }
 
     #[test]

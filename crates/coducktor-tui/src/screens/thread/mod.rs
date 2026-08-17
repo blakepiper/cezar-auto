@@ -275,7 +275,7 @@ fn pending_ask(state: &ThreadState) -> Option<&ThreadAsk> {
 /// (Tasks, Global tasks, row menus, a just-started run) should call instead of navigating
 /// `Route::Thread` directly.
 pub fn open(app: &mut App, project: &str, id: &str) {
-    app.history.navigate(crate::app::Route::Thread {
+    app.navigate_route(crate::app::Route::Thread {
         project: project.to_owned(),
         id: id.to_owned(),
     });
@@ -923,7 +923,7 @@ mod tests {
             Vec::new(),
             -1.0,
         );
-        app.history.navigate(crate::app::Route::Thread {
+        app.navigate_route(crate::app::Route::Thread {
             project: "main".to_owned(),
             id: "run-1".to_owned(),
         });
@@ -945,7 +945,7 @@ mod tests {
     #[test]
     fn full_run_lifecycle_start_live_ask_answer_review_send_back_accept_archive() {
         let mut app = app_with_run(RunStatus::Queued);
-        app.history.navigate(crate::app::Route::Thread {
+        app.navigate_route(crate::app::Route::Thread {
             project: "main".to_owned(),
             id: "run-1".to_owned(),
         });

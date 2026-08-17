@@ -27,14 +27,14 @@ user bindings are merged over these defaults, key by key.
 | `Ctrl+K` | Command palette |
 
 The left navigation panel shows a persistent arrow selector that the keyboard and
-the mouse share: hovering a sidebar row with the mouse moves it, clicking a row
-activates it, and `j`/`k`/`Up`/`Down` move it once the panel has focus (`Ctrl+Left`,
-or `Up`/`Down` from the Tasks screens). The selector starts on the current project
-row, so `Up`/`Down` reach every registered project; `Enter` opens the highlighted
-row (a project row switches to that project, a nav row opens its screen, and the
-Active/Archived rows switch the task filter). `Esc` (or `Right`) returns focus to
-the screen. The command palette (`Ctrl+K`) and
-`:open <route>` remain available too.
+the mouse share: clicking a sidebar row with the mouse moves it there and activates
+it, and `j`/`k`/`Up`/`Down` move it once the panel has focus (`Ctrl+Left`, or
+`Up`/`Down` from the Tasks screens). The selector starts on the current project
+row and follows every navigation, so the highlighted row always matches the screen
+you are on. `Enter` opens the highlighted row (a project row switches to that
+project, a nav row opens its screen, and the Active/Archived rows switch the task
+filter). `Esc` (or `Right`) returns focus to the screen. The command palette
+(`Ctrl+K`) and `:open <route>` remain available too.
 
 Clicking a non-active project row switches the sidebar context to that registered project and
 refreshes its tasks. Clicking the active project row still expands or collapses its navigation.
