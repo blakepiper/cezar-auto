@@ -32,15 +32,18 @@ use coducktor_contract::{
     AgentAccountDetailsResponse, AgentAccountFile, AgentAccountStatusResponse, AgentProfile,
     AgentProfileResponse, AgentProfileSelectionsResponse, AgentProfilesResponse, ApiRun,
     ArchiveFinishedResponse, BackendCheck, BackendCheckName, CancelResponse, Capabilities,
-    ConfigResponse, CreateAgentProfileInput, CreateRunInput, CreateRunResponse, DeleteRunResponse,
-    DeleteWorkflowResponse, FinishResponse, ForgeInfo, ForgeKind, HealthProject, HealthResponse,
-    IdeDirectoryResponse, IdeEntry, IdeEntryType, IdeFileResponse, MarkAllReadResponse,
+    ChangedFile, ChangedFileStatus, ChangesPayload, ConfigResponse, CreateAgentProfileInput,
+    CreateRunInput, CreateRunResponse, DeleteRunResponse, DeleteWorkflowResponse,
+    EmptyRepoResponse, FinishResponse, ForgeInfo, ForgeKind, HealthProject, HealthResponse,
+    IdeDirectoryResponse, IdeEntry, IdeEntryType, IdeFileResponse, LogEntry, MarkAllReadResponse,
     OpenAgentAccountFileInput, OpenAgentAccountFileResponse, ParsedWorkflow, PatchRunInput,
-    ProjectListEntry, ProjectSource, ProjectStatus, ProjectsResponse, ProviderConnectionState,
-    ProviderStatus, ProviderStatusResponse, RemoveAgentProfileResponse, RemoveTodoResponse,
-    RepoInfo, RunIndexEntry, Runner, RunnerSelection, RunsIndexResponse, SaveWorkflowInput,
-    SaveWorkflowResponse, SelectAgentProfileInput, SetConfigInput, Skill, StartTodoResponse,
-    TodoItem, UpdateAgentProfileInput, WorkflowStepDef, WorkflowsResponse, WorkspaceUsageResponse,
+    PresentRepoResponse, ProjectListEntry, ProjectSource, ProjectStatus, ProjectsResponse,
+    ProviderConnectionState, ProviderStatus, ProviderStatusResponse, RemoveAgentProfileResponse,
+    RemoveTodoResponse, RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoDiffStat,
+    RepoInfo, RepoResponse, RunIndexEntry, Runner, RunnerSelection, RunsIndexResponse,
+    SaveWorkflowInput, SaveWorkflowResponse, SelectAgentProfileInput, SetConfigInput, Skill,
+    StartTodoResponse, StatusEntry, TodoItem, UpdateAgentProfileInput, WorkflowStepDef,
+    WorkflowsResponse, WorkspaceUsageResponse, WorktreeDirEntry, WorktreeEntry, WorktreeEntryType,
 };
 use coducktor_core::handoff::followups_enabled;
 use coducktor_core::paths::{
@@ -1022,6 +1025,687 @@ impl InProcessEngine {
             .await
             .map_err(|error| EngineError::Transport(error.to_string()))?
     }
+
+    // ---- diff engine: task git, repo git, compare (spec §8.5-§8.7, A9) -----------------------
+    // Ported from `coducktor-server`'s `run_diff`/`run_changes`/`run_commit`/`run_files`/
+    // `get_repo`/`get_repo_changes`/`get_repo_commit`/`create_repo_branch` handlers, plus their
+    // shared `repo_info_at`/`repo_status`/`repo_log`/`repo_branches`/`collect_git_changes`/
+    // `repo_commit_payload`/`read_worktree_path` helpers (all duplicated below — none were
+    // `pub`). `group`/`pick_variant` are a separate, more involved cluster (they mutate run
+    // state — cancel/archive losing variants, remove their worktrees, touch the review gate) and
+    // are deliberately left for a follow-up round rather than folded in alongside this batch.
+
+    fn run_record(&self, run_id: &str) -> Result<coducktor_contract::RunRecord, EngineError> {
+        let manager = self.manager.lock().map_err(|_| lock_err())?;
+        manager
+            .get_run(run_id)
+            .cloned()
+            .ok_or(EngineError::NotFound)
+    }
+
+    fn run_working_directory(&self, run: &coducktor_contract::RunRecord) -> Option<PathBuf> {
+        if run.worktree == Some(false) {
+            Some(self.repo_root.clone())
+        } else {
+            run_worktree_of(run)
+        }
+    }
+
+    pub async fn run_diff_text(&self, run_id: &str) -> Result<String, EngineError> {
+        let run = self.run_record(run_id)?;
+        let Some(worktree) = run_worktree_of(&run) else {
+            return Ok(NO_WORKTREE.to_owned());
+        };
+        let base = run.base_branch.clone().unwrap_or_else(|| "HEAD".to_owned());
+        tokio::task::spawn_blocking(move || {
+            coducktor_core::git::worktree::worktree_diff(&worktree, &base, 400_000)
+        })
+        .await
+        .map_err(|error| EngineError::Transport(error.to_string()))
+    }
+
+    pub async fn run_changes(&self, run_id: &str) -> Result<ChangesPayload, EngineError> {
+        let run = self.run_record(run_id)?;
+        let Some(root) = self.run_working_directory(&run) else {
+            return Err(EngineError::Conflict {
+                reason: NO_WORKTREE.to_owned(),
+            });
+        };
+        let base = run.base_branch.clone().unwrap_or_else(|| "HEAD".to_owned());
+        tokio::task::spawn_blocking(move || {
+            run_changes_payload(&root, &base).map_err(|reason| EngineError::Conflict { reason })
+        })
+        .await
+        .map_err(|error| EngineError::Transport(error.to_string()))?
+    }
+
+    pub async fn run_commit(
+        &self,
+        run_id: &str,
+        sha: &str,
+    ) -> Result<RepoCommitPayload, EngineError> {
+        let run = self.run_record(run_id)?;
+        let Some(root) = self.run_working_directory(&run) else {
+            return Err(EngineError::Conflict {
+                reason: NO_WORKTREE.to_owned(),
+            });
+        };
+        let sha = sha.to_owned();
+        tokio::task::spawn_blocking(move || {
+            repo_commit_payload(&root, &sha).map_err(|reason| EngineError::Conflict { reason })
+        })
+        .await
+        .map_err(|error| EngineError::Transport(error.to_string()))?
+    }
+
+    pub async fn run_files(
+        &self,
+        run_id: &str,
+        path: Option<&str>,
+    ) -> Result<WorktreeEntry, EngineError> {
+        let run = self.run_record(run_id)?;
+        let Some(root) = self.run_working_directory(&run) else {
+            return Err(EngineError::Conflict {
+                reason: NO_WORKTREE.to_owned(),
+            });
+        };
+        let relative = path.unwrap_or_default().to_owned();
+        tokio::task::spawn_blocking(move || {
+            read_worktree_path(&root, &relative).map_err(|reason| EngineError::Conflict { reason })
+        })
+        .await
+        .map_err(|error| EngineError::Transport(error.to_string()))?
+    }
+
+    /// Raw bytes for an image the worktree file browser can preview (matches the oracle's own
+    /// `run_files?raw=1` restriction: "raw serving is limited to images").
+    pub async fn run_file_raw(&self, run_id: &str, path: &str) -> Result<Vec<u8>, EngineError> {
+        let run = self.run_record(run_id)?;
+        let Some(root) = self.run_working_directory(&run) else {
+            return Err(EngineError::Conflict {
+                reason: NO_WORKTREE.to_owned(),
+            });
+        };
+        let relative = path.to_owned();
+        tokio::task::spawn_blocking(move || read_worktree_raw(&root, &relative))
+            .await
+            .map_err(|error| EngineError::Transport(error.to_string()))?
+    }
+
+    pub async fn repo(&self) -> Result<RepoResponse, EngineError> {
+        let repo_root = self.repo_root.clone();
+        tokio::task::spawn_blocking(move || repo_response(&repo_root))
+            .await
+            .map_err(|error| EngineError::Transport(error.to_string()))
+    }
+
+    pub async fn repo_changes(&self) -> Result<ChangesPayload, EngineError> {
+        let repo_root = self.repo_root.clone();
+        tokio::task::spawn_blocking(move || {
+            let Some(info) = repo_info_at(&repo_root) else {
+                return Err(EngineError::Conflict {
+                    reason: "not a git repository".to_owned(),
+                });
+            };
+            collect_git_changes(Path::new(&info.root), &["HEAD".to_owned()])
+                .map_err(|reason| EngineError::Conflict { reason })
+        })
+        .await
+        .map_err(|error| EngineError::Transport(error.to_string()))?
+    }
+
+    pub async fn repo_commit(&self, sha: &str) -> Result<RepoCommitPayload, EngineError> {
+        let repo_root = self.repo_root.clone();
+        let sha = sha.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let Some(info) = repo_info_at(&repo_root) else {
+                return Err(EngineError::Conflict {
+                    reason: "not a git repository".to_owned(),
+                });
+            };
+            repo_commit_payload(Path::new(&info.root), &sha)
+                .map_err(|reason| EngineError::Conflict { reason })
+        })
+        .await
+        .map_err(|error| EngineError::Transport(error.to_string()))?
+    }
+
+    pub async fn repo_branch(
+        &self,
+        input: &RepoBranchRequest,
+    ) -> Result<RepoBranchResponse, EngineError> {
+        let repo_root = self.repo_root.clone();
+        let input = input.clone();
+        tokio::task::spawn_blocking(move || create_repo_branch(&repo_root, &input))
+            .await
+            .map_err(|error| EngineError::Transport(error.to_string()))?
+    }
+}
+
+// ---- repo/run git helpers, duplicated from `coducktor-server`'s private functions of the same
+// name (git shelling, worktree browsing, diff/compare) ------------------------------------
+
+const NO_WORKTREE: &str = "no worktree — this task ran directly in the repo working tree";
+const WORKTREE_FILE_CONTENT_CAP: u64 = 512_000;
+
+fn git_capture(root: &Path, args: &[&str]) -> Result<String, String> {
+    let output = Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        let error = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        Err(if error.is_empty() {
+            "git command failed".to_owned()
+        } else {
+            error
+        })
+    }
+}
+
+fn git_capture_owned(root: &Path, args: &[String]) -> Result<String, String> {
+    let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    git_capture(root, &refs)
+}
+
+fn repo_info_at(root: &Path) -> Option<RepoInfo> {
+    let repo_root = git_capture(root, &["rev-parse", "--show-toplevel"])
+        .ok()?
+        .trim()
+        .to_owned();
+    let branch = git_capture(
+        Path::new(&repo_root),
+        &["rev-parse", "--abbrev-ref", "HEAD"],
+    )
+    .ok()
+    .map(|value| value.trim().to_owned())
+    .filter(|value| !value.is_empty())
+    .unwrap_or_else(|| "HEAD".to_owned());
+    let remote = git_capture(Path::new(&repo_root), &["remote", "get-url", "origin"])
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            let name = git_capture(Path::new(&repo_root), &["remote"])
+                .ok()?
+                .lines()
+                .map(str::trim)
+                .find(|value| !value.is_empty())
+                .map(ToOwned::to_owned)?;
+            git_capture(Path::new(&repo_root), &["remote", "get-url", name.as_str()])
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+        });
+    Some(RepoInfo {
+        root: repo_root,
+        branch,
+        remote,
+    })
+}
+
+fn repo_status(root: &Path) -> Vec<StatusEntry> {
+    git_capture(root, &["status", "--porcelain"])
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| StatusEntry {
+            status: line.get(..2).unwrap_or(line).trim().to_owned(),
+            path: line.get(3..).unwrap_or_default().to_owned(),
+        })
+        .collect()
+}
+
+fn repo_log(root: &Path) -> Vec<LogEntry> {
+    git_capture(
+        root,
+        &["log", "-20", "--pretty=format:%h%x1f%s%x1f%an%x1f%cr"],
+    )
+    .unwrap_or_default()
+    .lines()
+    .filter_map(|line| {
+        let mut fields = line.split('\x1f');
+        Some(LogEntry {
+            hash: fields.next()?.to_owned(),
+            subject: fields.next()?.to_owned(),
+            author: fields.next()?.to_owned(),
+            when: fields.next()?.to_owned(),
+        })
+    })
+    .collect()
+}
+
+fn repo_branches(root: &Path) -> Vec<String> {
+    let mut branches = std::collections::BTreeSet::new();
+    for args in [
+        &["branch", "--list", "--format=%(refname:short)"][..],
+        &["branch", "-r", "--list", "--format=%(refname:short)"][..],
+    ] {
+        for name in git_capture(root, args)
+            .unwrap_or_default()
+            .lines()
+            .map(str::trim)
+        {
+            if name.is_empty() || name.contains("HEAD") {
+                continue;
+            }
+            let name = name.strip_prefix("origin/").unwrap_or(name);
+            if !name.starts_with("cez/") && !name.starts_with("duck/") {
+                branches.insert(name.to_owned());
+            }
+        }
+    }
+    branches.into_iter().collect()
+}
+
+fn cap_git_text(text: String, cap: usize) -> String {
+    let Some((end, _)) = text.char_indices().nth(cap) else {
+        return text;
+    };
+    format!("{}\n… (diff truncated)", &text[..end])
+}
+
+fn diff_revision_args(revisions: &[String], suffix: &[String]) -> Vec<String> {
+    let mut args = vec![
+        "diff".to_owned(),
+        "--no-color".to_owned(),
+        "--find-renames".to_owned(),
+        "--find-copies".to_owned(),
+    ];
+    args.extend(revisions.iter().cloned());
+    args.extend(suffix.iter().cloned());
+    args
+}
+
+fn changed_file_status(value: &str) -> ChangedFileStatus {
+    match value.chars().next().unwrap_or('M') {
+        'A' => ChangedFileStatus::Added,
+        'D' => ChangedFileStatus::Deleted,
+        'R' => ChangedFileStatus::Renamed,
+        'C' => ChangedFileStatus::Copied,
+        _ => ChangedFileStatus::Modified,
+    }
+}
+
+fn collect_git_changes(root: &Path, revisions: &[String]) -> Result<ChangesPayload, String> {
+    let names = git_capture_owned(
+        root,
+        &diff_revision_args(revisions, &["--name-status".to_owned()]),
+    )?;
+    let numstats = git_capture_owned(
+        root,
+        &diff_revision_args(revisions, &["--numstat".to_owned()]),
+    )?;
+    let mut counts = std::collections::HashMap::new();
+    for line in numstats.lines() {
+        let mut fields = line.split('\t');
+        let adds = fields.next().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+        let dels = fields.next().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+        let path = fields.collect::<Vec<_>>().join("\t");
+        if !path.is_empty() {
+            let path = if let Some((_, new)) = path.rsplit_once(" => ") {
+                new.to_owned()
+            } else {
+                path
+            };
+            counts.insert(path, (adds, dels, adds.is_nan() || dels.is_nan()));
+        }
+    }
+    let mut files = Vec::new();
+    for line in names.lines().filter(|line| !line.is_empty()) {
+        let fields = line.split('\t').collect::<Vec<_>>();
+        if fields.len() < 2 {
+            continue;
+        }
+        let status = changed_file_status(fields[0]);
+        let (path, old_path) = if matches!(
+            status,
+            ChangedFileStatus::Renamed | ChangedFileStatus::Copied
+        ) && fields.len() >= 3
+        {
+            (fields[2].to_owned(), Some(fields[1].to_owned()))
+        } else {
+            (fields[1].to_owned(), None)
+        };
+        let (adds, dels, binary) = counts
+            .get(&path)
+            .copied()
+            .map_or((0.0, 0.0, false), |(adds, dels, binary)| {
+                (adds, dels, binary)
+            });
+        let patch_args = diff_revision_args(
+            revisions,
+            &[
+                "--patch".to_owned(),
+                "--unified=20".to_owned(),
+                "--".to_owned(),
+                path.clone(),
+            ],
+        );
+        let patch = git_capture_owned(root, &patch_args).unwrap_or_default();
+        let binary = binary || patch.contains("Binary files");
+        files.push(ChangedFile {
+            path,
+            old_path,
+            status,
+            adds,
+            dels,
+            binary,
+            image: None,
+            patch: cap_git_text(patch, 200_000),
+        });
+    }
+    let adds = files.iter().map(|file| file.adds).sum();
+    let dels = files.iter().map(|file| file.dels).sum();
+    Ok(ChangesPayload {
+        stat: RepoDiffStat {
+            adds,
+            dels,
+            files: files.len() as f64,
+        },
+        files,
+        repointed_head: None,
+    })
+}
+
+fn valid_commit_hash(value: &str) -> bool {
+    (4..=40).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn repo_commit_payload(root: &Path, sha: &str) -> Result<RepoCommitPayload, String> {
+    if !valid_commit_hash(sha) {
+        return Err("not a commit hash".to_owned());
+    }
+    let metadata = git_capture(
+        root,
+        &["show", "-s", "--format=%H%x1f%s%x1f%an%x1f%cr", sha],
+    )?;
+    let mut fields = metadata.trim().split('\x1f');
+    let full_sha = fields.next().unwrap_or(sha).to_owned();
+    let subject = fields.next().unwrap_or_default().to_owned();
+    let author = fields.next().unwrap_or_default().to_owned();
+    let when = fields.next().unwrap_or_default().to_owned();
+    let parents = git_capture(root, &["rev-list", "--parents", "-n", "1", sha])?;
+    let changes = if let Some(parent) = parents.split_whitespace().nth(1) {
+        collect_git_changes(root, &[parent.to_owned(), sha.to_owned()])?
+    } else {
+        ChangesPayload {
+            files: Vec::new(),
+            stat: RepoDiffStat {
+                adds: 0.0,
+                dels: 0.0,
+                files: 0.0,
+            },
+            repointed_head: None,
+        }
+    };
+    Ok(RepoCommitPayload {
+        sha: full_sha,
+        subject,
+        author,
+        when,
+        files: changes.files,
+        stat: changes.stat,
+    })
+}
+
+fn run_changes_payload(root: &Path, base: &str) -> Result<ChangesPayload, String> {
+    if !coducktor_core::git::refs::is_safe_git_ref(base) {
+        return Err("refusing option-like base ref".to_owned());
+    }
+    collect_git_changes(root, &[base.to_owned()])
+}
+
+fn run_worktree_of(run: &coducktor_contract::RunRecord) -> Option<PathBuf> {
+    run.worktree_path
+        .as_deref()
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+}
+
+fn contains_git_component(path: &str) -> bool {
+    Path::new(path)
+        .components()
+        .any(|component| component == std::path::Component::Normal(".git".as_ref()))
+}
+
+fn read_worktree_path(root: &Path, relative: &str) -> Result<WorktreeEntry, String> {
+    if relative.contains('\0') || contains_git_component(relative) {
+        return Err("invalid path".to_owned());
+    }
+    let real_root =
+        std::fs::canonicalize(root).map_err(|_| "worktree is unavailable".to_owned())?;
+    let target = root.join(relative);
+    let metadata = std::fs::symlink_metadata(&target).map_err(|_| {
+        format!(
+            "no such file or directory in the worktree: {}",
+            if relative.is_empty() { "/" } else { relative }
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err("symlinks are not served".to_owned());
+    }
+    let real_target =
+        std::fs::canonicalize(&target).map_err(|_| "worktree path is unavailable".to_owned())?;
+    if real_target != real_root && !real_target.starts_with(&real_root) {
+        return Err(format!("path escapes the worktree: {relative}"));
+    }
+    let display = real_target
+        .strip_prefix(&real_root)
+        .ok()
+        .map(|path| {
+            path.to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "/")
+        })
+        .unwrap_or_default();
+    if metadata.is_dir() {
+        let mut entries = Vec::new();
+        let directory = std::fs::read_dir(&target).map_err(|error| error.to_string())?;
+        for entry in directory.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == ".git" {
+                continue;
+            }
+            let child_metadata = match std::fs::symlink_metadata(entry.path()) {
+                Ok(metadata) if !metadata.file_type().is_symlink() => metadata,
+                _ => continue,
+            };
+            let entry_type = if child_metadata.is_dir() {
+                WorktreeEntryType::Dir
+            } else if child_metadata.is_file() {
+                WorktreeEntryType::File
+            } else {
+                continue;
+            };
+            entries.push(WorktreeDirEntry {
+                name,
+                entry_type,
+                size: child_metadata
+                    .is_file()
+                    .then_some(child_metadata.len() as f64),
+            });
+        }
+        entries.sort_by(|left, right| {
+            let left_dir = matches!(left.entry_type, WorktreeEntryType::Dir);
+            let right_dir = matches!(right.entry_type, WorktreeEntryType::Dir);
+            right_dir
+                .cmp(&left_dir)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        return Ok(WorktreeEntry::Dir {
+            path: display,
+            entries,
+        });
+    }
+    if !metadata.is_file() {
+        return Err(format!("not a regular file: {display}"));
+    }
+    let size = metadata.len();
+    let too_large = size > WORKTREE_FILE_CONTENT_CAP;
+    let mut sample = Vec::new();
+    if let Ok(mut file) = std::fs::File::open(&target) {
+        use std::io::Read as _;
+        let mut buffer = [0_u8; 8_192];
+        let read = file.read(&mut buffer).unwrap_or(0);
+        sample.extend_from_slice(&buffer[..read]);
+    }
+    let binary = sample.contains(&0);
+    let content = if binary || too_large {
+        None
+    } else {
+        std::fs::read(&target)
+            .ok()
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+    };
+    Ok(WorktreeEntry::File {
+        path: display,
+        size: size as f64,
+        binary,
+        too_large,
+        content,
+    })
+}
+
+fn image_content_type(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Ported from `run_files`'s `wants_raw` branch: raw bytes are only ever served for an image
+/// that isn't over the content cap — everything else is a `Conflict`, matching the oracle's own
+/// `raw serving is limited to images` / `file too large to serve raw` messages.
+fn read_worktree_raw(root: &Path, relative: &str) -> Result<Vec<u8>, EngineError> {
+    let entry =
+        read_worktree_path(root, relative).map_err(|reason| EngineError::Conflict { reason })?;
+    let WorktreeEntry::File {
+        path, too_large, ..
+    } = &entry
+    else {
+        return Err(EngineError::Conflict {
+            reason: format!("raw serving is limited to images: {relative}"),
+        });
+    };
+    let mime = image_content_type(Path::new(path));
+    if !mime.starts_with("image/") {
+        return Err(EngineError::Conflict {
+            reason: format!("raw serving is limited to images: {path}"),
+        });
+    }
+    if *too_large {
+        return Err(EngineError::Conflict {
+            reason: format!("file too large to serve raw: {path}"),
+        });
+    }
+    std::fs::read(root.join(path)).map_err(io_err)
+}
+
+fn repo_response(repo_root: &Path) -> RepoResponse {
+    let Some(info) = repo_info_at(repo_root) else {
+        return RepoResponse::Empty(EmptyRepoResponse {
+            info: None,
+            status: Vec::new(),
+            log: Vec::new(),
+            branches: Vec::new(),
+            base_branch: None,
+        });
+    };
+    let workspace = workspace_config_for(repo_root);
+    let config =
+        coducktor_core::config::load_config(Path::new(&info.root), &workspace.agent_defaults);
+    RepoResponse::Present(PresentRepoResponse {
+        info: info.clone(),
+        status: repo_status(Path::new(&info.root)),
+        log: repo_log(Path::new(&info.root)),
+        branches: repo_branches(Path::new(&info.root)),
+        base_branch: config.base_branch,
+    })
+}
+
+fn create_repo_branch(
+    repo_root: &Path,
+    input: &RepoBranchRequest,
+) -> Result<RepoBranchResponse, EngineError> {
+    let Some(info) = repo_info_at(repo_root) else {
+        return Err(EngineError::Conflict {
+            reason: "not a git repository".to_owned(),
+        });
+    };
+    let name = input.name.trim();
+    if name.is_empty() || name.len() > 200 || !coducktor_core::git::refs::is_safe_git_ref(name) {
+        return Err(EngineError::Conflict {
+            reason: format!("invalid branch name: {name}"),
+        });
+    }
+    let root = Path::new(&info.root);
+    if git_capture(root, &["check-ref-format", "--branch", name]).is_err() {
+        return Err(EngineError::Conflict {
+            reason: format!("invalid branch name: {name}"),
+        });
+    }
+    let exists = git_capture(
+        root,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{name}"),
+        ],
+    )
+    .is_ok();
+    let args = if exists {
+        vec!["checkout".to_owned(), name.to_owned()]
+    } else if let Some(from) = input
+        .from
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if !coducktor_core::git::refs::is_safe_git_ref(from)
+            || git_capture(
+                root,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("{from}^{{commit}}"),
+                ],
+            )
+            .is_err()
+        {
+            return Err(EngineError::Conflict {
+                reason: format!("unknown start point: {from}"),
+            });
+        }
+        vec![
+            "checkout".to_owned(),
+            "-b".to_owned(),
+            name.to_owned(),
+            from.to_owned(),
+        ]
+    } else {
+        vec!["checkout".to_owned(), "-b".to_owned(), name.to_owned()]
+    };
+    if let Err(error) = git_capture_owned(root, &args) {
+        return Err(EngineError::Conflict { reason: error });
+    }
+    Ok(RepoBranchResponse {
+        branch: name.to_owned(),
+        created: !exists,
+    })
 }
 
 // ---- IDE helpers, duplicated from `coducktor-server`'s private ide_* functions -----------
@@ -3386,5 +4070,269 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(error, EngineError::Conflict { .. }));
+    }
+
+    // ---- repo/run git (C1 continuation) ----------------------------------------------------
+
+    /// Mirrors `coducktor-core::git::worktree`'s own `fixture_repo()` test helper: tempdir →
+    /// `git init -q -b main` → commit a base file with an explicit test identity.
+    fn fixture_repo() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let ok = |args: &[&str]| {
+            assert!(
+                Command::new("git")
+                    .current_dir(root)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success(),
+                "git {args:?} failed"
+            );
+        };
+        ok(&["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("base.txt"), "base\n").unwrap();
+        ok(&["add", "-A"]);
+        ok(&[
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@local",
+            "commit",
+            "-q",
+            "-m",
+            "base",
+        ]);
+        dir
+    }
+
+    fn commit_all_git(root: &Path, message: &str) {
+        assert!(
+            Command::new("git")
+                .current_dir(root)
+                .args(["add", "-A"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .current_dir(root)
+                .args([
+                    "-c",
+                    "user.name=test",
+                    "-c",
+                    "user.email=test@local",
+                    "commit",
+                    "-q",
+                    "-m",
+                    message
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
+    #[tokio::test]
+    async fn repo_reports_present_for_a_real_git_repository() {
+        let dir = fixture_repo();
+        let engine = engine(&dir);
+        let repo = engine.repo().await.unwrap();
+        match repo {
+            RepoResponse::Present(present) => {
+                assert_eq!(present.info.branch, "main");
+                assert!(present.log.iter().any(|entry| entry.subject == "base"));
+            }
+            RepoResponse::Empty(_) => panic!("expected Present"),
+        }
+    }
+
+    #[tokio::test]
+    async fn repo_reports_empty_for_a_non_git_directory() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let repo = engine.repo().await.unwrap();
+        assert!(matches!(repo, RepoResponse::Empty(_)));
+    }
+
+    #[tokio::test]
+    async fn repo_changes_lists_a_modified_tracked_file_against_head() {
+        let dir = fixture_repo();
+        std::fs::write(dir.path().join("base.txt"), "changed\n").unwrap();
+        let engine = engine(&dir);
+        let changes = engine.repo_changes().await.unwrap();
+        assert_eq!(changes.files.len(), 1);
+        assert_eq!(changes.files[0].path, "base.txt");
+        assert_eq!(changes.files[0].status, ChangedFileStatus::Modified);
+    }
+
+    #[tokio::test]
+    async fn repo_commit_returns_a_structured_payload_for_a_known_sha() {
+        let dir = fixture_repo();
+        let sha = String::from_utf8(
+            Command::new("git")
+                .current_dir(dir.path())
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_owned();
+        let engine = engine(&dir);
+        let payload = engine.repo_commit(&sha).await.unwrap();
+        assert_eq!(payload.sha, sha);
+        assert_eq!(payload.subject, "base");
+    }
+
+    #[tokio::test]
+    async fn repo_commit_rejects_a_malformed_sha() {
+        let dir = fixture_repo();
+        let engine = engine(&dir);
+        let error = engine.repo_commit("not-a-sha!!").await.unwrap_err();
+        assert!(matches!(error, EngineError::Conflict { .. }));
+    }
+
+    #[tokio::test]
+    async fn repo_branch_creates_and_checks_out_a_new_branch() {
+        let dir = fixture_repo();
+        let engine = engine(&dir);
+        let response = engine
+            .repo_branch(&RepoBranchRequest {
+                name: "feature/x".to_owned(),
+                from: None,
+            })
+            .await
+            .unwrap();
+        assert!(response.created);
+        assert_eq!(response.branch, "feature/x");
+        let current = String::from_utf8(
+            Command::new("git")
+                .current_dir(dir.path())
+                .args(["branch", "--show-current"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        assert_eq!(current.trim(), "feature/x");
+    }
+
+    #[tokio::test]
+    async fn repo_branch_rejects_an_unsafe_branch_name() {
+        let dir = fixture_repo();
+        let engine = engine(&dir);
+        let error = engine
+            .repo_branch(&RepoBranchRequest {
+                name: "--evil".to_owned(),
+                from: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(error, EngineError::Conflict { .. }));
+    }
+
+    #[tokio::test]
+    async fn run_files_lists_the_repo_root_when_the_run_has_no_worktree() {
+        let dir = fixture_repo();
+        let engine = engine(&dir);
+        let CreateRunResponse::Single(run) =
+            engine.start_run(steps_input("look around")).await.unwrap()
+        else {
+            panic!("expected a single run");
+        };
+        let files = engine.run_files(&run.id, None).await.unwrap();
+        match files {
+            WorktreeEntry::Dir { entries, .. } => {
+                assert!(entries.iter().any(|entry| entry.name == "base.txt"));
+            }
+            WorktreeEntry::File { .. } => panic!("expected Dir"),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_changes_lists_a_modification_relative_to_the_runs_base_branch() {
+        let dir = fixture_repo();
+        let engine = engine(&dir);
+        let CreateRunResponse::Single(run) =
+            engine.start_run(steps_input("look around")).await.unwrap()
+        else {
+            panic!("expected a single run");
+        };
+        commit_all_git(dir.path(), "second"); // moves HEAD past the run's implicit base
+        std::fs::write(dir.path().join("base.txt"), "changed again\n").unwrap();
+        let changes = engine.run_changes(&run.id).await.unwrap();
+        assert!(changes.files.iter().any(|file| file.path == "base.txt"));
+    }
+
+    #[tokio::test]
+    async fn run_diff_text_and_run_commit_and_run_files_report_not_found_for_an_unknown_run() {
+        let dir = fixture_repo();
+        let engine = engine(&dir);
+        assert_eq!(
+            engine.run_diff_text("no-such-run").await.unwrap_err(),
+            EngineError::NotFound
+        );
+        assert_eq!(
+            engine.run_files("no-such-run", None).await.unwrap_err(),
+            EngineError::NotFound
+        );
+        assert_eq!(
+            engine
+                .run_commit("no-such-run", "deadbeef")
+                .await
+                .unwrap_err(),
+            EngineError::NotFound
+        );
+    }
+
+    #[tokio::test]
+    async fn run_file_raw_rejects_a_non_image_file() {
+        let dir = fixture_repo();
+        let engine = engine(&dir);
+        let CreateRunResponse::Single(run) =
+            engine.start_run(steps_input("look around")).await.unwrap()
+        else {
+            panic!("expected a single run");
+        };
+        let error = engine.run_file_raw(&run.id, "base.txt").await.unwrap_err();
+        assert!(matches!(error, EngineError::Conflict { .. }));
+    }
+
+    #[test]
+    fn changed_file_status_maps_the_git_status_letters() {
+        assert_eq!(changed_file_status("A"), ChangedFileStatus::Added);
+        assert_eq!(changed_file_status("D"), ChangedFileStatus::Deleted);
+        assert_eq!(changed_file_status("R100"), ChangedFileStatus::Renamed);
+        assert_eq!(changed_file_status("C50"), ChangedFileStatus::Copied);
+        assert_eq!(changed_file_status("M"), ChangedFileStatus::Modified);
+    }
+
+    #[test]
+    fn valid_commit_hash_accepts_hex_strings_of_a_plausible_length() {
+        assert!(valid_commit_hash("abcd"));
+        assert!(valid_commit_hash(&"a".repeat(40)));
+        assert!(!valid_commit_hash("abc"));
+        assert!(!valid_commit_hash(&"a".repeat(41)));
+        assert!(!valid_commit_hash("not-hex!"));
+    }
+
+    #[test]
+    fn image_content_type_recognizes_common_extensions_and_falls_back_to_octet_stream() {
+        assert_eq!(image_content_type(Path::new("a.png")), "image/png");
+        assert_eq!(image_content_type(Path::new("a.JPG")), "image/jpeg");
+        assert_eq!(
+            image_content_type(Path::new("a.txt")),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn contains_git_component_detects_a_git_segment_anywhere_in_the_path() {
+        assert!(contains_git_component(".git/config"));
+        assert!(contains_git_component("src/.git/hooks/pre-commit"));
+        assert!(!contains_git_component("src/gitignore.txt"));
     }
 }
