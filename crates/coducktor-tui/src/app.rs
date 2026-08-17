@@ -2251,15 +2251,7 @@ impl App {
                 self.new_task_ui.composer_focused = true;
                 self.new_task_ui.composer.focus();
             }
-            NavItem::Ide => {
-                self.request_navigate(Route::Ide {
-                    project: project.clone(),
-                });
-                self.pending.push(PendingAction::LoadIdeDirectory {
-                    project,
-                    path: None,
-                });
-            }
+            NavItem::Ide => crate::screens::ide::open(self, &project),
             NavItem::Github => crate::screens::github::open(self, &project),
             NavItem::Skills => crate::screens::skills::open(self, &project),
             NavItem::Inbox => crate::screens::inbox::open(self, &project),
@@ -2948,6 +2940,31 @@ mod tests {
             KeyModifiers::NONE,
         )));
         assert!(matches!(app.route(), Route::NewTask { project } if project == "main"));
+    }
+
+    #[test]
+    fn opening_the_ide_from_the_sidebar_syncs_its_project() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Left,
+            KeyModifiers::CONTROL,
+        )));
+        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+
+        assert!(matches!(app.route(), Route::Ide { project } if project == "main"));
+        assert_eq!(app.ide_ui.project, "main");
+        assert!(app.pending.iter().any(|action| matches!(
+            action,
+            PendingAction::LoadIdeDirectory { project, path: None } if project == "main"
+        )));
     }
 
     #[test]

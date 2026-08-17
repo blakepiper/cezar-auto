@@ -208,4 +208,13 @@ mod tests {
         let event = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
         assert_eq!(key_id(&event), "ctrl-o");
     }
+
+    #[test]
+    fn f6_focuses_the_sidebar() {
+        let event = KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE);
+        assert_eq!(
+            Keymap::default().action_for(KeyMode::Normal, &event),
+            Some(ActionId::FocusSidebar)
+        );
+    }
 }

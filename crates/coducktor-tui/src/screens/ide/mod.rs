@@ -597,6 +597,30 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_e_queues_the_external_editor_handoff() {
+        let mut app = app_with_entries();
+        apply_hit(&mut app, IdeAction::SelectEntry(1));
+        app.pending.clear();
+        app.handle_event(crossterm::event::Event::Key(KeyEvent::new(
+            KeyCode::Char('e'),
+            KeyModifiers::CONTROL,
+        )));
+        assert!(app.pending.iter().any(|action| {
+            matches!(action, PendingAction::OpenIdeInEditor { project, path } if project == "main" && path == "README.md")
+        }));
+    }
+
+    #[test]
+    fn opening_a_file_queues_the_load_for_the_ides_project() {
+        let mut app = app_with_entries();
+        app.ide_ui.project = "blarchy".to_owned();
+        apply_hit(&mut app, IdeAction::SelectEntry(1));
+        assert!(app.pending.iter().any(|action| {
+            matches!(action, PendingAction::LoadIdeFile { project, path } if project == "blarchy" && path == "README.md")
+        }));
+    }
+
+    #[test]
     fn typing_marks_the_draft_dirty_but_moving_the_caret_does_not() {
         let mut app = app_with_entries();
         apply_hit(&mut app, IdeAction::SelectEntry(1));

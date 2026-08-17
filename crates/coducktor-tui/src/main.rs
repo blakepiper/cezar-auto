@@ -718,19 +718,24 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
                 }
             }
             PendingAction::OpenIdeInEditor { project, path } => {
-                let absolute = app
+                // Prefer the registry entry (the root the user added), then the
+                // engine's scope resolution, which also knows the workspace root
+                // (`default`) and any registered project root.
+                let root = app
                     .project_registry
                     .iter()
                     .find(|entry| entry.id == project)
-                    .map(|entry| {
-                        if path.is_empty() {
-                            entry.root.clone()
+                    .map(|entry| entry.root.clone())
+                    .or_else(|| engine.project_root(&Scope::Project(project.clone())).ok());
+                match root {
+                    Some(root) => {
+                        let absolute = if path.is_empty() {
+                            root
                         } else {
-                            format!("{}/{}", entry.root.trim_end_matches('/'), path)
-                        }
-                    });
-                match absolute {
-                    Some(absolute) => app.set_editor_handoff(absolute),
+                            format!("{}/{}", root.trim_end_matches('/'), path)
+                        };
+                        app.set_editor_handoff(absolute);
+                    }
                     None => {
                         app.notice = Some("project root unknown — cannot open in editor".to_owned())
                     }
@@ -1463,14 +1468,19 @@ fn run_editor_handoff(terminal: &mut AppTerminal, path: &str) -> io::Result<()> 
     use crossterm::execute;
     use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 
+    let editor = env::var("VISUAL")
+        .or_else(|_| env::var("EDITOR"))
+        .unwrap_or_else(|_| "vi".to_owned());
+    let (program, arguments) = parse_editor_command(&editor)?;
+
     terminal.flush()?;
     crossterm::terminal::disable_raw_mode()?;
     execute!(io::stdout(), LeaveAlternateScreen, cursor::Show)?;
 
-    let editor = env::var("VISUAL")
-        .or_else(|_| env::var("EDITOR"))
-        .unwrap_or_else(|_| "vi".to_owned());
-    let result = std::process::Command::new(&editor).arg(path).status();
+    let result = std::process::Command::new(&program)
+        .args(&arguments)
+        .arg(path)
+        .status();
 
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -1485,7 +1495,70 @@ fn run_editor_handoff(terminal: &mut AppTerminal, path: &str) -> io::Result<()> 
 
     result
         .map(|_| ())
-        .map_err(|error| io::Error::other(format!("failed to run {editor}: {error}")))
+        .map_err(|error| io::Error::other(format!("failed to run {program}: {error}")))
+}
+
+fn parse_editor_command(raw: &str) -> io::Result<(String, Vec<String>)> {
+    if raw.chars().count() > 4_096 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "editor command is too long",
+        ));
+    }
+
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut started = false;
+    for character in raw.chars() {
+        if escaped {
+            word.push(character);
+            escaped = false;
+            started = true;
+            continue;
+        }
+        match quote {
+            Some(delimiter) if character == delimiter => quote = None,
+            Some('"') if character == '\\' => escaped = true,
+            Some(_) => word.push(character),
+            None if character == '\\' => {
+                escaped = true;
+                started = true;
+            }
+            None if character == '\'' || character == '"' => {
+                quote = Some(character);
+                started = true;
+            }
+            None if character.is_whitespace() => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            None => {
+                word.push(character);
+                started = true;
+            }
+        }
+    }
+    if escaped || quote.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unterminated escape or quote in editor command",
+        ));
+    }
+    if started {
+        words.push(word);
+    }
+    let mut words = words.into_iter();
+    let Some(program) = words.next() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "editor command is empty",
+        ));
+    };
+    Ok((program, words.collect()))
 }
 
 #[cfg(test)]
@@ -1582,5 +1655,36 @@ mod tests {
 
         assert_eq!(app.projects[0].id, "blarchy");
         assert_eq!(app.project_registry[0].root, "/home/przvl/blarchy");
+    }
+
+    #[test]
+    fn editor_command_splits_launcher_arguments_without_a_shell() {
+        let _ = std::fs::remove_file("/tmp/editor_proof.log");
+        let (program, arguments) =
+            parse_editor_command("sh -c 'echo handoff: $1 > /tmp/editor_proof.log' sh").unwrap();
+        let status = std::process::Command::new(&program)
+            .args(&arguments)
+            .arg("/home/przvl/blarchy/README.md")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(
+            std::fs::read_to_string("/tmp/editor_proof.log").unwrap(),
+            "handoff: /home/przvl/blarchy/README.md\n"
+        );
+        assert_eq!(
+            parse_editor_command("omarchy-launch-editor --inline").unwrap(),
+            (
+                "omarchy-launch-editor".to_owned(),
+                vec!["--inline".to_owned()]
+            )
+        );
+        assert_eq!(
+            parse_editor_command("editor --flag 'file mode'").unwrap(),
+            (
+                "editor".to_owned(),
+                vec!["--flag".to_owned(), "file mode".to_owned()]
+            )
+        );
     }
 }

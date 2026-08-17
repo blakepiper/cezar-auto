@@ -271,6 +271,9 @@ pub trait Engine: Send + Sync {
     ) -> Result<PickVariantResponse, EngineError>;
 
     // ---- IDE: project file browser + editor ------------------------------------------------
+    /// Resolve a scope's repository root on disk — a registered project's root or the
+    /// engine's workspace root — for the `$EDITOR` handoff.
+    fn project_root(&self, scope: &Scope) -> Result<String, EngineError>;
     /// Return one directory listing at the given project-relative path (`None` = root).
     async fn ide_tree(
         &self,
@@ -831,6 +834,11 @@ impl Engine for InProcessEngine {
     ) -> Result<IdeDirectoryResponse, EngineError> {
         let root = self.root_for_scope(scope)?;
         InProcessEngine::ide_tree_at(root, path).await
+    }
+
+    fn project_root(&self, scope: &Scope) -> Result<String, EngineError> {
+        self.root_for_scope(scope)
+            .map(|root| root.display().to_string())
     }
 
     async fn ide_file(&self, scope: &Scope, path: &str) -> Result<IdeFileResponse, EngineError> {

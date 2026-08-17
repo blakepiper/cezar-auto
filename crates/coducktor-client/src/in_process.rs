@@ -6883,6 +6883,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scoped_ide_reads_files_from_the_selected_project_root() {
+        let project_root = TempDir::new().unwrap();
+        std::fs::write(project_root.path().join("README.md"), "blarchy").unwrap();
+        let project = coducktor_core::workspace::config::WorkspaceProject {
+            id: "blarchy".to_owned(),
+            root: project_root.path().to_string_lossy().into_owned(),
+            name: "blarchy".to_owned(),
+            added_at: String::new(),
+            last_opened_at: String::new(),
+            source: coducktor_core::workspace::config::ProjectSource::Local,
+            max_parallel: None,
+            tags: None,
+            extra: Map::new(),
+        };
+        let root = resolve_scope_root(
+            Path::new("/home/przvl"),
+            &Scope::Project("blarchy".to_owned()),
+            &[project],
+        )
+        .unwrap();
+        let file = InProcessEngine::ide_file_at(root, "README.md")
+            .await
+            .unwrap();
+        assert_eq!(file.path, "README.md");
+        assert_eq!(file.content, "blarchy");
+    }
+
+    #[tokio::test]
     async fn subscribe_receives_a_run_event_published_during_start_run() {
         let dir = TempDir::new().unwrap();
         let engine = engine(&dir);
