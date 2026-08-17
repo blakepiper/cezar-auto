@@ -17,18 +17,23 @@ user bindings are merged over these defaults, key by key.
 | `g` | Jump to global (cross-project) Tasks |
 | `c` | New task |
 | `Ctrl+B` | Toggle sidebar |
-| `Ctrl+Left` | Focus the left navigation panel; `j`/`k` or `Up`/`Down` move, `Enter` opens, `Esc` returns |
+| `Ctrl+Left` | Move keyboard focus into the left navigation panel; `j`/`k` or `Up`/`Down` move, `Enter` opens, `Esc` returns |
 
-| `Up` / `Down` on Tasks | Focus and cycle the left navigation panel; `Enter` opens the highlighted destination |
+| `Up` / `Down` on Tasks | Move into and cycle the left navigation panel; `Enter` opens the highlighted destination |
 | `?` | Help overlay (context-filtered) |
 | `:` | Open the command line |
 | `Ctrl+O` | Navigate back |
 | `Ctrl+I` | Navigate forward |
 | `Ctrl+K` | Command palette |
 
-The left navigation panel is keyboard-accessible with `Ctrl+Left`, or directly with `Up`/`Down`
-from the Tasks screens; use `j`/`k` or `Up`/`Down` to move through its destinations and `Enter` to
-open one. The command palette (`Ctrl+K`) and
+The left navigation panel shows a persistent arrow selector that the keyboard and
+the mouse share: hovering a sidebar row with the mouse moves it, clicking a row
+activates it, and `j`/`k`/`Up`/`Down` move it once the panel has focus (`Ctrl+Left`,
+or `Up`/`Down` from the Tasks screens). The selector starts on the current project
+row, so `Up`/`Down` reach every registered project; `Enter` opens the highlighted
+row (a project row switches to that project, a nav row opens its screen, and the
+Active/Archived rows switch the task filter). `Esc` (or `Right`) returns focus to
+the screen. The command palette (`Ctrl+K`) and
 `:open <route>` remain available too.
 
 Clicking a non-active project row switches the sidebar context to that registered project and

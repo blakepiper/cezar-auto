@@ -85,25 +85,17 @@ impl NavItem {
     }
 }
 
+/// One keyboard/mouse-navigable sidebar row. Project rows precede the current
+/// project's nav rows, then the workspace entries and the task filter rows, so
+/// the shared arrow selector can reach every destination the sidebar renders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SidebarItem {
-    Project(NavItem),
+enum SidebarRow {
+    Project(usize),
+    Nav(NavItem),
     GlobalTasks,
     GlobalSettings,
+    Filter(TaskFilter),
 }
-
-const SIDEBAR_ITEMS: [SidebarItem; 10] = [
-    SidebarItem::Project(NavItem::NewTask),
-    SidebarItem::Project(NavItem::Tasks),
-    SidebarItem::Project(NavItem::Ide),
-    SidebarItem::Project(NavItem::RepoGit),
-    SidebarItem::Project(NavItem::Github),
-    SidebarItem::Project(NavItem::Skills),
-    SidebarItem::Project(NavItem::Workflows),
-    SidebarItem::Project(NavItem::Settings),
-    SidebarItem::GlobalTasks,
-    SidebarItem::GlobalSettings,
-];
 
 /// The routed identity used by the TUI. Routes retain a stable URL-shaped seam for navigation.
 /// A `screens/task_git` sub-tab — Changes / Files / Commits.
@@ -1005,6 +997,68 @@ impl App {
                 collapsed: false,
             });
         }
+        if let Some(index) = self
+            .projects
+            .iter()
+            .position(|entry| entry.id == self.current_project())
+        {
+            self.sidebar_selected = index;
+        }
+    }
+
+    /// The keyboard/mouse-navigable sidebar rows in visual order.
+    fn sidebar_rows(&self) -> Vec<SidebarRow> {
+        let mut rows = Vec::new();
+        for (index, project) in self.projects.iter().enumerate() {
+            rows.push(SidebarRow::Project(index));
+            if project.id == self.current_project() && !project.collapsed {
+                rows.push(SidebarRow::Nav(NavItem::NewTask));
+                rows.push(SidebarRow::Nav(NavItem::Tasks));
+                for nav in NavItem::ALL.into_iter().skip(2) {
+                    rows.push(SidebarRow::Nav(nav));
+                }
+            }
+        }
+        rows.push(SidebarRow::GlobalTasks);
+        rows.push(SidebarRow::GlobalSettings);
+        rows.push(SidebarRow::Filter(TaskFilter::Active));
+        rows.push(SidebarRow::Filter(TaskFilter::Archived));
+        rows
+    }
+
+    fn sidebar_selected_row(&self) -> Option<SidebarRow> {
+        self.sidebar_rows().get(self.sidebar_selected).copied()
+    }
+
+    /// The row for a sidebar hit action, so mouse hover/click moves the same
+    /// arrow selector the keyboard uses.
+    fn sidebar_row_for_hit(&self, action: &HitAction) -> Option<SidebarRow> {
+        match action {
+            HitAction::ProjectToggle(project) => self
+                .projects
+                .iter()
+                .position(|entry| entry.id == *project)
+                .map(SidebarRow::Project),
+            HitAction::NewTask => Some(SidebarRow::Nav(NavItem::NewTask)),
+            HitAction::Tasks => Some(SidebarRow::Nav(NavItem::Tasks)),
+            HitAction::Ide => Some(SidebarRow::Nav(NavItem::Ide)),
+            HitAction::RepoGit => Some(SidebarRow::Nav(NavItem::RepoGit)),
+            HitAction::Github => Some(SidebarRow::Nav(NavItem::Github)),
+            HitAction::Skills => Some(SidebarRow::Nav(NavItem::Skills)),
+            HitAction::Workflows => Some(SidebarRow::Nav(NavItem::Workflows)),
+            HitAction::Settings => Some(SidebarRow::Nav(NavItem::Settings)),
+            HitAction::GlobalTasks => Some(SidebarRow::GlobalTasks),
+            HitAction::GlobalSettings => Some(SidebarRow::GlobalSettings),
+            HitAction::ActiveTasks => Some(SidebarRow::Filter(TaskFilter::Active)),
+            HitAction::ArchivedTasks => Some(SidebarRow::Filter(TaskFilter::Archived)),
+            _ => None,
+        }
+    }
+
+    fn sidebar_position(&self, row: SidebarRow) -> Option<usize> {
+        self.sidebar_rows()
+            .iter()
+            .position(|candidate| *candidate == row)
     }
 
     pub fn set_quick_tasks(&mut self, tasks: impl IntoIterator<Item = QuickTask>) {
@@ -1316,19 +1370,21 @@ impl App {
     }
 
     fn render_sidebar(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        let selected = self.sidebar_selected_row();
         let mut rows: Vec<(Line<'static>, Option<HitAction>)> = Vec::new();
         rows.push((sidebar_line("  PROJECTS", self.soft_style()), None));
-        for project in &self.projects {
+        for (index, project) in self.projects.iter().enumerate() {
             let marker = if project.collapsed { "+" } else { "-" };
+            let mut style = if project.id == self.current_project() {
+                self.active_style()
+            } else {
+                self.normal_style()
+            };
+            if selected == Some(SidebarRow::Project(index)) {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
             rows.push((
-                sidebar_line(
-                    format!("  {marker} {}", truncate(&project.name, 20)),
-                    if project.id == self.current_project() {
-                        self.active_style()
-                    } else {
-                        self.normal_style()
-                    },
-                ),
+                sidebar_line(format!("  {marker} {}", truncate(&project.name, 20)), style),
                 Some(HitAction::ProjectToggle(project.id.clone())),
             ));
             if project.id == self.current_project() && !project.collapsed {
@@ -1337,7 +1393,7 @@ impl App {
                         "New task",
                         None,
                         self.route_is(NavItem::NewTask),
-                        self.sidebar_item_focused(NavItem::NewTask),
+                        selected == Some(SidebarRow::Nav(NavItem::NewTask)),
                         self.nav_style(self.route_is(NavItem::NewTask)),
                     ),
                     Some(HitAction::NewTask),
@@ -1347,7 +1403,7 @@ impl App {
                         "Tasks",
                         None,
                         self.route_is(NavItem::Tasks),
-                        self.sidebar_item_focused(NavItem::Tasks),
+                        selected == Some(SidebarRow::Nav(NavItem::Tasks)),
                         self.nav_style(self.route_is(NavItem::Tasks)),
                     ),
                     Some(HitAction::Tasks),
@@ -1358,7 +1414,7 @@ impl App {
                             nav.label(),
                             None,
                             self.route_is(nav),
-                            self.sidebar_item_focused(nav),
+                            selected == Some(SidebarRow::Nav(nav)),
                             self.nav_style(self.route_is(nav)),
                         ),
                         Some(nav_hit_action(nav)),
@@ -1373,7 +1429,7 @@ impl App {
                 "All tasks",
                 None,
                 matches!(self.route(), Route::GlobalTasks),
-                self.sidebar_workspace_item_focused(SidebarItem::GlobalTasks),
+                selected == Some(SidebarRow::GlobalTasks),
                 self.nav_style(matches!(self.route(), Route::GlobalTasks)),
             ),
             Some(HitAction::GlobalTasks),
@@ -1383,7 +1439,7 @@ impl App {
                 "Settings",
                 None,
                 matches!(self.route(), Route::GlobalSettings),
-                self.sidebar_global_settings_focused(),
+                selected == Some(SidebarRow::GlobalSettings),
                 self.nav_style(matches!(self.route(), Route::GlobalSettings)),
             ),
             Some(HitAction::GlobalSettings),
@@ -1395,7 +1451,7 @@ impl App {
                 "Active",
                 None,
                 self.task_filter == TaskFilter::Active,
-                false,
+                selected == Some(SidebarRow::Filter(TaskFilter::Active)),
                 self.nav_style(self.task_filter == TaskFilter::Active),
             ),
             Some(HitAction::ActiveTasks),
@@ -1405,7 +1461,7 @@ impl App {
                 "Archived",
                 None,
                 self.task_filter == TaskFilter::Archived,
-                false,
+                selected == Some(SidebarRow::Filter(TaskFilter::Archived)),
                 self.nav_style(self.task_filter == TaskFilter::Archived),
             ),
             Some(HitAction::ArchivedTasks),
@@ -1748,8 +1804,22 @@ impl App {
     fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
         self.hover = Some((mouse.column, mouse.row));
         match mouse.kind {
+            MouseEventKind::Moved => {
+                if let Some(action) = self.hitmap.hit(mouse.column, mouse.row)
+                    && let Some(row) = self.sidebar_row_for_hit(&action)
+                    && let Some(index) = self.sidebar_position(row)
+                {
+                    self.sidebar_selected = index;
+                }
+            }
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(action) = self.hitmap.hit(mouse.column, mouse.row) {
+                    if let Some(row) = self.sidebar_row_for_hit(&action)
+                        && let Some(index) = self.sidebar_position(row)
+                    {
+                        self.sidebar_selected = index;
+                        self.sidebar_focus = true;
+                    }
                     // Press on a workflow step arms the drag-reorder; the click itself is
                     // still applied (it moves the step cursor), the release does the move.
                     if let HitAction::WorkflowStep(index) = action
@@ -2212,6 +2282,11 @@ impl App {
         if project == self.current_project() && self.route().project().is_some() {
             if let Some(entry) = self.projects.iter_mut().find(|entry| entry.id == project) {
                 entry.collapsed = !entry.collapsed;
+                if entry.collapsed
+                    && let Some(index) = self.projects.iter().position(|entry| entry.id == project)
+                {
+                    self.sidebar_selected = index;
+                }
             }
             return;
         }
@@ -2232,6 +2307,9 @@ impl App {
 
     fn apply_project_switch(&mut self, project: String) {
         self.default_project = project.clone();
+        if let Some(index) = self.projects.iter().position(|entry| entry.id == project) {
+            self.sidebar_selected = index;
+        }
         self.request_navigate(Route::Tasks {
             project: project.clone(),
         });
@@ -2270,38 +2348,38 @@ impl App {
         } else if self.last_width >= SIDEBAR_BREAKPOINT {
             self.sidebar_collapsed = false;
         }
-        self.sidebar_selected = SIDEBAR_ITEMS
-            .iter()
-            .position(|item| match item {
-                SidebarItem::Project(nav) => self.route_is(*nav),
-                SidebarItem::GlobalTasks => matches!(self.route(), Route::GlobalTasks),
-                SidebarItem::GlobalSettings => matches!(self.route(), Route::GlobalSettings),
-            })
-            .unwrap_or(0);
         self.sidebar_focus = true;
     }
 
     fn handle_sidebar_key(&mut self, key: KeyEvent) -> bool {
+        let rows = self.sidebar_rows();
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
-                self.sidebar_selected = (self.sidebar_selected + 1) % SIDEBAR_ITEMS.len();
+                self.sidebar_selected = (self.sidebar_selected + 1) % rows.len();
                 true
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.sidebar_selected =
-                    (self.sidebar_selected + SIDEBAR_ITEMS.len() - 1) % SIDEBAR_ITEMS.len();
+                self.sidebar_selected = (self.sidebar_selected + rows.len() - 1) % rows.len();
                 true
             }
             KeyCode::Enter => {
-                let item = SIDEBAR_ITEMS[self.sidebar_selected];
+                let Some(row) = rows.get(self.sidebar_selected).copied() else {
+                    return false;
+                };
                 self.sidebar_focus = false;
-                match item {
-                    SidebarItem::Project(nav) => self.navigate(nav),
-                    SidebarItem::GlobalTasks => {
+                match row {
+                    SidebarRow::Project(index) => {
+                        if let Some(project) = self.projects.get(index) {
+                            self.select_project(project.id.clone());
+                        }
+                    }
+                    SidebarRow::Nav(nav) => self.navigate(nav),
+                    SidebarRow::GlobalTasks => {
                         self.request_navigate(Route::GlobalTasks);
                         self.pending.push(PendingAction::RefreshIndex);
                     }
-                    SidebarItem::GlobalSettings => crate::screens::settings::open_global(self),
+                    SidebarRow::GlobalSettings => crate::screens::settings::open_global(self),
+                    SidebarRow::Filter(filter) => self.task_filter = filter,
                 }
                 true
             }
@@ -2311,24 +2389,6 @@ impl App {
             }
             _ => false,
         }
-    }
-
-    fn sidebar_item_focused(&self, nav: NavItem) -> bool {
-        self.sidebar_focus
-            && SIDEBAR_ITEMS
-                .get(self.sidebar_selected)
-                .is_some_and(|item| *item == SidebarItem::Project(nav))
-    }
-
-    fn sidebar_global_settings_focused(&self) -> bool {
-        self.sidebar_workspace_item_focused(SidebarItem::GlobalSettings)
-    }
-
-    fn sidebar_workspace_item_focused(&self, item: SidebarItem) -> bool {
-        self.sidebar_focus
-            && SIDEBAR_ITEMS
-                .get(self.sidebar_selected)
-                .is_some_and(|selected| *selected == item)
     }
 
     fn request_quit(&mut self) {
@@ -2847,6 +2907,8 @@ mod tests {
             KeyModifiers::CONTROL,
         )));
         app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
         app.handle_event(Event::Key(KeyEvent::new(
             KeyCode::Enter,
             KeyModifiers::NONE,
@@ -2861,9 +2923,11 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
         terminal.draw(|frame| app.render(frame)).unwrap();
 
-        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)));
-        assert!(app.sidebar_focus);
+        // The arrow selector starts on the current project's row.
         assert_eq!(app.sidebar_selected, 0);
+        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        assert!(app.sidebar_focus);
+        assert_eq!(app.sidebar_selected, 1);
         app.handle_event(Event::Key(KeyEvent::new(
             KeyCode::Enter,
             KeyModifiers::NONE,
@@ -2881,6 +2945,8 @@ mod tests {
             KeyCode::Left,
             KeyModifiers::CONTROL,
         )));
+        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
         app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
         app.handle_event(Event::Key(KeyEvent::new(
             KeyCode::Enter,
@@ -2905,7 +2971,7 @@ mod tests {
             KeyCode::Left,
             KeyModifiers::CONTROL,
         )));
-        for _ in 0..8 {
+        for _ in 0..10 {
             app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
         }
         app.handle_event(Event::Key(KeyEvent::new(
@@ -2914,6 +2980,35 @@ mod tests {
         )));
 
         assert_eq!(app.route(), &Route::GlobalSettings);
+    }
+
+    #[test]
+    fn startup_selector_anchors_on_the_current_project_row() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.set_projects([
+            ("blarchy".to_owned(), "blarchy".to_owned()),
+            ("main".to_owned(), "main".to_owned()),
+            ("syzygy".to_owned(), "syzygy".to_owned()),
+        ]);
+
+        assert_eq!(app.sidebar_selected, 1);
+        assert_eq!(app.sidebar_selected_row(), Some(SidebarRow::Project(1)));
+    }
+
+    #[test]
+    fn sidebar_arrow_cycle_reaches_the_task_filter_rows() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        // 13 rows: current project + 8 navs + All tasks + Settings + Active + Archived.
+        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)));
+        assert_eq!(app.sidebar_selected, 12);
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.task_filter, TaskFilter::Archived);
     }
 
     #[test]
@@ -2944,6 +3039,43 @@ mod tests {
             action,
             PendingAction::RefreshNewTask { project } if project == "blarchy"
         )));
+    }
+
+    #[test]
+    fn mouse_hover_moves_the_shared_sidebar_selector() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        app.handle_event(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 2,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        }));
+
+        assert_eq!(app.sidebar_selected, 3);
+        assert!(!app.sidebar_focus);
+    }
+
+    #[test]
+    fn clicking_a_sidebar_row_moves_the_arrow_selector_there() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        app.handle_event(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 2,
+            row: 4,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert_eq!(app.sidebar_selected, 2);
+        assert!(app.sidebar_focus);
+
+        // The keyboard continues from the clicked row.
+        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        assert_eq!(app.sidebar_selected, 3);
     }
 
     #[test]
