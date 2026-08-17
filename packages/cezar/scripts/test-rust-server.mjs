@@ -76,7 +76,12 @@ try {
   const result = await new Promise((resolveResult, reject) => {
     const test = spawn(
       'npm',
-      ['test', '--', 'packages/cezar/src/server/rust-server.smoke.test.ts'],
+      [
+        'test',
+        '--',
+        'packages/cezar/src/server/rust-server.smoke.test.ts',
+        'packages/cezar/src/server/rust-server.parity.test.ts',
+      ],
       {
         cwd: repoRoot,
         env: {

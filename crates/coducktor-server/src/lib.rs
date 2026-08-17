@@ -8846,7 +8846,7 @@ async fn request_origin_guard(
     if !host_name.is_some_and(is_loopback_host) {
         return error_response(
             StatusCode::FORBIDDEN,
-            "forbidden: unexpected Host header — this request did not originate from this machine",
+            "forbidden: unexpected Host header — this request did not originate from this machine (see #426)",
         );
     }
 
