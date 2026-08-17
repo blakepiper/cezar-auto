@@ -653,8 +653,33 @@ call it when doing the work.
 the mock streams them (not all at once at the end), and `cargo test --workspace` /
 clippy / fmt stay green throughout.
 **Commit(s):** `feat(runners): B9a.2a agent-runner seam (spawn/signal/termination
-helpers)`, then `B9a.2b claude backend`, `B9a.2c codex backend`, `B9a.2d opencode
-backend`, `B9a.2e pi backend` — none of these are done yet.
+helpers)` — pushed as `01a15b45`; then `B9a.2b claude backend`, `B9a.2c codex
+backend`, `B9a.2d opencode backend`, `B9a.2e pi backend` — none of these are done
+yet.
+**B9a.2a note:** shipped as `crates/coducktor-runners/src/agent_runner.rs` — the four
+primitives `agent-runner.ts` actually exports: `is_signal_termination_exit`,
+`prepend_system_prompt`, `ContentBlock`/`ImageSource` (the outbound Anthropic-shaped
+content-block wire format), and a `TrackableChild` trait + `track_child_exit` tracker.
+`RunnerId`/`AgentBackend`/`isRunnerId`/`RUNNER_IDS` were **not** re-ported — checked
+against `coducktor_contract::{Runner, RunnerSelection}` (A1) first and confirmed they
+already cover that enumeration, so re-porting would have been a duplicate source of
+truth. `track_child_exit` is poll-based rather than push-based — `std::process::Child`
+has no event-loop exit notification the way Node's `ChildProcess` `once('exit', …)`
+does — but keeps the same observable contract the TS version's own doc comment
+describes: seeded eagerly so an already-exited child is recognized on the first call
+(the race the original guards against), and latched so it never re-polls once exited.
+The per-runner SIGTERM→SIGKILL watchdog *timers* (`endCodexAppServer`, the `end()`
+closures in `claude-cli-runner.ts`) are correctly left for B9a.2b/2c — they are not
+exports of `agent-runner.ts` itself, each backend implements its own grace-period
+sequence around the shared `TrackableChild` primitive.
+**Accept, verified:** 8 new unit tests in `agent_runner.rs` (exit-code classification
+matching `claude-cli-runner.test.ts`'s own cases, the prepend-with/without-prompt
+cases, a wire-shape round-trip against the literal Anthropic JSON shape, and three
+`track_child_exit` cases — already-exited, exits-later, and latches-without-repolling
+verified via a poll counter) plus the crate's existing 14 tests, all green.
+`cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`,
+and `cargo fmt --check` all green (the one pre-existing `coducktor-client/tests/
+transport.rs` drift noted since B2 is untouched by this step).
 
 ### [ ] B10 — `cezar-cli`
 **Ships:** `serve`, `run`, `init`, `usage`, `projects` subcommands. `-p/--port` and
