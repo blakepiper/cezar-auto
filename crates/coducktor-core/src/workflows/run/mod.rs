@@ -4004,7 +4004,9 @@ mod tests {
         let mut manager = RunManager::with_session_factory(dir.path(), factory);
         let workflow = workflow_with_steps(vec![agent_workflow_step("implement")]);
 
-        manager.start_run(&workflow, start_input("ship it")).unwrap();
+        manager
+            .start_run(&workflow, start_input("ship it"))
+            .unwrap();
 
         let requests = requests.lock().unwrap();
         let expected: Vec<String> = types::DEFAULT_ALLOWED_TOOLS
