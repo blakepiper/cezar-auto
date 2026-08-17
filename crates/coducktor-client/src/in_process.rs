@@ -40,13 +40,14 @@ use coducktor_contract::{
     IdeFileResponse, LogEntry, MarkAllReadResponse, OpenAgentAccountFileInput,
     OpenAgentAccountFileResponse, ParsedWorkflow, PatchRunInput, PresentRepoResponse,
     ProjectListEntry, ProjectSource, ProjectStatus, ProjectsResponse, ProviderConnectionState,
-    ProviderStatus, ProviderStatusResponse, RemoveAgentProfileResponse, RemoveTodoResponse,
-    RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse,
-    RunIndexEntry, Runner, RunnerSelection, RunsIndexResponse, SaveWorkflowInput,
-    SaveWorkflowResponse, SelectAgentProfileInput, SetAgentConfigInput, SetConfigInput, Skill,
-    StartTodoResponse, StatusEntry, TodoItem, UpdateAgentProfileInput, UserMcpListing,
-    WorkflowStepDef, WorkflowsResponse, WorkspaceUsageResponse, WorktreeDirEntry, WorktreeEntry,
-    WorktreeEntryType,
+    ProviderStatus, ProviderStatusResponse, ReclaimWorktreesResponse, RemoveAgentProfileResponse,
+    RemoveTodoResponse, RemoveWorktreeResponse, RepoBranchRequest, RepoBranchResponse,
+    RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse, RunIndexEntry, Runner,
+    RunnerSelection, RunsIndexResponse, SaveWorkflowInput, SaveWorkflowResponse,
+    SelectAgentProfileInput, SetAgentConfigInput, SetConfigInput, Skill, StartTodoResponse,
+    StatusEntry, TodoItem, UpdateAgentProfileInput, UserMcpListing, WorkflowStepDef,
+    WorkflowsResponse, WorkspaceUsageResponse, WorktreeDirEntry, WorktreeEntry, WorktreeEntryType,
+    WorktreeInfo, WorktreeRunStatus, WorktreesResponse,
 };
 use coducktor_core::handoff::followups_enabled;
 use coducktor_core::paths::{
@@ -1230,6 +1231,150 @@ impl InProcessEngine {
         .await
         .map_err(|error| EngineError::Transport(error.to_string()))?
     }
+
+    // ---- worktree management (spec §8.7, A9) --------------------------------------------------
+    // Ported from `coducktor-server`'s `list_worktrees`/`reclaim_worktrees`/`remove_run_worktree`
+    // handlers. Reuses `coducktor_core::runs::retention::{is_reclaimable, reclaim_worktrees}`
+    // and `coducktor_core::config::resolve_worktree_retention` directly (already ported at
+    // B2/B3) — only the response-shaping glue (`worktree_run_status`/`worktree_keep`) is
+    // duplicated, since it was never `pub` in the oracle.
+
+    fn worktree_keep(&self) -> u64 {
+        let workspace = workspace_config_for(&self.repo_root);
+        coducktor_core::config::resolve_worktree_retention(
+            &self.repo_root,
+            Some(workspace.resources.worktree_retention_default),
+        )
+    }
+
+    pub async fn worktrees(&self) -> Result<WorktreesResponse, EngineError> {
+        let keep = self.worktree_keep();
+        let manager = self.manager.lock().map_err(|_| lock_err())?;
+        let mut worktrees = Vec::new();
+        let mut any_size_unavailable = false;
+        let mut total = 0_u64;
+        for run in manager.list_runs() {
+            let Some(path) = run.worktree_path.as_deref() else {
+                continue;
+            };
+            if !Path::new(path).exists() {
+                continue;
+            }
+            let size = worktree_size_bytes(Path::new(path));
+            if let Some(bytes) = size {
+                total = total.saturating_add(bytes);
+            } else {
+                any_size_unavailable = true;
+            }
+            let reclaimable = coducktor_core::runs::retention::is_reclaimable(&run);
+            let title = if run.title.is_empty() {
+                run.id.clone()
+            } else {
+                run.title.clone()
+            };
+            worktrees.push(WorktreeInfo {
+                run_id: run.id,
+                title,
+                status: worktree_run_status(run.status),
+                branch: run.branch,
+                size_bytes: size.map(|bytes| bytes as f64),
+                finished_at: run.finished_at,
+                reclaimable,
+            });
+        }
+        Ok(WorktreesResponse {
+            worktrees,
+            total_bytes: (!any_size_unavailable).then_some(total),
+            keep,
+        })
+    }
+
+    pub async fn reclaim_worktrees(&self) -> Result<ReclaimWorktreesResponse, EngineError> {
+        let keep = self.worktree_keep();
+        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        let runs = manager.list_runs();
+        let reclaimed = coducktor_core::runs::retention::reclaim_worktrees(
+            &self.repo_root,
+            &runs,
+            keep,
+            coducktor_core::time::now_iso8601,
+        );
+        let mut ids = Vec::new();
+        for (id, timestamp) in reclaimed {
+            if manager
+                .edit_run(&id, |run| run.worktree_reclaimed_at = Some(timestamp))
+                .is_ok()
+            {
+                ids.push(id);
+            }
+        }
+        Ok(ReclaimWorktreesResponse { reclaimed: ids })
+    }
+
+    pub async fn remove_run_worktree(
+        &self,
+        run_id: &str,
+    ) -> Result<RemoveWorktreeResponse, EngineError> {
+        let run = self.run_record(run_id)?;
+        {
+            let manager = self.manager.lock().map_err(|_| lock_err())?;
+            if manager.is_active(run_id) {
+                return Err(EngineError::Conflict {
+                    reason: "run is active — cancel it first".to_owned(),
+                });
+            }
+        }
+        if let Some(worktree) = run_worktree_of(&run) {
+            let repo_root = self.repo_root.clone();
+            let branch = run.branch.clone();
+            tokio::task::spawn_blocking(move || {
+                coducktor_core::git::worktree::remove_worktree(
+                    &repo_root,
+                    &worktree,
+                    branch.as_deref(),
+                )
+            })
+            .await
+            .map_err(|error| EngineError::Transport(error.to_string()))?;
+        }
+        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        manager
+            .update_run_value(
+                run_id,
+                serde_json::json!({ "worktreePath": null, "branch": null }),
+            )
+            .map_err(io_err)?;
+        Ok(RemoveWorktreeResponse { removed: true })
+    }
+}
+
+// ---- worktree helpers, duplicated from `coducktor-server`'s private functions of the same name
+
+fn worktree_run_status(status: coducktor_contract::RunStatus) -> WorktreeRunStatus {
+    match status {
+        coducktor_contract::RunStatus::Queued => WorktreeRunStatus::Queued,
+        coducktor_contract::RunStatus::Running => WorktreeRunStatus::Running,
+        coducktor_contract::RunStatus::Waiting => WorktreeRunStatus::Waiting,
+        coducktor_contract::RunStatus::Review => WorktreeRunStatus::Review,
+        coducktor_contract::RunStatus::Done => WorktreeRunStatus::Done,
+        coducktor_contract::RunStatus::Failed => WorktreeRunStatus::Failed,
+        coducktor_contract::RunStatus::Cancelled => WorktreeRunStatus::Cancelled,
+    }
+}
+
+fn worktree_size_bytes(path: &Path) -> Option<u64> {
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    if metadata.is_file() {
+        return Some(metadata.len());
+    }
+    if !metadata.is_dir() {
+        return Some(0);
+    }
+    let mut total = 0_u64;
+    for entry in std::fs::read_dir(path).ok()? {
+        total = total.checked_add(worktree_size_bytes(&entry.ok()?.path())?)?;
+    }
+    Some(total)
 }
 
 // ---- repo/run git helpers, duplicated from `coducktor-server`'s private functions of the same
@@ -5076,5 +5221,92 @@ mod tests {
     fn config_hash_is_deterministic_and_content_sensitive() {
         assert_eq!(config_hash(b"same"), config_hash(b"same"));
         assert_ne!(config_hash(b"a"), config_hash(b"b"));
+    }
+
+    // ---- worktree management (C1 continuation) ---------------------------------------------
+
+    #[tokio::test]
+    async fn worktrees_reports_empty_when_no_run_has_a_worktree() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let CreateRunResponse::Single(_run) =
+            engine.start_run(steps_input("no worktree")).await.unwrap()
+        else {
+            panic!("expected a single run");
+        };
+        let worktrees = engine.worktrees().await.unwrap();
+        assert!(worktrees.worktrees.is_empty());
+        assert_eq!(worktrees.total_bytes, Some(0));
+    }
+
+    #[tokio::test]
+    async fn reclaim_worktrees_reports_no_reclaimed_ids_when_nothing_has_a_worktree() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let reclaimed = engine.reclaim_worktrees().await.unwrap();
+        assert!(reclaimed.reclaimed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn remove_run_worktree_reports_not_found_for_an_unknown_run() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine.remove_run_worktree("no-such-run").await.unwrap_err();
+        assert_eq!(error, EngineError::NotFound);
+    }
+
+    #[tokio::test]
+    async fn remove_run_worktree_succeeds_trivially_for_a_finished_run_with_no_worktree() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let CreateRunResponse::Single(run) =
+            engine.start_run(steps_input("no worktree")).await.unwrap()
+        else {
+            panic!("expected a single run");
+        };
+        let response = engine.remove_run_worktree(&run.id).await.unwrap();
+        assert!(response.removed);
+    }
+
+    #[test]
+    fn worktree_run_status_maps_every_run_status_variant() {
+        use coducktor_contract::RunStatus;
+        assert_eq!(
+            worktree_run_status(RunStatus::Queued),
+            WorktreeRunStatus::Queued
+        );
+        assert_eq!(
+            worktree_run_status(RunStatus::Running),
+            WorktreeRunStatus::Running
+        );
+        assert_eq!(
+            worktree_run_status(RunStatus::Waiting),
+            WorktreeRunStatus::Waiting
+        );
+        assert_eq!(
+            worktree_run_status(RunStatus::Review),
+            WorktreeRunStatus::Review
+        );
+        assert_eq!(
+            worktree_run_status(RunStatus::Done),
+            WorktreeRunStatus::Done
+        );
+        assert_eq!(
+            worktree_run_status(RunStatus::Failed),
+            WorktreeRunStatus::Failed
+        );
+        assert_eq!(
+            worktree_run_status(RunStatus::Cancelled),
+            WorktreeRunStatus::Cancelled
+        );
+    }
+
+    #[test]
+    fn worktree_size_bytes_sums_nested_directory_contents() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"1234").unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/b.txt"), b"12345678").unwrap();
+        assert_eq!(worktree_size_bytes(dir.path()), Some(12));
     }
 }
