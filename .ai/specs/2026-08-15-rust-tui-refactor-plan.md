@@ -631,7 +631,7 @@ since B2/B5, untouched by this step.
 **Commit:** `refactor(core): B9a.1 stream AgentSession events instead of one aggregate per turn`
 
 **Sub-step 2 of 2 — concrete `SessionFactory`/`AgentSession` implementations, one per
-backend, ⚠ not started yet.** Port `agent-runner.ts` (the shared spawn/signal/
+backend — all four shipped (claude/codex/opencode/pi).** Port `agent-runner.ts` (the shared spawn/signal/
 termination-tracking helpers — `isSignalTerminationExit`, `trackChildExit`,
 `ContentBlock`, `prependSystemPrompt`) plus one commit per backend
 (`claude-cli-runner.ts` → `codex-app-server-runner.ts` → `opencode-server-runner.ts`
@@ -658,7 +658,7 @@ helpers)` — pushed as `01a15b45`; `B9a.2b.1 ask-marker validation` — `f912a5
 `0653a0bf`; `B9a.2c.0 extract shared child-process plumbing` — `2ed6b976`;
 `B9a.2c.1 v1 text coalescer` — `5ef2944b`; `B9a.2c codex backend` — `0213ad30`;
 `B9a.2d.1 model identity parser` — `ea18dd78`; `B9a.2d opencode backend` —
-`c0a34f1b` (Cargo.lock sync `410fde1b`); then `B9a.2e pi backend` — not done yet.
+`c0a34f1b` (Cargo.lock sync `410fde1b`); then `B9a.2e pi backend` — `4f218be5`.
 **B9a.2a note:** shipped as `crates/coducktor-runners/src/agent_runner.rs` — the four
 primitives `agent-runner.ts` actually exports: `is_signal_termination_exit`,
 `prepend_system_prompt`, `ContentBlock`/`ImageSource` (the outbound Anthropic-shaped
@@ -847,6 +847,54 @@ cumulative totals, and `finish()` closing a cooperative process promptly. 8 new 
 opencode + 3 `child_process`), 90 total in `coducktor-runners`, full workspace
 test/clippy/fmt green (the one pre-existing `coducktor-client/tests/transport.rs` drift
 noted since B2 is untouched).
+
+**B9a.2e notes:** the backend itself (`crates/coducktor-runners/src/pi_runner.rs`) ships
+`PiSpawnConfig`/`open_pi_session`/`PiSession` over pi's documented RPC mode
+(stdin/stdout NDJSON commands — `get_state`/`prompt`/`abort` — not stream-json, not
+JSON-RPC, not HTTP+SSE). No prerequisite commit was needed this time: unlike codex/
+opencode, pi has no native structured ask and no bespoke wire-shape helper this crate
+didn't already have (its usage-weighting formula is literally `usageValues` — identical
+to `crate::usage::cost_weighted_tokens`, already shared with the claude backend since
+B9a.2b), so this shipped as a single commit.
+**Architecture notes (documented in the module doc), not scope cuts:** structurally
+closest to the claude backend — a single flat NDJSON stream, no RPC request/response
+matching to track (unlike codex), turn boundaries visible only via a live `agent_settled`
+frame instead of claude's `"result"`. Bootstrap (the `get_state` probe plus the opening
+prompt) runs eagerly in `open_pi_session`, same as claude's own eager opening write —
+pi's wire has no roundtrip either command needs to wait on before the next write, unlike
+codex's genuinely sequential handshake. Two TS-only conveniences have no Rust
+counterpart: `sendMessage`'s `streamingBehavior: 'steer'` only applies while a previous
+turn is still in flight, a state this turn-scoped trait can never observe (every
+`turn()`/`send_message()` already blocks until `agent_settled` before returning); and
+`autoEndAfterFirstTurn`/`AUTO_END_DELAY_MS` belong to TS's one-shot `run()` convenience
+wrapper for callers that don't manage the session lifecycle themselves, superseded here
+by every caller's own explicit `finish()`.
+**Scope cut:** same as B9a.2b/2c/2d — wiring a real `SessionFactory` into
+`coducktor-server` is deferred to B10.
+**Mock fixture:** `packages/cezar/scripts/mock-pi-rpc.mjs` (previously a single canned
+turn with no test hooks) gained `mock:done` (appends `CEZ:DONE` to the reply, mirroring
+`mock-claude.mjs`), `mock:slow` (a ~25s hold, for the wall-clock-timeout test), and a
+`MOCK_PI_IGNORE_EOF=1` toggle reproducing the #703 teardown shape (SIGTERM handler
+exiting 143, `setInterval` keeping the event loop alive against EOF) — the same shape
+already established for claude's `stub-ignores-eof-exits-143.mjs` and
+`mock-codex-app-server.mjs`'s own `MOCK_CODEX_IGNORE_EOF`. Multi-turn already worked
+(the mock loops over stdin lines) and needed no changes.
+**Accept, verified:** pure argv-builder tests port every case in `pi-runner.test.ts`'s
+"pi RPC argv" describe block (thinking-level passthrough, exact session
+selection+resume+model+system-prompt+full tool mapping, session-id-without-resume, and
+the bash-allowlist-fails-closed case); real subprocess tests spawn `node` against the
+extended `mock-pi-rpc.mjs` — a first turn streaming session/text/tool-call/tool-result/
+token-usage/turn-end events, a `mock:done`-marked turn completing the step, a follow-up
+turn via `send_message` reaching a second turn, `finish()` closing a cooperative process
+promptly, `finish()`'s SIGTERM→SIGKILL escalation against a `MOCK_PI_IGNORE_EOF=1`
+process, a wall-clock timeout (`mock:slow`) killing the process and failing the turn, and
+a friendly missing-binary error. 11 new tests, 93 total in `coducktor-runners` (up from
+82), 658 total across the Rust workspace. `cargo test --workspace`, `cargo clippy
+--workspace --all-targets -- -D warnings`, and `cargo fmt --all --check` all green (the
+one pre-existing `coducktor-client/tests/transport.rs` drift noted since B2 is
+untouched). This closes out B9a.2 — all four backends (claude/codex/opencode/pi) are now
+shipped; wiring a real `SessionFactory` into `coducktor-server` is B10's job.
+**Commit:** `feat(runners): B9a.2e pi backend` — pushed as `4f218be5`.
 
 ### [ ] B10 — `cezar-cli`
 **Ships:** `serve`, `run`, `init`, `usage`, `projects` subcommands. `-p/--port` and
