@@ -34,28 +34,33 @@ use coducktor_contract::{
     AgentConfigFileContent, AgentConfigFormat, AgentConfigKind, AgentConfigListing,
     AgentConfigScope, AgentConfigTracked, AgentProfile, AgentProfileResponse,
     AgentProfileSelectionsResponse, AgentProfilesResponse, ApiRun, ArchiveFinishedResponse,
-    BackendCheck, BackendCheckName, CancelResponse, Capabilities, ChangedFile, ChangedFileStatus,
-    ChangesPayload, ConfigResponse, CreateAgentProfileInput, CreateRunInput, CreateRunResponse,
-    DeleteRunResponse, DeleteWorkflowResponse, EmptyRepoResponse, FinishResponse, ForgeInfo,
-    ForgeKind, GithubChecksAvailable, GithubChecksData, GithubChecksUnavailable,
-    GithubCommentsData, GithubData, GithubItemKind, GithubMergeInput, GithubMergeResponse,
-    GithubPrChangesAvailable, GithubPrChangesData, GithubPrChangesUnavailable,
-    GithubPrMergeStateResponse, GithubRefStatusData, GroupResponse, GroupVariant, HealthProject,
-    HealthResponse, IdeDirectoryResponse, IdeEntry, IdeEntryType, IdeFileResponse, LogEntry,
-    MarkAllReadResponse, ModelCatalogSource, ModelDiscoveryRunner, OpenAgentAccountFileInput,
-    OpenAgentAccountFileResponse, OpenProjectInResponse, OpenTargetsResponse, ParsedWorkflow,
-    PatchRunInput, PickVariantRequest, PickVariantResponse, PlanResponse, PresentRepoResponse,
-    ProjectListEntry, ProjectSource, ProjectStatus, ProjectsResponse, ProviderConnectionState,
-    ProviderStatus, ProviderStatusResponse, ReclaimWorktreesResponse, RemoveAgentProfileResponse,
-    RemoveProjectResponse, RemoveTodoResponse, RemoveWorktreeResponse, RepoBranchRequest,
-    RepoBranchResponse, RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse, RunIndexEntry,
-    Runner, RunnerModelCatalogResponse, RunnerModelOption, RunnerSelection, RunsIndexResponse,
-    SaveWorkflowInput, SaveWorkflowResponse, SelectAgentProfileInput, SetAgentConfigInput,
-    SetConfigInput, SetWorkspaceConfigInput, SetWorkspaceUiStateInput, Skill, StartTodoResponse,
-    StatusEntry, TodoItem, UpdateAgentProfileInput, UpdateProjectInput, UpdateProjectResponse,
-    UserMcpListing, WorkflowStepDef, WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUiState,
-    WorkspaceUsageResponse, WorktreeDirEntry, WorktreeEntry, WorktreeEntryType, WorktreeInfo,
-    WorktreeRunStatus, WorktreesResponse,
+    BackendCheck, BackendCheckName, CancelAutoResumeResponse, CancelResponse, Capabilities,
+    ChangedFile, ChangedFileStatus, ChangesPayload, ConfigResponse, ContinueInput,
+    ContinueResponse, CreateAgentProfileInput, CreatePrResponse, CreateRunInput, CreateRunResponse,
+    DeleteRunResponse, DeleteWorkflowResponse, EditQueuedMessageResponse, EmptyRepoResponse,
+    FinishResponse, ForgeInfo, ForgeKind, GitCommitInput, GitCommitResponse, GitPushResponse,
+    GithubChecksAvailable, GithubChecksData, GithubChecksUnavailable, GithubCommentsData,
+    GithubData, GithubItemKind, GithubMergeInput, GithubMergeResponse, GithubPrChangesAvailable,
+    GithubPrChangesData, GithubPrChangesUnavailable, GithubPrMergeStateResponse,
+    GithubRefStatusData, GroupResponse, GroupVariant, HealthProject, HealthResponse,
+    IdeDirectoryResponse, IdeEntry, IdeEntryType, IdeFileResponse, ImageInput, LogEntry,
+    MarkAllReadResponse, MessageInput, MessageResponse, ModelCatalogSource, ModelDiscoveryRunner,
+    OpenAgentAccountFileInput, OpenAgentAccountFileResponse, OpenInCliResponse, OpenInInput,
+    OpenProjectInResponse, OpenTargetsResponse, ParsedWorkflow, PatchRunInput, PickVariantRequest,
+    PickVariantResponse, PlanResponse, PresentRepoResponse, ProjectListEntry, ProjectSource,
+    ProjectStatus, ProjectsResponse, ProviderConnectionState, ProviderStatus,
+    ProviderStatusResponse, QueuedMessagePatchInput, RUN_HISTORY_PAGE_ITEMS,
+    ReclaimWorktreesResponse, RemoveAgentProfileResponse, RemoveProjectResponse,
+    RemoveQueuedMessageResponse, RemoveTodoResponse, RemoveWorktreeResponse, RepoBranchRequest,
+    RepoBranchResponse, RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse, RunCommit,
+    RunCommitsResponse, RunEvent, RunHistoryContext, RunHistoryEvent, RunHistoryPage,
+    RunIndexEntry, Runner, RunnerModelCatalogResponse, RunnerModelOption, RunnerSelection,
+    RunsIndexResponse, SaveWorkflowInput, SaveWorkflowResponse, SelectAgentProfileInput,
+    SetAgentConfigInput, SetConfigInput, SetWorkspaceConfigInput, SetWorkspaceUiStateInput, Skill,
+    StartTodoResponse, StatusEntry, TodoItem, UpdateAgentProfileInput, UpdateProjectInput,
+    UpdateProjectResponse, UserMcpListing, WorkflowStepDef, WorkflowsResponse,
+    WorkspaceConfigResponse, WorkspaceUiState, WorkspaceUsageResponse, WorktreeDirEntry,
+    WorktreeEntry, WorktreeEntryType, WorktreeInfo, WorktreeRunStatus, WorktreesResponse,
 };
 use coducktor_core::config::load_config;
 use coducktor_core::handoff::followups_enabled;
@@ -81,10 +86,11 @@ use coducktor_core::workspace::ui_state::{
     merge_write_workspace_ui_state, read_workspace_ui_state,
 };
 use coducktor_forge::{
-    ForgeMergeInput, ForgeMergeResult, ForgePrDiffResult, ForgePrMergeStateResult, GithubDriver,
-    resolve_forge,
+    DraftPrInput, DraftPrOutcome, ForgeMergeInput, ForgeMergeResult, ForgePrDiffResult,
+    ForgePrMergeStateResult, GithubDriver, resolve_forge,
 };
 use coducktor_runners::session_factory::DefaultSessionFactory;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tokio::sync::broadcast;
 use tokio_stream::StreamExt as _;
@@ -2142,6 +2148,918 @@ impl InProcessEngine {
             project: project_entry(&updated),
         })
     }
+
+    // ---- task-thread write paths (ported from `coducktor-server`'s send_message/
+    // edit_queued_message/remove_queued_message/continue_run/cancel_auto_resume/
+    // run_git_commit/run_git_push/run_commits/run_pr/run_history/run_history_context/
+    // open_run_in_cli/open_run_in handlers) ---------------------------------------------
+
+    pub async fn send_message(
+        &self,
+        run_id: &str,
+        input: MessageInput,
+    ) -> Result<MessageResponse, EngineError> {
+        let Some(text) = input.text.filter(|value| !value.trim().is_empty()) else {
+            return Err(EngineError::Conflict {
+                reason: "message needs text or at least one image".to_owned(),
+            });
+        };
+        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        if manager.get_run(run_id).is_none() {
+            return Err(EngineError::NotFound);
+        }
+        match manager.send_message(run_id, text) {
+            Ok(true) => Ok(MessageResponse::Delivered { delivered: true }),
+            Ok(false) => Err(EngineError::Conflict {
+                reason: "session closed".to_owned(),
+            }),
+            Err(error) => Err(io_err(error)),
+        }
+    }
+
+    pub async fn continue_run(
+        &self,
+        run_id: &str,
+        input: ContinueInput,
+    ) -> Result<ContinueResponse, EngineError> {
+        let options = coducktor_core::workflows::run::ContinueOptions {
+            text: input.text,
+            runner: input.runner,
+            model: input.model,
+        };
+        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        if manager.get_run(run_id).is_none() {
+            return Err(EngineError::NotFound);
+        }
+        match manager.continue_run(run_id, options) {
+            Ok(result) if result.ok => Ok(ContinueResponse { continued: true }),
+            Ok(result) => Err(EngineError::Conflict {
+                reason: result
+                    .error
+                    .unwrap_or_else(|| "cannot continue run".to_owned()),
+            }),
+            Err(error) => Err(io_err(error)),
+        }
+    }
+
+    pub async fn edit_queued_message(
+        &self,
+        run_id: &str,
+        message_id: &str,
+        input: QueuedMessagePatchInput,
+    ) -> Result<EditQueuedMessageResponse, EngineError> {
+        let run = self.run_record(run_id)?;
+        if input.text.is_none() && input.images.is_none() {
+            return Err(EngineError::Conflict {
+                reason: "message edit needs text or images".to_owned(),
+            });
+        }
+        if input
+            .text
+            .as_deref()
+            .is_some_and(|text| !valid_queued_text(text))
+            || input.images.as_ref().is_some_and(|images| images.len() > 4)
+        {
+            return Err(EngineError::Conflict {
+                reason: "queued message exceeds its limits".to_owned(),
+            });
+        }
+        let Some(stack) = run.queued_messages.clone() else {
+            return Err(EngineError::NotFound);
+        };
+        let Some(current) = stack.iter().find(|message| message.id == message_id) else {
+            return Err(EngineError::NotFound);
+        };
+        if run.status != coducktor_contract::RunStatus::Queued {
+            return Err(EngineError::Conflict {
+                reason: "run already started".to_owned(),
+            });
+        }
+        let text = input.text.clone().unwrap_or_else(|| current.text.clone());
+        let images = input
+            .images
+            .as_deref()
+            .map(image_input_urls)
+            .or_else(|| current.images.clone());
+        let effective_images = images.as_ref().map_or(0, Vec::len);
+        let other_images = stack
+            .iter()
+            .filter(|message| message.id != message_id)
+            .map(|message| message.images.as_ref().map_or(0, Vec::len))
+            .sum::<usize>();
+        if text.trim().is_empty() && effective_images == 0 {
+            return Err(EngineError::Conflict {
+                reason: "message needs text or at least one image".to_owned(),
+            });
+        }
+        if other_images + effective_images > MAX_QUEUED_IMAGES {
+            return Err(EngineError::Conflict {
+                reason: "too many queued images — 8 image limit across the stack".to_owned(),
+            });
+        }
+        let mut prospective = stack.clone();
+        if let Some(message) = prospective
+            .iter_mut()
+            .find(|message| message.id == message_id)
+        {
+            message.text = text.clone();
+            message.images = images.clone().filter(|images| !images.is_empty());
+        }
+        if folded_task_length(&run.task, &prospective) > MAX_FOLDED_TASK_CHARS {
+            return Err(EngineError::Conflict {
+                reason: "prompt too long — 200000 character limit across the task and its queued messages"
+                    .to_owned(),
+            });
+        }
+        let replacement = prospective
+            .iter()
+            .find(|message| message.id == message_id)
+            .cloned();
+        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        if manager
+            .edit_run(run_id, |record| record.queued_messages = Some(prospective))
+            .ok()
+            .flatten()
+            .is_none()
+        {
+            return Err(EngineError::Conflict {
+                reason: "run already started".to_owned(),
+            });
+        }
+        Ok(EditQueuedMessageResponse {
+            message: replacement.unwrap_or_else(|| current.clone()),
+        })
+    }
+
+    pub async fn remove_queued_message(
+        &self,
+        run_id: &str,
+        message_id: &str,
+    ) -> Result<RemoveQueuedMessageResponse, EngineError> {
+        let run = self.run_record(run_id)?;
+        if !run
+            .queued_messages
+            .as_ref()
+            .is_some_and(|messages| messages.iter().any(|message| message.id == message_id))
+        {
+            return Err(EngineError::NotFound);
+        }
+        if run.status != coducktor_contract::RunStatus::Queued {
+            return Err(EngineError::Conflict {
+                reason: "run already started".to_owned(),
+            });
+        }
+        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        let updated = manager
+            .edit_run(run_id, |record| {
+                if let Some(messages) = record.queued_messages.as_mut() {
+                    messages.retain(|message| message.id != message_id);
+                }
+            })
+            .ok()
+            .flatten();
+        if updated.is_none() {
+            return Err(EngineError::Conflict {
+                reason: "run already started".to_owned(),
+            });
+        }
+        Ok(RemoveQueuedMessageResponse { removed: true })
+    }
+
+    pub async fn cancel_auto_resume(
+        &self,
+        run_id: &str,
+    ) -> Result<CancelAutoResumeResponse, EngineError> {
+        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        if manager.get_run(run_id).is_none() {
+            return Err(EngineError::NotFound);
+        }
+        let mut patch = Map::new();
+        patch.insert("autoResumeAt".to_owned(), Value::Null);
+        patch.insert("autoResumeAttempts".to_owned(), Value::Null);
+        match manager.update_run_value(run_id, Value::Object(patch)) {
+            Ok(Some(_)) => Ok(CancelAutoResumeResponse { cancelled: true }),
+            Ok(None) => Err(EngineError::NotFound),
+            Err(error) => Err(io_err(error)),
+        }
+    }
+
+    pub async fn git_commit(
+        &self,
+        run_id: &str,
+        input: GitCommitInput,
+    ) -> Result<GitCommitResponse, EngineError> {
+        let run = self.run_record(run_id)?;
+        let Some(worktree) = run_worktree_of(&run) else {
+            return Err(EngineError::Conflict {
+                reason: NO_WORKTREE.to_owned(),
+            });
+        };
+        tokio::task::spawn_blocking(move || {
+            commit_all(&worktree, &input.message)
+                .map(|sha| GitCommitResponse {
+                    committed: true,
+                    sha,
+                })
+                .map_err(|reason| EngineError::Conflict { reason })
+        })
+        .await
+        .map_err(|error| EngineError::Transport(error.to_string()))?
+    }
+
+    pub async fn git_push(&self, run_id: &str) -> Result<GitPushResponse, EngineError> {
+        let run = self.run_record(run_id)?;
+        let Some(worktree) = run_worktree_of(&run) else {
+            return Err(EngineError::Conflict {
+                reason: NO_WORKTREE.to_owned(),
+            });
+        };
+        tokio::task::spawn_blocking(move || {
+            push_current_branch(&worktree).map_err(|reason| EngineError::Conflict { reason })
+        })
+        .await
+        .map_err(|error| EngineError::Transport(error.to_string()))?
+    }
+
+    pub async fn run_commits(&self, run_id: &str) -> Result<RunCommitsResponse, EngineError> {
+        let run = self.run_record(run_id)?;
+        let Some(root) = self.working_directory_of(&run) else {
+            return Err(EngineError::Conflict {
+                reason: NO_WORKTREE.to_owned(),
+            });
+        };
+        let base = run.base_branch.clone().unwrap_or_else(|| "HEAD".to_owned());
+        tokio::task::spawn_blocking(move || {
+            let commits = collect_run_commits(&root, &base)
+                .map_err(|reason| EngineError::Conflict { reason })?;
+            let (current_branch, pushed) = run_git_status(&root);
+            Ok(RunCommitsResponse {
+                commits,
+                branch: run.branch.or(current_branch),
+                pushed,
+            })
+        })
+        .await
+        .map_err(|error| EngineError::Transport(error.to_string()))?
+    }
+
+    fn working_directory_of(&self, run: &coducktor_contract::RunRecord) -> Option<PathBuf> {
+        if run.worktree == Some(false) {
+            Some(self.repo_root.clone())
+        } else {
+            run_worktree_of(run)
+        }
+    }
+
+    /// `create_pr` (`POST /runs/:id/pr`, `coducktor-server`'s `run_pr` handler) — publishes a
+    /// draft PR via `coducktor-forge`'s `create_draft_pr` and records the outcome on the run.
+    pub async fn create_pr(&self, run_id: &str) -> Result<CreatePrResponse, EngineError> {
+        let run = self.run_record(run_id)?;
+        {
+            let manager = self.manager.lock().map_err(|_| lock_err())?;
+            if manager.is_active(run_id) {
+                return Err(EngineError::Conflict {
+                    reason: "run is still active — wait for the review gate".to_owned(),
+                });
+            }
+        }
+        if run_worktree_of(&run).is_none() || run.branch.is_none() {
+            return Err(EngineError::Conflict {
+                reason: "no worktree/branch to publish — this task ran in the repo working tree"
+                    .to_owned(),
+            });
+        }
+        let repo_root = self.repo_root.clone();
+        let handoff_text = read_handoff(&data_dir(&self.repo_root), run_id);
+        let outcome = tokio::task::spawn_blocking(move || {
+            Self::github_driver_blocking(&repo_root).map(|driver| {
+                driver.create_draft_pr(&DraftPrInput {
+                    repo_root,
+                    run: run.clone(),
+                    handoff_text,
+                })
+            })
+        })
+        .await
+        .map_err(|error| EngineError::Transport(error.to_string()))?;
+        let Some(outcome) = outcome else {
+            return Err(EngineError::Conflict {
+                reason: "no GitHub forge configured for this repository".to_owned(),
+            });
+        };
+        let (url, dry_run) = match outcome {
+            DraftPrOutcome::Created { url, dry_run } => (url, dry_run),
+            DraftPrOutcome::Failed { error } => {
+                return Err(EngineError::Conflict { reason: error });
+            }
+        };
+        let run = self.run_record(run_id)?;
+        let finished_at = run
+            .finished_at
+            .unwrap_or_else(coducktor_core::time::now_iso8601);
+        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        manager
+            .update_run_value(
+                run_id,
+                json!({ "pullRequestUrl": url, "status": "done", "finishedAt": finished_at }),
+            )
+            .map_err(|_| EngineError::Transport("could not update run".to_owned()))?;
+        let _ = manager.append_event(
+            run_id,
+            EventInput::new("note").field(
+                "message",
+                format!(
+                    "draft PR created: {url}{}",
+                    if dry_run {
+                        " (dry run — no real PR)"
+                    } else {
+                        ""
+                    }
+                ),
+            ),
+        );
+        Ok(CreatePrResponse { url, dry_run })
+    }
+
+    pub async fn run_history(
+        &self,
+        run_id: &str,
+        cursor: Option<&str>,
+    ) -> Result<RunHistoryPage, EngineError> {
+        if self
+            .manager
+            .lock()
+            .map_err(|_| lock_err())?
+            .get_run(run_id)
+            .is_none()
+        {
+            return Err(EngineError::NotFound);
+        }
+        self.read_history_page(run_id, cursor)
+    }
+
+    pub async fn run_history_context(
+        &self,
+        run_id: &str,
+    ) -> Result<RunHistoryContext, EngineError> {
+        if self
+            .manager
+            .lock()
+            .map_err(|_| lock_err())?
+            .get_run(run_id)
+            .is_none()
+        {
+            return Err(EngineError::NotFound);
+        }
+        let events = self
+            .manager
+            .lock()
+            .map_err(|_| lock_err())?
+            .read_events(run_id);
+        let mut latest_plan = None;
+        let mut selected = BTreeMap::new();
+        for event in events.iter() {
+            if event.event_type == "plan.updated"
+                || (event.event_type == "tool-call"
+                    && event.extra.get("tool").and_then(Value::as_str) == Some("TodoWrite"))
+            {
+                latest_plan = Some(event.clone());
+                continue;
+            }
+            if is_history_boundary(event)
+                || matches!(
+                    event.event_type.as_str(),
+                    "turn.completed" | "session.ended" | "session.error"
+                )
+            {
+                selected.insert(event_seq_u64(event.seq), event.clone());
+                continue;
+            }
+            if matches!(
+                event.event_type.as_str(),
+                "item.started" | "item.updated" | "item.completed"
+            ) && event
+                .extra
+                .get("item")
+                .and_then(Value::as_object)
+                .and_then(|item| item.get("kind"))
+                .and_then(Value::as_str)
+                == Some("tool")
+            {
+                selected.insert(event_seq_u64(event.seq), event.clone());
+            }
+        }
+        if let Some(event) = latest_plan {
+            selected.insert(event_seq_u64(event.seq), event);
+        }
+        Ok(RunHistoryContext {
+            context_events: selected.into_values().map(history_event).collect(),
+            as_of_seq: events
+                .iter()
+                .map(|event| event_seq_u64(event.seq))
+                .max()
+                .unwrap_or(0),
+        })
+    }
+
+    fn run_events_path(&self, run_id: &str) -> PathBuf {
+        data_dir(&self.repo_root)
+            .join("runs")
+            .join(format!("{run_id}.ndjson"))
+    }
+
+    fn read_history_page(
+        &self,
+        run_id: &str,
+        cursor: Option<&str>,
+    ) -> Result<RunHistoryPage, EngineError> {
+        let path = self.run_events_path(run_id);
+        let file_size = std::fs::metadata(&path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        let decoded = cursor.map(decode_cursor::<PageCursor>).transpose()?;
+        if let Some(decoded) = &decoded
+            && (decoded.v != 1
+                || decoded.kind != "page"
+                || !matches!(decoded.direction.as_str(), "older" | "newer"))
+        {
+            return Err(EngineError::Conflict {
+                reason: "invalid history cursor".to_owned(),
+            });
+        }
+        if decoded
+            .as_ref()
+            .is_some_and(|value| value.file_size > file_size)
+        {
+            return Err(EngineError::Conflict {
+                reason: "history cursor is no longer valid — reload the newest page".to_owned(),
+            });
+        }
+
+        let events = self
+            .manager
+            .lock()
+            .map_err(|_| lock_err())?
+            .read_events(run_id);
+        let mut units: Vec<usize> = events
+            .iter()
+            .enumerate()
+            .filter_map(|(index, event)| (!is_history_boundary(event)).then_some(index))
+            .collect();
+        if units.is_empty() {
+            units = (0..events.len()).collect();
+        }
+
+        let selected: Vec<usize> = match decoded.as_ref().map(|value| value.direction.as_str()) {
+            Some("older") => units
+                .iter()
+                .copied()
+                .filter(|index| {
+                    events[*index].seq
+                        < decoded
+                            .as_ref()
+                            .map_or(0.0, |value| value.boundary_seq as f64)
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .take(RUN_HISTORY_PAGE_ITEMS as usize)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect(),
+            Some("newer") => units
+                .iter()
+                .copied()
+                .filter(|index| {
+                    events[*index].seq
+                        > decoded
+                            .as_ref()
+                            .map_or(0.0, |value| value.boundary_seq as f64)
+                })
+                .take(RUN_HISTORY_PAGE_ITEMS as usize)
+                .collect(),
+            _ => units
+                .iter()
+                .copied()
+                .rev()
+                .take(RUN_HISTORY_PAGE_ITEMS as usize)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect(),
+        };
+
+        let (page_events, first_seq, last_seq, item_count) =
+            if let (Some(first), Some(last)) = (selected.first(), selected.last()) {
+                let mut start = *first;
+                if let Some(boundary) = events[..start].iter().rposition(is_history_boundary) {
+                    start = boundary;
+                }
+                let page = events[start..=*last].to_vec();
+                (
+                    page,
+                    events[*first].seq,
+                    events[*last].seq,
+                    selected.len() as u64,
+                )
+            } else {
+                (Vec::new(), 0.0, 0.0, 0)
+            };
+        let has_older = selected.first().is_some_and(|first| {
+            units
+                .iter()
+                .any(|index| events[*index].seq < events[*first].seq)
+        });
+        let has_newer = selected.last().is_some_and(|last| {
+            units
+                .iter()
+                .any(|index| events[*index].seq > events[*last].seq)
+        });
+        let as_of_seq = events
+            .iter()
+            .map(|event| event_seq_u64(event.seq))
+            .max()
+            .unwrap_or(0);
+        let live_cursor = encode_cursor(&json!({
+            "v": 1,
+            "kind": "live",
+            "offset": file_size,
+            "boundarySeq": as_of_seq,
+        }));
+        let older_cursor = has_older.then(|| {
+            encode_cursor(&PageCursor {
+                v: 1,
+                kind: "page".to_owned(),
+                direction: "older".to_owned(),
+                file_size,
+                boundary_seq: event_seq_u64(first_seq),
+            })
+        });
+        let newer_cursor = has_newer.then(|| {
+            encode_cursor(&PageCursor {
+                v: 1,
+                kind: "page".to_owned(),
+                direction: "newer".to_owned(),
+                file_size,
+                boundary_seq: event_seq_u64(last_seq),
+            })
+        });
+        Ok(RunHistoryPage {
+            events: page_events.into_iter().map(history_event).collect(),
+            item_count,
+            older_cursor,
+            newer_cursor,
+            live_cursor,
+            as_of_seq,
+            has_older,
+        })
+    }
+
+    pub async fn open_in_cli(&self, run_id: &str) -> Result<OpenInCliResponse, EngineError> {
+        let run = self.run_record(run_id)?;
+        let Some(command) = run_resume_command(&run) else {
+            return Err(EngineError::Conflict {
+                reason: "no agent session to resume".to_owned(),
+            });
+        };
+        let directory = run_worktree_of(&run).unwrap_or_else(|| self.repo_root.clone());
+        let launch = format!(
+            "cd {} && {command}",
+            shell_quote(&directory.to_string_lossy())
+        );
+        if !open_terminal_for_command(&launch) {
+            return Err(EngineError::Conflict {
+                reason: "no terminal emulator found".to_owned(),
+            });
+        }
+        Ok(OpenInCliResponse {
+            opened: true,
+            command,
+        })
+    }
+
+    pub async fn open_in(&self, run_id: &str, input: OpenInInput) -> Result<Value, EngineError> {
+        let run = self.run_record(run_id)?;
+        let target = input.target.trim();
+        if target.is_empty() || target.chars().count() > 200 {
+            return Err(EngineError::Conflict {
+                reason: "target required".to_owned(),
+            });
+        }
+        let directory = run_worktree_of(&run).unwrap_or_else(|| self.repo_root.clone());
+        if target == "default" {
+            let Some(worktree) = run_worktree_of(&run) else {
+                return Err(EngineError::Conflict {
+                    reason: NO_WORKTREE.to_owned(),
+                });
+            };
+            let Some(path) = input.path.as_deref().filter(|path| !path.is_empty()) else {
+                return Err(EngineError::Conflict {
+                    reason: "path required for the default-app target".to_owned(),
+                });
+            };
+            let Ok(WorktreeEntry::File { path, .. }) = read_worktree_path(&worktree, path) else {
+                return Err(EngineError::Conflict {
+                    reason: "path is not a file in the worktree".to_owned(),
+                });
+            };
+            let file = worktree.join(path);
+            if !account_open_default(&file) {
+                return Err(EngineError::Conflict {
+                    reason: "could not open file".to_owned(),
+                });
+            }
+            return Ok(json!({ "opened": true, "path": file }));
+        }
+        if let Some(provider) = target.strip_prefix("cli:") {
+            let command = match provider {
+                "claude" => "claude",
+                "codex" => "codex",
+                "opencode" => "opencode",
+                "pi" => "pi",
+                _ => {
+                    return Err(EngineError::Conflict {
+                        reason: "unknown target".to_owned(),
+                    });
+                }
+            };
+            let launch = format!(
+                "cd {} && {command}",
+                shell_quote(&directory.to_string_lossy())
+            );
+            if !open_terminal_for_command(&launch) {
+                return Err(EngineError::Conflict {
+                    reason: "no terminal emulator found".to_owned(),
+                });
+            }
+            return Ok(json!({ "opened": true, "path": directory, "command": command }));
+        }
+        if !open_targets_list()
+            .iter()
+            .any(|candidate| candidate.id == target)
+        {
+            return Err(EngineError::Conflict {
+                reason: "unknown target".to_owned(),
+            });
+        }
+        if !open_target(&directory, target) {
+            return Err(EngineError::Conflict {
+                reason: format!("could not open {target}"),
+            });
+        }
+        Ok(json!({ "opened": true, "path": directory }))
+    }
+}
+
+const MAX_QUEUED_IMAGES: usize = 8;
+const MAX_FOLDED_TASK_CHARS: usize = 200_000;
+
+fn image_input_urls(images: &[ImageInput]) -> Vec<String> {
+    images
+        .iter()
+        .map(|image| format!("data:{};base64,{}", image.media_type, image.data))
+        .collect()
+}
+
+fn folded_task_length(task: &str, messages: &[coducktor_contract::QueuedMessage]) -> usize {
+    std::iter::once(task)
+        .chain(messages.iter().map(|message| message.text.as_str()))
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+        .len()
+}
+
+fn valid_queued_text(text: &str) -> bool {
+    text.chars().count() <= 100_000
+}
+
+fn commit_all(root: &Path, message: &str) -> Result<String, String> {
+    if message.trim().is_empty() {
+        return Err("commit message is required".to_owned());
+    }
+    let status = git_capture(root, &["status", "--porcelain"])?;
+    if status.trim().is_empty() {
+        return Err("nothing to commit — the working tree is clean".to_owned());
+    }
+    git_capture(root, &["add", "-A"])?;
+    git_capture_owned(
+        root,
+        &["commit".to_owned(), "-m".to_owned(), message.to_owned()],
+    )?;
+    git_capture(root, &["rev-parse", "HEAD"]).map(|sha| sha.trim().to_owned())
+}
+
+fn push_current_branch(root: &Path) -> Result<GitPushResponse, String> {
+    let branch = git_capture(root, &["rev-parse", "--abbrev-ref", "HEAD"])?
+        .trim()
+        .to_owned();
+    if branch.is_empty() || branch == "HEAD" {
+        return Err("detached HEAD — check out a branch before pushing".to_owned());
+    }
+    let remotes = git_capture(root, &["remote"])?;
+    let remote = remotes
+        .lines()
+        .map(str::trim)
+        .find(|remote| *remote == "origin")
+        .or_else(|| {
+            remotes
+                .lines()
+                .map(str::trim)
+                .find(|remote| !remote.is_empty())
+        })
+        .ok_or_else(|| {
+            "no remote configured — add one with `git remote add origin <url>`".to_owned()
+        })?;
+    let upstream = git_capture(
+        root,
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    )
+    .is_ok();
+    let push_args = if upstream {
+        vec!["push".to_owned()]
+    } else {
+        vec![
+            "push".to_owned(),
+            "-u".to_owned(),
+            remote.to_owned(),
+            branch.clone(),
+        ]
+    };
+    git_capture_owned(root, &push_args)?;
+    Ok(GitPushResponse {
+        pushed: true,
+        branch,
+        remote: remote.to_owned(),
+        upstream_set: !upstream,
+    })
+}
+
+fn run_git_status(root: &Path) -> (Option<String>, bool) {
+    let branch = git_capture(root, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    let Some(branch) = branch.clone() else {
+        return (None, false);
+    };
+    let remote_refs = git_capture(
+        root,
+        &[
+            "for-each-ref",
+            "--contains",
+            "HEAD",
+            "--format=%(refname)",
+            "refs/remotes/",
+        ],
+    )
+    .ok()
+    .is_some_and(|value| !value.trim().is_empty());
+    if remote_refs {
+        return (Some(branch), true);
+    }
+    let upstream = git_capture(
+        root,
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    );
+    if upstream.is_err() {
+        return (Some(branch), false);
+    }
+    let ahead = git_capture(root, &["rev-list", "--count", "@{u}..HEAD"])
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok());
+    (Some(branch), ahead == Some(0))
+}
+
+fn collect_run_commits(root: &Path, base: &str) -> Result<Vec<RunCommit>, String> {
+    if !coducktor_core::git::refs::is_safe_git_ref(base) {
+        return Err("refusing option-like base ref".to_owned());
+    }
+    let base = git_capture(root, &["merge-base", base, "HEAD"])
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| base.to_owned());
+    let revision = format!("{base}..HEAD");
+    let log = git_capture(
+        root,
+        &["log", "--pretty=format:%H%x1f%s%x1f%an%x1f%cr", &revision],
+    )?;
+    Ok(log
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let fields = line.split('\x1f').collect::<Vec<_>>();
+            RunCommit {
+                sha: fields.first().copied().unwrap_or_default().to_owned(),
+                subject: fields.get(1).copied().unwrap_or_default().to_owned(),
+                author: fields.get(2).copied().unwrap_or_default().to_owned(),
+                when: fields.get(3).copied().unwrap_or_default().to_owned(),
+            }
+        })
+        .collect())
+}
+
+fn run_resume_command(run: &coducktor_contract::RunRecord) -> Option<String> {
+    let session_id = run
+        .steps
+        .iter()
+        .rev()
+        .find_map(|step| step.session_id.as_deref())?;
+    if !safe_session_id(session_id) {
+        return None;
+    }
+    Some(match run.runner {
+        Some(Runner::Codex) => format!("codex resume {session_id}"),
+        Some(Runner::OpenCode) => format!("opencode --session {session_id}"),
+        Some(Runner::Pi) => format!("pi --session {session_id}"),
+        Some(Runner::Claude) | None => format!("claude --resume {session_id}"),
+    })
+}
+
+fn safe_session_id(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    value.len() <= 200
+        && (first.is_ascii_alphanumeric() || matches!(first, '.' | '_'))
+        && chars.all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+        })
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn open_terminal_for_command(command: &str) -> bool {
+    if cfg!(target_os = "linux") {
+        return Command::new("x-terminal-emulator")
+            .args(["-e", "sh", "-lc", command])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .is_ok();
+    }
+    false
+}
+
+fn is_history_boundary(event: &RunEvent) -> bool {
+    matches!(event.event_type.as_str(), "user-message" | "turn.started")
+}
+
+fn event_seq_u64(seq: f64) -> u64 {
+    if seq.is_finite() && seq >= 0.0 && seq <= u64::MAX as f64 {
+        seq as u64
+    } else {
+        0
+    }
+}
+
+fn history_event(event: RunEvent) -> RunHistoryEvent {
+    RunHistoryEvent {
+        seq: event.seq,
+        ts: event.ts,
+        step_id: event.step_id,
+        event_type: event.event_type,
+        extra: event.extra,
+    }
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PageCursor {
+    v: u8,
+    kind: String,
+    direction: String,
+    file_size: u64,
+    boundary_seq: u64,
+}
+
+fn decode_cursor<T: serde::de::DeserializeOwned>(cursor: &str) -> Result<T, EngineError> {
+    use base64::Engine as _;
+    let invalid = || EngineError::Conflict {
+        reason: "invalid history cursor".to_owned(),
+    };
+    if cursor.is_empty() || cursor.len() > 2_048 {
+        return Err(invalid());
+    }
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(cursor)
+        .map_err(|_| invalid())?;
+    serde_json::from_slice(&bytes).map_err(|_| invalid())
+}
+
+fn encode_cursor<T: Serialize>(value: &T) -> String {
+    use base64::Engine as _;
+    serde_json::to_vec(value).map_or_else(
+        |_| String::new(),
+        |bytes| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes),
+    )
 }
 
 fn workspace_config_response(
@@ -7578,5 +8496,424 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error, EngineError::NotFound);
+    }
+
+    // ---- task-thread write paths ------------------------------------------------------------
+
+    // -- pure helpers --
+
+    #[test]
+    fn valid_queued_text_enforces_the_100k_character_cap() {
+        assert!(valid_queued_text("hello"));
+        assert!(!valid_queued_text(&"x".repeat(100_001)));
+    }
+
+    #[test]
+    fn folded_task_length_joins_task_and_queued_text_ignoring_blanks() {
+        let messages = vec![
+            coducktor_contract::QueuedMessage {
+                id: "1".to_owned(),
+                text: "  ".to_owned(),
+                images: None,
+                created_at: "now".to_owned(),
+            },
+            coducktor_contract::QueuedMessage {
+                id: "2".to_owned(),
+                text: "second".to_owned(),
+                images: None,
+                created_at: "now".to_owned(),
+            },
+        ];
+        assert_eq!(
+            folded_task_length("first", &messages),
+            "first\n\nsecond".len()
+        );
+    }
+
+    #[test]
+    fn shell_quote_escapes_embedded_single_quotes() {
+        assert_eq!(shell_quote("it's fine"), "'it'\\''s fine'");
+    }
+
+    #[test]
+    fn safe_session_id_rejects_path_and_shell_shaped_values() {
+        assert!(safe_session_id("abc123.def_ghi-1"));
+        assert!(!safe_session_id(""));
+        assert!(!safe_session_id("../etc/passwd"));
+        assert!(!safe_session_id("$(rm -rf /)"));
+        assert!(!safe_session_id(&"a".repeat(201)));
+    }
+
+    #[test]
+    fn cursor_round_trips_through_encode_and_decode() {
+        let cursor = PageCursor {
+            v: 1,
+            kind: "page".to_owned(),
+            direction: "older".to_owned(),
+            file_size: 42,
+            boundary_seq: 7,
+        };
+        let encoded = encode_cursor(&cursor);
+        let decoded: PageCursor = decode_cursor(&encoded).unwrap();
+        assert_eq!(decoded, PageCursor { ..cursor });
+    }
+
+    #[test]
+    fn decode_cursor_rejects_garbage() {
+        let error: EngineError = decode_cursor::<PageCursor>("not base64!!").unwrap_err();
+        assert_eq!(
+            error,
+            EngineError::Conflict {
+                reason: "invalid history cursor".to_owned()
+            }
+        );
+        let error: EngineError = decode_cursor::<PageCursor>("").unwrap_err();
+        assert_eq!(
+            error,
+            EngineError::Conflict {
+                reason: "invalid history cursor".to_owned()
+            }
+        );
+    }
+
+    // -- wired-through-the-engine paths (NotFound/validation, matching the established
+    // restraint elsewhere in this file: exercise what returns before deep RunManager session
+    // state is needed — RunManager's own continue/session semantics are coducktor-core's own
+    // test responsibility, this suite only proves the wiring) --
+
+    #[tokio::test]
+    async fn send_message_rejects_blank_text() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let response = engine.start_run(steps_input("do the thing")).await.unwrap();
+        let CreateRunResponse::Single(run) = response else {
+            panic!("expected a single run");
+        };
+        let error = engine
+            .send_message(
+                &run.id,
+                MessageInput {
+                    text: Some("   ".to_owned()),
+                    images: None,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            EngineError::Conflict {
+                reason: "message needs text or at least one image".to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn send_message_reports_not_found_for_an_unknown_run() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine
+            .send_message(
+                "no-such-run",
+                MessageInput {
+                    text: Some("hi".to_owned()),
+                    images: None,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error, EngineError::NotFound);
+    }
+
+    #[tokio::test]
+    async fn continue_run_reports_not_found_for_an_unknown_run() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine
+            .continue_run("no-such-run", ContinueInput::default())
+            .await
+            .unwrap_err();
+        assert_eq!(error, EngineError::NotFound);
+    }
+
+    #[tokio::test]
+    async fn edit_queued_message_reports_not_found_when_the_run_has_no_queue() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let response = engine.start_run(steps_input("do the thing")).await.unwrap();
+        let CreateRunResponse::Single(run) = response else {
+            panic!("expected a single run");
+        };
+        let error = engine
+            .edit_queued_message(
+                &run.id,
+                "msg-1",
+                QueuedMessagePatchInput {
+                    text: Some("edited".to_owned()),
+                    images: None,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error, EngineError::NotFound);
+    }
+
+    #[tokio::test]
+    async fn edit_queued_message_rejects_an_empty_patch() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let response = engine.start_run(steps_input("do the thing")).await.unwrap();
+        let CreateRunResponse::Single(run) = response else {
+            panic!("expected a single run");
+        };
+        let error = engine
+            .edit_queued_message(
+                &run.id,
+                "msg-1",
+                QueuedMessagePatchInput {
+                    text: None,
+                    images: None,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            EngineError::Conflict {
+                reason: "message edit needs text or images".to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_queued_message_reports_not_found_when_the_run_has_no_queue() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let response = engine.start_run(steps_input("do the thing")).await.unwrap();
+        let CreateRunResponse::Single(run) = response else {
+            panic!("expected a single run");
+        };
+        let error = engine
+            .remove_queued_message(&run.id, "msg-1")
+            .await
+            .unwrap_err();
+        assert_eq!(error, EngineError::NotFound);
+    }
+
+    #[tokio::test]
+    async fn cancel_auto_resume_reports_not_found_for_an_unknown_run() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine.cancel_auto_resume("no-such-run").await.unwrap_err();
+        assert_eq!(error, EngineError::NotFound);
+    }
+
+    #[tokio::test]
+    async fn cancel_auto_resume_reports_cancelled_for_a_real_run() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let response = engine.start_run(steps_input("do the thing")).await.unwrap();
+        let CreateRunResponse::Single(run) = response else {
+            panic!("expected a single run");
+        };
+        let response = engine.cancel_auto_resume(&run.id).await.unwrap();
+        assert!(response.cancelled);
+    }
+
+    #[tokio::test]
+    async fn git_commit_reports_no_worktree_for_a_worktree_less_run() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let response = engine.start_run(steps_input("do the thing")).await.unwrap();
+        let CreateRunResponse::Single(run) = response else {
+            panic!("expected a single run");
+        };
+        let error = engine
+            .git_commit(
+                &run.id,
+                GitCommitInput {
+                    message: "a commit".to_owned(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            EngineError::Conflict {
+                reason: NO_WORKTREE.to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn git_push_reports_no_worktree_for_a_worktree_less_run() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let response = engine.start_run(steps_input("do the thing")).await.unwrap();
+        let CreateRunResponse::Single(run) = response else {
+            panic!("expected a single run");
+        };
+        let error = engine.git_push(&run.id).await.unwrap_err();
+        assert_eq!(
+            error,
+            EngineError::Conflict {
+                reason: NO_WORKTREE.to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn run_commits_reports_no_worktree_for_a_worktree_less_run() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let response = engine.start_run(steps_input("do the thing")).await.unwrap();
+        let CreateRunResponse::Single(run) = response else {
+            panic!("expected a single run");
+        };
+        // `create_run` persists `worktree: Some(false)` when worktree creation was skipped in
+        // this environment (the temp dir is not a real git repo) — `working_directory_of` reads
+        // that as "ran directly in the repo working tree" and legitimately resolves to
+        // `self.repo_root`, which is correct for a real worktree-less run but leaves nothing for
+        // `run_commits`'s git shell-outs to work against here. Force the field to `None`
+        // (genuinely never requested) so the NO_WORKTREE conflict this test actually means to
+        // exercise is the one that fires, matching `create_pr`'s own equivalent test right below.
+        {
+            let mut manager = engine.manager.lock().unwrap();
+            manager
+                .update_run_value(&run.id, json!({ "worktree": null }))
+                .unwrap();
+        }
+        let error = engine.run_commits(&run.id).await.unwrap_err();
+        assert_eq!(
+            error,
+            EngineError::Conflict {
+                reason: NO_WORKTREE.to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn create_pr_reports_no_worktree_for_a_worktree_less_run() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let response = engine.start_run(steps_input("do the thing")).await.unwrap();
+        let CreateRunResponse::Single(run) = response else {
+            panic!("expected a single run");
+        };
+        let error = engine.create_pr(&run.id).await.unwrap_err();
+        assert_eq!(
+            error,
+            EngineError::Conflict {
+                reason: "no worktree/branch to publish — this task ran in the repo working tree"
+                    .to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn run_history_reports_not_found_for_an_unknown_run() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine.run_history("no-such-run", None).await.unwrap_err();
+        assert_eq!(error, EngineError::NotFound);
+    }
+
+    #[tokio::test]
+    async fn run_history_reads_a_real_runs_events() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let response = engine.start_run(steps_input("do the thing")).await.unwrap();
+        let CreateRunResponse::Single(run) = response else {
+            panic!("expected a single run");
+        };
+        let page = engine.run_history(&run.id, None).await.unwrap();
+        assert!(!page.events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_history_rejects_a_garbage_cursor() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let response = engine.start_run(steps_input("do the thing")).await.unwrap();
+        let CreateRunResponse::Single(run) = response else {
+            panic!("expected a single run");
+        };
+        let error = engine
+            .run_history(&run.id, Some("not a cursor"))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            EngineError::Conflict {
+                reason: "invalid history cursor".to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn run_history_context_reports_not_found_for_an_unknown_run() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine.run_history_context("no-such-run").await.unwrap_err();
+        assert_eq!(error, EngineError::NotFound);
+    }
+
+    #[tokio::test]
+    async fn open_in_cli_reports_no_session_for_a_fresh_run_or_reports_not_found() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine.open_in_cli("no-such-run").await.unwrap_err();
+        assert_eq!(error, EngineError::NotFound);
+    }
+
+    #[tokio::test]
+    async fn open_in_rejects_an_empty_target() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let response = engine.start_run(steps_input("do the thing")).await.unwrap();
+        let CreateRunResponse::Single(run) = response else {
+            panic!("expected a single run");
+        };
+        let error = engine
+            .open_in(
+                &run.id,
+                OpenInInput {
+                    target: "  ".to_owned(),
+                    path: None,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            EngineError::Conflict {
+                reason: "target required".to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn open_in_rejects_an_unknown_cli_provider() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let response = engine.start_run(steps_input("do the thing")).await.unwrap();
+        let CreateRunResponse::Single(run) = response else {
+            panic!("expected a single run");
+        };
+        let error = engine
+            .open_in(
+                &run.id,
+                OpenInInput {
+                    target: "cli:nonsense".to_owned(),
+                    path: None,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            EngineError::Conflict {
+                reason: "unknown target".to_owned()
+            }
+        );
     }
 }

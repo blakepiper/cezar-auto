@@ -9,6 +9,7 @@ version.workspace = true
 [dependencies]
 async-stream.workspace = true
 async-trait.workspace = true
+base64.workspace = true
 bytes.workspace = true
 coducktor-contract = { path = "../coducktor-contract" }
 coducktor-core = { path = "../coducktor-core" }
