@@ -5,7 +5,48 @@
 //! re-ported here: `coducktor_contract::Runner`/`RunnerSelection` already cover
 //! that enumeration (A1).
 
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use coducktor_contract::ConcreteReasoningEffort;
 use serde::{Deserialize, Serialize};
+
+/// Everything one agent-CLI backend needs to spawn and drive a session. Ported from
+/// `agent-runner.ts`'s `AgentRunSpec`, shared by every backend (claude first, at B9a.2b;
+/// codex/opencode/pi follow at 2c-2e).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AgentRunSpec {
+    /// Appended to the CLI's default system prompt (`--append-system-prompt` for claude;
+    /// prepended to the opening message via [`prepend_system_prompt`] for backends with no
+    /// dedicated channel).
+    pub system_prompt: Option<String>,
+    pub user_prompt: String,
+    /// Image blocks delivered with the first user message — screenshots pasted into the new-task
+    /// form, at task start.
+    pub images: Vec<ContentBlock>,
+    /// The directory the agent runs in — also the only writable root.
+    pub cwd: PathBuf,
+    /// Tool allowlist; the CLI is default-deny for anything not listed.
+    pub allowed_tools: Vec<String>,
+    /// When `Bash` is allowed, restrict it to commands starting with one of these.
+    pub bash_allowlist: Vec<String>,
+    /// Extra directories the agent may read/write besides `cwd`.
+    pub additional_directories: Vec<String>,
+    /// Extra env vars for the agent process (merged over the curated child env from
+    /// `agent_env::build_child_env`).
+    pub env: BTreeMap<String, String>,
+    pub model: Option<String>,
+    /// Concrete reasoning level for this session — the run manager resolves `auto` before spawn.
+    pub reasoning_effort: Option<ConcreteReasoningEffort>,
+    /// Wall-clock kill switch for the run (ms). `None` uses the backend's own default; `Some(0)`
+    /// disables it entirely (interactive sessions).
+    pub timeout_ms: Option<u64>,
+    /// Stable session id (UUID) so the user can take over interactively later.
+    pub session_id: Option<String>,
+    /// Spawn with `--resume <sessionId>` instead of starting a fresh session — picks up the
+    /// on-disk conversation (used by "Continue" after a run ends).
+    pub resume: bool,
+}
 
 /// One content block of a user message — mirrors the Anthropic wire format so it can be
 /// written to the claude CLI's stdin verbatim.

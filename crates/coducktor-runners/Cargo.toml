@@ -10,6 +10,10 @@ version.workspace = true
 coducktor-contract = { path = "../coducktor-contract" }
 coducktor-core = { path = "../coducktor-core" }
 coducktor-protocol = { path = "../coducktor-protocol" }
+libc.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

@@ -9,6 +9,8 @@ mod wire;
 pub mod agent_env;
 pub mod agent_runner;
 pub mod claude;
+pub mod claude_runner;
 pub mod codex;
 pub mod opencode;
 pub mod pi;
+pub mod usage;

@@ -773,9 +773,11 @@ dependencies = [
  "coducktor-contract",
  "coducktor-core",
  "coducktor-protocol",
+ "libc",
  "regex",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

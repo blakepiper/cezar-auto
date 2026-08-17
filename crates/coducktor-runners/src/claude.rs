@@ -630,7 +630,7 @@ fn same_plan(left: &BTreeMap<String, PlanEntry>, right: &BTreeMap<String, PlanEn
     left == right
 }
 
-fn stringify_tool_result_content(content: Option<&Value>) -> String {
+pub(crate) fn stringify_tool_result_content(content: Option<&Value>) -> String {
     match content {
         Some(Value::String(text)) => text.clone(),
         Some(Value::Array(parts)) => parts
@@ -656,12 +656,12 @@ fn stringify_tool_result_content(content: Option<&Value>) -> String {
     }
 }
 
-struct ImageBlock {
-    media_type: String,
-    data: String,
+pub(crate) struct ImageBlock {
+    pub(crate) media_type: String,
+    pub(crate) data: String,
 }
 
-fn tool_result_image_blocks(content: Option<&Value>) -> Vec<ImageBlock> {
+pub(crate) fn tool_result_image_blocks(content: Option<&Value>) -> Vec<ImageBlock> {
     content
         .and_then(Value::as_array)
         .map(|parts| {
