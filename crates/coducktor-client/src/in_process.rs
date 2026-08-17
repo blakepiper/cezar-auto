@@ -25,8 +25,9 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use coducktor_contract::{
     AgentAccountDetailsResponse, AgentAccountFile, AgentAccountStatusResponse, AgentConfigFile,
@@ -37,14 +38,15 @@ use coducktor_contract::{
     ChangesPayload, ConfigResponse, CreateAgentProfileInput, CreateRunInput, CreateRunResponse,
     DeleteRunResponse, DeleteWorkflowResponse, EmptyRepoResponse, FinishResponse, ForgeInfo,
     ForgeKind, GroupResponse, GroupVariant, HealthProject, HealthResponse, IdeDirectoryResponse,
-    IdeEntry, IdeEntryType, IdeFileResponse, LogEntry, MarkAllReadResponse,
-    OpenAgentAccountFileInput, OpenAgentAccountFileResponse, OpenProjectInResponse,
-    OpenTargetsResponse, ParsedWorkflow, PatchRunInput, PickVariantRequest, PickVariantResponse,
-    PresentRepoResponse, ProjectListEntry, ProjectSource, ProjectStatus, ProjectsResponse,
-    ProviderConnectionState, ProviderStatus, ProviderStatusResponse, ReclaimWorktreesResponse,
-    RemoveAgentProfileResponse, RemoveTodoResponse, RemoveWorktreeResponse, RepoBranchRequest,
-    RepoBranchResponse, RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse, RunIndexEntry,
-    Runner, RunnerSelection, RunsIndexResponse, SaveWorkflowInput, SaveWorkflowResponse,
+    IdeEntry, IdeEntryType, IdeFileResponse, LogEntry, MarkAllReadResponse, ModelCatalogSource,
+    ModelDiscoveryRunner, OpenAgentAccountFileInput, OpenAgentAccountFileResponse,
+    OpenProjectInResponse, OpenTargetsResponse, ParsedWorkflow, PatchRunInput, PickVariantRequest,
+    PickVariantResponse, PresentRepoResponse, ProjectListEntry, ProjectSource, ProjectStatus,
+    ProjectsResponse, ProviderConnectionState, ProviderStatus, ProviderStatusResponse,
+    ReclaimWorktreesResponse, RemoveAgentProfileResponse, RemoveTodoResponse,
+    RemoveWorktreeResponse, RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoDiffStat,
+    RepoInfo, RepoResponse, RunIndexEntry, Runner, RunnerModelCatalogResponse, RunnerModelOption,
+    RunnerSelection, RunsIndexResponse, SaveWorkflowInput, SaveWorkflowResponse,
     SelectAgentProfileInput, SetAgentConfigInput, SetConfigInput, Skill, StartTodoResponse,
     StatusEntry, TodoItem, UpdateAgentProfileInput, UserMcpListing, WorkflowStepDef,
     WorkflowsResponse, WorkspaceUsageResponse, WorktreeDirEntry, WorktreeEntry, WorktreeEntryType,
@@ -85,7 +87,24 @@ pub struct InProcessEngine {
     version: String,
     manager: Arc<Mutex<RunManager>>,
     live_events: broadcast::Sender<EngineEvent>,
+    model_catalog: Arc<Mutex<Vec<CachedModelCatalog>>>,
 }
+
+/// Ported from `coducktor-server`'s private struct of the same name — a 5-minute TTL cache so a
+/// slow/failing `codex`/`opencode` model probe doesn't re-run on every keystroke of a picker.
+#[derive(Debug, Clone)]
+struct CachedModelCatalog {
+    runner: ModelDiscoveryRunner,
+    models: Vec<RunnerModelOption>,
+    expires_at: Instant,
+    failure_reason: Option<String>,
+}
+
+const MODEL_CATALOG_TTL: Duration = Duration::from_secs(5 * 60);
+const MODEL_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
+const CODEX_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_MODEL_OUTPUT_BYTES: usize = 512 * 1024;
+const MAX_DISCOVERED_MODELS: usize = 500;
 
 fn data_dir(repo_root: &Path) -> PathBuf {
     repo_root.join(".ai").join("coducktor")
@@ -156,6 +175,7 @@ impl InProcessEngine {
             version: version.into(),
             manager: Arc::new(Mutex::new(manager)),
             live_events,
+            model_catalog: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -1578,6 +1598,364 @@ impl InProcessEngine {
             path: self.repo_root.to_string_lossy().into_owned(),
         })
     }
+
+    // ---- host model catalog (ported from `coducktor-server`'s `get_models` handler) --------
+
+    /// `GET /models?runner=` — a 5-minute-TTL-cached host-discovered model catalog for
+    /// `codex`/`opencode` (`claude`/`pi` have no discovery path and are rejected, matching
+    /// `runner_discovers_models`). Live discovery shells out to the real CLI; a failure falls
+    /// back to the last good cached catalog (stale-but-something beats nothing).
+    pub async fn models(&self, runner: Runner) -> Result<RunnerModelCatalogResponse, EngineError> {
+        let runner = match runner {
+            Runner::Codex => ModelDiscoveryRunner::Codex,
+            Runner::OpenCode => ModelDiscoveryRunner::OpenCode,
+            Runner::Claude | Runner::Pi => {
+                return Err(EngineError::Conflict {
+                    reason: "runner must be codex or opencode".to_owned(),
+                });
+            }
+        };
+        let now = Instant::now();
+        if let Ok(cache) = self.model_catalog.lock()
+            && let Some(entry) = cache.iter().find(|entry| entry.runner == runner)
+            && now < entry.expires_at
+        {
+            let source = if entry.failure_reason.is_some() && entry.models.is_empty() {
+                ModelCatalogSource::Unavailable
+            } else {
+                ModelCatalogSource::Cache
+            };
+            return Ok(model_catalog_wire(
+                runner,
+                entry.models.clone(),
+                source,
+                entry.failure_reason.is_some() && !entry.models.is_empty(),
+                entry.failure_reason.clone(),
+            ));
+        }
+
+        let discovered = match runner {
+            ModelDiscoveryRunner::Codex => discover_codex_models(&self.repo_root).await,
+            ModelDiscoveryRunner::OpenCode => discover_opencode_models(&self.repo_root).await,
+        };
+        let (models, source, stale, reason) = match discovered {
+            Ok(models) => (models, ModelCatalogSource::Live, false, None),
+            Err(()) => {
+                let cached =
+                    self.model_catalog.lock().ok().and_then(|cache| {
+                        cache.iter().find(|entry| entry.runner == runner).cloned()
+                    });
+                let models = cached.map(|entry| entry.models).unwrap_or_default();
+                let stale = !models.is_empty();
+                (
+                    models,
+                    if stale {
+                        ModelCatalogSource::Cache
+                    } else {
+                        ModelCatalogSource::Unavailable
+                    },
+                    stale,
+                    Some(model_catalog_reason(runner)),
+                )
+            }
+        };
+        if let Ok(mut cache) = self.model_catalog.lock() {
+            cache.retain(|entry| entry.runner != runner);
+            cache.push(CachedModelCatalog {
+                runner,
+                models: models.clone(),
+                expires_at: Instant::now() + MODEL_CATALOG_TTL,
+                failure_reason: reason
+                    .clone()
+                    .filter(|_| source != ModelCatalogSource::Live),
+            });
+        }
+        Ok(model_catalog_wire(runner, models, source, stale, reason))
+    }
+}
+
+fn model_catalog_reason(runner: ModelDiscoveryRunner) -> String {
+    match runner {
+        ModelDiscoveryRunner::Codex => {
+            "Codex model discovery is temporarily unavailable".to_owned()
+        }
+        ModelDiscoveryRunner::OpenCode => {
+            "OpenCode model discovery is temporarily unavailable".to_owned()
+        }
+    }
+}
+
+fn model_catalog_wire(
+    runner: ModelDiscoveryRunner,
+    models: Vec<RunnerModelOption>,
+    source: ModelCatalogSource,
+    stale: bool,
+    reason: Option<String>,
+) -> RunnerModelCatalogResponse {
+    RunnerModelCatalogResponse {
+        runner: match runner {
+            ModelDiscoveryRunner::Codex => Runner::Codex,
+            ModelDiscoveryRunner::OpenCode => Runner::OpenCode,
+        },
+        models,
+        source,
+        stale,
+        reason,
+    }
+}
+
+async fn read_bounded_stdout(
+    child: &mut tokio::process::Child,
+) -> Result<(Vec<u8>, std::process::ExitStatus), ()> {
+    use tokio::io::AsyncReadExt;
+    let mut stdout = child.stdout.take().ok_or(())?;
+    tokio::time::timeout(MODEL_DISCOVERY_TIMEOUT, async {
+        let mut bytes = Vec::new();
+        let mut buffer = [0_u8; 8192];
+        loop {
+            let read = stdout.read(&mut buffer).await.map_err(|_| ())?;
+            if read == 0 {
+                break;
+            }
+            if bytes.len() + read > MAX_MODEL_OUTPUT_BYTES {
+                return Err(());
+            }
+            bytes.extend_from_slice(&buffer[..read]);
+        }
+        let status = child.wait().await.map_err(|_| ())?;
+        Ok((bytes, status))
+    })
+    .await
+    .map_err(|_| ())?
+}
+
+fn parse_opencode_models(stdout: &str) -> Result<Vec<RunnerModelOption>, ()> {
+    let mut models = Vec::new();
+    let mut ids = std::collections::BTreeSet::new();
+    let mut had_line = false;
+    for raw_line in stdout.lines() {
+        let line = strip_ansi(raw_line).trim().to_owned();
+        if line.is_empty() {
+            continue;
+        }
+        had_line = true;
+        let Some(slash) = line.find('/') else {
+            continue;
+        };
+        if slash == 0
+            || line[slash + 1..].is_empty()
+            || !line[..slash]
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+            || !line[slash + 1..]
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | ':' | '/' | '-'))
+        {
+            continue;
+        }
+        if !ids.insert(line.clone()) {
+            continue;
+        }
+        if models.len() >= MAX_DISCOVERED_MODELS {
+            return Err(());
+        }
+        let description = format!("via {}", &line[..slash]);
+        models.push(RunnerModelOption {
+            id: line.clone(),
+            label: line,
+            description,
+            reasoning_efforts: None,
+        });
+    }
+    if had_line && models.is_empty() {
+        return Err(());
+    }
+    Ok(models)
+}
+
+fn strip_ansi(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(character) = chars.next() {
+        if character == '\u{1b}' {
+            if chars.next() == Some('[') {
+                for character in chars.by_ref() {
+                    if character.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                output.push(character);
+            }
+        } else {
+            output.push(character);
+        }
+    }
+    output
+}
+
+async fn discover_opencode_models(repo_root: &Path) -> Result<Vec<RunnerModelOption>, ()> {
+    let executable = provider_executable(Runner::OpenCode);
+    let mut child = tokio::process::Command::new(executable)
+        .arg("models")
+        .current_dir(repo_root)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|_| ())?;
+    let (stdout, status) = read_bounded_stdout(&mut child).await?;
+    if !status.success() {
+        return Err(());
+    }
+    parse_opencode_models(&String::from_utf8(stdout).map_err(|_| ())?)
+}
+
+async fn write_codex_message(
+    stdin: &mut tokio::process::ChildStdin,
+    message: Value,
+) -> Result<(), ()> {
+    use tokio::io::AsyncWriteExt;
+    let mut bytes = serde_json::to_vec(&message).map_err(|_| ())?;
+    bytes.push(b'\n');
+    stdin.write_all(&bytes).await.map_err(|_| ())
+}
+
+async fn read_codex_response(
+    lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+    id: u64,
+) -> Result<Value, ()> {
+    while let Some(line) = lines.next_line().await.map_err(|_| ())? {
+        let frame: Value = serde_json::from_str(&line).map_err(|_| ())?;
+        if frame.get("id").and_then(Value::as_u64) != Some(id) {
+            continue;
+        }
+        if frame.get("error").is_some() {
+            return Err(());
+        }
+        return Ok(frame
+            .get("result")
+            .cloned()
+            .unwrap_or(Value::Object(Map::new())));
+    }
+    Err(())
+}
+
+async fn discover_codex_models(repo_root: &Path) -> Result<Vec<RunnerModelOption>, ()> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let executable = provider_executable(Runner::Codex);
+    let mut child = tokio::process::Command::new(executable)
+        .arg("app-server")
+        .current_dir(repo_root)
+        .stdin(Stdio::piped())
+        .stderr(Stdio::null())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|_| ())?;
+    let mut stdin = child.stdin.take().ok_or(())?;
+    let stdout = child.stdout.take().ok_or(())?;
+    let mut lines = BufReader::new(stdout).lines();
+    let result = tokio::time::timeout(CODEX_DISCOVERY_TIMEOUT, async {
+        write_codex_message(
+            &mut stdin,
+            json!({
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "clientInfo": { "name": "coducktor", "title": "Coducktor", "version": "0.1.0" },
+                    "capabilities": { "experimentalApi": true }
+                }
+            }),
+        )
+        .await?;
+        read_codex_response(&mut lines, 1).await?;
+        write_codex_message(&mut stdin, json!({ "method": "initialized", "params": {} })).await?;
+        let mut cursor = Value::Null;
+        let mut cursors = std::collections::BTreeSet::new();
+        let mut models = Vec::new();
+        let mut ids = std::collections::BTreeSet::new();
+        for page in 0..25_u64 {
+            let id = page + 2;
+            write_codex_message(
+                &mut stdin,
+                json!({
+                    "id": id,
+                    "method": "model/list",
+                    "params": { "cursor": cursor, "includeHidden": false }
+                }),
+            )
+            .await?;
+            let result = read_codex_response(&mut lines, id).await?;
+            let data = result.get("data").and_then(Value::as_array).ok_or(())?;
+            for model in data {
+                let object = model.as_object().ok_or(())?;
+                if object.get("hidden").and_then(Value::as_bool) == Some(true) {
+                    continue;
+                }
+                let id = object
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or(())?
+                    .to_owned();
+                if !ids.insert(id.clone()) {
+                    continue;
+                }
+                if models.len() >= MAX_DISCOVERED_MODELS {
+                    return Err(());
+                }
+                let reasoning_efforts = object
+                    .get("supportedReasoningEfforts")
+                    .map(|value| {
+                        value
+                            .as_array()
+                            .ok_or(())?
+                            .iter()
+                            .map(|value| {
+                                value
+                                    .as_str()
+                                    .filter(|value| !value.is_empty())
+                                    .map(str::to_owned)
+                                    .ok_or(())
+                            })
+                            .collect::<Result<Vec<_>, ()>>()
+                    })
+                    .transpose()?;
+                models.push(RunnerModelOption {
+                    label: object
+                        .get("displayName")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or(&id)
+                        .to_owned(),
+                    description: object
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    id,
+                    reasoning_efforts,
+                });
+            }
+            let next = result.get("nextCursor").cloned().unwrap_or(Value::Null);
+            let Some(next) = next.as_str() else {
+                return Ok(models);
+            };
+            if next.is_empty() || !cursors.insert(next.to_owned()) {
+                return Err(());
+            }
+            cursor = Value::String(next.to_owned());
+        }
+        Err(())
+    })
+    .await
+    .map_err(|_| ())?;
+    let _ = child.kill().await;
+    result
 }
 
 // ---- open-targets helpers, duplicated from `coducktor-server`'s private functions of the same
@@ -6028,5 +6406,95 @@ mod tests {
         let loser = group.runs.iter().find(|run| run.id != winner_id).unwrap();
         assert!(!winner.archived);
         assert!(loser.archived);
+    }
+
+    // ---- host model catalog (`models`) -----------------------------------------------------
+
+    #[test]
+    fn opencode_model_catalog_parser_preserves_order_and_rejects_banners() {
+        let models = parse_opencode_models(
+            "openai/gpt-5\n\u{1b}[32manthropic/claude-sonnet-4\u{1b}[0m\nopenai/gpt-5\n",
+        )
+        .expect("valid model listing");
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "openai/gpt-5");
+        assert_eq!(models[1].description, "via anthropic");
+        assert!(parse_opencode_models("warning: no models\n").is_err());
+    }
+
+    #[tokio::test]
+    async fn models_rejects_a_runner_with_no_discovery_path() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        for runner in [Runner::Claude, Runner::Pi] {
+            let error = engine.models(runner).await.unwrap_err();
+            assert_eq!(
+                error,
+                EngineError::Conflict {
+                    reason: "runner must be codex or opencode".to_owned()
+                }
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn models_falls_back_to_unavailable_when_the_cli_cannot_be_spawned() {
+        // No `codex`/`opencode` binary is installed in this sandbox (same assumption this
+        // repo's other backend tests already document, e.g. B9a's runner tests) — live
+        // discovery fails to spawn, and with no prior cache entry the result is `Unavailable`
+        // with a reason, never an `Err` (a missing CLI degrades gracefully, matching the
+        // `coducktor-server` oracle's own `get_models` handler).
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let response = engine.models(Runner::Codex).await.unwrap();
+        assert_eq!(response.runner, Runner::Codex);
+        assert!(response.models.is_empty());
+        assert_eq!(response.source, ModelCatalogSource::Unavailable);
+        assert!(response.reason.is_some());
+    }
+
+    #[tokio::test]
+    async fn models_serves_a_live_cache_entry_within_its_ttl_without_reprobing() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        {
+            let mut cache = engine.model_catalog.lock().unwrap();
+            cache.push(CachedModelCatalog {
+                runner: ModelDiscoveryRunner::OpenCode,
+                models: vec![RunnerModelOption {
+                    id: "openai/gpt-5".to_owned(),
+                    label: "openai/gpt-5".to_owned(),
+                    description: "via openai".to_owned(),
+                    reasoning_efforts: None,
+                }],
+                expires_at: Instant::now() + Duration::from_secs(60),
+                failure_reason: None,
+            });
+        }
+        let response = engine.models(Runner::OpenCode).await.unwrap();
+        assert_eq!(response.source, ModelCatalogSource::Cache);
+        assert_eq!(response.models.len(), 1);
+        assert_eq!(response.models[0].id, "openai/gpt-5");
+        assert!(!response.stale);
+    }
+
+    #[tokio::test]
+    async fn models_reprobes_once_a_cache_entry_expires() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        {
+            let mut cache = engine.model_catalog.lock().unwrap();
+            cache.push(CachedModelCatalog {
+                runner: ModelDiscoveryRunner::Codex,
+                models: Vec::new(),
+                // Already expired — the TTL check must re-probe rather than serve this.
+                expires_at: Instant::now() - Duration::from_secs(1),
+                failure_reason: None,
+            });
+        }
+        let response = engine.models(Runner::Codex).await.unwrap();
+        // Re-probed (the sandbox has no `codex` binary), so this is a fresh `Unavailable`
+        // result, not the stale expired cache entry served as-is.
+        assert_eq!(response.source, ModelCatalogSource::Unavailable);
     }
 }
