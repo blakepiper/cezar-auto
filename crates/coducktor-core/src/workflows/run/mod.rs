@@ -39,7 +39,7 @@ use coducktor_contract::runs::{
     MarkerRefs, RunActivity, RunRecord, RunStatus, StepKind, StepState, StepStatus,
 };
 use coducktor_contract::workflows::WorkflowDef;
-use coducktor_contract::{ReasoningEffort, Runner, RunnerSelection};
+use coducktor_contract::{ConcreteReasoningEffort, ReasoningEffort, Runner, RunnerSelection};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -468,6 +468,16 @@ impl ContinueResult {
 }
 
 /// All information a backend-neutral session needs to open one turn.
+///
+/// This intentionally stays thin (run/step identity, prompt, backend routing) rather than
+/// widening into the full `AgentRunSpec` a concrete backend ultimately needs (`cwd`,
+/// `allowed_tools`, `system_prompt`, …) — those fields either already had a single source of
+/// truth available at this call site (the workflow step, the run record) with nowhere else that
+/// needed them, so they ride along here, or (`images`, `additional_directories`, `timeout_ms`)
+/// have no source at all yet in this crate (no worktree orchestration, no handoff-directory
+/// wiring) and are a concrete `SessionFactory`'s job to default sensibly (B10) until a later step
+/// gives them a real home. Extend this struct, don't invent a second out-of-band lookup, the day
+/// `RunManager` gains something a factory needs that only it can see.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRequest {
     pub run_id: String,
@@ -477,6 +487,28 @@ pub struct SessionRequest {
     pub model: Option<String>,
     pub session_id: Option<String>,
     pub continuation: bool,
+    /// The directory the agent should run in. Always the repo root today — no step here ever
+    /// creates a git worktree yet (`RunRecord.worktree` is recorded as an intent but nothing
+    /// acts on it), so there is no isolated per-run checkout to point at instead (B10 scope
+    /// note; worktree orchestration is unclaimed future work).
+    pub cwd: PathBuf,
+    /// From `step.allowed_tools`, falling back to `workflows::types::DEFAULT_ALLOWED_TOOLS`
+    /// exactly as `run.ts`'s own `step.allowedTools ?? DEFAULT_ALLOWED_TOOLS` does.
+    pub allowed_tools: Vec<String>,
+    /// From `step.bash_allowlist`, verbatim (empty when unset).
+    pub bash_allowlist: Vec<String>,
+    /// From `RunRecord.system_prompt`, verbatim. `run.ts`'s own `composeSystemPrompt` also folds
+    /// in a skill body and the handoff/todos contract instructions — neither is threaded through
+    /// here yet (skills execution and the handoff loop are not wired into this crate's
+    /// `RunManager` today), so a factory sees only the run-level override, not the full TS
+    /// composition.
+    pub system_prompt: Option<String>,
+    /// From `RunRecord.reasoning_effort`, mapped from the `auto`-inclusive contract enum to the
+    /// concrete one a backend spawn actually takes (`Auto` becomes `None`, letting the backend
+    /// use its own default) — `run.ts`'s own `resolveReasoningEffort` additionally inspects the
+    /// task/prompt text to pick a level for `auto`; that heuristic is not ported here, so `auto`
+    /// simply defers to the backend's default rather than being resolved to a concrete level.
+    pub reasoning_effort: Option<ConcreteReasoningEffort>,
 }
 
 /// Usage and marker information a fake or a future backend mapper can report without leaking its
@@ -696,6 +728,19 @@ impl RunManager {
 
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+
+    /// The repo root a session should run in — `data_dir` minus the `.ai/coducktor` suffix
+    /// `for_repo` appended, so this only round-trips correctly for managers opened that way
+    /// (every production caller). A manager opened directly against an arbitrary `data_dir`
+    /// (most unit tests) gets a nonsensical answer back, but nothing in this crate reads it for
+    /// anything other than a `SessionRequest`'s `cwd`, which those tests' fakes never inspect.
+    fn repo_root(&self) -> PathBuf {
+        self.data_dir
+            .parent()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.data_dir.clone())
     }
 
     pub fn set_session_factory(&mut self, session_factory: impl SessionFactory + 'static) {
@@ -1966,6 +2011,18 @@ impl RunManager {
             } else {
                 None
             };
+            let allowed_tools = step.allowed_tools.clone().unwrap_or_else(|| {
+                types::DEFAULT_ALLOWED_TOOLS
+                    .iter()
+                    .map(|tool| (*tool).to_owned())
+                    .collect()
+            });
+            let bash_allowlist = step.bash_allowlist.clone().unwrap_or_default();
+            let run_record = self.get_run(run_id);
+            let system_prompt = run_record.and_then(|run| run.system_prompt.clone());
+            let reasoning_effort = run_record
+                .and_then(|run| run.reasoning_effort)
+                .and_then(concrete_reasoning_effort);
             let request = SessionRequest {
                 run_id: run_id.to_owned(),
                 step_id: step.id.clone(),
@@ -1974,6 +2031,11 @@ impl RunManager {
                 model,
                 session_id,
                 continuation: continuation_step,
+                cwd: self.repo_root(),
+                allowed_tools,
+                bash_allowlist,
+                system_prompt,
+                reasoning_effort,
             };
             let mut run_affinity = RunPatch::new();
             if let Some(backend) = concrete_runner(runner) {
@@ -2901,6 +2963,19 @@ impl RunManager {
             .set("titleSummary", title)
             .set("titleOrigin", coducktor_contract::runs::TitleOrigin::Marker);
         self.update_run(run_id, patch)
+    }
+}
+
+/// `Auto` has no single concrete level here (unlike `run.ts`'s `resolveReasoningEffort`, this
+/// crate does not inspect the task/prompt text to pick one) — `None` lets the backend fall back
+/// to its own default, same as an unset override always has.
+fn concrete_reasoning_effort(effort: ReasoningEffort) -> Option<ConcreteReasoningEffort> {
+    match effort {
+        ReasoningEffort::Auto => None,
+        ReasoningEffort::Low => Some(ConcreteReasoningEffort::Low),
+        ReasoningEffort::Medium => Some(ConcreteReasoningEffort::Medium),
+        ReasoningEffort::High => Some(ConcreteReasoningEffort::High),
+        ReasoningEffort::XHigh => Some(ConcreteReasoningEffort::XHigh),
     }
 }
 
@@ -3891,6 +3966,55 @@ mod tests {
         assert_eq!(requests.lock().unwrap()[0].prompt, "ship it");
         assert!(manager.active.is_empty());
         assert!(manager.jobs.is_empty());
+    }
+
+    #[test]
+    fn session_request_carries_cwd_tools_prompt_and_reasoning_for_the_factory() {
+        let dir = tempdir().unwrap();
+        let (factory, requests) = fake_factory(vec![completed_session("session-1")]);
+        // `for_repo` (not `with_session_factory`'s raw-`data_dir` shortcut) so `repo_root()`
+        // round-trips back to `dir.path()` — this is exactly the production path (§B10).
+        let mut manager = RunManager::for_repo(dir.path());
+        manager.set_session_factory(factory);
+        let mut step = agent_workflow_step("implement");
+        step.allowed_tools = Some(vec!["Read".to_owned(), "Bash".to_owned()]);
+        step.bash_allowlist = Some(vec!["npm test".to_owned()]);
+        let workflow = workflow_with_steps(vec![step]);
+        let mut input = start_input("ship it");
+        input.system_prompt = Some("Stay focused.".to_owned());
+        input.reasoning_effort = Some(ReasoningEffort::High);
+
+        manager.start_run(&workflow, input).unwrap();
+
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests[0].cwd, dir.path());
+        assert_eq!(requests[0].allowed_tools, vec!["Read", "Bash"]);
+        assert_eq!(requests[0].bash_allowlist, vec!["npm test"]);
+        assert_eq!(requests[0].system_prompt.as_deref(), Some("Stay focused."));
+        assert_eq!(
+            requests[0].reasoning_effort,
+            Some(ConcreteReasoningEffort::High)
+        );
+    }
+
+    #[test]
+    fn session_request_falls_back_to_default_allowed_tools_when_the_step_names_none() {
+        let dir = tempdir().unwrap();
+        let (factory, requests) = fake_factory(vec![completed_session("session-1")]);
+        let mut manager = RunManager::with_session_factory(dir.path(), factory);
+        let workflow = workflow_with_steps(vec![agent_workflow_step("implement")]);
+
+        manager.start_run(&workflow, start_input("ship it")).unwrap();
+
+        let requests = requests.lock().unwrap();
+        let expected: Vec<String> = types::DEFAULT_ALLOWED_TOOLS
+            .iter()
+            .map(|tool| (*tool).to_owned())
+            .collect();
+        assert_eq!(requests[0].allowed_tools, expected);
+        assert!(requests[0].bash_allowlist.is_empty());
+        assert_eq!(requests[0].system_prompt, None);
+        assert_eq!(requests[0].reasoning_effort, None);
     }
 
     #[test]
