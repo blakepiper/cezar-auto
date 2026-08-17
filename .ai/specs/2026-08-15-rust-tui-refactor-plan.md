@@ -1123,19 +1123,78 @@ warnings`, `cargo fmt --check` all green (the one pre-existing unrelated
 — `63661861`; `feat(cli): B11.3 --legacy-server flag for one-command side-by-side
 comparison` — `68ff149b`.
 
-### [ ] B12 — Delete the TypeScript
+### [x] B12 — Delete the TypeScript
 **Ships:** deletions in this order, each separately revertable: `packages/web` →
 `packages/api-client` → `packages/contract` → `packages/cezar` → root npm workspace
 files (`package.json`, `package-lock.json`, `vitest.config.ts`, `node_modules`),
 `scripts/dev.mjs`, `.github` workflows that ran vitest. Also delete
 `src/server/static-ui.ts`'s SPA-shell behavior, `/assets/:file` and
 `/open-mercato.svg` routes, and `docs/mockups/` if it still exists.
-**Accept:** `rg -l "\.tsx?$"` returns nothing outside `docs/`; `cargo test` is the
-whole suite; README's build instructions are Rust-only.
-**Commit(s):** one commit per deletion in the order above — five to seven small
-commits, e.g. `chore(cleanup): B12.1 delete packages/web`, `B12.2 delete
-packages/api-client`, … — so each is its own revert point, matching this step's own
-"separately revertable" instruction in the spec.
+**Prerequisite (B12.0), before any deletion — a real dependency the plan text didn't
+name:** `crates/coducktor-runners`' own tests (real-subprocess mocks for all four
+backends) and `crates/coducktor-protocol`'s golden-fixture tests both read Node
+scripts and NDJSON/JSON fixtures that lived under `packages/cezar/{scripts,
+src/core/__fixtures__}`; `coducktor-runners::session_factory::DefaultSessionFactory`
+(B10.1) — production code, not a test — hardcoded the same `packages/cezar/scripts/
+mock-{claude,pi-rpc}.mjs` paths as its `CEZ_DRY_RUN=1` fallback; and `crates/
+coducktor-tui/src/headless.rs`'s own dry-run test fixture did too. All of it was
+relocated to a new root-level `fixtures/` directory (`fixtures/scripts/` — the two
+mock CLIs; `fixtures/{claude,codex,opencode,pi}/` — every backend's mock server
+script and golden `.ndjson`/`.expected.json` pair) **before** `packages/cezar` was
+touched, with every Rust path constant updated to match (`session_factory.rs`'s
+`MOCK_CLAUDE_RELATIVE`/`MOCK_PI_RELATIVE`, the four backend runners' test helpers,
+`coducktor-runners/tests/{golden,ui_parity}.rs`, `coducktor-protocol/tests/
+golden.rs`, `headless.rs`). `crates/coducktor-core/tests/cross_impl.rs` (B1-B4's
+cross-implementation oracle, which shells out to `packages/cezar` via `tsx`) was
+deleted outright — its premise, a second live TS implementation to diff against,
+disappears with the tree it diffs against. Also dropped, both flagged in their own
+doc comments as existing only "until `packages/cezar` is deleted (B12)": the
+`CEZ_HOME` fallback in `paths::coducktor_home_dir` and the `CEZ_FOLLOWUPS` fallback
+in `handoff::followups_enabled` — each existed solely to stay in sync with a Node
+reader that no longer exists. And B11.3's `--legacy-server` flag (`crates/
+coducktor-tui`) was removed: it shelled out to the Node CLI for the B11 soak
+comparison, which has nothing left to shell out to once `packages/cezar` is gone —
+its own doc comment said "deleted at C2," but B12's literal deletion of
+`packages/cezar` makes it non-functional now, not at C2, so removed here instead of
+leaving dead code that would silently break.
+**Two bugs in the fixture-relocation commit's own execution, caught and fixed in a
+follow-up commit, not hidden:** the first `git add` invocation had a stale pathspec
+(a file `git rm` had already staged) that made the whole command fail silently for
+every OTHER path in the same invocation — the fixture files and Rust source edits
+never actually got staged, so the first commit contained only the `cross_impl.rs`
+deletion. Caught by re-running `git status` before the next step (ground rule 0's own
+"confirm only intended files changed" instruction), fixed with a second, honestly-
+labeled follow-up commit rather than an amend (this repo's own convention: never
+amend, always a new commit).
+**Accept, verified:** `rg -l "\.tsx?$"` matches zero files (filenames) outside `docs/`
+— zero `.ts`/`.tsx` files exist anywhere in the tree now; two CONTENT matches for the
+literal substring remain (`crates/coducktor-server/src/lib.rs`'s `ws.ts` doc-comment
+citations, `AGENTS.md`'s one stale `npm test` example path) — both are historical
+citations/prose, not TypeScript source, and left alone per this plan's own
+established convention of keeping "mirrors `X.ts`" doc comments after their source is
+deleted (see e.g. B8/A15's automations citations). `cargo test --workspace`: 691
+tests green (all crates, up from 690 pre-B12 after B12.0's `cross_impl.rs` removal
+netted against its own new coverage staying flat). `cargo clippy --workspace
+--all-targets -- -D warnings` and `cargo fmt --check` clean except the one
+pre-existing unrelated `coducktor-client/tests/transport.rs` drift noted since B2.
+README's Quick start/Prerequisites/Development sections are rewritten Rust-only (no
+Node prerequisite, no Node badge, no `packages/` dev-script section) — `git clone &&
+./install.sh` is the whole story now. `AGENTS.md`'s "Validation" section (the only
+part of that file actively **wrong** rather than merely stale — it told a future
+agent to run `npm`/vitest commands that no longer exist) was replaced with the real
+`cargo fmt`/`cargo test`/`cargo clippy` gate; the rest of `AGENTS.md` (a routing
+table still full of `packages/cezar/*.ts` paths) is flagged, not rewritten — that
+full pass is the Phase C Final checklist's own named item ("`AGENT_PROTOCOL.md`,
+`AGENTS.md`, `BACKWARD_COMPATIBILITY.md` are updated to match the shipped code"),
+out of B12's own scope.
+**Commit(s):** `chore(cleanup): B12.0 relocate Rust-owned test fixtures out of
+packages/cezar` — `01ad4f35` (+ `99135067`, the fixed-pathspec follow-up);
+`B12.1 delete packages/web` — `36a95eee`; `B12.2 delete packages/api-client` —
+`424941a4`; `B12.3 delete packages/contract` — `0849e010`; `B12.4 delete
+packages/cezar` — `5675a30c`; `B12.5 delete the root npm workspace` — `c02971e1`;
+`B12.6 trim vitest/npm steps from CI` — `db473108`; `docs: B12.7 rewrite README
+build instructions as Rust-only` — `b1126f3b`. `docs/mockups/` was already deleted
+at A15; nothing to remove there.
 
 ---
 
