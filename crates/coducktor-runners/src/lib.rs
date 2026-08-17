@@ -15,3 +15,4 @@ pub mod codex;
 pub mod opencode;
 pub mod pi;
 pub mod usage;
+pub mod v1_text_coalescer;
