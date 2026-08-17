@@ -14,7 +14,6 @@ use coducktor_core::workflows::{load::load_workflows, types::quick_task_workflow
 use coducktor_core::workspace::config::ProjectSource;
 use coducktor_core::workspace::projects;
 use coducktor_runners::session_factory::DefaultSessionFactory;
-use coducktor_server::{ServerConfig, ServerState};
 
 use crate::cli::ProjectsCommand;
 
@@ -43,40 +42,14 @@ pub fn resolve_repo_root(explicit: Option<&Path>) -> PathBuf {
     }
 }
 
-fn read_own_version() -> String {
-    env!("CARGO_PKG_VERSION").to_owned()
-}
-
 // ---- serve -------------------------------------------------------------------------------
 
-/// `cezar serve` — the Rust `coducktor-server` over this repo, no browser, no port flag (spec
-/// §1.4 waives `-p/--port`; this always tries 4321 upward, mirroring Node's `pickPort`).
-pub async fn serve_command(repo_root: PathBuf) -> io::Result<()> {
-    let mut manager = RunManager::for_repo(&repo_root);
-    manager.set_session_factory(DefaultSessionFactory::new());
-    let version = read_own_version();
-    let config = ServerConfig::new(repo_root.clone(), version.clone());
-    let state = ServerState::with_manager(config, manager);
-
-    let (listener, port) = bind_first_free_port(4321, 50).await?;
-    println!("\n  coducktor v{version} — {}", repo_root.display());
-    println!("  cockpit → http://127.0.0.1:{port}\n");
-    coducktor_server::serve_with_state(listener, state).await
-}
-
-async fn bind_first_free_port(
-    start: u16,
-    tries: u16,
-) -> io::Result<(tokio::net::TcpListener, u16)> {
-    let mut last_error = None;
-    for offset in 0..tries {
-        let port = start.saturating_add(offset);
-        match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
-            Ok(listener) => return Ok((listener, port)),
-            Err(error) => last_error = Some(error),
-        }
-    }
-    Err(last_error.unwrap_or_else(|| io::Error::other("no free port found")))
+/// Compatibility response for the pre-C2 command. The cockpit no longer needs a server
+/// process; C3 removes this command from the public CLI surface.
+pub async fn serve_command(_repo_root: PathBuf) -> io::Result<()> {
+    Err(io::Error::other(
+        "serve is retired: run coducktor without a subcommand for the in-process cockpit",
+    ))
 }
 
 // ---- run (headless) -----------------------------------------------------------------------

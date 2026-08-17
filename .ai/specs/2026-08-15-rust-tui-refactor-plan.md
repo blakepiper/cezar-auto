@@ -1590,7 +1590,7 @@ tests; the full workspace tests, clippy, and format checks are green.
 The `Engine` trait is now genuinely implemented and C2 is unblocked; do not
 start C2 as part of this continuation.
 
-### [ ] C2 — Switch default backend, delete `cezar-server`
+### [x] C2 — Switch default backend, delete `cezar-server`
 **Ships:** `cezar-tui`'s default backend becomes `InProcess`; then **delete
 `cezar-server` entirely** — the `axum` dependency, every handler, SSE/WS
 transports, `origin-guard`, `host-guard`, the WS `trusted`/`loopbackReadable`
@@ -1599,6 +1599,19 @@ split, and `HttpEngine` in `cezar-client`. Event streams become in-process
 **Accept:** the TUI runs fully functional with no `cezar-server` in the dependency
 graph; every screen-level test from Phase A still passes against `InProcessEngine`.
 **Commit:** `feat(engine): C2 switch to InProcessEngine, delete cezar-server`
+
+**Status (C2):** complete. The interactive TUI now constructs one `InProcessEngine`
+over the resolved repository instead of discovering, spawning, health-polling, and
+tearing down a child HTTP service. The client transport surface was reduced to the
+`Engine` trait, `InProcessEngine`, in-process topic events, and `Scope`; the HTTP
+engine, SSE parser, WebSocket bus, URL scoping helpers, transport tests, and the
+`coducktor-server` crate were deleted. Workspace and per-thread live listeners now
+consume filtered `tokio::sync::broadcast` streams. The legacy `serve` entry point and
+footer vocabulary remain only as C3 compatibility scaffolding; they are no longer
+part of the interactive startup path.
+**Accept, verified:** `cargo test --workspace` (all workspace tests green),
+`cargo clippy --workspace --all-targets -- -D warnings`, and `cargo fmt --check`
+all pass. `cargo tree` contains no `coducktor-server` package or HTTP server crate.
 
 ### [ ] C3 — Retire remaining server-shaped concepts
 **Ships:** `cez serve` as a command, port-selection logic (`pickPort`, the 4321

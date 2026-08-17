@@ -95,7 +95,7 @@ use tokio_stream::wrappers::BroadcastStream;
 
 use crate::Topic;
 use crate::error::EngineError;
-use crate::ws::EngineEvent;
+use crate::events::EngineEvent;
 
 /// Version string this engine reports through `health()` — set once at construction, same as
 /// `coducktor-server`'s `ServerConfig::version`.
@@ -180,11 +180,16 @@ impl InProcessEngine {
         });
         let run_sender = live_events.clone();
         manager.subscribe_runs(move |run| {
+            let data = json!({ "type": "run", "run": run });
             let event = EngineEvent {
                 topic: format!("run:{}", run.id),
-                data: json!({ "type": "run", "run": run }),
+                data: data.clone(),
             };
             let _ = run_sender.send(event);
+            let _ = run_sender.send(EngineEvent {
+                topic: "workspace".to_owned(),
+                data,
+            });
         });
 
         Self {
@@ -912,7 +917,7 @@ impl InProcessEngine {
     }
 
     /// Ported from `get_agent_profile_status`. `refresh` is accepted for signature parity with
-    /// `HttpEngine` but has no effect — the oracle's own handler ignores it too (there is no
+    /// network engine but has no effect — the oracle's own handler ignores it too (there is no
     /// caching layer for provider status on either side; every call already probes fresh).
     pub async fn agent_account_status(
         &self,
@@ -1020,7 +1025,7 @@ impl InProcessEngine {
 
     // ---- live events (Topic::Health/Todos/Run/Named -> the in-process broadcast channel) ---
 
-    /// Mirrors `HttpEngine::subscribe`'s topic-string convention exactly, but the transport is
+    /// Mirrors the former network engine's topic-string convention, but the transport is
     /// a plain in-process `tokio::sync::broadcast` receiver instead of a WS frame — no
     /// reconnect/resubscribe machinery needed, there is no connection to lose.
     pub fn subscribe(&self, topic: Topic) -> futures_core::stream::BoxStream<'static, EngineEvent> {

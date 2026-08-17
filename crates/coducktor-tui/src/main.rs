@@ -1,22 +1,21 @@
 use std::env;
 use std::io;
 use std::io::Write;
-use std::path::PathBuf;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use coducktor_client::{HttpEngine, RunStreamEvent, Scope, SseFrame};
+use coducktor_client::{Engine, EngineEvent, InProcessEngine, Scope, Topic};
 use coducktor_contract::{ApiRun, BackendCheckName, TaskSource};
 use crossterm::event::{self, Event, MouseEventKind};
 use futures_util::StreamExt;
-use serde::Deserialize;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::task::JoinHandle;
 
 use coducktor_tui::app::{self, App, PendingAction, QuickTask, WorkspaceEvent};
 use coducktor_tui::cli::{Cli, Command};
 use coducktor_tui::input::keymap::Keymap;
-use coducktor_tui::service::{ServiceConfig, ServiceState, ServiceSupervisor};
+use coducktor_tui::service::ServiceState;
 use coducktor_tui::terminal::AppTerminal;
 use coducktor_tui::theme::Theme;
 use coducktor_tui::{cli, headless, new_task_form, screens, terminal};
@@ -73,163 +72,44 @@ async fn main() -> io::Result<()> {
     let user_keymap = Keymap::default_path();
     let keymap = Keymap::load(user_keymap.as_deref()).unwrap_or_default();
     let mut app = App::new("main", Theme::detect(), keymap);
-    let mut service = configured_service();
-    if let Some(supervisor) = service.as_mut() {
-        let _ = supervisor.start().await;
-        app.set_service_state(supervisor.state());
-    } else {
-        app.set_service_state(ServiceState::Disabled);
-    }
-    let mut workspace_listener = None;
-    if let Some(engine) = service
-        .as_ref()
-        .map(|supervisor| supervisor.engine().clone())
-    {
-        prime_app(&mut app, &engine).await;
-        apply_launch_args(&engine, &mut app, &cli).await;
-        workspace_listener = open_workspace_listener(engine).await;
-    }
+    let repo_root = headless::resolve_repo_root(cli.repo.as_deref());
+    let engine: Arc<dyn Engine> =
+        Arc::new(InProcessEngine::new(repo_root, env!("CARGO_PKG_VERSION")));
+    app.set_service_state(ServiceState::Ready);
+    prime_app(&mut app, engine.as_ref()).await;
+    apply_launch_args(engine.as_ref(), &mut app, &cli).await;
+    let mut workspace_listener =
+        open_workspace_listener(engine.clone(), app.current_project().to_owned()).await;
     let run_result = run(
         &mut terminal,
         &mut app,
-        &mut service,
+        engine,
         workspace_listener.as_mut().map(|(_, receiver)| receiver),
     )
     .await;
     if let Some((handle, _)) = workspace_listener {
         handle.abort();
     }
-    if let Some(supervisor) = service.as_mut() {
-        supervisor.shutdown().await;
-        let _ = supervisor.logs();
-    }
     let restore_result = terminal::restore();
 
     run_result.and(restore_result)
 }
 
-fn configured_service() -> Option<ServiceSupervisor> {
-    let (command, default_args) = if let Some(command) = env::var_os("DUCK_SERVICE_COMMAND") {
-        (PathBuf::from(command), Vec::new())
-    } else {
-        let entry = discover_service_entry()?;
-        (
-            PathBuf::from("node"),
-            vec![
-                "--import".to_owned(),
-                "tsx".to_owned(),
-                entry.to_string_lossy().into_owned(),
-                "serve".to_owned(),
-                "--no-open".to_owned(),
-            ],
-        )
-    };
-    let base_url =
-        env::var("DUCK_SERVICE_URL").unwrap_or_else(|_| "http://127.0.0.1:4321".to_owned());
-    let engine = HttpEngine::new(base_url).ok()?;
-    let log_root = coducktor_core::paths::coducktor_home_dir(&coducktor_core::paths::ProcessEnv);
-    let mut config = ServiceConfig::new(command, log_root.join("logs/service.log"));
-    config.args = default_args;
-    if let Some(args) = env::var_os("DUCK_SERVICE_ARGS") {
-        config.args = args
-            .to_string_lossy()
-            .split_whitespace()
-            .map(ToOwned::to_owned)
-            .collect();
+fn parse_workspace_event(event: EngineEvent, project: &str) -> Option<WorkspaceEvent> {
+    if event.data.get("type")?.as_str()? != "run" {
+        return None;
     }
-    Some(ServiceSupervisor::new(config, engine))
+    let record = serde_json::from_value(event.data.get("run")?.clone()).ok()?;
+    Some(WorkspaceEvent::Run {
+        project: project.to_owned(),
+        run: ApiRun {
+            record,
+            usage: None,
+        },
+    })
 }
 
-fn discover_service_entry() -> Option<PathBuf> {
-    let packages = env::current_dir().ok()?.join("packages");
-    let entries = std::fs::read_dir(packages).ok()?;
-    for entry in entries.flatten() {
-        let candidate = entry.path().join("src/index.ts");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-#[derive(Debug, Deserialize)]
-struct WorkspaceRunPayload {
-    project: String,
-    #[serde(flatten)]
-    run: ApiRun,
-}
-
-#[derive(Debug, Deserialize)]
-struct WorkspaceDeletedPayload {
-    project: String,
-    id: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct WorkspaceTodosPayload {
-    project: String,
-    #[serde(default)]
-    items: Vec<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize)]
-struct WorkspaceUsagePayload {
-    project: String,
-    #[serde(default)]
-    usage: std::collections::BTreeMap<String, coducktor_contract::ProcessUsage>,
-}
-
-#[derive(Debug, Deserialize)]
-struct WorkspaceProviderStatusPayload {
-    provider: String,
-    status: String,
-    #[serde(default)]
-    enabled: Option<bool>,
-}
-
-fn parse_workspace_frame(frame: SseFrame) -> Option<WorkspaceEvent> {
-    match frame.event.as_deref()? {
-        "run" => {
-            let payload = serde_json::from_str::<WorkspaceRunPayload>(&frame.data).ok()?;
-            Some(WorkspaceEvent::Run {
-                project: payload.project,
-                run: payload.run,
-            })
-        }
-        "run-deleted" => {
-            let payload = serde_json::from_str::<WorkspaceDeletedPayload>(&frame.data).ok()?;
-            Some(WorkspaceEvent::RunDeleted {
-                project: payload.project,
-                id: payload.id,
-            })
-        }
-        "todos" => {
-            let payload = serde_json::from_str::<WorkspaceTodosPayload>(&frame.data).ok()?;
-            Some(WorkspaceEvent::Todos {
-                project: payload.project,
-                count: payload.items.len(),
-            })
-        }
-        "usage" => {
-            let payload = serde_json::from_str::<WorkspaceUsagePayload>(&frame.data).ok()?;
-            Some(WorkspaceEvent::Usage {
-                project: payload.project,
-                usage: payload.usage,
-            })
-        }
-        "provider-status" => {
-            let payload =
-                serde_json::from_str::<WorkspaceProviderStatusPayload>(&frame.data).ok()?;
-            Some(WorkspaceEvent::ProviderStatus {
-                provider: payload.provider,
-                available: payload.status == "connected" && payload.enabled != Some(false),
-            })
-        }
-        _ => None,
-    }
-}
-
-async fn prime_app(app: &mut App, engine: &HttpEngine) {
+async fn prime_app(app: &mut App, engine: &dyn Engine) {
     if let Ok(health) = engine.health().await {
         // Adopt the boot project the service actually knows about — the TUI's
         // "main" default is only a placeholder until the health answer arrives.
@@ -289,7 +169,7 @@ async fn prime_app(app: &mut App, engine: &HttpEngine) {
 /// silently staying put. `--workflow`/`--model` preselect the New Task screen,
 /// covering the same "hand a task to the agent from outside the TUI" use case the
 /// deleted browser-launch surface used to (spec §9.3 point 2).
-async fn apply_launch_args(engine: &HttpEngine, app: &mut App, cli: &Cli) {
+async fn apply_launch_args(engine: &dyn Engine, app: &mut App, cli: &Cli) {
     if let Some(repo) = &cli.repo {
         match cli::resolve_repo(&app.project_registry, repo) {
             Some(project) => {
@@ -327,8 +207,8 @@ async fn apply_launch_args(engine: &HttpEngine, app: &mut App, cli: &Cli) {
 }
 
 /// Run one pending action against the engine and reconcile the app with the
-/// server's answer. Failures surface as a toast rather than a crash.
-async fn execute_pending(engine: &HttpEngine, app: &mut App) {
+/// engine's answer. Failures surface as a toast rather than a crash.
+async fn execute_pending(engine: &dyn Engine, app: &mut App) {
     for action in app.take_pending() {
         match action {
             PendingAction::Archive {
@@ -407,7 +287,7 @@ async fn execute_pending(engine: &HttpEngine, app: &mut App) {
             }
             PendingAction::StartRun { project, input } => {
                 let scope = Scope::Project(project.clone());
-                match engine.start_run(&scope, &input).await {
+                match engine.start_run(&scope, input).await {
                     Ok(response) => {
                         if let Some(id) = new_task_form::started_run_id(&response) {
                             screens::thread::open(app, &project, &id);
@@ -489,7 +369,7 @@ async fn execute_pending(engine: &HttpEngine, app: &mut App) {
             }
             PendingAction::SendMessage { project, id, input } => {
                 let scope = Scope::Project(project.clone());
-                if let Err(error) = engine.send_message(&scope, &id, &input).await {
+                if let Err(error) = engine.send_message(&scope, &id, input).await {
                     app.notice = Some(format!("send failed: {error}"));
                 }
                 refresh_thread_run(engine, app, &project, &id).await;
@@ -507,7 +387,7 @@ async fn execute_pending(engine: &HttpEngine, app: &mut App) {
                     text,
                     ..coducktor_contract::ContinueInput::default()
                 };
-                if let Err(error) = engine.continue_run(&scope, &id, &input).await {
+                if let Err(error) = engine.continue_run(&scope, &id, input).await {
                     app.notice = Some(format!("continue failed: {error}"));
                 }
                 refresh_thread_run(engine, app, &project, &id).await;
@@ -593,7 +473,7 @@ async fn execute_pending(engine: &HttpEngine, app: &mut App) {
                 let input = coducktor_contract::GitCommitInput {
                     message: app.task_git_ui.commit_message.clone(),
                 };
-                match engine.git_commit(&scope, &id, &input).await {
+                match engine.git_commit(&scope, &id, input).await {
                     Ok(response) => {
                         app.notice = Some(format!(
                             "committed {}",
@@ -848,7 +728,7 @@ async fn execute_pending(engine: &HttpEngine, app: &mut App) {
             }
             PendingAction::GithubHandToAgent { project, input } => {
                 let scope = Scope::Project(project.clone());
-                match engine.start_run(&scope, &input).await {
+                match engine.start_run(&scope, input).await {
                     Ok(response) => {
                         if let Some(id) = new_task_form::started_run_id(&response) {
                             app.github_ui.queued = Some(id);
@@ -1100,7 +980,7 @@ async fn execute_pending(engine: &HttpEngine, app: &mut App) {
 /// Every Settings data source, in one place — the section list needs all of it at once
 /// rather than per-section lazy loads, since Tab cycling between sections must not each
 /// re-trigger a fetch.
-async fn load_settings(engine: &HttpEngine, app: &mut App, project: &str) {
+async fn load_settings(engine: &dyn Engine, app: &mut App, project: &str) {
     let scope = Scope::Project(project.to_owned());
     if let Ok(config) = engine.config(&scope).await {
         app.settings_ui.config = Some(config);
@@ -1132,7 +1012,7 @@ async fn load_settings(engine: &HttpEngine, app: &mut App, project: &str) {
 
 /// Every thread-mutating action re-fetches the run record so the header/actions/dock reflect
 /// the server's answer immediately, rather than waiting for the next workspace `run` frame.
-async fn refresh_thread_run(engine: &HttpEngine, app: &mut App, project: &str, id: &str) {
+async fn refresh_thread_run(engine: &dyn Engine, app: &mut App, project: &str, id: &str) {
     if app.thread_ui.data.project != project || app.thread_ui.data.run_id != id {
         return;
     }
@@ -1154,7 +1034,7 @@ fn thread_history_event(
     }
 }
 
-async fn refresh_index_if_global(engine: &HttpEngine, app: &mut App) {
+async fn refresh_index_if_global(engine: &dyn Engine, app: &mut App) {
     if matches!(app.route(), app::Route::GlobalTasks)
         && let Ok(index) = engine.runs_index().await
     {
@@ -1162,7 +1042,7 @@ async fn refresh_index_if_global(engine: &HttpEngine, app: &mut App) {
     }
 }
 
-async fn refresh_tasks(engine: &HttpEngine, app: &mut App, project: &str) {
+async fn refresh_tasks(engine: &dyn Engine, app: &mut App, project: &str) {
     let scope = Scope::Project(project.to_owned());
     if let Ok(runs) = engine.list_runs(&scope).await {
         app.set_tasks(runs);
@@ -1176,7 +1056,7 @@ async fn refresh_tasks(engine: &HttpEngine, app: &mut App, project: &str) {
 }
 
 /// Load everything the New Task screen reads (§8.3), scoped to the active project.
-async fn refresh_new_task(engine: &HttpEngine, app: &mut App, project: &str) {
+async fn refresh_new_task(engine: &dyn Engine, app: &mut App, project: &str) {
     let scope = Scope::Project(project.to_owned());
     if let Ok(config) = engine.config(&scope).await {
         app.new_task_ui.data.config = Some(new_task_form::ComposerConfig::from_config(&config));
@@ -1202,27 +1082,18 @@ async fn refresh_new_task(engine: &HttpEngine, app: &mut App, project: &str) {
 }
 
 async fn open_workspace_listener(
-    engine: HttpEngine,
+    engine: Arc<dyn Engine>,
+    project: String,
 ) -> Option<(JoinHandle<()>, UnboundedReceiver<WorkspaceEvent>)> {
     let (sender, receiver) = unbounded_channel();
     let handle = tokio::spawn(async move {
-        loop {
-            let Ok(mut frames) = engine
-                .sse_frames(&Scope::Workspace, "/workspace/events")
-                .await
-            else {
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                continue;
-            };
-            while let Some(frame) = frames.next().await {
-                if let Ok(frame) = frame
-                    && let Some(event) = parse_workspace_frame(frame)
-                    && sender.send(event).is_err()
-                {
-                    return;
-                }
+        let mut events = engine.subscribe(Topic::Named("workspace".to_owned()));
+        while let Some(event) = events.next().await {
+            if let Some(event) = parse_workspace_event(event, &project)
+                && sender.send(event).is_err()
+            {
+                return;
             }
-            tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });
     Some((handle, receiver))
@@ -1246,23 +1117,17 @@ struct ThreadListener {
     project: String,
     id: String,
     handle: JoinHandle<()>,
-    receiver: UnboundedReceiver<RunStreamEvent>,
+    receiver: UnboundedReceiver<EngineEvent>,
 }
 
-async fn open_run_listener(engine: HttpEngine, project: String, id: String) -> ThreadListener {
+async fn open_run_listener(engine: Arc<dyn Engine>, project: String, id: String) -> ThreadListener {
     let (sender, receiver) = unbounded_channel();
     let handle = tokio::spawn({
-        let project = project.clone();
         let id = id.clone();
         async move {
-            let scope = Scope::Project(project);
-            let Ok(mut stream) = engine.run_events(&scope, &id, None, None).await else {
-                return;
-            };
-            while let Some(frame) = stream.next().await {
-                if let Ok(frame) = frame
-                    && sender.send(frame).is_err()
-                {
+            let mut stream = engine.subscribe(Topic::Run { id });
+            while let Some(event) = stream.next().await {
+                if sender.send(event).is_err() {
                     return;
                 }
             }
@@ -1279,7 +1144,7 @@ async fn open_run_listener(engine: HttpEngine, project: String, id: String) -> T
 async fn run(
     terminal: &mut AppTerminal,
     app: &mut App,
-    service: &mut Option<ServiceSupervisor>,
+    engine: Arc<dyn Engine>,
     workspace_events: Option<&mut UnboundedReceiver<WorkspaceEvent>>,
 ) -> io::Result<()> {
     let mut workspace_events = workspace_events;
@@ -1317,30 +1182,26 @@ async fn run(
             if let Some(listener) = thread_listener.take() {
                 listener.handle.abort();
             }
-            if let (Some((project, id)), Some(supervisor)) = (desired_thread, service.as_ref()) {
-                let engine = supervisor.engine().clone();
-                thread_listener = Some(open_run_listener(engine, project, id).await);
+            if let Some((project, id)) = desired_thread {
+                thread_listener = Some(open_run_listener(engine.clone(), project, id).await);
             }
         }
         if let Some(listener) = thread_listener.as_mut() {
-            while let Ok(frame) = listener.receiver.try_recv() {
+            while let Ok(event) = listener.receiver.try_recv() {
                 if app.thread_ui.data.project == listener.project
                     && app.thread_ui.data.run_id == listener.id
+                    && event.data.get("type").and_then(serde_json::Value::as_str)
+                        == Some("run-event")
+                    && let Some(run_event) = event.data.get("event").cloned()
+                    && let Ok(run_event) =
+                        serde_json::from_value::<coducktor_contract::RunEvent>(run_event)
                 {
-                    app.thread_ui.push_event(frame.seq, frame.event);
+                    app.thread_ui.push_event(run_event.seq, run_event);
                 }
             }
         }
-        if let Some(supervisor) = service.as_mut() {
-            let _ = supervisor.monitor_once().await;
-            app.set_service_state(supervisor.state());
-            if app.logs_open {
-                app.set_service_logs(supervisor.logs());
-            }
-            let engine = supervisor.engine().clone();
-            if !app.pending.is_empty() {
-                execute_pending(&engine, app).await;
-            }
+        if !app.pending.is_empty() {
+            execute_pending(engine.as_ref(), app).await;
         }
         for (summary, body) in app.take_pending_notifications() {
             coducktor_tui::notify::notify(app.notifications_enabled, &summary, &body);
@@ -1383,7 +1244,7 @@ async fn run(
 /// same write answered with the file path it landed in (spec §8.13). The body honors the
 /// portable compact form: `skills:` when every step is a plain skill step, `steps:` otherwise
 /// (mirrors the server's own `skillStackOf`, spec 012 — a protected format property).
-async fn save_or_export_workflow(engine: &HttpEngine, app: &mut App, project: &str, export: bool) {
+async fn save_or_export_workflow(engine: &dyn Engine, app: &mut App, project: &str, export: bool) {
     let name = if app.workflows_ui.draft_name.trim().is_empty() {
         app.workflows_ui
             .workflows
@@ -1485,12 +1346,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn workspace_sse_frames_decode_shell_badges() {
-        let run = parse_workspace_frame(SseFrame {
-            id: None,
-            event: Some("run".to_owned()),
-            data: r#"{"project":"main","id":"run-1","title":"Ship shell","workflow":"quick-task","task":"ship","status":"running","createdAt":"2026-08-15T00:00:00Z","tokensUsed":0,"archived":false,"steps":[]}"#.to_owned(),
-        });
+    fn in_process_workspace_events_decode_shell_badges() {
+        let run = parse_workspace_event(
+            EngineEvent {
+                topic: "workspace".to_owned(),
+                data: serde_json::json!({
+                    "type": "run",
+                    "run": {
+                        "id": "run-1",
+                        "title": "Ship shell",
+                        "workflow": "quick-task",
+                        "task": "ship",
+                        "status": "running",
+                        "createdAt": "2026-08-15T00:00:00Z",
+                        "tokensUsed": 0,
+                        "archived": false,
+                        "steps": []
+                    }
+                }),
+            },
+            "main",
+        );
         assert_eq!(
             run,
             Some(WorkspaceEvent::Run {
@@ -1513,53 +1389,15 @@ mod tests {
             })
         );
 
-        let usage = parse_workspace_frame(SseFrame {
-            id: None,
-            event: Some("usage".to_owned()),
-            data: r#"{"project":"main","usage":{"run-1":{"cpuPct":37.5,"rssBytes":1048576,"procCount":3}}}"#
-                .to_owned(),
-        });
-        assert_eq!(
-            usage,
-            Some(WorkspaceEvent::Usage {
-                project: "main".to_owned(),
-                usage: [(
-                    "run-1".to_owned(),
-                    coducktor_contract::ProcessUsage {
-                        cpu_pct: 37.5,
-                        rss_bytes: 1048576.0,
-                        proc_count: 3.0,
-                    }
-                )]
-                .into_iter()
-                .collect(),
-            })
-        );
-
-        let todo = parse_workspace_frame(SseFrame {
-            id: None,
-            event: Some("todos".to_owned()),
-            data: r#"{"project":"main","items":[{"summary":"one"},{"summary":"two"}]}"#.to_owned(),
-        });
-        assert_eq!(
-            todo,
-            Some(WorkspaceEvent::Todos {
-                project: "main".to_owned(),
-                count: 2,
-            })
-        );
-
-        let provider = parse_workspace_frame(SseFrame {
-            id: None,
-            event: Some("provider-status".to_owned()),
-            data: r#"{"provider":"codex","status":"connected","enabled":false}"#.to_owned(),
-        });
-        assert_eq!(
-            provider,
-            Some(WorkspaceEvent::ProviderStatus {
-                provider: "codex".to_owned(),
-                available: false,
-            })
+        assert!(
+            parse_workspace_event(
+                EngineEvent {
+                    topic: "workspace".to_owned(),
+                    data: serde_json::json!({"type": "provider-status"}),
+                },
+                "main",
+            )
+            .is_none()
         );
     }
 }

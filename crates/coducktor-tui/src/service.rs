@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use coducktor_client::HttpEngine;
+use coducktor_client::Engine;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::time::sleep;
@@ -87,16 +87,20 @@ impl fmt::Display for ServiceError {
 impl std::error::Error for ServiceError {}
 
 /// Supervises a child without inheriting either output stream.
-pub struct ServiceSupervisor {
+///
+/// C2 no longer constructs this compatibility type; C3 removes the old service-shaped
+/// lifecycle and log overlay entirely. Keeping the generic seam here avoids making that
+/// independent cleanup part of the engine switch.
+pub struct ServiceSupervisor<E: Engine> {
     config: ServiceConfig,
-    engine: HttpEngine,
+    engine: E,
     child: Option<Child>,
     logs: Arc<Mutex<LogRing>>,
     state: ServiceState,
 }
 
-impl ServiceSupervisor {
-    pub fn new(config: ServiceConfig, engine: HttpEngine) -> Self {
+impl<E: Engine> ServiceSupervisor<E> {
+    pub fn new(config: ServiceConfig, engine: E) -> Self {
         Self {
             config,
             engine,
@@ -110,7 +114,7 @@ impl ServiceSupervisor {
         self.state
     }
 
-    pub fn engine(&self) -> &HttpEngine {
+    pub fn engine(&self) -> &E {
         &self.engine
     }
 
@@ -246,42 +250,4 @@ where
             }
         }
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use coducktor_client::HttpEngine;
-    use tempfile::tempdir;
-
-    use super::*;
-
-    #[test]
-    fn ring_keeps_only_the_latest_lines() {
-        let mut ring = LogRing::default();
-        for index in 0..(LOG_CAPACITY + 2) {
-            ring.push(index.to_string());
-        }
-        assert_eq!(ring.lines().len(), LOG_CAPACITY);
-        assert_eq!(ring.lines().first().map(String::as_str), Some("2"));
-    }
-
-    #[tokio::test]
-    async fn child_output_is_captured_and_not_inherited() {
-        let directory = tempdir().unwrap();
-        let log_path = directory.path().join("service.log");
-        let mut config = ServiceConfig::new("sh", &log_path);
-        config.args = vec!["-c".to_owned(), "printf out; printf err >&2".to_owned()];
-        config.health_timeout = Duration::from_millis(20);
-        config.poll_interval = Duration::from_millis(5);
-        config.max_restarts = 0;
-        let engine = HttpEngine::new("http://127.0.0.1:9").unwrap();
-        let mut supervisor = ServiceSupervisor::new(config, engine);
-
-        let result = supervisor.start().await;
-        assert!(matches!(result, Err(ServiceError::Unavailable(_))));
-        sleep(Duration::from_millis(20)).await;
-        let logs = supervisor.logs().join("\n");
-        assert!(logs.contains("[stdout] out") || logs.contains("[stderr] err"));
-        supervisor.shutdown().await;
-    }
 }

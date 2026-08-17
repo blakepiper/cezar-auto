@@ -2,16 +2,12 @@
 
 mod engine;
 mod error;
-mod http;
+mod events;
 mod in_process;
 mod scope;
-mod sse;
-mod ws;
 
 pub use engine::{Engine, StartRunInput, Topic};
 pub use error::EngineError;
-pub use http::{HttpEngine, RunStreamEvent};
+pub use events::EngineEvent;
 pub use in_process::InProcessEngine;
-pub use scope::{API_PREFIX, Scope, api_path, encode_path_segment, is_workspace_route};
-pub use sse::SseFrame;
-pub use ws::EngineEvent;
+pub use scope::Scope;
