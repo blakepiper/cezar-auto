@@ -1,5 +1,5 @@
 //! `.ai/coducktor/config.json` — the optional per-repo config. Mirrors
-//! `packages/cezar/src/config.ts`. Zero-config rule: a missing file behaves exactly like
+//! `packages/coducktor/src/config.ts`. Zero-config rule: a missing file behaves exactly like
 //! the default below; an unreadable or invalid file degrades to the default too (never
 //! blocks startup).
 //!

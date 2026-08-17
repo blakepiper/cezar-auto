@@ -1,10 +1,10 @@
 //! `AgentSession` over `codex app-server` — the same JSON-RPC 2.0 (newline-delimited) transport
 //! the VS Code extension and desktop app use. Ported from
-//! `packages/cezar/src/core/codex-app-server-runner.ts` +
-//! `packages/cezar/src/core/codex-app-server-transport.ts`.
+//! `packages/coducktor/src/core/codex-app-server-runner.ts` +
+//! `packages/coducktor/src/core/codex-app-server-transport.ts`.
 //!
 //! Auth is the host's logged-in ChatGPT/Codex session (or `CODEX_API_KEY`). The agent runs
-//! autonomously via `sandbox: danger-full-access` + `approvalPolicy: never`; `CEZ_CODEX_NETWORK=0`
+//! autonomously via `sandbox: danger-full-access` + `approvalPolicy: never`; `DUCK_CODEX_NETWORK=0`
 //! retains the previous network-blocked `workspace-write` sandbox as an explicit restriction.
 //! Codex has no per-tool allowlist, so `spec.allowed_tools`/`bash_allowlist` are ignored, and it
 //! has no way to receive pasted images at task start (`spec.images` is unused here too — a
@@ -32,7 +32,7 @@
 //!   a stronger signal than a trailing marker). The next `send_message` answers it via RPC instead
 //!   of starting a new turn, then resumes reading exactly like any other follow-up.
 //!
-//! `isSignalTerminationExit`/`terminatedByCezar`/the EOF-watchdog "did not exit on its own" note
+//! `isSignalTerminationExit`/`terminatedByCoducktor`/the EOF-watchdog "did not exit on its own" note
 //! are dropped for the same reason claude's port drops them (see that module's doc): no call can
 //! signal this session while a read loop is in flight, so there is no ambiguity to resolve.
 //!
@@ -67,7 +67,7 @@ const NON_TOOL_ITEMS: &[&str] = &["agentMessage", "userMessage", "reasoning", "p
 const REASONING_SUMMARIES: &[&str] = &["auto", "concise", "detailed", "none"];
 
 /// Where to find the codex binary. Production wiring resolves `program`/`prefix_args` from
-/// `CEZ_CODEX_BIN` (`coducktor-server`'s job, not this crate's); tests point `program` at `node`
+/// `DUCK_CODEX_BIN` (`coducktor-server`'s job, not this crate's); tests point `program` at `node`
 /// with `prefix_args: vec![mock_script_path]`. `app-server` is always appended as the final arg
 /// regardless — matching `spawnCodexAppServer`'s own `nodeSpawn(bin, ['app-server'], ...)`.
 #[derive(Debug, Clone)]
@@ -102,21 +102,21 @@ fn wrap_spawn_error(error: &io::Error, program: &str) -> String {
 }
 
 /// `CLAUDE_CODE_USE_BEDROCK`-style toggle: full access is the shared `auto` preset across every
-/// backend; `CEZ_CODEX_NETWORK=0` remains the backwards-compatible explicit sandbox opt-out.
+/// backend; `DUCK_CODEX_NETWORK=0` remains the backwards-compatible explicit sandbox opt-out.
 fn resolve_sandbox(env: &BTreeMap<String, String>) -> &'static str {
-    if env.get("CEZ_CODEX_NETWORK").map(String::as_str) == Some("0") {
+    if env.get("DUCK_CODEX_NETWORK").map(String::as_str) == Some("0") {
         "workspace-write"
     } else {
         "danger-full-access"
     }
 }
 
-/// The reasoning-summary override sent on `turn/start`. Defaults to `auto`; `CEZ_CODEX_REASONING`
+/// The reasoning-summary override sent on `turn/start`. Defaults to `auto`; `DUCK_CODEX_REASONING`
 /// overrides it (`auto`/`concise`/`detailed`, or `none` to opt out); an unrecognized value falls
 /// back to `auto`.
 fn resolve_reasoning_summary(env: &BTreeMap<String, String>) -> String {
     match env
-        .get("CEZ_CODEX_REASONING")
+        .get("DUCK_CODEX_REASONING")
         .map(|value| value.trim().to_lowercase())
     {
         Some(value) if REASONING_SUMMARIES.contains(&value.as_str()) => value,
@@ -893,7 +893,7 @@ mod tests {
     fn resolve_sandbox_defaults_to_full_access() {
         assert_eq!(resolve_sandbox(&BTreeMap::new()), "danger-full-access");
         let mut env = BTreeMap::new();
-        env.insert("CEZ_CODEX_NETWORK".to_owned(), "0".to_owned());
+        env.insert("DUCK_CODEX_NETWORK".to_owned(), "0".to_owned());
         assert_eq!(resolve_sandbox(&env), "workspace-write");
     }
 
@@ -901,9 +901,9 @@ mod tests {
     fn resolve_reasoning_summary_falls_back_to_auto() {
         assert_eq!(resolve_reasoning_summary(&BTreeMap::new()), "auto");
         let mut env = BTreeMap::new();
-        env.insert("CEZ_CODEX_REASONING".to_owned(), "DETAILED".to_owned());
+        env.insert("DUCK_CODEX_REASONING".to_owned(), "DETAILED".to_owned());
         assert_eq!(resolve_reasoning_summary(&env), "detailed");
-        env.insert("CEZ_CODEX_REASONING".to_owned(), "nonsense".to_owned());
+        env.insert("DUCK_CODEX_REASONING".to_owned(), "nonsense".to_owned());
         assert_eq!(resolve_reasoning_summary(&env), "auto");
     }
 

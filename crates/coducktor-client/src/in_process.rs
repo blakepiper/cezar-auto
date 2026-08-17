@@ -4,7 +4,7 @@
 //! (A2), this is meant to be "an implementation, not an extraction" — in practice a large
 //! fraction of `coducktor-server`'s own handlers turned out to hold real business logic
 //! directly (git shelling, IDE file I/O, agent-config file listing, provider probing) rather
-//! than being thin `cezar-core` delegates the way that crate's own module doc promises, so
+//! than being thin `coducktor-core` delegates the way that crate's own module doc promises, so
 //! porting the *whole* `Engine` trait honestly is a bigger lift than this one step's text
 //! implies. The complete port now lives here: each family is implemented against the
 //! matching `coducktor-server` handler, with the final trait adapter in `engine.rs`.
@@ -14,7 +14,7 @@
 //! converts the legacy raw JSON repository UI-state helpers to the typed trait contract.
 //!
 //! Every method here cites the `coducktor-server` handler it was ported from (that crate is
-//! this port's oracle, the same role `packages/cezar` played for the rest of Phase B) —
+//! this port's oracle, the same role `packages/coducktor` played for the rest of Phase B) —
 //! `coducktor-server` is deleted whole at C2, so duplicating its business logic here now
 //! (rather than trying to share it across an axum-shaped and a non-axum-shaped caller) is the
 //! right amount of engineering, not a shortcut.
@@ -210,7 +210,19 @@ impl InProcessEngine {
     pub async fn health(&self) -> Result<HealthResponse, EngineError> {
         let repo_root = self.repo_root.clone();
         let version = self.version.clone();
-        tokio::task::spawn_blocking(move || health_payload(&repo_root, &version))
+        tokio::task::spawn_blocking(move || health_payload(&repo_root, &version, false))
+            .await
+            .map_err(|error| EngineError::Transport(error.to_string()))
+    }
+
+    /// Run the slower provider/version probes used by `coducktor doctor`. The interactive TUI
+    /// deliberately uses the cheap health path so a missing or slow agent CLI cannot delay the
+    /// first frame; settings and task execution perform their own provider-specific probes when
+    /// the user asks for them.
+    pub async fn diagnostic_health(&self) -> Result<HealthResponse, EngineError> {
+        let repo_root = self.repo_root.clone();
+        let version = self.version.clone();
+        tokio::task::spawn_blocking(move || health_payload(&repo_root, &version, true))
             .await
             .map_err(|error| EngineError::Transport(error.to_string()))
     }
@@ -1513,10 +1525,7 @@ impl InProcessEngine {
         let config = load_config(&repo_root, &workspace_config_for(&repo_root).agent_defaults);
         let review_gate = review_gate_enabled(
             config.review_gate,
-            std::env::var("DUCK_REVIEW_GATE")
-                .or_else(|_| std::env::var("CEZ_REVIEW_GATE"))
-                .ok()
-                .as_deref(),
+            std::env::var("DUCK_REVIEW_GATE").ok().as_deref(),
         );
         if winner.status != coducktor_contract::RunStatus::Review
             && winner.autonomous != Some(true)
@@ -2137,9 +2146,6 @@ impl InProcessEngine {
             }
             if input.last_location.is_some() {
                 state.last_location = input.last_location.clone();
-            }
-            if input.imported_skills.is_some() {
-                state.imported_skills = input.imported_skills.clone();
             }
             state.extra.extend(input.extra.clone());
         })
@@ -3707,11 +3713,9 @@ fn executable_on_path(binary: &str) -> bool {
 }
 
 fn configured_executable(provider: &str, default: &str) -> bool {
-    let duck_name = format!("DUCK_{}_BIN", provider.to_ascii_uppercase());
-    let cez_name = format!("CEZ_{}_BIN", provider.to_ascii_uppercase());
-    std::env::var(&duck_name)
+    let env_name = format!("DUCK_{}_BIN", provider.to_ascii_uppercase());
+    std::env::var(&env_name)
         .ok()
-        .or_else(|| std::env::var(&cez_name).ok())
         .filter(|path| !path.trim().is_empty())
         .is_some_and(|path| Path::new(&path).is_file())
         || executable_on_path(default)
@@ -4084,7 +4088,7 @@ fn repo_branches(root: &Path) -> Vec<String> {
                 continue;
             }
             let name = name.strip_prefix("origin/").unwrap_or(name);
-            if !name.starts_with("cez/") && !name.starts_with("duck/") {
+            if !coducktor_core::git::refs::is_task_branch(name) {
                 branches.insert(name.to_owned());
             }
         }
@@ -5239,7 +5243,7 @@ fn workspace_config_for(repo_root: &Path) -> coducktor_core::workspace::config::
 }
 
 fn config_models_locked(repo_root: &Path, config: &coducktor_core::config::RepoConfig) -> bool {
-    std::env::var("CEZ_AGENT_MODELS_LOCKED").is_ok_and(|value| value == "1")
+    std::env::var("DUCK_AGENT_MODELS_LOCKED").is_ok_and(|value| value == "1")
         || workspace_config_for(repo_root).models_locked == Some(true)
         || config.models_locked == Some(true)
 }
@@ -5913,26 +5917,19 @@ fn provider_status_response() -> ProviderStatusResponse {
 }
 
 fn provider_models_locked() -> bool {
-    std::env::var("DUCK_AGENT_MODELS_LOCKED")
-        .or_else(|_| std::env::var("CEZ_AGENT_MODELS_LOCKED"))
-        .is_ok_and(|value| value == "1")
+    std::env::var("DUCK_AGENT_MODELS_LOCKED").is_ok_and(|value| value == "1")
 }
 
 fn provider_executable(provider: Runner) -> String {
-    let (duck, cez, default) = match provider {
-        Runner::Claude => ("DUCK_CLAUDE_BIN", "CEZ_CLAUDE_BIN", "claude"),
-        Runner::Codex => ("DUCK_CODEX_BIN", "CEZ_CODEX_BIN", "codex"),
-        Runner::OpenCode => ("DUCK_OPENCODE_BIN", "CEZ_OPENCODE_BIN", "opencode"),
-        Runner::Pi => ("DUCK_PI_BIN", "CEZ_PI_BIN", "pi"),
+    let (env_name, default) = match provider {
+        Runner::Claude => ("DUCK_CLAUDE_BIN", "claude"),
+        Runner::Codex => ("DUCK_CODEX_BIN", "codex"),
+        Runner::OpenCode => ("DUCK_OPENCODE_BIN", "opencode"),
+        Runner::Pi => ("DUCK_PI_BIN", "pi"),
     };
-    std::env::var(duck)
+    std::env::var(env_name)
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            std::env::var(cez)
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-        })
         .unwrap_or_else(|| default.to_owned())
 }
 
@@ -6031,10 +6028,7 @@ fn provider_state_from_output(
 
 fn provider_status_for_profile(profile: &ResolvedAgentProfile) -> ProviderStatus {
     let profile_id = (!profile.is_default).then(|| profile.id.clone());
-    if std::env::var("DUCK_DRY_RUN")
-        .or_else(|_| std::env::var("CEZ_DRY_RUN"))
-        .is_ok_and(|value| value == "1")
-    {
+    if std::env::var("DUCK_DRY_RUN").is_ok_and(|value| value == "1") {
         return ProviderStatus {
             provider: profile.provider,
             status: ProviderConnectionState::Connected,
@@ -6116,7 +6110,7 @@ fn agent_profile_details(profile: &ResolvedAgentProfile) -> AgentAccountDetailsR
         return AgentAccountDetailsResponse {
             available: false,
             reason: Some(
-                "OpenCode keeps its login outside its config folder, so cezar cannot read it."
+                "OpenCode keeps its login outside its config folder, so coducktor cannot read it."
                     .to_owned(),
             ),
             fields: Vec::new(),
@@ -6350,7 +6344,7 @@ fn read_repo_ui_state(repo_root: &Path) -> Map<String, Value> {
         .unwrap_or_default()
 }
 
-fn health_payload(repo_root: &Path, version: &str) -> HealthResponse {
+fn health_payload(repo_root: &Path, version: &str, probe_backends: bool) -> HealthResponse {
     let repo_root_str = repo_root.to_string_lossy().into_owned();
     let branch = git_output(repo_root, &["branch", "--show-current"]);
     let remote = git_output(repo_root, &["config", "--get", "remote.origin.url"]);
@@ -6366,7 +6360,6 @@ fn health_payload(repo_root: &Path, version: &str) -> HealthResponse {
     };
     HealthResponse {
         version: version.to_owned(),
-        latest_version: None,
         repo_root: repo_root_str,
         repo,
         checks: [
@@ -6378,7 +6371,13 @@ fn health_payload(repo_root: &Path, version: &str) -> HealthResponse {
             (BackendCheckName::Git, "git"),
         ]
         .into_iter()
-        .map(|(name, binary)| backend_check(name, binary))
+        .map(|(name, binary)| {
+            if probe_backends {
+                backend_check(name, binary)
+            } else {
+                backend_presence_check(name, binary)
+            }
+        })
         .collect(),
         default_runner: RunnerSelection::Auto,
         forge: Some(ForgeInfo {
@@ -6429,6 +6428,28 @@ fn backend_check(name: BackendCheckName, binary: &str) -> BackendCheck {
     }
 }
 
+fn backend_presence_check(name: BackendCheckName, binary: &str) -> BackendCheck {
+    let env_name = match name {
+        BackendCheckName::Claude => Some("DUCK_CLAUDE_BIN"),
+        BackendCheckName::Codex => Some("DUCK_CODEX_BIN"),
+        BackendCheckName::OpenCode => Some("DUCK_OPENCODE_BIN"),
+        BackendCheckName::Pi => Some("DUCK_PI_BIN"),
+        BackendCheckName::Gh | BackendCheckName::Git => None,
+    };
+    let override_present = env_name
+        .and_then(std::env::var_os)
+        .is_some_and(|path| !path.is_empty() && Path::new(&path).is_file());
+    let dry_run_fallback = std::env::var("DUCK_DRY_RUN").is_ok_and(|value| value == "1")
+        && matches!(name, BackendCheckName::Claude | BackendCheckName::Pi);
+    let available = override_present || dry_run_fallback || executable_on_path(binary);
+    BackendCheck {
+        name,
+        available,
+        version: None,
+        hint: (!available).then(|| format!("{binary} CLI not found")),
+    }
+}
+
 fn git_output(repo_root: &Path, args: &[&str]) -> Option<String> {
     let output = Command::new("git")
         .current_dir(repo_root)
@@ -6460,7 +6481,7 @@ mod tests {
     use std::io;
     use tempfile::TempDir;
 
-    /// A session that immediately completes with `CEZ:DONE` — enough to prove
+    /// A session that immediately completes with `DUCK:DONE` — enough to prove
     /// `InProcessEngine`'s own wiring (queueing, persistence, event fan-out) without spawning a
     /// real agent CLI; the four real backends already have their own dedicated subprocess
     /// tests in `coducktor-runners`.
@@ -6479,7 +6500,7 @@ mod tests {
                     input_tokens: Some(5.0),
                     output_tokens: Some(5.0),
                     cost_usd: None,
-                    turn_text: "done (fake)\n\nCEZ:DONE".to_owned(),
+                    turn_text: "done (fake)\n\nDUCK:DONE".to_owned(),
                     decision: Some(coducktor_core::workflows::run::TurnMarkerDecision::Done),
                     plan_entries: None,
                 },
@@ -6722,7 +6743,7 @@ mod tests {
     async fn todos_are_empty_when_followups_are_disabled() {
         let dir = TempDir::new().unwrap();
         let engine = engine(&dir);
-        // CEZ_FOLLOWUPS/DUCK_FOLLOWUPS are unset in the test process by default.
+        // DUCK_FOLLOWUPS is unset in the test process by default.
         assert!(engine.todos().await.unwrap().is_empty());
         assert_eq!(
             engine.delete_todo("anything").await,
@@ -6916,7 +6937,7 @@ mod tests {
     // `create_agent_profile`/`update_agent_profile`/`remove_agent_profile`/`select_agent_profile`
     // (like the `coducktor-server` handlers they're ported from) resolve their storage path via
     // `agent_accounts_path(&ProcessEnv)` — the REAL `~/.coducktor/agent-accounts.json` (or
-    // `$DUCK_HOME`/`$CEZ_HOME` if set), with no injectable override. No test here calls one of
+    // `$DUCK_HOME` if set), with no injectable override. No test here calls one of
     // these methods down a path that would actually write to it: every write-path test below
     // exercises validation that returns before any file I/O happens (matching the same
     // established "safe against a real, possibly-populated environment" discipline the existing

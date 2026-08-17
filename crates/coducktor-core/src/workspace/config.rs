@@ -1,5 +1,5 @@
 //! `~/.coducktor/config.json` — the per-user workspace config + project registry. Mirrors
-//! `packages/cezar/src/workspace/config.ts`. House rules, applied verbatim:
+//! `packages/coducktor/src/workspace/config.ts`. House rules, applied verbatim:
 //!
 //! - every field optional/defaulted with a per-key catch, so a bad value degrades in
 //!   place instead of discarding the file (contrast `crate::config`, whose per-repo
@@ -657,10 +657,10 @@ impl WorkspaceConfig {
         let object = raw.as_object();
         let projects_dir = zod::trimmed_str_opt(zod::field(object, "projectsDir"), 1, 4096)
             .unwrap_or_else(|| {
-                env.get("CEZ_PROJECTS_DIR")
+                env.get("DUCK_PROJECTS_DIR")
                     .map(|v| v.trim().to_owned())
                     .filter(|v| !v.is_empty())
-                    .unwrap_or_else(|| "~/cezar/projects".to_owned())
+                    .unwrap_or_else(|| "~/coducktor/projects".to_owned())
             });
         let disabled_providers = zod::field(object, "disabledProviders")
             .and_then(Value::as_array)
@@ -835,7 +835,7 @@ fn set_mode(_path: &Path, _mode: u32) -> io::Result<()> {
 /// never turn a successful write into an error).
 ///
 /// The path is resolved ONCE by the caller and passed in here, for the exact reason the
-/// TS source documents at length: `paths::workspace_config_path` re-reads `CEZ_HOME`/
+/// TS source documents at length: `paths::workspace_config_path` re-reads `DUCK_HOME`/
 /// `DUCK_HOME` on every call, so resolving it twice (once for the read, again for the
 /// write) can send the two halves to different files if the environment changes between
 /// them.
@@ -864,7 +864,7 @@ mod tests {
     fn defaults_match_the_shipped_node_output() {
         let config = WorkspaceConfig::default_for(&env());
         assert_eq!(config.schema_version, 0);
-        assert_eq!(config.projects_dir, "~/cezar/projects");
+        assert_eq!(config.projects_dir, "~/coducktor/projects");
         assert_eq!(config.resources.max_parallel, 2);
         assert_eq!(config.resources.monitoring_wake_interval_minutes, Some(5));
         assert_eq!(config.resources.memory_limit_mb, None);

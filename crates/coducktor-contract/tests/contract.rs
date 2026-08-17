@@ -3,8 +3,8 @@ use std::path::Path;
 
 use coducktor_contract::compat::{catch_optional, catch_or_default, salvage_entries};
 use coducktor_contract::{
-    AgentConfigListing, AgentProfilesResponse, ConfigResponse, FsBrowseResponse, GithubChecksData,
-    GithubData, GithubRefStatusData, HealthResponse, IdeDirectoryResponse, OpenTargetsResponse,
+    AgentConfigListing, AgentProfilesResponse, ConfigResponse, GithubChecksData, GithubData,
+    GithubRefStatusData, HealthResponse, IdeDirectoryResponse, OpenTargetsResponse,
     ProjectsResponse, RunEvent, RunRecord, RunnerModelCatalogResponse, RunsIndexResponse, Skill,
     UiState, WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUiState, WorkspaceUsageResponse,
     WorktreesResponse,
@@ -78,7 +78,6 @@ fn captured_live_responses_round_trip_without_wire_drift() {
     assert_round_trip::<GithubChecksData>("github-checks.json");
     assert_round_trip::<GithubRefStatusData>("github-ref-status.json");
     assert_round_trip::<GithubData>("github.json");
-    assert_round_trip::<FsBrowseResponse>("fs-browse.json");
     assert_round_trip::<IdeDirectoryResponse>("ide-directory.json");
     assert_round_trip::<Vec<Skill>>("skills.json");
     assert_round_trip::<RunEvent>("run-event.json");

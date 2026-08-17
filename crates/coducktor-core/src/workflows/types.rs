@@ -1,4 +1,4 @@
-//! The slice of `packages/cezar/src/workflows/types.ts` that [`super::load`] needs: turning
+//! The slice of `packages/coducktor/src/workflows/types.ts` that [`super::load`] needs: turning
 //! a raw parsed YAML/JSON document into a validated [`WorkflowDef`], and the built-in
 //! `quick-task` workflow it falls back to.
 //!

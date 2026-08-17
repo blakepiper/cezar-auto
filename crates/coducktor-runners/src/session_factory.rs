@@ -5,19 +5,19 @@
 //!
 //! Binary resolution mirrors each TS runner's own constructor exactly, not a symmetric
 //! convention invented here:
-//! - claude/pi: `CEZ_CLAUDE_BIN`/`CEZ_PI_BIN` override, else — when `CEZ_DRY_RUN=1` — the bundled
+//! - claude/pi: `DUCK_CLAUDE_BIN`/`DUCK_PI_BIN` override, else — when `DUCK_DRY_RUN=1` — the bundled
 //!   Node mock script, else the bare binary name on PATH. (`claude-cli-runner.ts`'s
 //!   `mockClaudePath()`/`pi-runner.ts`'s `mockPiPath()`.)
-//! - codex/opencode: `CEZ_CODEX_BIN`/`CEZ_OPENCODE_BIN` override, else the bare binary name on
-//!   PATH — **no** `CEZ_DRY_RUN` fallback. `codex-app-server-transport.ts`'s
+//! - codex/opencode: `DUCK_CODEX_BIN`/`DUCK_OPENCODE_BIN` override, else the bare binary name on
+//!   PATH — **no** `DUCK_DRY_RUN` fallback. `codex-app-server-transport.ts`'s
 //!   `resolveCodexExecutable` and `opencode-server-runner.ts`'s constructor really do skip it;
 //!   this is not an oversight to "fix" here, it is the oracle.
 //!
 //! The dry-run mock scripts live under this monorepo's root-level `fixtures/` directory (B12
-//! relocated them there from the since-deleted `packages/cezar/scripts/`, the only reason those
+//! relocated them there from the since-deleted `packages/coducktor/scripts/`, the only reason those
 //! two files survived the TypeScript deletion), so resolving them relative to `SessionRequest.cwd`
 //! (the repo root a run operates in) rather than this binary's own install location is deliberate
-//! — `CEZ_DRY_RUN=1` is a development/testing affordance that only makes sense run from inside
+//! — `DUCK_DRY_RUN=1` is a development/testing affordance that only makes sense run from inside
 //! this monorepo checkout in the first place, same premise Phase A/B's dual-implementation
 //! testing already assumed throughout.
 
@@ -37,7 +37,7 @@ const MOCK_CLAUDE_RELATIVE: &str = "fixtures/scripts/mock-claude.mjs";
 const MOCK_PI_RELATIVE: &str = "fixtures/scripts/mock-pi-rpc.mjs";
 
 /// Production `SessionFactory`: spawns the real agent CLI (or, for claude/pi under
-/// `CEZ_DRY_RUN=1`, the bundled mock) for whichever backend a [`SessionRequest`] names.
+/// `DUCK_DRY_RUN=1`, the bundled mock) for whichever backend a [`SessionRequest`] names.
 pub struct DefaultSessionFactory {
     host_env: BTreeMap<String, String>,
 }
@@ -58,7 +58,7 @@ impl DefaultSessionFactory {
     }
 
     fn dry_run(&self) -> bool {
-        self.host_env.get("CEZ_DRY_RUN").map(String::as_str) == Some("1")
+        self.host_env.get("DUCK_DRY_RUN").map(String::as_str) == Some("1")
     }
 
     fn mock_node_config(&self, repo_root: &Path, relative: &str) -> (String, Vec<String>) {
@@ -71,7 +71,7 @@ impl DefaultSessionFactory {
 
     fn claude_config(&self, repo_root: &Path) -> ClaudeSpawnConfig {
         let mut config = ClaudeSpawnConfig::default();
-        if let Some(bin) = self.host_env.get("CEZ_CLAUDE_BIN") {
+        if let Some(bin) = self.host_env.get("DUCK_CLAUDE_BIN") {
             config.program = bin.clone();
         } else if self.dry_run() {
             let (program, args) = self.mock_node_config(repo_root, MOCK_CLAUDE_RELATIVE);
@@ -83,7 +83,7 @@ impl DefaultSessionFactory {
 
     fn codex_config(&self) -> CodexSpawnConfig {
         let mut config = CodexSpawnConfig::default();
-        if let Some(bin) = self.host_env.get("CEZ_CODEX_BIN") {
+        if let Some(bin) = self.host_env.get("DUCK_CODEX_BIN") {
             config.program = bin.clone();
         }
         config
@@ -91,7 +91,7 @@ impl DefaultSessionFactory {
 
     fn opencode_config(&self) -> OpencodeSpawnConfig {
         let mut config = OpencodeSpawnConfig::default();
-        if let Some(bin) = self.host_env.get("CEZ_OPENCODE_BIN") {
+        if let Some(bin) = self.host_env.get("DUCK_OPENCODE_BIN") {
             config.program = bin.clone();
         }
         config
@@ -99,7 +99,7 @@ impl DefaultSessionFactory {
 
     fn pi_config(&self, repo_root: &Path) -> PiSpawnConfig {
         let mut config = PiSpawnConfig::default();
-        if let Some(bin) = self.host_env.get("CEZ_PI_BIN") {
+        if let Some(bin) = self.host_env.get("DUCK_PI_BIN") {
             config.program = bin.clone();
         } else if self.dry_run() {
             let (program, args) = self.mock_node_config(repo_root, MOCK_PI_RELATIVE);
@@ -202,7 +202,8 @@ mod tests {
 
     #[test]
     fn claude_config_prefers_the_env_override_over_dry_run() {
-        let factory = factory_with_env(&[("CEZ_CLAUDE_BIN", "/opt/claude"), ("CEZ_DRY_RUN", "1")]);
+        let factory =
+            factory_with_env(&[("DUCK_CLAUDE_BIN", "/opt/claude"), ("DUCK_DRY_RUN", "1")]);
         let config = factory.claude_config(Path::new("/repo"));
         assert_eq!(config.program, "/opt/claude");
         assert!(config.prefix_args.is_empty());
@@ -210,7 +211,7 @@ mod tests {
 
     #[test]
     fn claude_config_falls_back_to_the_bundled_mock_under_dry_run() {
-        let factory = factory_with_env(&[("CEZ_DRY_RUN", "1")]);
+        let factory = factory_with_env(&[("DUCK_DRY_RUN", "1")]);
         let config = factory.claude_config(Path::new("/repo"));
         assert_eq!(config.program, "node");
         assert_eq!(
@@ -229,7 +230,7 @@ mod tests {
 
     #[test]
     fn pi_config_follows_the_same_dry_run_convention_as_claude() {
-        let factory = factory_with_env(&[("CEZ_DRY_RUN", "1")]);
+        let factory = factory_with_env(&[("DUCK_DRY_RUN", "1")]);
         let config = factory.pi_config(Path::new("/repo"));
         assert_eq!(config.program, "node");
         assert_eq!(
@@ -240,7 +241,7 @@ mod tests {
 
     #[test]
     fn codex_config_has_no_dry_run_fallback_matching_the_ts_oracle() {
-        let factory = factory_with_env(&[("CEZ_DRY_RUN", "1")]);
+        let factory = factory_with_env(&[("DUCK_DRY_RUN", "1")]);
         let config = factory.codex_config();
         assert_eq!(config.program, "codex");
         assert!(config.prefix_args.is_empty());
@@ -248,7 +249,7 @@ mod tests {
 
     #[test]
     fn opencode_config_has_no_dry_run_fallback_matching_the_ts_oracle() {
-        let factory = factory_with_env(&[("CEZ_DRY_RUN", "1")]);
+        let factory = factory_with_env(&[("DUCK_DRY_RUN", "1")]);
         let config = factory.opencode_config();
         assert_eq!(config.program, "opencode");
         assert!(config.prefix_args.is_empty());
@@ -256,13 +257,13 @@ mod tests {
 
     #[test]
     fn codex_config_honors_its_own_env_override() {
-        let factory = factory_with_env(&[("CEZ_CODEX_BIN", "/opt/codex")]);
+        let factory = factory_with_env(&[("DUCK_CODEX_BIN", "/opt/codex")]);
         assert_eq!(factory.codex_config().program, "/opt/codex");
     }
 
     #[test]
     fn opencode_config_honors_its_own_env_override() {
-        let factory = factory_with_env(&[("CEZ_OPENCODE_BIN", "/opt/opencode")]);
+        let factory = factory_with_env(&[("DUCK_OPENCODE_BIN", "/opt/opencode")]);
         assert_eq!(factory.opencode_config().program, "/opt/opencode");
     }
 
@@ -306,7 +307,7 @@ mod tests {
             .join("../..")
             .canonicalize()
             .unwrap();
-        let mut factory = factory_with_env(&[("CEZ_DRY_RUN", "1")]);
+        let mut factory = factory_with_env(&[("DUCK_DRY_RUN", "1")]);
         let request = SessionRequest {
             run_id: "run-1".to_owned(),
             step_id: "step-1".to_owned(),

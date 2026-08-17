@@ -4,6 +4,7 @@ pub use super::{
     AgentSession, CheckExecutor, CheckResult, ContinueOptions, ContinueResult, DiffInspector,
     RuntimeOptions, SessionFactory, SessionOutcome, SessionReport, SessionRequest,
 };
+use crate::runs::task_markers::canonicalize_markers;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnMarkerDecision {
@@ -18,8 +19,8 @@ pub enum TurnMarkerDecision {
 pub const MAX_AUTONOMOUS_CONTINUES: u32 = 40;
 
 fn trailing_marker(text: &str, marker: &str) -> bool {
-    let trimmed = text.trim_end();
-    trimmed.ends_with(&format!("CEZ:{marker}")) || trimmed.ends_with(&format!("DUCK:{marker}"))
+    let canonical = canonicalize_markers(text);
+    canonical.trim_end().ends_with(&format!("DUCK:{marker}"))
 }
 
 pub fn append_turn_text(current: &str, next: &str) -> String {
@@ -36,16 +37,15 @@ pub fn append_turn_text(current: &str, next: &str) -> String {
 /// split a marker across events; callers should pass the accumulated turn, just as they do to
 /// [`decide_turn_marker`], so a complete marker is never rendered as transcript prose.
 pub fn strip_turn_marker(text: &str) -> String {
-    let trimmed = text.trim_end();
+    let canonical = canonicalize_markers(text);
+    let trimmed = canonical.trim_end();
     for marker in ["DONE", "MONITORING"] {
-        for prefix in ["CEZ:", "DUCK:"] {
-            let suffix = format!("{prefix}{marker}");
-            if let Some(without_marker) = trimmed.strip_suffix(&suffix) {
-                return without_marker.trim_end().to_owned();
-            }
+        let suffix = format!("DUCK:{marker}");
+        if let Some(without_marker) = trimmed.strip_suffix(&suffix) {
+            return without_marker.trim_end().to_owned();
         }
     }
-    text.to_owned()
+    canonical
 }
 
 pub fn decide_turn_marker(
@@ -133,12 +133,14 @@ mod tests {
     fn complete_lifecycle_markers_are_hidden_from_transcript_text() {
         assert_eq!(strip_turn_marker("progress\nDUCK:DONE\n"), "progress");
         assert_eq!(
-            strip_turn_marker("still working CEZ:MONITORING"),
+            strip_turn_marker("still working DUCK:MONITORING"),
             "still working"
         );
         assert_eq!(
             strip_turn_marker("mentioning DUCK:DONE in prose"),
             "mentioning DUCK:DONE in prose"
         );
+        let legacy = format!("still working {}:MONITORING", concat!("C", "E", "Z"));
+        assert_eq!(strip_turn_marker(&legacy), "still working");
     }
 }

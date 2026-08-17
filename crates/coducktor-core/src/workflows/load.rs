@@ -1,4 +1,4 @@
-//! The workflow catalog loader. Mirrors `packages/cezar/src/workflows/load.ts`.
+//! The workflow catalog loader. Mirrors `packages/coducktor/src/workflows/load.ts`.
 //!
 //! Loads the built-in `quick-task` plus every `.ai/coducktor/workflows/*.{yaml,yml}` in the
 //! repo. File workflows win name collisions with built-ins. Invalid files are reported,

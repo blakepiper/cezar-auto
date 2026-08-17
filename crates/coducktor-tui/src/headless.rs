@@ -43,7 +43,7 @@ pub fn resolve_repo_root(explicit: Option<&Path>) -> PathBuf {
 
 // ---- run (headless) -----------------------------------------------------------------------
 
-/// `cezar run "<task>"` — headless execution. Returns the process exit code: 0 for `done`/
+/// `coducktor run "<task>"` — headless execution. Returns the process exit code: 0 for `done`/
 /// `review` (spec §1.4's protected exit-code contract), 1 otherwise.
 pub async fn run_command(
     repo_root: PathBuf,
@@ -61,7 +61,7 @@ pub async fn run_command(
 }
 
 /// The testable core of [`run_command`] — takes its `SessionFactory` explicitly so a test gets
-/// deterministic backend resolution (`CEZ_DRY_RUN=1`, a fixed `host_env`) without mutating the
+/// deterministic backend resolution (`DUCK_DRY_RUN=1`, a fixed `host_env`) without mutating the
 /// real process environment, which `#[test]`s running in parallel in this same binary cannot do
 /// safely.
 fn run_command_with_factory(
@@ -192,7 +192,7 @@ fn first_line(text: &str) -> String {
 
 // ---- init ----------------------------------------------------------------------------------
 
-/// `cezar init` — scaffold `.ai/coducktor/{workflows,skills}` with one worked example each.
+/// `coducktor init` — scaffold `.ai/coducktor/{workflows,skills}` with one worked example each.
 /// Ported from `index.ts`'s `initCommand`, content verbatim.
 pub fn init_command(repo_root: &Path) {
     let workflows_dir = repo_root.join(".ai/coducktor/workflows");
@@ -233,16 +233,6 @@ fn ensure_data_gitignore(repo_root: &Path) {
         "tmp/",
         "todos.json",
         "todos.json.tmp",
-        "launch-key",
-        "automations.json",
-        "automations.json.tmp",
-        "automation-state.json",
-        "automation-state.json.tmp",
-        "automation-receipts.ndjson",
-        "automation-receipts.ndjson.tmp",
-        "automation-log.ndjson",
-        "automation-log.ndjson.tmp",
-        "automation-poll.lock",
     ];
     let dir = repo_root.join(".ai/coducktor");
     let path = dir.join(".gitignore");
@@ -273,7 +263,7 @@ fn ensure_data_gitignore(repo_root: &Path) {
 
 // ---- usage ---------------------------------------------------------------------------------
 
-/// `cezar usage` — SCOPE CUT (B10): the quota-telemetry stack (`core/quota/*`, nine files —
+/// `coducktor usage` — SCOPE CUT (B10): the quota-telemetry stack (`core/quota/*`, nine files —
 /// runtime/coordinator/router/policy/failure-classifier/usage-report/usage-service/
 /// claude-usage-adapter/codex-usage-adapter/claude-credentials) is read-only CLI display logic
 /// orthogonal to session execution and is not ported here. The subcommand still parses (spec
@@ -296,7 +286,7 @@ pub fn usage_command() -> i32 {
 /// action is to pull the checkout and rerun `install.sh`.
 pub async fn doctor_command(repo_root: PathBuf, json: bool) -> i32 {
     let engine = InProcessEngine::new(repo_root, env!("CARGO_PKG_VERSION"));
-    let health = match engine.health().await {
+    let health = match engine.diagnostic_health().await {
         Ok(health) => health,
         Err(error) => {
             eprintln!("coducktor doctor: {error}");
@@ -321,7 +311,6 @@ pub async fn doctor_command(repo_root: PathBuf, json: bool) -> i32 {
             "version": health.version,
             "update": {
                 "available": false,
-                "latestVersion": health.latest_version,
                 "hint": "source-first install: run git pull and ./install.sh",
             },
             "repoRoot": health.repo_root,
@@ -375,7 +364,7 @@ fn backend_check_label(name: BackendCheckName) -> &'static str {
 
 // ---- projects --------------------------------------------------------------------------------
 
-/// `cezar projects [list|add [<dir>]|remove <id>|rm <id>]` — the terminal twin of Settings →
+/// `coducktor projects [list|add [<dir>]|remove <id>|rm <id>]` — the terminal twin of Settings →
 /// Projects, no server required. Ported from `projects-cli.ts`'s `list`/`add`/`remove` (its
 /// `tag` subcommand is not ported — a secondary UX affordance, not part of the protected
 /// surface).
@@ -537,7 +526,7 @@ mod tests {
 
         let gitignore =
             std::fs::read_to_string(repo.path().join(".ai/coducktor/.gitignore")).unwrap();
-        for wanted in ["runs.json", "worktrees/", "todos.json", "launch-key"] {
+        for wanted in ["runs.json", "worktrees/", "todos.json"] {
             assert!(gitignore.contains(wanted), "gitignore missing {wanted:?}");
         }
 
@@ -602,7 +591,7 @@ mod tests {
 
     fn dry_run_factory() -> DefaultSessionFactory {
         let mut env = BTreeMap::new();
-        env.insert("CEZ_DRY_RUN".to_owned(), "1".to_owned());
+        env.insert("DUCK_DRY_RUN".to_owned(), "1".to_owned());
         DefaultSessionFactory::with_env(env)
     }
 

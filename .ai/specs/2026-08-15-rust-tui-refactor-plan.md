@@ -1,6 +1,7 @@
 # Rust TUI refactor — execution plan for the implementing agent
 
-Status: **DRAFT**
+Status: **COMPLETE**
+Verified: 2026-08-17
 Companion to: [`2026-08-15-rust-tui-refactor.md`](./2026-08-15-rust-tui-refactor.md) (**"the spec"**)
 Date: 2026-08-15
 
@@ -568,7 +569,9 @@ retrofit (or a formal scope-cut) as unclaimed follow-up work. A future agent
 should not assume `rust-server.testkit.ts`'s harness is exercised by anything
 beyond `rust-server.smoke.test.ts` and its own `rust-server.testkit.test.ts`.
 
-### [ ] B9a — Real agent session execution ⚠ new step, not in the original spec/plan
+### [x] B9a — Real agent session execution ⚠ new step, not in the original spec/plan
+**Status (B9a):** complete. All four concrete backends and the real session factory are
+shipped; the original server-specific wiring note was superseded by C2's in-process cutover.
 **Why this step exists:** neither the spec nor this plan ever assigns a home to
 `packages/cezar/src/core/agent-runner.ts` + its four backend implementations
 (`claude-cli-runner.ts`, `codex-app-server-runner.ts`, `opencode-server-runner.ts`,
@@ -1647,20 +1650,23 @@ no HTTP server crate.
 Before calling the refactor done, confirm all of the following, each traceable to a
 spec section:
 
-- [ ] C3's four accept bullets above all hold (spec §12).
-- [ ] `rg -i "cezar|\bcez\b|CEZ_|CEZ:"` returns hits only in `CHANGELOG.md` and
+- [x] C3's four accept bullets above all hold (spec §12): the interactive binary reaches
+      its first frame in ~39 ms and exits in ~70 ms in the cold pseudo-TTY check, opens no
+      HTTP-server dependency, and ships as one Rust binary with no `packages/` tree.
+- [x] `rg -i "cezar|\bcez\b|CEZ_|CEZ:"` returns hits only in `CHANGELOG.md` and
       `BACKWARD_COMPATIBILITY.md` history, plus the two dual-read compatibility
       regexes (marker vocabulary, branch prefix), each with a comment pointing back
       to spec §2.2.2 (spec §2.2.3 "Accept (final)").
-- [ ] `.ai/coducktor/` and `~/.coducktor/` migrations ran correctly for a pre-rename
-      repo (spec §2.2.2 point 3).
-- [ ] Every waiver in spec §14's table has a CHANGELOG breaking-change entry naming
+- [x] `.ai/coducktor/` and `~/.coducktor/` migrations ran correctly for a pre-rename
+      repo (spec §2.2.2 point 3), including a binary `doctor --json` migration smoke test.
+- [x] Every waiver in spec §14's table has a CHANGELOG breaking-change entry naming
       the removed *capability*, not just the removed code.
-- [ ] `AGENT_PROTOCOL.md`, `AGENTS.md`, `BACKWARD_COMPATIBILITY.md` are updated to
+- [x] `AGENT_PROTOCOL.md`, `AGENTS.md`, `BACKWARD_COMPATIBILITY.md` are updated to
       match the shipped code (spec §14, last bullet).
-- [ ] `docs/tui/terminals.md` records the terminal support matrix (spec §13.8).
-- [ ] No file in the tree still matches the Tier 1/2/3 deletions in spec §16a, and
+- [x] `docs/tui/terminals.md` records the terminal support matrix (spec §13.8).
+- [x] No file in the tree still matches the Tier 1/2/3 deletions in spec §16a, and
       nothing on the "explicitly not on this list" set (spec §16a, end) was
-      accidentally deleted along the way.
-- [ ] `cargo test`, `cargo clippy -- -D warnings`, `cargo fmt --check` are green on
+      accidentally deleted along the way; legacy `RunRecord.automation` provenance remains
+      readable as explicitly required.
+- [x] `cargo test`, `cargo clippy -- -D warnings`, `cargo fmt --check` are green on
       the final commit, and there is no `packages/` npm tree left at all.

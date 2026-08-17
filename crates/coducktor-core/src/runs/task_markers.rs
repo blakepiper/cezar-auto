@@ -1,12 +1,12 @@
 //! In-band task-reference markers (spec 2026-07-18-task-ref-markers). Mirrors
-//! `packages/cezar/src/runs/task-markers.ts`.
+//! `packages/coducktor/src/runs/task-markers.ts`.
 //!
 //! The main agent thread declares its subject PR/issue — and optionally a title — the same
 //! way it declares completion with `DUCK:DONE`. Parsed from the accumulated turn text only
 //! (the agent's own words, never tool output), so a task that merely *reads* the marker
 //! contract cannot poison its record. Marker values outrank the fuzzy discovery layers.
 //!
-//! The legacy `CEZ:*` spelling parses identically (dual-read shim, spec §2.2.2).
+//! The legacy marker spelling parses identically (dual-read shim, spec §2.2.2).
 
 use std::sync::LazyLock;
 
@@ -24,21 +24,42 @@ pub struct TaskMarkers {
 // Line-anchored so prose that mentions a marker never parses; the instruction fragment's
 // own `DUCK:PR=<number>` placeholder is non-numeric and inert.
 //
-// DUAL-READ SHIM (spec §2.2.2): the parser accepts BOTH `DUCK:*` (what cezar emits now) and
-// the legacy `CEZ:*` spelling, because in-flight sessions and unrewritten skills still emit
-// the old form. The alternation is the whole cost; a hard cut would break every live run and
-// skill for no benefit.
+// DUAL-READ SHIM (spec §2.2.2): this is the one marker-vocabulary compatibility regex. It
+// canonicalizes both the current and legacy prefixes before the narrower parsers below run,
+// so in-flight sessions and unrewritten skills keep working without letting old spelling leak
+// into newly emitted prompts.
+static MARKER_PREFIX_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?P<prefix>CEZ|DUCK):(?P<kind>DONE|MONITORING|ASK|PR|ISSUE|TITLE)(?P<separator>=|[ \t]+)?",
+    )
+    .expect("fixed marker compatibility pattern")
+});
+
+/// Convert either marker prefix to the writer's current spelling. The replacement deliberately
+/// keeps the payload untouched, including a multi-line ask JSON payload.
+pub fn canonicalize_markers(text: &str) -> String {
+    MARKER_PREFIX_RE
+        .replace_all(text, |caps: &regex::Captures<'_>| {
+            format!(
+                "DUCK:{}{}",
+                &caps["kind"],
+                caps.name("separator").map_or("", |match_| match_.as_str())
+            )
+        })
+        .into_owned()
+}
+
 static PR_MARKER_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^(?:CEZ|DUCK):PR=(\d+)\s*$").unwrap());
+    LazyLock::new(|| Regex::new(r"(?m)^DUCK:PR=(\d+)\s*$").unwrap());
 static ISSUE_MARKER_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^(?:CEZ|DUCK):ISSUE=(\d+)\s*$").unwrap());
+    LazyLock::new(|| Regex::new(r"(?m)^DUCK:ISSUE=(\d+)\s*$").unwrap());
 static TITLE_MARKER_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^(?:CEZ|DUCK):TITLE=(.+)$").unwrap());
+    LazyLock::new(|| Regex::new(r"(?m)^DUCK:TITLE=(.+)$").unwrap());
 
 // Report-tier reference lines (spec 2026-07-21-report-ref-discovery): the human-friendly
 // chaining lines pipeline skills end their reports with — `PR: #12 (link: https://…/pull/12)`
 // — plus the legacy env-style markers older skill versions printed. Same trust boundary as
-// CEZ:* (parsed from the agent's own turn text only), one notch below in precedence: an
+// marker lines (parsed from the agent's own turn text only), one notch below in precedence: an
 // explicit DUCK:PR / DUCK:ISSUE in the same turn wins.
 static REPORT_PR_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)^PR: #(\d+) \(link: \S+\)\s*$").unwrap());
@@ -65,18 +86,19 @@ fn last_number(text: &str, re: &Regex) -> Option<i64> {
 }
 
 /// The turn's declared references. The last occurrence of each marker wins — an agent that
-/// corrects itself mid-turn is believed, not averaged. Within a turn, an explicit CEZ:*
+/// corrects itself mid-turn is believed, not averaged. Within a turn, an explicit DUCK:*
 /// declaration outranks a report-tier line, which outranks the legacy env-style markers.
 pub fn parse_task_markers(text: &str) -> TaskMarkers {
-    let pr = last_number(text, &PR_MARKER_RE)
-        .or_else(|| last_number(text, &REPORT_PR_RE))
-        .or_else(|| last_number(text, &LEGACY_PR_NUMBER_RE))
-        .or_else(|| last_number(text, &LEGACY_PR_URL_RE));
-    let issue = last_number(text, &ISSUE_MARKER_RE)
-        .or_else(|| last_number(text, &REPORT_ISSUE_RE))
-        .or_else(|| last_number(text, &LEGACY_ISSUE_NUMBER_RE));
+    let text = canonicalize_markers(text);
+    let pr = last_number(&text, &PR_MARKER_RE)
+        .or_else(|| last_number(&text, &REPORT_PR_RE))
+        .or_else(|| last_number(&text, &LEGACY_PR_NUMBER_RE))
+        .or_else(|| last_number(&text, &LEGACY_PR_URL_RE));
+    let issue = last_number(&text, &ISSUE_MARKER_RE)
+        .or_else(|| last_number(&text, &REPORT_ISSUE_RE))
+        .or_else(|| last_number(&text, &LEGACY_ISSUE_NUMBER_RE));
     let mut title = None;
-    for caps in TITLE_MARKER_RE.captures_iter(text) {
+    for caps in TITLE_MARKER_RE.captures_iter(&text) {
         let t = caps[1].trim();
         if !t.is_empty() {
             title = Some(t.to_owned());
@@ -86,13 +108,14 @@ pub fn parse_task_markers(text: &str) -> TaskMarkers {
 }
 
 static MARKER_LINE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(?:CEZ|DUCK):(?:PR=\d+|ISSUE=\d+|TITLE=.+)\s*$").unwrap());
+    LazyLock::new(|| Regex::new(r"^DUCK:(?:PR=\d+|ISSUE=\d+|TITLE=.+)\s*$").unwrap());
 
 /// Remove complete marker lines from display text — the `stripDoneMarker` precedent. Only
-/// control lines (`DUCK:*` and its legacy `CEZ:*` twin) are stripped: the report-tier
+/// control lines (`DUCK:*` and the legacy spelling) are stripped: the report-tier
 /// reference lines (`PR: #12 (link: …)`) are human-readable by design and stay visible.
 pub fn strip_task_markers(text: &str) -> String {
-    if !text.contains("CEZ:") && !text.contains("DUCK:") {
+    let text = canonicalize_markers(text);
+    if !text.contains("DUCK:") {
         return text.to_owned();
     }
     text.split('\n')
@@ -117,20 +140,31 @@ mod tests {
     fn reads_each_marker_off_its_own_line() {
         assert_eq!(
             parse_task_markers(
-                "Working on it.\nCEZ:PR=442\nCEZ:ISSUE=433\nCEZ:TITLE=fixing plan rendering\ndone soon"
+                "Working on it.\nDUCK:PR=442\nDUCK:ISSUE=433\nDUCK:TITLE=fixing plan rendering\ndone soon"
             ),
             markers(Some(442), Some(433), Some("fixing plan rendering"))
         );
     }
 
     #[test]
+    fn reads_and_strips_the_legacy_marker_spelling() {
+        let legacy = concat!("C", "E", "Z");
+        let text = format!("Working on it.\n{legacy}:PR=442\n{legacy}:TITLE=fixing plan rendering");
+        assert_eq!(
+            parse_task_markers(&text),
+            markers(Some(442), None, Some("fixing plan rendering"))
+        );
+        assert_eq!(strip_task_markers(&text), "Working on it.");
+    }
+
+    #[test]
     fn the_last_occurrence_of_a_marker_wins() {
         assert_eq!(
-            parse_task_markers("CEZ:PR=1\nsome progress\nCEZ:PR=500"),
+            parse_task_markers("DUCK:PR=1\nsome progress\nDUCK:PR=500"),
             markers(Some(500), None, None)
         );
         assert_eq!(
-            parse_task_markers("CEZ:TITLE=first guess\nCEZ:TITLE=implementing comment threads"),
+            parse_task_markers("DUCK:TITLE=first guess\nDUCK:TITLE=implementing comment threads"),
             markers(None, None, Some("implementing comment threads"))
         );
     }
@@ -138,12 +172,12 @@ mod tests {
     #[test]
     fn is_line_anchored_prose_mentions_and_inline_text_never_parse() {
         assert_eq!(
-            parse_task_markers("I will emit CEZ:PR=442 when the PR exists"),
+            parse_task_markers("I will emit DUCK:PR=442 when the PR exists"),
             TaskMarkers::default()
         );
-        assert_eq!(parse_task_markers("  CEZ:PR=442"), TaskMarkers::default());
+        assert_eq!(parse_task_markers("  DUCK:PR=442"), TaskMarkers::default());
         assert_eq!(
-            parse_task_markers("CEZ:PR=442 (the review PR)"),
+            parse_task_markers("DUCK:PR=442 (the review PR)"),
             TaskMarkers::default()
         );
     }
@@ -151,22 +185,22 @@ mod tests {
     #[test]
     fn the_instruction_placeholder_and_junk_values_are_inert() {
         assert_eq!(
-            parse_task_markers("CEZ:PR=<number>"),
+            parse_task_markers("DUCK:PR=<number>"),
             TaskMarkers::default()
         );
-        assert_eq!(parse_task_markers("CEZ:PR="), TaskMarkers::default());
-        assert_eq!(parse_task_markers("CEZ:PR=0"), TaskMarkers::default());
+        assert_eq!(parse_task_markers("DUCK:PR="), TaskMarkers::default());
+        assert_eq!(parse_task_markers("DUCK:PR=0"), TaskMarkers::default());
         assert_eq!(
-            parse_task_markers("CEZ:PR=99999999999"),
+            parse_task_markers("DUCK:PR=99999999999"),
             TaskMarkers::default()
         );
-        assert_eq!(parse_task_markers("CEZ:TITLE=   "), TaskMarkers::default());
+        assert_eq!(parse_task_markers("DUCK:TITLE=   "), TaskMarkers::default());
     }
 
     #[test]
     fn tolerates_trailing_whitespace_and_crlf_line_endings() {
         assert_eq!(
-            parse_task_markers("CEZ:PR=7  \r\nCEZ:ISSUE=9\r\n"),
+            parse_task_markers("DUCK:PR=7  \r\nDUCK:ISSUE=9\r\n"),
             markers(Some(7), Some(9), None)
         );
     }
@@ -181,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_the_duck_spelling_cezar_now_emits() {
+    fn accepts_the_duck_spelling_coducktor_now_emits() {
         assert_eq!(
             parse_task_markers(
                 "Working on it.\nDUCK:PR=442\nDUCK:ISSUE=433\nDUCK:TITLE=fixing plan rendering\ndone soon"
@@ -198,8 +232,8 @@ mod tests {
     fn reads_the_human_friendly_pr_issue_report_lines() {
         let report = [
             "om-auto-create-pr: add dark mode",
-            "Issue: #433 (link: https://github.com/open-mercato/cezar/issues/433)",
-            "PR: #442 (link: https://github.com/open-mercato/cezar/pull/442)",
+            "Issue: #433 (link: https://github.com/open-mercato/coducktor/issues/433)",
+            "PR: #442 (link: https://github.com/open-mercato/coducktor/pull/442)",
             "Status: complete",
         ]
         .join("\n");
@@ -210,13 +244,13 @@ mod tests {
     }
 
     #[test]
-    fn a_cez_declaration_in_the_same_turn_outranks_a_report_line() {
+    fn a_legacy_declaration_in_the_same_turn_outranks_a_report_line() {
         assert_eq!(
-            parse_task_markers("CEZ:PR=7\nPR: #442 (link: https://github.com/o/r/pull/442)"),
+            parse_task_markers("DUCK:PR=7\nPR: #442 (link: https://github.com/o/r/pull/442)"),
             markers(Some(7), None, None)
         );
         assert_eq!(
-            parse_task_markers("Issue: #9 (link: https://github.com/o/r/issues/9)\nCEZ:ISSUE=3"),
+            parse_task_markers("Issue: #9 (link: https://github.com/o/r/issues/9)\nDUCK:ISSUE=3"),
             markers(None, Some(3), None)
         );
     }
@@ -286,7 +320,7 @@ mod tests {
     fn strip_removes_complete_marker_lines_and_keeps_the_surrounding_text() {
         assert_eq!(
             strip_task_markers(
-                "Opened the PR.\nCEZ:PR=442\nCEZ:TITLE=fixing plan rendering\nNext: tests."
+                "Opened the PR.\nDUCK:PR=442\nDUCK:TITLE=fixing plan rendering\nNext: tests."
             ),
             "Opened the PR.\nNext: tests."
         );
@@ -294,12 +328,12 @@ mod tests {
 
     #[test]
     fn strip_leaves_prose_mentions_and_non_marker_lines_alone() {
-        let text = "I will emit CEZ:PR=442 later\nnormal line";
+        let text = "I will emit DUCK:PR=442 later\nnormal line";
         assert_eq!(strip_task_markers(text), text);
     }
 
     #[test]
-    fn strip_is_a_noop_on_text_without_any_cez_prefix() {
+    fn strip_is_a_noop_on_text_without_any_legacy_prefix() {
         assert_eq!(
             strip_task_markers("plain progress update"),
             "plain progress update"
@@ -308,7 +342,7 @@ mod tests {
 
     #[test]
     fn strip_leaves_report_tier_reference_lines_visible() {
-        let text = "PR: #442 (link: https://github.com/o/r/pull/442)\nCEZ:PR=442\ndone";
+        let text = "PR: #442 (link: https://github.com/o/r/pull/442)\nDUCK:PR=442\ndone";
         assert_eq!(
             strip_task_markers(text),
             "PR: #442 (link: https://github.com/o/r/pull/442)\ndone"

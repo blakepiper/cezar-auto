@@ -1262,7 +1262,7 @@ impl RunManager {
     /// aggregated [`SessionReport::turn_text`] would exist, once, after the turn already ended.
     ///
     /// Mirrors `run.ts`'s `onEvent` handler: a `text`-typed event is marker-stripped per chunk
-    /// (so `CEZ:DONE`/`CEZ:MONITORING`/task markers never flash in the live transcript, matching
+    /// (so `DUCK:DONE`/`DUCK:MONITORING`/task markers never flash in the live transcript, matching
     /// [`Self::apply_session_markers`]'s aggregate-side detection) and dropped if that empties it;
     /// every other event type passes through unchanged.
     fn event_sink(
@@ -2264,7 +2264,7 @@ impl RunManager {
         Ok(())
     }
 
-    /// Post-turn marker bookkeeping (`CEZ:DONE`/`CEZ:PR=`/…) over the whole aggregated turn text.
+    /// Post-turn marker bookkeeping (`DUCK:DONE`/`DUCK:PR=`/…) over the whole aggregated turn text.
     /// This no longer persists the text itself as an event — the live [`Self::event_sink`]
     /// already streamed it turn-by-turn as the session produced it; re-appending the aggregate
     /// here would duplicate the transcript.
@@ -3548,7 +3548,7 @@ mod tests {
             TurnMarkerDecision::Ask
         );
         assert_eq!(
-            decide_turn_marker("work\nCEZ:DONE", true, true),
+            decide_turn_marker("work\nDUCK:DONE", true, true),
             TurnMarkerDecision::Done
         );
         assert_eq!(
@@ -3619,7 +3619,7 @@ mod tests {
         manager
             .apply_turn_markers(
                 &run.id,
-                "progress\nCEZ:PR=500\nCEZ:TITLE=Implementing comment threads",
+                "progress\nDUCK:PR=500\nDUCK:TITLE=Implementing comment threads",
             )
             .unwrap();
         let marked = manager.get_run(&run.id).unwrap();
@@ -3642,7 +3642,7 @@ mod tests {
             )
             .unwrap();
         manager
-            .apply_turn_markers(&run.id, "CEZ:PR=501\nCEZ:TITLE=other title")
+            .apply_turn_markers(&run.id, "DUCK:PR=501\nDUCK:TITLE=other title")
             .unwrap();
         let user_owned = manager.get_run(&run.id).unwrap();
         assert_eq!(user_owned.title_summary.as_deref(), Some("My title"));
@@ -4023,7 +4023,7 @@ mod tests {
     fn runtime_applies_and_hides_turn_markers_before_publishing_text() {
         let dir = tempdir().unwrap();
         let (factory, _requests) = fake_factory(vec![SessionOutcome::Completed(SessionReport {
-            turn_text: "Implemented it.\nCEZ:PR=500\nCEZ:TITLE=Improve runtime".to_owned(),
+            turn_text: "Implemented it.\nDUCK:PR=500\nDUCK:TITLE=Improve runtime".to_owned(),
             ..SessionReport::default()
         })]);
         let mut manager = RunManager::with_session_factory(dir.path(), factory);
@@ -4100,10 +4100,10 @@ mod tests {
                     .field("toolCallId", "call-1")
                     .field("result", "ok")
                     .field("isError", false),
-                EventInput::new("text").field("text", "Done. CEZ:DONE"),
+                EventInput::new("text").field("text", "Done. DUCK:DONE"),
             ],
             outcome: Some(SessionOutcome::Completed(SessionReport {
-                turn_text: "Looking at the code…\nDone. CEZ:DONE".to_owned(),
+                turn_text: "Looking at the code…\nDone. DUCK:DONE".to_owned(),
                 ..SessionReport::default()
             })),
         }));
@@ -4121,7 +4121,7 @@ mod tests {
             .filter_map(|event| event.extra.get("text").and_then(Value::as_str))
             .collect();
         // Two live text chunks, each already marker-stripped by the sink — not one aggregated
-        // blob appended after the turn finished, and the trailing `CEZ:DONE` never appears.
+        // blob appended after the turn finished, and the trailing `DUCK:DONE` never appears.
         assert_eq!(text_events, ["Looking at the code…", "Done."]);
         let tool_call = events
             .iter()

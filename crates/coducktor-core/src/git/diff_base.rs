@@ -1,5 +1,5 @@
 //! "Which ref anchors *this task's* diff" — the single rule every task-diff surface
-//! resolves through (#751). Mirrors `packages/cezar/src/git-diff-base.ts`.
+//! resolves through (#751). Mirrors `packages/coducktor/src/git-diff-base.ts`.
 //!
 //! The normal answer is `merge-base(baseBranch, HEAD)`: it keeps a task's diff to the
 //! task's own commits even after the base branch moves on, and even after the task merges
@@ -9,7 +9,7 @@
 //!
 //! **A stale local base ref.** `RunRecord.baseBranch` is a NAME (`main`), resolved to a ref
 //! once, when the worktree was created. Nothing ever fast-forwards the user's local `main`
-//! — cezar's agents only ever `git fetch`, which moves `origin/main` — so on a repo the
+//! — coducktor's agents only ever `git fetch`, which moves `origin/main` — so on a repo the
 //! user does not pull, the local ref drifts arbitrarily far behind. The merge-base then
 //! collapses onto that stale tip and every upstream commit the task forked from or merged
 //! in counts as the task's own work. So the base is re-resolved to the freshest ref it
@@ -17,7 +17,7 @@
 //! `worktree::resolve_base_ref`, which does the same thing at worktree-creation time and
 //! cannot know what happens later.
 //!
-//! **A repointed HEAD.** cezar hands the agent a worktree on the task's own branch, but
+//! **A repointed HEAD.** coducktor hands the agent a worktree on the task's own branch, but
 //! nothing stops the agent from checking out another branch in it. The merge-base then
 //! silently redefines "this task's diff" as *the whole checked-out branch*. The honest
 //! anchor for a repointed HEAD is the branch as it stood **when this run first saw it** —
@@ -42,7 +42,7 @@ pub struct GitRunResult {
 /// caller like the future `server/git-changes.ts` port, an env override).
 pub type GitRunner<'a> = &'a dyn Fn(&[&str]) -> GitRunResult;
 
-/// The task branch cezar created vs. the branch HEAD actually sits on.
+/// The task branch coducktor created vs. the branch HEAD actually sits on.
 pub struct RepointedHead {
     pub head_branch: String,
     pub task_branch: String,

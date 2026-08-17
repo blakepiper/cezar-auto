@@ -85,8 +85,6 @@ pub struct Capabilities {
 #[serde(rename_all = "camelCase")]
 pub struct HealthResponse {
     pub version: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub latest_version: Option<String>,
     pub repo_root: String,
     pub repo: Option<RepoInfo>,
     pub checks: Vec<BackendCheck>,

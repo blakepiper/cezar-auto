@@ -1,6 +1,6 @@
 //! `AgentSession` over `opencode serve` — a headless HTTP server (the same one the opencode TUI
 //! talks to) with an SSE event stream. Ported from
-//! `packages/cezar/src/core/opencode-server-runner.ts`.
+//! `packages/coducktor/src/core/opencode-server-runner.ts`.
 //!
 //! Auth is the host's opencode config/logins. The agent runs autonomously (auto-approved
 //! permissions); OpenCode has no per-tool allowlist, so `spec.allowed_tools`/`bash_allowlist` are
@@ -76,7 +76,7 @@ static VARIANT_ERROR_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Where to find the opencode binary. Production wiring resolves `program`/`prefix_args` from
-/// `CEZ_OPENCODE_BIN` (`coducktor-server`'s job, not this crate's); tests point `program` at
+/// `DUCK_OPENCODE_BIN` (`coducktor-server`'s job, not this crate's); tests point `program` at
 /// `node` with `prefix_args: vec![mock_script_path]`.
 #[derive(Debug, Clone)]
 pub struct OpencodeSpawnConfig {

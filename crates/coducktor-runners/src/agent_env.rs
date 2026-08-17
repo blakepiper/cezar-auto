@@ -1,16 +1,16 @@
 //! Least-privilege environment for spawned agent backends (#427). Ported from
-//! `packages/cezar/src/core/agent-env.ts`.
+//! `packages/coducktor/src/core/agent-env.ts`.
 //!
 //! Every backend used to inherit the FULL parent environment, handing `GITHUB_TOKEN`,
 //! `ANTHROPIC_API_KEY`, `AWS_*` and any other host secret to a process an attacker-controlled
 //! prompt can drive. Instead [`build_child_env`] builds an explicit, curated child env: a base
 //! allowlist of the non-secret vars a shell / dev toolchain genuinely needs, plus the specific
-//! auth vars the chosen backend requires, plus coducktor's own `CEZ_*` namespace and the per-run
+//! auth vars the chosen backend requires, plus coducktor's own `DUCK_*` namespace and the per-run
 //! `extra_env`. Everything else — notably arbitrary secrets — is dropped by default.
 //!
 //! Zero-config: the safe env is the default and needs no configuration. Two opt-in escape
-//! hatches (both read from the host env, both off by default): `CEZ_ENV_PASSTHROUGH=A,B,C`
-//! forwards those extra named vars; `CEZ_AGENT_ENV_FULL=1` restores the legacy full-env
+//! hatches (both read from the host env, both off by default): `DUCK_ENV_PASSTHROUGH=A,B,C`
+//! forwards those extra named vars; `DUCK_AGENT_ENV_FULL=1` restores the legacy full-env
 //! behavior.
 
 use std::collections::{BTreeMap, HashSet};
@@ -19,7 +19,7 @@ use std::sync::LazyLock;
 use coducktor_contract::Runner;
 use regex::Regex;
 
-/// Mirrors `packages/cezar/src/core/secret-redaction.ts`'s `SECRET_NAME_RE` — the single source
+/// Mirrors `packages/coducktor/src/core/secret-redaction.ts`'s `SECRET_NAME_RE` — the single source
 /// of truth for "is this env var name a credential?". Duplicated here (rather than depending on
 /// a ported `secret-redaction` module) because nothing in this crate needs that module's other
 /// job — scrubbing secret VALUES out of persisted transcript text; only the name pattern is
@@ -279,7 +279,7 @@ fn is_truthy(value: Option<&str>) -> bool {
 
 pub struct BuildChildEnvOptions<'a> {
     pub backend: Runner,
-    /// Per-run env (`CEZ_HANDOFF_FILE` etc.) — always applied, wins over the host.
+    /// Per-run env (`DUCK_HANDOFF_FILE` etc.) — always applied, wins over the host.
     pub extra_env: &'a BTreeMap<String, String>,
     pub source: &'a BTreeMap<String, String>,
 }
@@ -294,7 +294,7 @@ pub fn build_child_env(opts: BuildChildEnvOptions<'_>) -> BTreeMap<String, Strin
     let extra = opts.extra_env;
     let overridden: HashSet<String> = extra.keys().map(|key| key.to_uppercase()).collect();
 
-    if is_truthy(read_var(source, "CEZ_AGENT_ENV_FULL")) {
+    if is_truthy(read_var(source, "DUCK_AGENT_ENV_FULL")) {
         let mut full: BTreeMap<String, String> = source
             .iter()
             .filter(|(key, _)| !overridden.contains(&key.to_uppercase()))
@@ -307,7 +307,7 @@ pub fn build_child_env(opts: BuildChildEnvOptions<'_>) -> BTreeMap<String, Strin
     }
 
     let backend_prefixes = backend_allow_prefixes(opts.backend);
-    let passthrough: HashSet<String> = read_var(source, "CEZ_ENV_PASSTHROUGH")
+    let passthrough: HashSet<String> = read_var(source, "DUCK_ENV_PASSTHROUGH")
         .unwrap_or("")
         .split(',')
         .map(str::trim)
@@ -330,7 +330,7 @@ pub fn build_child_env(opts: BuildChildEnvOptions<'_>) -> BTreeMap<String, Strin
 
     let allow = |name: &str| -> bool {
         let key = name.to_uppercase();
-        if key.starts_with("CEZ_") {
+        if key.starts_with("DUCK_") {
             return true;
         }
         if GH_ALLOW_NAMES.contains(&key) {
@@ -473,20 +473,20 @@ mod tests {
     }
 
     #[test]
-    fn keeps_github_token_and_the_cez_namespace() {
+    fn keeps_github_token_and_the_duck_namespace() {
         let mut src = host();
         src.insert("GITHUB_TOKEN".to_owned(), "gho_token".to_owned());
-        src.insert("CEZ_DRY_RUN".to_owned(), "1".to_owned());
-        src.insert("CEZ_MOCK_ARGS_FILE".to_owned(), "/tmp/args".to_owned());
+        src.insert("DUCK_DRY_RUN".to_owned(), "1".to_owned());
+        src.insert("DUCK_MOCK_ARGS_FILE".to_owned(), "/tmp/args".to_owned());
 
         let env = build(Runner::Claude, &src);
         assert_eq!(
             env.get("GITHUB_TOKEN").map(String::as_str),
             Some("gho_token")
         );
-        assert_eq!(env.get("CEZ_DRY_RUN").map(String::as_str), Some("1"));
+        assert_eq!(env.get("DUCK_DRY_RUN").map(String::as_str), Some("1"));
         assert_eq!(
-            env.get("CEZ_MOCK_ARGS_FILE").map(String::as_str),
+            env.get("DUCK_MOCK_ARGS_FILE").map(String::as_str),
             Some("/tmp/args")
         );
     }
@@ -495,10 +495,10 @@ mod tests {
     fn applies_extra_env_last_so_per_run_vars_win() {
         let mut src = host();
         src.insert("PATH".to_owned(), "/host".to_owned());
-        let extra = map(&[("CEZ_HANDOFF_FILE", "/runs/x.md"), ("PATH", "/override")]);
+        let extra = map(&[("DUCK_HANDOFF_FILE", "/runs/x.md"), ("PATH", "/override")]);
         let env = build_with_extra(Runner::Claude, &src, &extra);
         assert_eq!(
-            env.get("CEZ_HANDOFF_FILE").map(String::as_str),
+            env.get("DUCK_HANDOFF_FILE").map(String::as_str),
             Some("/runs/x.md")
         );
         assert_eq!(env.get("PATH").map(String::as_str), Some("/override"));
@@ -554,7 +554,7 @@ mod tests {
     #[test]
     fn the_escape_hatch_does_not_resurrect_the_host_value_either() {
         let mut src = host();
-        src.insert("CEZ_AGENT_ENV_FULL".to_owned(), "1".to_owned());
+        src.insert("DUCK_AGENT_ENV_FULL".to_owned(), "1".to_owned());
         src.insert("Temp".to_owned(), "C:\\Windows\\Temp".to_owned());
         let extra = map(&[("TEMP", "D:\\run-1")]);
         let env = build_with_extra(Runner::Claude, &src, &extra);
@@ -567,7 +567,7 @@ mod tests {
         let mut src = host();
         src.insert("MY_TOOLCHAIN_DIR".to_owned(), "/opt/tc".to_owned());
         src.insert(
-            "CEZ_ENV_PASSTHROUGH".to_owned(),
+            "DUCK_ENV_PASSTHROUGH".to_owned(),
             "MY_TOOLCHAIN_DIR".to_owned(),
         );
         let env = build(Runner::Claude, &src);
@@ -581,7 +581,7 @@ mod tests {
     fn opt_in_full_inheritance_restores_the_legacy_escape_hatch() {
         for value in ["1", "true", "yes"] {
             let mut src = host();
-            src.insert("CEZ_AGENT_ENV_FULL".to_owned(), value.to_owned());
+            src.insert("DUCK_AGENT_ENV_FULL".to_owned(), value.to_owned());
             let env = build(Runner::Claude, &src);
             assert_eq!(
                 env.get("AWS_SECRET_ACCESS_KEY"),
@@ -591,7 +591,7 @@ mod tests {
         }
         for value in ["0", "false", ""] {
             let mut src = host();
-            src.insert("CEZ_AGENT_ENV_FULL".to_owned(), value.to_owned());
+            src.insert("DUCK_AGENT_ENV_FULL".to_owned(), value.to_owned());
             let env = build(Runner::Claude, &src);
             assert!(
                 !env.contains_key("AWS_SECRET_ACCESS_KEY"),
@@ -649,7 +649,7 @@ mod tests {
         let win = map(&[
             ("Path", "C:\\Windows\\system32"),
             ("http_proxy", "http://p:3128"),
-            ("CEZ_ENV_PASSTHROUGH", "my_tool_dir"),
+            ("DUCK_ENV_PASSTHROUGH", "my_tool_dir"),
             ("my_tool_dir", "C:\\tc"),
         ]);
         let env = build(Runner::Claude, &win);
@@ -804,7 +804,7 @@ mod tests {
     fn per_run_account_wins_under_the_full_inheritance_hatch_too() {
         let src = map(&[
             ("PATH", "/usr/bin"),
-            ("CEZ_AGENT_ENV_FULL", "1"),
+            ("DUCK_AGENT_ENV_FULL", "1"),
             ("CLAUDE_CONFIG_DIR", "/home/u/.claude"),
         ]);
         let extra = map(&[("CLAUDE_CONFIG_DIR", "/home/u/.claude-klaudiusz")]);

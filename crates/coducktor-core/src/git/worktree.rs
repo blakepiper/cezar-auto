@@ -1,10 +1,10 @@
-//! Git worktree per task (spec 006). Mirrors `packages/cezar/src/git-worktree.ts`. Each run
+//! Git worktree per task (spec 006). Mirrors `packages/coducktor/src/git-worktree.ts`. Each run
 //! gets its own branch `duck/<id8>` checked out into `.ai/coducktor/worktrees/<runId>` so
 //! agents never touch the user's working tree. Everything degrades: helpers never fail
 //! except [`create_worktree`], whose failure the caller turns into a note.
 //!
-//! Task branches that predate the rename are `cez/<id8>` (dual-read shim, spec §2.2.2): the
-//! WRITER here only ever emits `duck/` — recognizing the old `cez/` prefix when reading a
+//! Task branches that predate the rename are `duck/<id8>` (dual-read shim, spec §2.2.2): the
+//! WRITER here only ever emits `duck/` — recognizing the old `duck/` prefix when reading a
 //! branch name back is a concern for whatever surface does that reading, not this module.
 
 use std::collections::HashSet;
@@ -315,7 +315,7 @@ pub fn remove_worktree(repo_root: &Path, worktree_path: &Path, branch: Option<&s
     }
 }
 
-/// Why an autosave commit happened. Only `Periodic` is gated (behind `CEZ_AUTOSAVE=1`,
+/// Why an autosave commit happened. Only `Periodic` is gated (behind `DUCK_AUTOSAVE=1`,
 /// #471) — the other three flushes always run so the branch ends holding the finished
 /// state. The message carries the reason so the opt-in periodic timer and the always-on
 /// flushes are distinguishable in `git log`.
@@ -489,7 +489,7 @@ fn git_has_identity(dir: &Path) -> bool {
     name.ok && !name.stdout.trim().is_empty() && email.ok && !email.stdout.trim().is_empty()
 }
 
-/// Stage and commit everything in the worktree as a "cezar autosave" commit (janitor
+/// Stage and commit everything in the worktree as a "coducktor autosave" commit (janitor
 /// pattern) — the agent's progress is always recoverable from the `duck/<id8>` branch
 /// history. Quietly a no-op when nothing changed.
 ///
@@ -505,7 +505,7 @@ pub fn autosave_commit(dir: &Path, reason: AutosaveReason) -> AutosaveResult {
         // build. For the periodic and turn-end flushes the next one picks the work up once
         // the merge resolves; the pre-PR flush has no next one.
         eprintln!(
-            "[cezar] skipping {} autosave in {}: {unresolved}",
+            "[coducktor] skipping {} autosave in {}: {unresolved}",
             reason.label(),
             dir.display()
         );
@@ -516,7 +516,7 @@ pub fn autosave_commit(dir: &Path, reason: AutosaveReason) -> AutosaveResult {
     // are attributed to the real author. Fall back to a fixed identity ONLY when the
     // machine has none configured — otherwise `git commit` would fail and the autosave (the
     // run's recovery point) would be lost.
-    let message = format!("cezar autosave ({})", reason.label());
+    let message = format!("coducktor autosave ({})", reason.label());
     let commit = if git_has_identity(dir) {
         run_git(dir, &["commit", "--no-verify", "-m", &message])
     } else {
@@ -524,9 +524,9 @@ pub fn autosave_commit(dir: &Path, reason: AutosaveReason) -> AutosaveResult {
             dir,
             &[
                 "-c",
-                "user.name=cezar",
+                "user.name=coducktor",
                 "-c",
-                "user.email=cezar@local",
+                "user.email=coducktor@local",
                 "commit",
                 "--no-verify",
                 "-m",
@@ -896,7 +896,7 @@ mod tests {
             AutosaveResult::Committed
         );
         let log = run_git(repo.path(), &["log", "-1", "--pretty=%s"]);
-        assert_eq!(log.stdout.trim(), "cezar autosave (turn end)");
+        assert_eq!(log.stdout.trim(), "coducktor autosave (turn end)");
     }
 
     #[test]

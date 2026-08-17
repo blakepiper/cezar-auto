@@ -621,7 +621,7 @@ pub struct PatchRunInput {
     pub task: Option<String>,
 }
 
-/// Mirrors `continueSchema` in `packages/cezar/src/server/server.ts` (§8.4 "Continue").
+/// Mirrors `continueSchema` in `packages/coducktor/src/server/server.ts` (§8.4 "Continue").
 /// Every field optional: an empty body reopens the last session on the run's own
 /// backend, exactly as `POST /runs/:id/continue` with no body does today.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -636,7 +636,7 @@ pub struct ContinueInput {
     pub model: Option<String>,
 }
 
-/// Mirrors `openInSchema` in `packages/cezar/src/server/server.ts`.
+/// Mirrors `openInSchema` in `packages/coducktor/src/server/server.ts`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenInInput {
     pub target: String,
@@ -644,13 +644,13 @@ pub struct OpenInInput {
     pub path: Option<String>,
 }
 
-/// Mirrors `gitCommitSchema` in `packages/cezar/src/server/server.ts`.
+/// Mirrors `gitCommitSchema` in `packages/coducktor/src/server/server.ts`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitCommitInput {
     pub message: String,
 }
 
-/// Mirrors `queuedMessagePatchSchema` in `packages/cezar/src/server/server.ts`. PATCH
+/// Mirrors `queuedMessagePatchSchema` in `packages/coducktor/src/server/server.ts`. PATCH
 /// semantics: an omitted field keeps its current value — the cockpit edits text
 /// without re-uploading existing attachments.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

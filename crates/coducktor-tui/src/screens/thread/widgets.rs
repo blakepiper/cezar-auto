@@ -494,7 +494,7 @@ fn collect_subagents(state: &ThreadState) -> Vec<coducktor_protocol::UiToolItem>
     out
 }
 
-/// The AskUser card: the agent asked one or more structured questions via `CEZ:ASK`.
+/// The AskUser card: the agent asked one or more structured questions via `DUCK:ASK`.
 pub fn render_ask_card(
     frame: &mut Frame<'_>,
     area: Rect,

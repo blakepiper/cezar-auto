@@ -1,5 +1,5 @@
 //! `AgentSession` over the Claude Code CLI in headless stream-json mode. Ported from
-//! `packages/cezar/src/core/claude-cli-runner.ts`. Auth is the host's logged-in Pro/Max
+//! `packages/coducktor/src/core/claude-cli-runner.ts`. Auth is the host's logged-in Pro/Max
 //! subscription (no API key needed). Sandboxing is `--allowedTools` (default-deny for anything
 //! not listed) + running inside the repo `cwd`; `Bash` is narrowed to `Bash(<prefix>:*)`
 //! patterns only when `bash_allowlist` is set.
@@ -27,7 +27,7 @@
 //! exited?" directly — so the workaround the TS pair exists for does not apply to this concrete
 //! type; `ChildProcess` polls `try_wait()` inline instead.
 //!
-//! For the same reason, `isSignalTerminationExit`/`terminatedByCezar`/
+//! For the same reason, `isSignalTerminationExit`/`terminatedByCoducktor`/
 //! `normalizeIntentionalTeardownResult` are not ported here either. In `claude-cli-runner.ts`
 //! those exist to resolve an AMBIGUITY: the EOF watchdog, wall-clock timeout, and the ongoing
 //! stdout read loop are three independent callbacks racing on the same event loop, so by the
@@ -67,7 +67,7 @@ pub const EOF_KILL_GRACE_MS: u64 = 4_000;
 /// Build the headless argv. `--input-format stream-json` reads user messages from stdin;
 /// `--output-format stream-json --verbose` gives per-event NDJSON; `--permission-mode dontAsk`
 /// keeps headless runs non-interactive: tools in `--allowedTools` proceed and everything else is
-/// denied instead of prompting. `CEZ_APPROVAL_GATE=1` opts back into Claude's approval UI.
+/// denied instead of prompting. `DUCK_APPROVAL_GATE=1` opts back into Claude's approval UI.
 pub fn build_claude_args(spec: &AgentRunSpec, env: &BTreeMap<String, String>) -> Vec<String> {
     let mut args = vec![
         "--input-format".to_owned(),
@@ -76,7 +76,7 @@ pub fn build_claude_args(spec: &AgentRunSpec, env: &BTreeMap<String, String>) ->
         "stream-json".to_owned(),
         "--verbose".to_owned(),
         "--permission-mode".to_owned(),
-        if env.get("CEZ_APPROVAL_GATE").map(String::as_str) == Some("1") {
+        if env.get("DUCK_APPROVAL_GATE").map(String::as_str) == Some("1") {
             "acceptEdits".to_owned()
         } else {
             "dontAsk".to_owned()
@@ -141,7 +141,7 @@ pub fn build_allowed_tools(allowed_tools: &[String], bash_allowlist: &[String]) 
 }
 
 /// Where to find the claude binary. Production wiring resolves `program`/`prefix_args` from
-/// `CEZ_CLAUDE_BIN`/`CEZ_DRY_RUN` (that resolution is `coducktor-server`'s job, not this crate's
+/// `DUCK_CLAUDE_BIN`/`DUCK_DRY_RUN` (that resolution is `coducktor-server`'s job, not this crate's
 /// — it is the same "injected by the integration layer" seam `SessionFactory` already is); tests
 /// point `program` at `node` with `prefix_args: vec![mock_script_path]`.
 #[derive(Debug, Clone)]
@@ -508,7 +508,7 @@ impl ClaudeSession {
 
         // stdout closed without a `result` frame — the process exited (or crashed) mid-turn.
         // No signal-termination bookkeeping to consult here: see the module doc's note on why
-        // `terminatedByCezar` has no Rust counterpart in this turn-scoped session.
+        // `terminatedByCoducktor` has no Rust counterpart in this turn-scoped session.
         let exit_code = self.process.wait_for_exit();
         if let Some(code) = exit_code
             && code != 0
@@ -672,7 +672,7 @@ mod tests {
             ..Default::default()
         };
         let mut env = BTreeMap::new();
-        env.insert("CEZ_APPROVAL_GATE".to_owned(), "1".to_owned());
+        env.insert("DUCK_APPROVAL_GATE".to_owned(), "1".to_owned());
         let args = build_claude_args(&spec, &env);
         let idx = args
             .iter()
@@ -742,7 +742,7 @@ mod tests {
         assert!(event_types.contains(&"token-usage"));
         assert!(event_types.contains(&"turn-end"));
 
-        // No CEZ:DONE in the prompt — the mock's first-turn reply just asks a follow-up
+        // No DUCK:DONE in the prompt — the mock's first-turn reply just asks a follow-up
         // question, so the turn parks as Waiting rather than completing the step.
         match outcome {
             SessionOutcome::Waiting(report) => {

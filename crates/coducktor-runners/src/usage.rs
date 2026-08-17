@@ -1,4 +1,4 @@
-//! Ported from `packages/cezar/src/core/usage.ts`.
+//! Ported from `packages/coducktor/src/core/usage.ts`.
 
 /// Anthropic bills cache-read input at ~10% of standard input cost and cache creation at ~125%.
 /// Weighting raw counts by these keeps the token number shown to the user roughly proportional

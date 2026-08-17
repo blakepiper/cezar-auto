@@ -1,5 +1,27 @@
 # Unreleased
 
+### ⚠️ Breaking changes — Rust terminal cutover
+
+- **The npm distribution is gone.** `npx` and global npm installation no longer provide the
+  cockpit; install from a checkout with `./install.sh` or `cargo install --path crates/coducktor-tui`.
+- **The browser cockpit and its page URLs are gone.** Coducktor now runs as the local terminal
+  binary; there is no browser shell or static asset server to open.
+- **The browser handoff capability is gone.** The bookmarklet, launch-key endpoint and
+  cross-origin health discovery no longer exist; start work from the terminal's project and
+  GitHub screens instead.
+- **Server-only CLI controls are gone.** Port selection, `serve`, `--no-open`, remote hosting,
+  authentication tokens for a remote server, and the service supervisor were removed because
+  the binary opens no listener.
+- **Hosted-deployment and network-mutation features are gone.** Remote skill repositories and
+  automatic skill mutation, GitHub automations, browser filesystem browsing, hosted
+  single-project restrictions, and browser spend-hiding settings were removed. Local skill
+  discovery, cloning a project from GitHub, and the interactive GitHub surface remain.
+- **The HTTP API is gone at the Phase C boundary.** The in-process engine is the only runtime
+  boundary; API clients must use the terminal application or the Rust engine seam.
+- **The environment namespace changed.** New overrides use `DUCK_*`; old marker text and task
+  branches remain readable through the permanent compatibility shims, and old state directories
+  migrate automatically on startup.
+
 ### 🐛 Fixes
 - 🐛 **The settings gear and the theme toggle stay inside the sidebar on a nightly build.** A
   nightly's version is long — `v0.9.2-nightly.20260813.1`, where a release is `v0.9.2` — and the

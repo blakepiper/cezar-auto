@@ -370,8 +370,6 @@ pub struct UiState {
     pub appearance: Option<Appearance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_templates: Option<Vec<PromptTemplate>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dismissed_skills_banner: Option<bool>,
     #[serde(flatten, default)]
     pub extra: ExtraFields,
 }
@@ -451,8 +449,6 @@ pub struct WorkspaceUiState {
     pub task_table: Option<TaskTableUiState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_location: Option<WorkspaceLastLocation>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub imported_skills: Option<Vec<String>>,
     #[serde(flatten, default)]
     pub extra: ExtraFields,
 }
@@ -514,55 +510,6 @@ pub struct SetConfigInput {
     pub live_title_updates: Option<Option<bool>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_gate: Option<Option<bool>>,
-}
-
-/// Mirrors `packages/contract/src/workspace.ts::SkillsUpdateStatus`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SkillsUpdateStatus {
-    Idle,
-    Checking,
-    Available,
-    Updating,
-    Current,
-    Unavailable,
-    Error,
-}
-
-/// Mirrors `packages/contract/src/workspace.ts::SkillsUpdateScopeState`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillsUpdateScopeState {
-    pub scope: SkillsUpdateScope,
-    pub status: SkillsUpdateStatus,
-    pub available: bool,
-    pub skills: Vec<String>,
-    pub checked_at: Option<String>,
-    pub updated_at: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-}
-
-/// Skills update scope from `packages/contract/src/workspace.ts`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SkillsUpdateScope {
-    Project,
-    Global,
-}
-
-/// Mirrors `packages/contract/src/workspace.ts::SkillsUpdateState`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillsUpdateState {
-    pub status: SkillsUpdateStatus,
-    pub available: bool,
-    pub auto_update_enabled: bool,
-    pub inherited: bool,
-    pub checked_at: Option<String>,
-    pub updated_at: Option<String>,
-    pub scopes: Vec<SkillsUpdateScopeState>,
-    pub needs_upgrade_notes: bool,
 }
 
 /// The provider id alias from `packages/contract/src/workspace.ts`.

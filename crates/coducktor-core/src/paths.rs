@@ -1,4 +1,4 @@
-//! Mirrors `packages/cezar/src/paths.ts` (deleted at B12). Every path the workspace layer
+//! Mirrors `packages/coducktor/src/paths.ts` (deleted at B12). Every path the workspace layer
 //! touches goes through here so `DUCK_HOME` (see [`coducktor_home_dir`]) is resolved in
 //! exactly one place — do not re-derive `home_dir()` elsewhere.
 
@@ -40,16 +40,16 @@ pub fn real_home_dir(env: &dyn EnvSource) -> PathBuf {
 }
 
 /// Per-user coducktor home. Literal `~/.coducktor` on every platform — no XDG, no
-/// `%LOCALAPPDATA%` branch, mirroring `paths.ts::cezarHomeDir`'s one rule.
+/// `%LOCALAPPDATA%` branch, mirroring `paths.ts::coducktorHomeDir`'s one rule.
 ///
 /// `DUCK_HOME` (spec §2.2.1 decision 6) wins if set, else the real home directory. An
 /// **empty** override falls back rather than resolving to a relative cwd path, matching the
-/// TS `env.CEZ_HOME || undefined` guard's own empty-string handling.
+/// TS `env.DUCK_HOME || undefined` guard's own empty-string handling.
 ///
-/// B12 dropped the `CEZ_HOME` dual-read this function carried through the whole of Phase B —
-/// it existed only so the still-live Node server (`packages/cezar`, which read `CEZ_HOME`
+/// B12 dropped the `DUCK_HOME` dual-read this function carried through the whole of Phase B —
+/// it existed only so the still-live Node server (`packages/coducktor`, which read `DUCK_HOME`
 /// and nothing else) and this crate resolved the SAME `~/.coducktor` while both implementations
-/// coexisted. `packages/cezar` is deleted now, so there is no second reader left to stay in
+/// coexisted. `packages/coducktor` is deleted now, so there is no second reader left to stay in
 /// sync with.
 pub fn coducktor_home_dir(env: &dyn EnvSource) -> PathBuf {
     if let Some(duck_home) = non_empty(env.get("DUCK_HOME")) {

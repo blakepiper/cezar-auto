@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 
 use coducktor_client::{Engine, EngineEvent, InProcessEngine, Scope, Topic};
 use coducktor_contract::{ApiRun, BackendCheckName, TaskSource};
+use coducktor_core::paths::ProcessEnv;
+use coducktor_core::workspace::migrations::run_migrations;
 use crossterm::event::{self, Event, MouseEventKind};
 use futures_util::StreamExt;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
@@ -33,12 +35,15 @@ async fn main() -> io::Result<()> {
         eprintln!("coducktor: --repo {} is not a directory", repo.display());
         std::process::exit(2);
     }
+    let repo_root = headless::resolve_repo_root(cli.repo.as_deref());
+    for message in run_migrations(Some(&repo_root), &ProcessEnv).messages {
+        eprintln!("coducktor: {message}");
+    }
     // The non-interactive subcommands (B10) never open the alternate screen — they run
     // straight in the caller's terminal, print to real stdout/stderr, and exit. Only
     // `None`/`Tui` fall through to the interactive cockpit below.
     match &cli.command {
         Some(Command::Run { task }) => {
-            let repo_root = headless::resolve_repo_root(cli.repo.as_deref());
             let code = headless::run_command(
                 repo_root,
                 task.join(" "),
@@ -49,7 +54,6 @@ async fn main() -> io::Result<()> {
             std::process::exit(code);
         }
         Some(Command::Init) => {
-            let repo_root = headless::resolve_repo_root(cli.repo.as_deref());
             headless::init_command(&repo_root);
             return Ok(());
         }
@@ -57,11 +61,9 @@ async fn main() -> io::Result<()> {
             std::process::exit(headless::usage_command());
         }
         Some(Command::Doctor { json }) => {
-            let repo_root = headless::resolve_repo_root(cli.repo.as_deref());
             std::process::exit(headless::doctor_command(repo_root, *json).await);
         }
         Some(Command::Projects { action }) => {
-            let repo_root = headless::resolve_repo_root(cli.repo.as_deref());
             std::process::exit(headless::projects_command(&repo_root, action.clone()));
         }
         None | Some(Command::Tui) => {}
@@ -71,11 +73,8 @@ async fn main() -> io::Result<()> {
     let user_keymap = Keymap::default_path();
     let keymap = Keymap::load(user_keymap.as_deref()).unwrap_or_default();
     let mut app = App::new("main", Theme::detect(), keymap);
-    let repo_root = headless::resolve_repo_root(cli.repo.as_deref());
     let engine: Arc<dyn Engine> =
         Arc::new(InProcessEngine::new(repo_root, env!("CARGO_PKG_VERSION")));
-    prime_app(&mut app, engine.as_ref()).await;
-    apply_launch_args(engine.as_ref(), &mut app, &cli).await;
     let mut workspace_listener =
         open_workspace_listener(engine.clone(), app.current_project().to_owned()).await;
     let run_result = run(
@@ -83,6 +82,7 @@ async fn main() -> io::Result<()> {
         &mut app,
         engine,
         workspace_listener.as_mut().map(|(_, receiver)| receiver),
+        &cli,
     )
     .await;
     if let Some((handle, _)) = workspace_listener {
@@ -107,17 +107,75 @@ fn parse_workspace_event(event: EngineEvent, project: &str) -> Option<WorkspaceE
     })
 }
 
-async fn prime_app(app: &mut App, engine: &dyn Engine) {
-    if let Ok(health) = engine.health().await {
-        // Adopt the boot project the service actually knows about — the TUI's
-        // "main" default is only a placeholder until the health answer arrives.
+struct PrimeSnapshot {
+    health: Option<coducktor_contract::HealthResponse>,
+    runs: Option<Vec<ApiRun>>,
+    projects: Option<coducktor_contract::ProjectsResponse>,
+    index: Option<coducktor_contract::RunsIndexResponse>,
+    workspace_ui_state: Option<coducktor_contract::WorkspaceUiState>,
+    new_task: PrimeNewTaskSnapshot,
+}
+
+struct PrimeNewTaskSnapshot {
+    config: Option<coducktor_contract::ConfigResponse>,
+    skills: Option<Vec<coducktor_contract::Skill>>,
+    workflows: Option<coducktor_contract::WorkflowsResponse>,
+    workspace_config: Option<coducktor_contract::WorkspaceConfigResponse>,
+    provider_status: Option<coducktor_contract::ProviderStatusResponse>,
+    agent_profiles: Option<coducktor_contract::AgentProfilesResponse>,
+    ui_state: Option<coducktor_contract::UiState>,
+}
+
+/// Load the data that makes the first screen useful without holding up the first frame. The
+/// in-process engine is deliberately retained as the only seam; this task only moves its file
+/// and git reads behind the TUI event loop.
+fn spawn_prime(engine: Arc<dyn Engine>) -> (JoinHandle<()>, UnboundedReceiver<PrimeSnapshot>) {
+    let (sender, receiver) = unbounded_channel();
+    let handle = tokio::spawn(async move {
+        let health = engine.health().await.ok();
+        let project = health
+            .as_ref()
+            .filter(|health| !health.boot_project.is_empty())
+            .map(|health| health.boot_project.clone())
+            .unwrap_or_else(|| "main".to_owned());
+        let scope = Scope::Project(project);
+
+        let runs = engine.list_runs(&scope).await.ok();
+        let projects = engine.projects().await.ok();
+        let index = engine.runs_index().await.ok();
+        let workspace_ui_state = engine.workspace_ui_state().await.ok();
+        let new_task = PrimeNewTaskSnapshot {
+            config: engine.config(&scope).await.ok(),
+            skills: engine.skills(&scope).await.ok(),
+            workflows: engine.workflows(&scope).await.ok(),
+            workspace_config: engine.workspace_config().await.ok(),
+            provider_status: engine.provider_status().await.ok(),
+            agent_profiles: engine.agent_profiles().await.ok(),
+            ui_state: engine.ui_state(&scope).await.ok(),
+        };
+        let _ = sender.send(PrimeSnapshot {
+            health,
+            runs,
+            projects,
+            index,
+            workspace_ui_state,
+            new_task,
+        });
+    });
+    (handle, receiver)
+}
+
+fn apply_prime_snapshot(app: &mut App, snapshot: PrimeSnapshot) {
+    if let Some(health) = snapshot.health {
+        // Adopt the boot project the engine actually knows about — the TUI's "main" default is
+        // only a placeholder until the health answer arrives.
         if !health.boot_project.is_empty()
             && app.projects.iter().all(|p| p.id != health.boot_project)
         {
             app.history.navigate(app::Route::Tasks {
                 project: health.boot_project.clone(),
             });
-            app.default_project = health.boot_project.clone();
+            app.default_project = health.boot_project;
         }
         app.set_projects(
             health
@@ -131,10 +189,10 @@ async fn prime_app(app: &mut App, engine: &dyn Engine) {
                 .into_iter()
                 .map(|check| (backend_check_name(check.name), check.available)),
         );
-        app.new_task_ui.data.repo = health.repo.clone();
+        app.new_task_ui.data.repo = health.repo;
     }
-    let project = app.current_project().to_owned();
-    if let Ok(runs) = engine.list_runs(&Scope::Project(project.clone())).await {
+    if let Some(runs) = snapshot.runs {
+        let project = app.current_project().to_owned();
         app.set_tasks(runs);
         app.set_quick_tasks(
             app.tasks
@@ -143,24 +201,44 @@ async fn prime_app(app: &mut App, engine: &dyn Engine) {
                 .collect::<Vec<_>>(),
         );
     }
-    if let Ok(projects) = engine.projects().await {
+    if let Some(projects) = snapshot.projects {
         app.set_project_registry(projects.projects);
     }
-    if let Ok(index) = engine.runs_index().await {
+    if let Some(index) = snapshot.index {
         app.set_global_index(index);
     }
-    if let Ok(state) = engine.workspace_ui_state().await {
+    if let Some(state) = snapshot.workspace_ui_state {
         app.notifications_enabled = state
             .notifications
             .as_ref()
             .and_then(|notifications| notifications.enabled)
             .unwrap_or(false);
     }
-    let project = app.current_project().to_owned();
-    refresh_new_task(engine, app, &project).await;
+    let new_task = snapshot.new_task;
+    if let Some(config) = new_task.config {
+        app.new_task_ui.data.config = Some(new_task_form::ComposerConfig::from_config(&config));
+    }
+    if let Some(skills) = new_task.skills {
+        app.new_task_ui.data.skills = skills;
+    }
+    if let Some(workflows) = new_task.workflows {
+        app.new_task_ui.data.workflows = workflows.workflows;
+    }
+    if let Some(workspace_config) = new_task.workspace_config {
+        app.new_task_ui.data.workspace_config = Some(workspace_config);
+    }
+    if let Some(provider_status) = new_task.provider_status {
+        app.new_task_ui.data.provider_status = Some(provider_status);
+    }
+    if let Some(agent_profiles) = new_task.agent_profiles {
+        app.new_task_ui.data.agent_profiles = Some(agent_profiles);
+    }
+    if let Some(ui_state) = new_task.ui_state {
+        app.new_task_ui.data.ui_state = Some(ui_state);
+    }
 }
 
-/// Apply `--repo`/`--workflow`/`--model` (spec §10 A13) once `prime_app` has loaded
+/// Apply `--repo`/`--workflow`/`--model` (spec §10 A13) once the background bootstrap has loaded
 /// the project registry. `--repo` switches the active project — re-fetching its
 /// tasks and New Task data if it differs from the one `prime_app` already loaded —
 /// or leaves a clear notice if the directory isn't a registered project rather than
@@ -1144,13 +1222,36 @@ async fn run(
     app: &mut App,
     engine: Arc<dyn Engine>,
     workspace_events: Option<&mut UnboundedReceiver<WorkspaceEvent>>,
+    cli: &Cli,
 ) -> io::Result<()> {
     let mut workspace_events = workspace_events;
     let mut thread_listener: Option<ThreadListener> = None;
+    let mut bootstrap: Option<(JoinHandle<()>, UnboundedReceiver<PrimeSnapshot>)> = None;
     let mut last_needs_you = usize::MAX;
+    let mut bootstrap_applied = false;
+    let mut launch_args_applied =
+        cli.repo.is_none() && cli.workflow.is_none() && cli.model.is_none();
     while !app.should_quit() {
         let frame_started = Instant::now();
         app.now_epoch = current_epoch_seconds();
+        if let Some((_, receiver)) = bootstrap.as_mut()
+            && !bootstrap_applied
+        {
+            match receiver.try_recv() {
+                Ok(snapshot) => {
+                    apply_prime_snapshot(app, snapshot);
+                    bootstrap_applied = true;
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    bootstrap_applied = true;
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+            }
+        }
+        if bootstrap_applied && !launch_args_applied {
+            apply_launch_args(engine.as_ref(), app, cli).await;
+            launch_args_applied = true;
+        }
         let mut pending_mouse = None;
         while event::poll(Duration::ZERO)? {
             match event::read()? {
@@ -1225,6 +1326,9 @@ async fn run(
             }
         }
         terminal.draw(|frame| app.render(frame))?;
+        if bootstrap.is_none() && !app.should_quit() {
+            bootstrap = Some(spawn_prime(engine.clone()));
+        }
 
         let remaining = FRAME_BUDGET.saturating_sub(frame_started.elapsed());
         if !remaining.is_zero() {
@@ -1233,6 +1337,9 @@ async fn run(
     }
     if let Some(listener) = thread_listener {
         listener.handle.abort();
+    }
+    if let Some((handle, _)) = bootstrap {
+        handle.abort();
     }
 
     Ok(())
@@ -1306,7 +1413,7 @@ fn current_epoch_seconds() -> i64 {
 
 /// Suspend the TUI (raw mode + alternate screen off), run `$VISUAL`/`$EDITOR`/`vi` on the
 /// file in the real terminal, then re-enter raw mode and the alternate screen. The
-/// supervised `cezar serve` child keeps its piped stdout throughout, so nothing foreign
+/// supervised `coducktor serve` child keeps its piped stdout throughout, so nothing foreign
 /// reaches the terminal (one-terminal rule, §7.7).
 fn run_editor_handoff(terminal: &mut AppTerminal, path: &str) -> io::Result<()> {
     use crossterm::cursor;

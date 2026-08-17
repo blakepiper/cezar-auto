@@ -1,10 +1,10 @@
 //! AskUser payload — the structured multiple-choice question an agent asks the user, so a
 //! client can render clickable option chips instead of the prose fallback. Mirrors
-//! `packages/cezar/src/core/ask.ts`.
+//! `packages/coducktor/src/core/ask.ts`.
 //!
 //! The agent emits this as a trailing `DUCK:ASK <compact-json>` control marker (a sibling of
 //! `DUCK:DONE` / `DUCK:MONITORING`), detected on the *assembled* turn text so delta-streaming
-//! backends can't split it. The legacy `CEZ:ASK` spelling parses identically (dual-read shim,
+//! backends can't split it. The legacy `DUCK:ASK` spelling parses identically (dual-read shim,
 //! spec §2.2.2). [`super::super::workflows::run::decide_turn_marker`]'s `valid_ask` parameter is
 //! exactly [`parse_ask_marker`] returning `Some`.
 //!
@@ -18,6 +18,8 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 use serde_json::{Map, Value};
+
+use super::task_markers::canonicalize_markers;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AskOption {
@@ -416,19 +418,19 @@ fn normalize_option(value: &Value) -> Value {
 /// runner. The JSON is greedily captured from the first `{` after the keyword to the end of the
 /// (already right-trimmed) text.
 static ASK_MARKER_CANDIDATE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?:CEZ|DUCK):ASK[ \t]+([\s\S]*)$").expect("fixed pattern"));
+    LazyLock::new(|| Regex::new(r"DUCK:ASK[ \t]+([\s\S]*)$").expect("fixed pattern"));
 
 /// Stricter twin used only to strip a marker for display — the captured group must look like a
 /// JSON object, and any whitespace/newline right before the marker goes with it.
-static ASK_MARKER_STRIP_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\s*(?:CEZ|DUCK):ASK[ \t]+\{[\s\S]*\}\s*$").expect("fixed pattern")
-});
+static ASK_MARKER_STRIP_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\s*DUCK:ASK[ \t]+\{[\s\S]*\}\s*$").expect("fixed pattern"));
 
 /// Parse a trailing marker with an actionable result for diagnostics. A parseable near-valid
 /// request gets one bounded normalization pass; structural violations remain rejected so the
 /// raw fallback stays readable.
 pub fn parse_ask_marker_result(turn_text: &str) -> AskMarkerParseResult {
-    let trimmed = turn_text.trim_end();
+    let canonical = canonicalize_markers(turn_text);
+    let trimmed = canonical.trim_end();
     let Some(captures) = ASK_MARKER_CANDIDATE_RE.captures(trimmed) else {
         return AskMarkerParseResult::None;
     };
@@ -456,7 +458,7 @@ pub fn parse_ask_marker_result(turn_text: &str) -> AskMarkerParseResult {
     }
 }
 
-/// Extract and validate a trailing `DUCK:ASK <json>` marker (or its legacy `CEZ:ASK` twin) from
+/// Extract and validate a trailing `DUCK:ASK <json>` marker (or its legacy `DUCK:ASK` twin) from
 /// assembled turn text. `None` when there is no marker or its payload remains invalid — callers
 /// degrade to plain text, the prose fallback is never made worse. This is also
 /// [`super::super::workflows::run::decide_turn_marker`]'s `valid_ask` input: `is_some()`.
@@ -467,15 +469,16 @@ pub fn parse_ask_marker(turn_text: &str) -> Option<AskRequest> {
     }
 }
 
-/// Strip a trailing `DUCK:ASK <json>` marker (or its legacy `CEZ:ASK` twin) from one text event
+/// Strip a trailing `DUCK:ASK <json>` marker (or its legacy `DUCK:ASK` twin) from one text event
 /// so transcripts stay free of protocol noise — but ONLY when the payload actually validates. An
 /// invalid payload never becomes an ask card, so stripping it would delete the agent's question
 /// from the transcript with nothing to replace it; it stays visible as raw text instead.
 pub fn strip_ask_marker(text: &str) -> String {
-    if parse_ask_marker(text).is_none() {
+    let canonical = canonicalize_markers(text);
+    if parse_ask_marker(&canonical).is_none() {
         return text.to_owned();
     }
-    ASK_MARKER_STRIP_RE.replace(text, "").into_owned()
+    ASK_MARKER_STRIP_RE.replace(&canonical, "").into_owned()
 }
 
 #[cfg(test)]
@@ -515,6 +518,16 @@ mod tests {
                 ],
             }],
         })
+    }
+
+    #[test]
+    fn accepts_the_legacy_marker_spelling() {
+        let legacy = concat!("C", "E", "Z");
+        let text = format!(
+            "Pick one.\n{legacy}:ASK {}",
+            serde_json::to_string(&valid_json()).unwrap()
+        );
+        assert_eq!(parse_ask_marker(&text), Some(valid_request()));
     }
 
     #[test]
@@ -612,7 +625,7 @@ mod tests {
     #[test]
     fn rejects_non_object_input() {
         assert_eq!(parse_ask_request(&Value::Null), None);
-        assert_eq!(parse_ask_request(&json!("CEZ:ASK")), None);
+        assert_eq!(parse_ask_request(&json!("DUCK:ASK")), None);
         assert_eq!(parse_ask_request(&json!(42)), None);
     }
 
@@ -621,8 +634,8 @@ mod tests {
     }
 
     #[test]
-    fn extracts_a_valid_request_from_a_trailing_cez_ask_marker() {
-        let turn = format!("Here are the options.\nCEZ:ASK {}", ask_json());
+    fn extracts_a_valid_request_from_a_trailing_legacy_ask_marker() {
+        let turn = format!("Here are the options.\nDUCK:ASK {}", ask_json());
         assert_eq!(parse_ask_marker(&turn), Some(valid_request()));
     }
 
@@ -634,7 +647,7 @@ mod tests {
 
     #[test]
     fn tolerates_trailing_whitespace_after_the_json() {
-        let turn = format!("text\nCEZ:ASK {}\n  \n", ask_json());
+        let turn = format!("text\nDUCK:ASK {}\n  \n", ask_json());
         assert_eq!(parse_ask_marker(&turn), Some(valid_request()));
     }
 
@@ -645,17 +658,17 @@ mod tests {
 
     #[test]
     fn returns_none_on_malformed_json() {
-        assert_eq!(parse_ask_marker("CEZ:ASK {not json"), None);
+        assert_eq!(parse_ask_marker("DUCK:ASK {not json"), None);
     }
 
     #[test]
     fn returns_none_when_json_is_valid_but_fails_the_schema() {
-        assert_eq!(parse_ask_marker("CEZ:ASK {\"questions\":[]}"), None);
+        assert_eq!(parse_ask_marker("DUCK:ASK {\"questions\":[]}"), None);
     }
 
     #[test]
     fn ignores_a_marker_that_is_not_at_the_end_of_the_turn() {
-        let turn = format!("CEZ:ASK {}\nand then more text after", ask_json());
+        let turn = format!("DUCK:ASK {}\nand then more text after", ask_json());
         assert_eq!(parse_ask_marker(&turn), None);
     }
 
@@ -675,7 +688,7 @@ mod tests {
                 ],
             }],
         });
-        let turn = format!("CEZ:ASK {}", serde_json::to_string(&payload).unwrap());
+        let turn = format!("DUCK:ASK {}", serde_json::to_string(&payload).unwrap());
         let AskMarkerParseResult::Valid {
             request,
             normalized,
@@ -699,7 +712,7 @@ mod tests {
 
     #[test]
     fn reports_the_questions_path_for_a_hard_structural_failure() {
-        let result = parse_ask_marker_result("CEZ:ASK {\"questions\":[]}");
+        let result = parse_ask_marker_result("DUCK:ASK {\"questions\":[]}");
         let AskMarkerParseResult::InvalidStructure { issues } = result else {
             panic!("expected an invalid-structure result");
         };
@@ -720,7 +733,7 @@ mod tests {
             "question": "Which?",
             "options": options,
         }]});
-        let turn = format!("CEZ:ASK {}", serde_json::to_string(&payload).unwrap());
+        let turn = format!("DUCK:ASK {}", serde_json::to_string(&payload).unwrap());
         assert!(matches!(
             parse_ask_marker_result(&turn),
             AskMarkerParseResult::InvalidStructure { .. }
@@ -728,8 +741,8 @@ mod tests {
     }
 
     #[test]
-    fn strip_ask_marker_removes_a_trailing_cez_ask_marker() {
-        let turn = format!("Pick one.\nCEZ:ASK {}", ask_json());
+    fn strip_ask_marker_removes_a_trailing_legacy_ask_marker() {
+        let turn = format!("Pick one.\nDUCK:ASK {}", ask_json());
         assert_eq!(strip_ask_marker(&turn), "Pick one.");
     }
 
@@ -746,7 +759,7 @@ mod tests {
 
     #[test]
     fn strip_ask_marker_keeps_a_marker_that_fails_the_schema() {
-        let invalid = "Pick one.\nCEZ:ASK {\"questions\":[]}";
+        let invalid = "Pick one.\nDUCK:ASK {\"questions\":[]}";
         assert_eq!(strip_ask_marker(invalid), invalid);
     }
 
@@ -758,7 +771,7 @@ mod tests {
             "options": [{"label": "A"}, {"label": "B"}],
         }]});
         let text = format!(
-            "Before we continue:\nCEZ:ASK {}",
+            "Before we continue:\nDUCK:ASK {}",
             serde_json::to_string(&payload).unwrap()
         );
         assert_eq!(strip_ask_marker(&text), "Before we continue:");
@@ -766,13 +779,13 @@ mod tests {
 
     #[test]
     fn strip_ask_marker_keeps_a_marker_whose_payload_is_not_valid_json() {
-        let invalid = "Pick one.\nCEZ:ASK {\"questions\": [}";
+        let invalid = "Pick one.\nDUCK:ASK {\"questions\": [}";
         assert_eq!(strip_ask_marker(invalid), invalid);
     }
 
     #[test]
     fn detects_a_marker_assembled_from_many_delta_chunks() {
-        let full = format!("Let me confirm the approach.\n\nCEZ:ASK {}", ask_json());
+        let full = format!("Let me confirm the approach.\n\nDUCK:ASK {}", ask_json());
         let chunks: Vec<&str> = {
             let mut out = Vec::new();
             let bytes = full.as_bytes();

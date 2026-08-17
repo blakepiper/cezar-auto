@@ -1,5 +1,5 @@
 //! Project registry operations over `~/.coducktor/config.json`. Ported from
-//! `packages/cezar/src/workspace/projects.ts` for the `cezar projects` CLI subcommand (B10) —
+//! `packages/coducktor/src/workspace/projects.ts` for the `coducktor projects` CLI subcommand (B10) —
 //! the terminal twin of Settings → Projects, working with no server running.
 //!
 //! **Scope cut (B10):** `projects.ts`'s per-root git/forge probe (branch, forge kind, repo URL,
@@ -9,7 +9,7 @@
 //! plain filesystem check (`missing`/`not-git`/`ok`, no cache, no branch/forge/repo-url) — good
 //! enough for a headless listing; `coducktor-server`'s own `list_projects` route handler already
 //! has its own richer (if independently-derived, not shared with this module) probe for the HTTP
-//! API / TUI project switcher. `normalizeProjectTags`/`cezar projects tag` is not ported either —
+//! API / TUI project switcher. `normalizeProjectTags`/`coducktor projects tag` is not ported either —
 //! a secondary UX affordance, not part of the protected CLI surface (spec §1.4 names `serve`/
 //! `run`/`init`/`usage`/`projects`, not its subcommands).
 //!

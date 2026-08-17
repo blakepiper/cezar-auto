@@ -1,6 +1,6 @@
 //! The global follow-up inbox (spec 007). Mirrors the file-layer half of
-//! `packages/cezar/src/todos.ts`: `.ai/coducktor/todos.json`, a flat JSON array agents
-//! append to (via `CEZ_TODOS_FILE`). Agent entries are external data — each one is
+//! `packages/coducktor/src/todos.ts`: `.ai/coducktor/todos.json`, a flat JSON array agents
+//! append to (via `DUCK_TODOS_FILE`). Agent entries are external data — each one is
 //! validated on read and malformed ones are skipped, never fatal. Writes land atomically
 //! (tmp + rename, the `runs::store` pattern).
 //!
@@ -8,7 +8,7 @@
 //! (`onTodosChanged`/`todosWatchActive`) is runtime plumbing that turns a file write from
 //! another process into an SSE push to the cockpit — it has no synchronous-file-layer
 //! counterpart in this crate (which pulls in neither `tokio` nor a filesystem-watch crate)
-//! and belongs with whichever crate owns that fan-out, `cezar-server` (B9), same as
+//! and belongs with whichever crate owns that fan-out, `coducktor-server` (B9), same as
 //! `runs::store`'s `EventEmitter` fan-out was deferred to the `RunManager` that owns it (B6).
 //!
 //! This crate also does not lock concurrent writers in-process (`todos.ts`'s `withLock`,
@@ -16,7 +16,7 @@
 //! same read-modify-write-atomic-rename sequence the lock exists to serialize, so the lock
 //! itself is single-process async-scheduling plumbing, not a behavior this crate's
 //! synchronous, one-call-at-a-time API needs to reproduce. A concurrent caller (the future
-//! `cezar-server`) is responsible for serializing calls into this module the same way
+//! `coducktor-server`) is responsible for serializing calls into this module the same way
 //! `todos.ts`'s route handlers rely on `withLock` today.
 
 use std::fs;

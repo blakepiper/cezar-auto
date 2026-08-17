@@ -1,4 +1,4 @@
-//! Count-based worktree retention (#483). Mirrors `packages/cezar/src/runs/retention.ts`:
+//! Count-based worktree retention (#483). Mirrors `packages/coducktor/src/runs/retention.ts`:
 //! which finished worktrees are over budget and should have their *directory* reclaimed
 //! (the `duck/<id8>` branch stays, so the work is always recoverable via
 //! `git worktree add`).

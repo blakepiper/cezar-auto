@@ -1,5 +1,5 @@
 //! `~/.coducktor/ui-state.json` — global GUI state, the workspace twin of the per-repo
-//! `.ai/coducktor/ui-state.json`. Mirrors `packages/cezar/src/workspace/ui-state.ts`.
+//! `.ai/coducktor/ui-state.json`. Mirrors `packages/coducktor/src/workspace/ui-state.ts`.
 //! Cross-project prefs (appearance, notifications, curated skills) live here; per-project
 //! prefs stay in each repo's own file, and prefs that describe the BROWSER rather than
 //! the workspace stay in that browser's `localStorage`.

@@ -6,12 +6,9 @@
 //! `/workspace/agent-profiles*`, `/agent-config/:id`), so the two clients stay
 //! interoperable while both exist (Phase A/B).
 //!
-//! **Section list, per spec §8.14 verbatim** (the plan's "(all 12 sections)" line loses to
-//! the spec's own enumeration — plan ground rule 0): Bookmarklets is deleted (decision 5),
-//! Keyboard is hidden/unimplemented in the web app too, and the update-checker "Skills"
-//! settings entry (distinct from the already-built Skills *content* screen) is not in the
-//! spec's list and loses its backing (`skills-update.ts`/`skills-remote.ts`) at A15 anyway
-//! (decision 7) — none of the three are ported here.
+//! **Section list, per spec §8.14 verbatim**: the settings screen contains only the nine
+//! sections listed above. Terminal-only concerns such as keymaps and external-link safety
+//! stay in their owning screens or local configuration rather than becoming settings panels.
 //!
 //! **Deliberate scope cuts, documented like A8's:** the Theme control changes `app.theme`
 //! for the running session only, matching the web app's own comment in

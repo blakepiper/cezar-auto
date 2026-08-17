@@ -3,7 +3,7 @@
 {"id":2,"result":{"thread":{"id":"th_01J8ZCMD2QW4RT"}}}
 {"method":"turn/started","params":{"turn":{"id":"turn_01J8ZCMD9A","status":"inProgress","items":[]}}}
 {"method":"item/started","params":{"threadId":"th_01J8ZCMD2QW4RT","turnId":"turn_01J8ZCMD9A","item":{"type":"commandExecution","id":"item_cmd_1","command":["bash","-lc","npm test"],"cwd":"/repo","status":"inProgress"}}}
-{"method":"item/commandExecution/outputDelta","params":{"threadId":"th_01J8ZCMD2QW4RT","turnId":"turn_01J8ZCMD9A","itemId":"item_cmd_1","delta":"> cezar@0.1.0 test\n> vitest run\n"}}
+{"method":"item/commandExecution/outputDelta","params":{"threadId":"th_01J8ZCMD2QW4RT","turnId":"turn_01J8ZCMD9A","itemId":"item_cmd_1","delta":"> coducktor@0.1.0 test\n> vitest run\n"}}
 {"method":"item/commandExecution/outputDelta","params":{"threadId":"th_01J8ZCMD2QW4RT","turnId":"turn_01J8ZCMD9A","itemId":"item_cmd_1","delta":"Test Files  4 passed (4)\n"}}
 {"method":"item/completed","params":{"threadId":"th_01J8ZCMD2QW4RT","turnId":"turn_01J8ZCMD9A","item":{"type":"commandExecution","id":"item_cmd_1","command":["bash","-lc","npm test"],"cwd":"/repo","status":"completed","exitCode":0}}}
 {"method":"item/started","params":{"threadId":"th_01J8ZCMD2QW4RT","turnId":"turn_01J8ZCMD9A","item":{"type":"commandExecution","id":"item_cmd_2","command":["bash","-lc","npm run lint"],"cwd":"/repo","status":"inProgress"}}}

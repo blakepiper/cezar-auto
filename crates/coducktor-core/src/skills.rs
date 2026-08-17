@@ -1,4 +1,4 @@
-//! Local skill discovery. Mirrors `packages/cezar/src/skills.ts`.
+//! Local skill discovery. Mirrors `packages/coducktor/src/skills.ts`.
 //!
 //! A skill is a Markdown file with optional YAML-ish frontmatter (`name`, `description`).
 //! Discovered from the repo's `.ai/coducktor/skills/` (this tool's own dir), `.ai/skills/`

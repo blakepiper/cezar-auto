@@ -110,28 +110,3 @@ pub struct CheckoutProjectInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkout_id: Option<String>,
 }
-
-/// Mirrors `packages/contract/src/projects.ts::FsBrowseDir`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FsBrowseDir {
-    pub name: String,
-    pub path: String,
-    pub is_repo: bool,
-}
-
-/// Mirrors `packages/contract/src/projects.ts::FsBrowseResponse`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FsBrowseResponse {
-    pub path: String,
-    pub parent: Option<String>,
-    pub dirs: Vec<FsBrowseDir>,
-    pub truncated: bool,
-}
-
-/// Mirrors `packages/contract/src/projects.ts::LaunchKeyResponse`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LaunchKeyResponse {
-    pub key: String,
-}

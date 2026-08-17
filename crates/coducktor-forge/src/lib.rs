@@ -1,4 +1,4 @@
-//! GitHub's `gh` integration, ported from `packages/cezar/src/server/forge/github.ts`.
+//! GitHub's `gh` integration, ported from `packages/coducktor/src/server/forge/github.ts`.
 //!
 //! The boundary is deliberately small: GitHub JSON is parsed at the driver edge, pure
 //! normalization and policy functions are injectable, and every shell/API failure becomes a

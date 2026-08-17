@@ -44,7 +44,7 @@ pub struct ThreadImage {
     pub name: Option<String>,
 }
 
-/// A structured AskUser question the agent posed via `CEZ:ASK` (v2 `ask.requested`).
+/// A structured AskUser question the agent posed via `DUCK:ASK` (v2 `ask.requested`).
 /// Resolution is client-side: the next `user-message` for the run flips `resolved` and
 /// records the reply as `answer`.
 #[derive(Debug, Clone, PartialEq)]
@@ -580,17 +580,17 @@ fn valid_ask_question(value: &Value) -> Option<UiAskQuestion> {
     })
 }
 
-/// The engine's turn-end markers (`CEZ:DONE`, `CEZ:MONITORING`) plus the in-band
-/// task-reference marker lines (`CEZ:PR=` / `CEZ:ISSUE=` / `CEZ:TITLE=`). `strip_ask` gates
-/// the `CEZ:ASK` strip on the turn actually holding an ask card — a marker whose card never
+/// The engine's turn-end markers (`DUCK:DONE`, `DUCK:MONITORING`) plus the in-band
+/// task-reference marker lines (`DUCK:PR=` / `DUCK:ISSUE=` / `DUCK:TITLE=`). `strip_ask` gates
+/// the `DUCK:ASK` strip on the turn actually holding an ask card — a marker whose card never
 /// materialized stays visible as raw text.
 fn strip_done_marker(text: &str, strip_ask: bool) -> String {
-    let mut trailing = strip_trailing_marker(text, "CEZ:DONE");
-    trailing = strip_trailing_marker(&trailing, "CEZ:MONITORING");
+    let mut trailing = strip_trailing_marker(text, "DUCK:DONE");
+    trailing = strip_trailing_marker(&trailing, "DUCK:MONITORING");
     if strip_ask {
         trailing = strip_trailing_ask_marker(&trailing);
     }
-    if !trailing.contains("CEZ:") {
+    if !trailing.contains("DUCK:") {
         return trailing;
     }
     trailing
@@ -613,10 +613,10 @@ fn strip_trailing_ask_marker(text: &str) -> String {
     if !trimmed.ends_with('}') {
         return trimmed.to_owned();
     }
-    let Some(marker_at) = trimmed.rfind("CEZ:ASK") else {
+    let Some(marker_at) = trimmed.rfind("DUCK:ASK") else {
         return trimmed.to_owned();
     };
-    let after_marker = &trimmed[marker_at + "CEZ:ASK".len()..];
+    let after_marker = &trimmed[marker_at + "DUCK:ASK".len()..];
     let after_ws = after_marker.trim_start_matches([' ', '\t']);
     if after_ws.len() == after_marker.len() || !after_ws.starts_with('{') {
         return trimmed.to_owned();
@@ -626,13 +626,13 @@ fn strip_trailing_ask_marker(text: &str) -> String {
 
 fn is_marker_line(line: &str) -> bool {
     let trimmed = line.trim_end();
-    if let Some(rest) = trimmed.strip_prefix("CEZ:PR=") {
+    if let Some(rest) = trimmed.strip_prefix("DUCK:PR=") {
         return !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit());
     }
-    if let Some(rest) = trimmed.strip_prefix("CEZ:ISSUE=") {
+    if let Some(rest) = trimmed.strip_prefix("DUCK:ISSUE=") {
         return !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit());
     }
-    if let Some(rest) = trimmed.strip_prefix("CEZ:TITLE=") {
+    if let Some(rest) = trimmed.strip_prefix("DUCK:TITLE=") {
         return !rest.is_empty();
     }
     false
@@ -736,7 +736,7 @@ mod tests {
             event(
                 2.0,
                 "item.completed",
-                json!({"item": {"kind": "message", "id": "m1", "role": "assistant", "text": "All set.\nCEZ:DONE"}}),
+                json!({"item": {"kind": "message", "id": "m1", "role": "assistant", "text": "All set.\nDUCK:DONE"}}),
             ),
         ];
         let state = reduce_thread(&events, ThreadReduceOptions::default());

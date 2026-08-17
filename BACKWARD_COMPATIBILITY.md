@@ -1,5 +1,30 @@
 # Backward compatibility — protected surfaces
 
+## Current product boundary — Rust terminal release
+
+The current product is one local Rust binary (`coducktor`, with the short `duck` alias). It has
+no browser, npm distribution, HTTP server, listening port or remote deployment mode. The active
+runtime seam is `Engine` in `crates/coducktor-client`; agent wire compatibility is defined by
+`AGENT_PROTOCOL.md` and the contract/protocol crates.
+
+The durable compatibility surfaces are the JSON/NDJSON/Markdown/YAML files under
+`.ai/coducktor/` and `~/.coducktor/`, workflow and skill formats, old run records, and the
+agent event vocabulary. Startup migration moves the previous state-directory names when the
+current directory is absent, prefers the current directory when both exist, and never deletes a
+stray directory. New writes use the current `DUCK_*` environment and branch vocabulary. Readers
+retain a dual-read shim for old marker text and task branches so in-flight sessions and existing
+worktrees continue to load.
+
+The owner-approved capability removals are recorded as explicit breaking entries in
+`CHANGELOG.md`: npm installation; browser pages and the bookmarklet handoff; server, port and
+remote-hosting controls; remote skills, automatic skill mutation and GitHub automations; hosted
+deployment settings; and the HTTP API boundary. Local GitHub reads/PR actions, project cloning,
+local skills, agent accounts, worktrees and the in-process engine remain supported.
+
+The sections below are historical records from the pre-cutover service. They are retained so old
+state and release decisions remain searchable; their active product statements are superseded by
+this section.
+
 cezar is a published npm CLI (`@open-mercato/cezar`, currently 0.x — renamed from the now-deprecated `@pat-lewczuk/cezar` when the package moved to the open-mercato org; the unscoped `npx cezar-cli` alias is unchanged) whose state lives as plain files inside users' repos. Users upgrade with `npx cezar@latest` against `.ai/cezar/` directories written by older versions, and they script the CLI and hand-edit the files — the README promises "plain JSON, NDJSON and Markdown you can `cat` and fix by hand." That promise is the compatibility contract.
 
 **General rule for every surface below:** additive changes (new optional field, new flag, new route) are fine; anything that makes an existing input rejected, an existing output disappear, or an existing file unreadable is breaking. While the package is 0.x, a breaking change requires: a deprecation note in the README + CHANGELOG, a migration path (code that reads the old shape, or a documented manual fix), and a **minor** version bump called out as breaking. From 1.0 on, breaking = major bump.

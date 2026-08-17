@@ -173,7 +173,7 @@ impl GithubDriver {
     }
 
     fn dry_run() -> bool {
-        std::env::var("CEZ_DRY_RUN").ok().as_deref() == Some("1")
+        std::env::var("DUCK_DRY_RUN").ok().as_deref() == Some("1")
     }
 
     fn run(&self, binary: &str, args: &[impl AsRef<str>], timeout: Duration) -> CommandOutput {
@@ -1779,7 +1779,7 @@ pub fn build_pr_body(handoff_text: &str, task: &str) -> String {
         String::new(),
         "---".to_owned(),
         String::new(),
-        "🤖 made with cezar".to_owned(),
+        "🤖 made with coducktor".to_owned(),
     ]);
     parts.join("\n")
 }

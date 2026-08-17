@@ -1,8 +1,8 @@
-//! Per-task handoff journal. Mirrors `packages/cezar/src/handoff.ts`.
+//! Per-task handoff journal. Mirrors `packages/coducktor/src/handoff.ts`.
 //!
 //! `.ai/coducktor/runs/<runId>.handoff.md`, next to the run's NDJSON events and outside the
-//! task worktree — it survives worktree removal. Cez seeds the skeleton and appends
-//! heartbeats; the agent (told via `CEZ_HANDOFF_FILE` and the system-prompt fragment below)
+//! task worktree — it survives worktree removal. Coducktor seeds the skeleton and appends
+//! heartbeats; the agent (told via `DUCK_HANDOFF_FILE` and the system-prompt fragment below)
 //! keeps the "Progress log" and "Resume notes" sections up to date. Everything here is
 //! best-effort: the handoff is a journal, never a reason to fail a run.
 
@@ -56,7 +56,7 @@ pub fn seed_handoff_file(data_dir: &Path, run: &HandoffSeed<'_>) -> PathBuf {
     file
 }
 
-/// Cez's own heartbeat (the janitor pattern): insert `- <ISO ts> — <note>` right under the
+/// Coducktor's own heartbeat (the janitor pattern): insert `- <ISO ts> — <note>` right under the
 /// `## Progress log` header (newest at the top), so the file stays current even when the
 /// agent forgets to write. Missing header → append at the end of the file; missing file →
 /// no-op.
@@ -125,40 +125,40 @@ pub fn delete_handoff(data_dir: &Path, run_id: &str) {
 /// `DUCK_FOLLOWUPS` — the TUI's own Inbox screen tells the user to set this. An exact `"1"`
 /// opts in — the house spelling.
 ///
-/// B12 dropped the `CEZ_FOLLOWUPS` dual-read this function carried through the whole of
+/// B12 dropped the `DUCK_FOLLOWUPS` dual-read this function carried through the whole of
 /// Phase B: it existed only so a user following the TUI's on-screen `DUCK_FOLLOWUPS=1`
 /// instruction wouldn't silently fail to enable the inbox against the still-live Node server
-/// (`packages/cezar`, which read only `CEZ_FOLLOWUPS`). That server is deleted now.
+/// (`packages/coducktor`, which read only `DUCK_FOLLOWUPS`). That server is deleted now.
 pub fn followups_enabled(env: &dyn EnvSource) -> bool {
     env.get("DUCK_FOLLOWUPS").as_deref() == Some("1")
 }
 
 /// Appended to every agent step's `--append-system-prompt` (spec 007). The matching
-/// handoff/task env vars are set on every agent process; `CEZ_TODOS_FILE` carries a usable
+/// handoff/task env vars are set on every agent process; `DUCK_TODOS_FILE` carries a usable
 /// path only when follow-up generation is enabled (#444, #471) — opted-out runs get it
-/// empty, never absent, so an inherited value from a parent cezar cannot shine through.
-pub const HANDOFF_ONLY_INSTRUCTIONS: &str = "## Handoff (cezar)
+/// empty, never absent, so an inherited value from a parent coducktor cannot shine through.
+pub const HANDOFF_ONLY_INSTRUCTIONS: &str = "## Handoff (coducktor)
 
-CEZ_HANDOFF_FILE (env) is the absolute path to this task's rolling handoff file. Treat it like a HANDOFF.md:
+DUCK_HANDOFF_FILE (env) is the absolute path to this task's rolling handoff file. Treat it like a HANDOFF.md:
 1. At the start of work, read it — \"Resume notes\" left by a previous session is your starting context.
 2. After every meaningful milestone (passing tests, a commit, a PR, a scope decision), append one terse timestamped line under \"## Progress log\", newest at the top.
 3. Before finishing or pausing, update \"## Resume notes\" with what's done, what's next and any blockers. Leave it empty only when the task is truly complete.
 
-Task completion marker: when the task's goal is fully achieved and you have no question for the user, end your final message with a line containing exactly DUCK:DONE — cez then closes the session and marks the task finished. If you are waiting on the user (a question, a decision, missing input), just end your message normally; the session stays open for their reply. Never emit DUCK:DONE while anything is unfinished or unverified.
+Task completion marker: when the task's goal is fully achieved and you have no question for the user, end your final message with a line containing exactly DUCK:DONE — duck then closes the session and marks the task finished. If you are waiting on the user (a question, a decision, missing input), just end your message normally; the session stays open for their reply. Never emit DUCK:DONE while anything is unfinished or unverified.
 
-Still-working marker: if you end a turn while still working on your OWN downstream work — a sub-agent you dispatched, or a long-running command you're monitoring — and are NOT waiting on the user for anything, end your final message with a line containing exactly DUCK:MONITORING. cez then shows the task as \"monitoring\" (still working) instead of asking for your attention. Use DUCK:MONITORING only for that in-progress case; use DUCK:DONE when the goal is done; end plainly (no marker) only when you are genuinely waiting on the user. Never combine DUCK:MONITORING with DUCK:DONE.
+Still-working marker: if you end a turn while still working on your OWN downstream work — a sub-agent you dispatched, or a long-running command you're monitoring — and are NOT waiting on the user for anything, end your final message with a line containing exactly DUCK:MONITORING. duck then shows the task as \"monitoring\" (still working) instead of asking for your attention. Use DUCK:MONITORING only for that in-progress case; use DUCK:DONE when the goal is done; end plainly (no marker) only when you are genuinely waiting on the user. Never combine DUCK:MONITORING with DUCK:DONE.
 
-Structured question marker: when you are blocked on a decision that is genuinely the user's to make — one you cannot resolve from the request, the code, or sensible defaults — and it comes down to a few concrete choices, end your turn with a single line DUCK:ASK <json> instead of asking in prose. cez renders it as clickable option chips in the cockpit so the user can answer in one tap. The <json> is ONE object on ONE line, the last thing in your message: {\"questions\":[{\"header\":\"≤12-char label\",\"question\":\"a clear question ending in ?\",\"multiSelect\":false,\"options\":[{\"label\":\"short choice\",\"description\":\"what it means / the trade-off\"}]}]} — use only those keys (plus an optional non-empty \"id\" up to 64 characters), with 1–4 questions, 2–4 options per question, unique question text and option labels, header 1–12 characters, question 1–400, option label 1–60, and description at most 280. The user can always type a free-form reply, so never add an \"Other\" option. Prefer sensible defaults over asking; use DUCK:ASK only when the choice is truly the user's. Never combine DUCK:ASK with DUCK:DONE or DUCK:MONITORING.
+Structured question marker: when you are blocked on a decision that is genuinely the user's to make — one you cannot resolve from the request, the code, or sensible defaults — and it comes down to a few concrete choices, end your turn with a single line DUCK:ASK <json> instead of asking in prose. duck renders it as clickable option chips in the cockpit so the user can answer in one tap. The <json> is ONE object on ONE line, the last thing in your message: {\"questions\":[{\"header\":\"≤12-char label\",\"question\":\"a clear question ending in ?\",\"multiSelect\":false,\"options\":[{\"label\":\"short choice\",\"description\":\"what it means / the trade-off\"}]}]} — use only those keys (plus an optional non-empty \"id\" up to 64 characters), with 1–4 questions, 2–4 options per question, unique question text and option labels, header 1–12 characters, question 1–400, option label 1–60, and description at most 280. The user can always type a free-form reply, so never add an \"Other\" option. Prefer sensible defaults over asking; use DUCK:ASK only when the choice is truly the user's. Never combine DUCK:ASK with DUCK:DONE or DUCK:MONITORING.
 
-Task reference markers: as soon as you know which GitHub pull request or issue this task is ABOUT (it was named in the task, or you just opened it), declare it by emitting, on its own line in your message text: DUCK:PR=<number> and/or DUCK:ISSUE=<number>. Re-emit with the new number if the subject changes (e.g. you open a PR later in the task). Declare only the task's own subject — never a PR/issue you merely mention, list, or compare against. You may also emit DUCK:TITLE=<terse gerund phrase, max 40 chars, e.g. \"implementing comment threads\"> once the work has a clearer shape than its current title; cez uses these instead of guessing from the transcript. Put markers in plain message text, never inside a code fence.
+Task reference markers: as soon as you know which GitHub pull request or issue this task is ABOUT (it was named in the task, or you just opened it), declare it by emitting, on its own line in your message text: DUCK:PR=<number> and/or DUCK:ISSUE=<number>. Re-emit with the new number if the subject changes (e.g. you open a PR later in the task). Declare only the task's own subject — never a PR/issue you merely mention, list, or compare against. You may also emit DUCK:TITLE=<terse gerund phrase, max 40 chars, e.g. \"implementing comment threads\"> once the work has a clearer shape than its current title; duck uses these instead of guessing from the transcript. Put markers in plain message text, never inside a code fence.
 
 ## Pasted attachments
 User-pasted screenshots/files are saved as real files; their absolute paths are listed in the message that carries them. Use those paths when a task needs the file itself (saving, uploading, attaching to issues/PRs); the inline image is for viewing only.";
 
-pub const FOLLOWUP_INSTRUCTIONS: &str = "## Follow-ups (cezar)
+pub const FOLLOWUP_INSTRUCTIONS: &str = "## Follow-ups (coducktor)
 
-CEZ_TODOS_FILE (env) is the absolute path to the user's follow-up inbox — a JSON array. Only append an entry when a genuinely actionable follow-up remains: something concrete a human or the next agent still needs to decide or do (a review nit worth a dedicated pass, a manual step you cannot take yourself, a decision blocked on the user, a known next task). Do NOT append filler — a restated summary of what you just finished, a congratulatory note, or \"no further action needed\" is not a follow-up; when the task is simply done, skip this file entirely. When (and only when) a real follow-up exists, read the file (treat a missing file as []), append ONE object and write the whole array back:
-{ \"ts\": \"<ISO 8601>\", \"taskId\": \"<value of CEZ_TASK_ID>\", \"summary\": \"<one sentence: the concrete next action, not a status report>\", \"action\": \"<imperative user action, optional>\", \"prUrl\": \"<optional>\", \"suggestedSkill\": \"<optional skill name for the follow-up>\", \"suggestedArgs\": \"<optional>\", \"suggestedPrompt\": \"<optional freeform prompt for the follow-up task>\", \"runnable\": <true when an agent can execute this follow-up, false when it is a note> }
+DUCK_TODOS_FILE (env) is the absolute path to the user's follow-up inbox — a JSON array. Only append an entry when a genuinely actionable follow-up remains: something concrete a human or the next agent still needs to decide or do (a review nit worth a dedicated pass, a manual step you cannot take yourself, a decision blocked on the user, a known next task). Do NOT append filler — a restated summary of what you just finished, a congratulatory note, or \"no further action needed\" is not a follow-up; when the task is simply done, skip this file entirely. When (and only when) a real follow-up exists, read the file (treat a missing file as []), append ONE object and write the whole array back:
+{ \"ts\": \"<ISO 8601>\", \"taskId\": \"<value of DUCK_TASK_ID>\", \"summary\": \"<one sentence: the concrete next action, not a status report>\", \"action\": \"<imperative user action, optional>\", \"prUrl\": \"<optional>\", \"suggestedSkill\": \"<optional skill name for the follow-up>\", \"suggestedArgs\": \"<optional>\", \"suggestedPrompt\": \"<optional freeform prompt for the follow-up task>\", \"runnable\": <true when an agent can execute this follow-up, false when it is a note> }
 Set \"runnable\": false for anything a human must do or merely read — manual QA, \"remember to…\", informational notes — and leave out suggestedSkill/suggestedPrompt for those; the inbox then offers \"Acknowledge\" instead of \"Run\". Set \"runnable\": true only when suggestedSkill or suggestedPrompt says what to actually execute.
 Never modify or remove existing entries — append only.";
 

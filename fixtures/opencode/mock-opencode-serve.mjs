@@ -51,7 +51,7 @@ const server = createServer((req, res) => {
   req.on('end', () => {
     if (req.method === 'POST' && url === '/session') {
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ id: SESSION_ID, title: 'cezar task' }));
+      res.end(JSON.stringify({ id: SESSION_ID, title: 'coducktor task' }));
       return;
     }
     if (req.method === 'POST' && url === `/session/${SESSION_ID}/message`) {

@@ -6,6 +6,7 @@
 //! module.
 
 use ratatui::style::Color;
+use std::sync::OnceLock;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::Theme;
 use syntect::parsing::SyntaxSet;
@@ -22,22 +23,34 @@ pub struct HighlightSpan {
 }
 
 pub struct Highlighter {
-    syntax_set: SyntaxSet,
-    theme: Theme,
+    dark: bool,
 }
 
-impl Highlighter {
-    pub fn new(dark: bool) -> Self {
-        let syntax_set = two_face::syntax::extra_no_newlines();
+static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
+static DARK_THEME: OnceLock<Theme> = OnceLock::new();
+static LIGHT_THEME: OnceLock<Theme> = OnceLock::new();
+
+fn syntax_set() -> &'static SyntaxSet {
+    SYNTAX_SET.get_or_init(two_face::syntax::extra_no_newlines)
+}
+
+fn theme(dark: bool) -> &'static Theme {
+    let slot = if dark { &DARK_THEME } else { &LIGHT_THEME };
+    slot.get_or_init(|| {
         let theme_set = two_face::theme::extra();
-        let theme = theme_set
+        theme_set
             .get(if dark {
                 two_face::theme::EmbeddedThemeName::Nord
             } else {
                 two_face::theme::EmbeddedThemeName::Github
             })
-            .clone();
-        Self { syntax_set, theme }
+            .clone()
+    })
+}
+
+impl Highlighter {
+    pub fn new(dark: bool) -> Self {
+        Self { dark }
     }
 
     /// A theme-only instance for tests/tools that never need a live palette choice.
@@ -55,17 +68,18 @@ impl Highlighter {
         if lines.len() > HIGHLIGHT_MAX_LINES {
             return None;
         }
+        let syntax_set = syntax_set();
+        let theme = theme(self.dark);
         let extension = path.rsplit('.').next().unwrap_or("");
-        let syntax = self
-            .syntax_set
+        let syntax = syntax_set
             .find_syntax_by_extension(extension)
-            .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
-        let mut highlighter = HighlightLines::new(syntax, &self.theme);
+            .unwrap_or_else(|| syntax_set.find_syntax_plain_text());
+        let mut highlighter = HighlightLines::new(syntax, theme);
         let mut out = Vec::with_capacity(lines.len());
         for line in lines {
             let mut with_newline = line.clone();
             with_newline.push('\n');
-            let Ok(ranges) = highlighter.highlight_line(&with_newline, &self.syntax_set) else {
+            let Ok(ranges) = highlighter.highlight_line(&with_newline, syntax_set) else {
                 out.push(vec![HighlightSpan {
                     text: line.clone(),
                     color: Color::Reset,

@@ -6,7 +6,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // `MOCK_PI_IGNORE_EOF=1` switches to the #703 teardown shape: the mock stays
 // deaf to stdin EOF (the CLI hang the EOF watchdog exists for) and handles
 // SIGTERM itself, exiting 143 rather than dying from the signal — mirrors
-// `packages/cezar/src/core/__fixtures__/claude/stub-ignores-eof-exits-143.mjs`
+// `packages/coducktor/src/core/__fixtures__/claude/stub-ignores-eof-exits-143.mjs`
 // and `mock-codex-app-server.mjs`'s `MOCK_CODEX_IGNORE_EOF` toggle.
 const ignoreEof = process.env.MOCK_PI_IGNORE_EOF === '1';
 if (ignoreEof) {
@@ -43,9 +43,9 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     // `mock:slow` → hold the turn for ~25s so a wall-clock timeout is observable
     // (mirrors mock-claude.mjs's own `mock:slow`).
     if (message.includes('mock:slow')) await sleep(25_000);
-    // `mock:done` → the reply ends with the CEZ:DONE completion marker (#347),
+    // `mock:done` → the reply ends with the DUCK:DONE completion marker (#347),
     // so the auto-close path is testable dry (mirrors mock-claude.mjs).
-    const doneMarker = message.includes('mock:done') ? '\n\nCEZ:DONE' : '';
+    const doneMarker = message.includes('mock:done') ? '\n\nDUCK:DONE' : '';
     const replyText = `Investigating: ${message}${doneMarker}`;
 
     send({ type: 'response', command: 'prompt', success: true });

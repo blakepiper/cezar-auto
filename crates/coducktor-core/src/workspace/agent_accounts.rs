@@ -1,6 +1,6 @@
 //! `~/.coducktor/agent-accounts.json` — extra config dirs for a second login of the same
 //! agent CLI, plus which one each project uses. Mirrors
-//! `packages/cezar/src/workspace/agent-accounts.ts`.
+//! `packages/coducktor/src/workspace/agent-accounts.ts`.
 //!
 //! Its OWN file rather than a key in `config.json`, and that is the whole point: a
 //! coducktor build that has never heard of accounts does not open this file, so it

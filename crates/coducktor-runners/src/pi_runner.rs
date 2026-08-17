@@ -1,5 +1,5 @@
 //! `AgentSession` over pi's documented RPC mode. Ported from
-//! `packages/cezar/src/core/pi-runner.ts`.
+//! `packages/coducktor/src/core/pi-runner.ts`.
 //!
 //! Contract: <https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/rpc.md>.
 //! pi has its own command/event vocabulary (not claude stream-json, not codex's JSON-RPC
@@ -57,7 +57,7 @@ use crate::usage::{self, RawUsage};
 use crate::wire::{as_nonempty_str, as_record};
 
 /// Where to find the pi binary. Production wiring resolves `program`/`prefix_args` from
-/// `CEZ_PI_BIN`/`CEZ_DRY_RUN` (that resolution is `coducktor-server`'s job, not this crate's);
+/// `DUCK_PI_BIN`/`DUCK_DRY_RUN` (that resolution is `coducktor-server`'s job, not this crate's);
 /// tests point `program` at `node` with `prefix_args: vec![mock_script_path]`.
 #[derive(Debug, Clone)]
 pub struct PiSpawnConfig {
@@ -328,7 +328,7 @@ fn truncate(text: &str, max: usize) -> String {
 impl PiSession {
     fn write_get_state(&mut self) -> Result<(), String> {
         self.process
-            .write_line(&json!({"id": "cezar-state", "type": "get_state"}).to_string())
+            .write_line(&json!({"id": "coducktor-state", "type": "get_state"}).to_string())
     }
 
     fn write_prompt(&mut self, content: &[ContentBlock]) -> Result<(), String> {
@@ -767,7 +767,7 @@ mod tests {
         assert!(event_types.contains(&"token-usage"));
         assert!(event_types.contains(&"turn-end"));
 
-        // No CEZ:DONE in the prompt — the turn parks as Waiting rather than completing.
+        // No DUCK:DONE in the prompt — the turn parks as Waiting rather than completing.
         match outcome {
             SessionOutcome::Waiting(report) => {
                 assert!(report.turn_text.contains("Investigating"));

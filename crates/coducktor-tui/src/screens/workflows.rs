@@ -6,7 +6,7 @@
 //! /workflows`, `DELETE /workflows/:name`, `POST /workflows/parse`.
 //!
 //! The save path honors the portable compact `skills:` form: `skill_stack_of` mirrors the
-//! server's `skillStackOf` (packages/cezar/src/workflows/types.ts) and, when every step is a
+//! server's `skillStackOf` (packages/coducktor/src/workflows/types.ts) and, when every step is a
 //! plain skill step, the client POSTs `{skills: [...]}` instead of `{steps: [...]}` — the
 //! server then writes the file in the compact form (spec 012, a protected format property).
 
@@ -80,7 +80,7 @@ impl Default for WorkflowsUi {
     }
 }
 
-/// `skillStackOf` (`packages/cezar/src/workflows/types.ts`) — the inverse of
+/// `skillStackOf` (`packages/coducktor/src/workflows/types.ts`) — the inverse of
 /// `skillsToSteps`: when every step is a plain "apply this skill" agent step, return the
 /// skill list so the file can be written in the portable compact `skills:` form. Anything
 /// richer (checks, custom prompts, per-step models/tools, loops) returns `None`.

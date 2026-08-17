@@ -1,14 +1,14 @@
-//! The git shell-out layer, ported from `packages/cezar/src/{git-worktree,git-diff-base,
+//! The git shell-out layer, ported from `packages/coducktor/src/{git-worktree,git-diff-base,
 //! git-refs}.ts` (spec §11.1, step B3): worktrees, base-ref resolution, autosave commits,
 //! diff, shortstat, and the ref-safety guard. **Shells out to the real `git` binary** —
 //! deliberately, per the spec ("the current behavior is subtle and the shell-outs are the
 //! spec"), not `git2`/`gix`.
 //!
-//! `packages/cezar/src/server/git.ts` and `packages/cezar/src/server/git-changes.ts`
+//! `packages/coducktor/src/server/git.ts` and `packages/coducktor/src/server/git-changes.ts`
 //! (repo-info/status/log for the Repo tab, and the Changes/Files tabs/branch/commit/push
 //! plumbing) are **not** ported here — neither is named in the spec's B3 ship list, and
-//! both are server-route-adjacent logic that lands at B9 (`cezar-server`, "handlers stay
-//! thin, delegate to cezar-core").
+//! both are server-route-adjacent logic that lands at B9 (`coducktor-server`, "handlers stay
+//! thin, delegate to coducktor-core").
 //!
 //! TS has three near-identical private `git()` shell-out wrappers, one per file, because
 //! that tree grew organically (`git-diff-base.ts`'s own doc comment notes this — it takes

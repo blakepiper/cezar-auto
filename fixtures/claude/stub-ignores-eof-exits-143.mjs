@@ -5,7 +5,7 @@
 // itself, exiting 143 instead of dying from the signal.
 
 process.on('SIGTERM', () => {
-  // Claude reports this final frame while reacting to cezar's teardown
+  // Claude reports this final frame while reacting to coducktor's teardown
   // signal. It describes our interruption, not an agent failure.
   process.stdout.write(
     `${JSON.stringify({

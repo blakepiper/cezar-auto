@@ -1,5 +1,5 @@
 //! The backend-agnostic seam shared by every agent-CLI backend runner. Ported from
-//! `packages/cezar/src/core/agent-runner.ts`, ahead of the concrete backends
+//! `packages/coducktor/src/core/agent-runner.ts`, ahead of the concrete backends
 //! (B9a.2b-2e) so each one plugs into the same spawn/signal/termination-tracking
 //! primitives instead of re-deriving them. `RunnerId`/`AgentBackend` are not
 //! re-ported here: `coducktor_contract::Runner`/`RunnerSelection` already cover

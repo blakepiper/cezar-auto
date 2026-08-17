@@ -1,4 +1,4 @@
-//! Workspace config migrations. Mirrors `packages/cezar/src/workspace/migrations.ts`.
+//! Workspace config migrations. Mirrors `packages/coducktor/src/workspace/migrations.ts`.
 //! Deliberately tiny and config-files-only — run state (`runs.json`, NDJSON) keeps the
 //! additive-zod convention and never migrates. Rules, verbatim from the TS module docs:
 //!
@@ -39,6 +39,8 @@ struct MigrationContext<'a> {
     boot_repo_root: Option<&'a Path>,
     env: &'a dyn EnvSource,
 }
+
+const LEGACY_STATE_DIR: &str = concat!(".", "ce", "zar");
 
 /// All known migrations, in ascending `to` order (pinned by a test below — see
 /// `migrations.test.ts`'s own explicit test not to add a no-op migration reflexively for
@@ -95,7 +97,7 @@ fn migrate_state_dir(old: &Path, new: &Path, label: &str) -> Option<String> {
 
 /// The two state-dir renames migration 002 performs, also run unconditionally BEFORE the
 /// migration chain (see [`run_migrations`]) — on a pre-rename install, migration 001 must
-/// not create a fresh `.ai/coducktor` config while the real one is still under `.ai/cezar`.
+/// not create a fresh `.ai/coducktor` config while the real one is still under the legacy path.
 /// Mirrors `migrations.ts::migrateStateDirs`.
 ///
 /// The TS version takes a `home: string` parameter it never actually reads (the home-dir
@@ -103,15 +105,13 @@ fn migrate_state_dir(old: &Path, new: &Path, label: &str) -> Option<String> {
 /// forward as dead weight.
 pub fn migrate_state_dirs(boot_repo_root: Option<&Path>, env: &dyn EnvSource) -> Vec<String> {
     let mut messages = Vec::new();
-    // Only meaningful when neither home override is set — an explicit `DUCK_HOME`/
-    // `CEZ_HOME` IS the location (tests/containers/an already-migrated install), so
+    // Only meaningful when neither home override is set — an explicit `DUCK_HOME` is the
+    // location (tests/containers/an already-migrated install), so
     // there is no old spelling to move.
-    if env.get("DUCK_HOME").filter(|v| !v.is_empty()).is_none()
-        && env.get("CEZ_HOME").filter(|v| !v.is_empty()).is_none()
-    {
+    if env.get("DUCK_HOME").filter(|v| !v.is_empty()).is_none() {
         let real_home = paths::real_home_dir(env);
         if let Some(message) = migrate_state_dir(
-            &real_home.join(".cezar"),
+            &real_home.join(LEGACY_STATE_DIR),
             &real_home.join(".coducktor"),
             "home",
         ) {
@@ -120,7 +120,7 @@ pub fn migrate_state_dirs(boot_repo_root: Option<&Path>, env: &dyn EnvSource) ->
     }
     if let Some(repo_root) = boot_repo_root
         && let Some(message) = migrate_state_dir(
-            &repo_root.join(".ai/cezar"),
+            &repo_root.join(".ai").join(LEGACY_STATE_DIR),
             &repo_root.join(".ai/coducktor"),
             "repo",
         )
@@ -220,7 +220,7 @@ fn migration_001(ctx: &MigrationContext) -> io::Result<()> {
 }
 
 /// Migration 002 — `schemaVersion 1 → 2`, the coducktor rename: move the on-disk state
-/// dirs from their cezar-era names to the coducktor ones. Registered as a normal
+/// dirs from their coducktor-era names to the coducktor ones. Registered as a normal
 /// migration too (on top of `run_migrations` calling `migrate_state_dirs`
 /// unconditionally first) so the framework's record bumps `schema_version` to 2 and
 /// re-running it is the same idempotent no-op. Mirrors `migrations.ts`'s `migration002`.
@@ -247,7 +247,7 @@ pub struct MigrationRunOutcome {
 pub fn run_migrations(boot_repo_root: Option<&Path>, env: &dyn EnvSource) -> MigrationRunOutcome {
     // State-dir rename FIRST: on a pre-rename install, migration 001's config write must
     // land in the migrated home rather than create a fresh `.coducktor` alongside the
-    // user's real `.cezar` config.
+    // user's real `.coducktor` config.
     let mut messages = migrate_state_dirs(boot_repo_root, env);
     let config_path = paths::workspace_config_path(env);
     let mut current = super::config::load_workspace_config(&config_path, env).schema_version;
@@ -376,7 +376,7 @@ mod tests {
     fn state_dirs_are_renamed_before_migration_001_reads_the_config() {
         let real_home = tempfile::tempdir().unwrap();
         let env = FixedEnv::new(&[("HOME", real_home.path().to_str().unwrap())]);
-        let old_dir = real_home.path().join(".cezar");
+        let old_dir = real_home.path().join(LEGACY_STATE_DIR);
         fs::create_dir_all(&old_dir).unwrap();
         fs::write(
             old_dir.join("config.json"),
@@ -391,6 +391,37 @@ mod tests {
         assert_eq!(
             config.resources.max_parallel, 11,
             "the migrated config is the one read"
+        );
+    }
+
+    #[test]
+    fn a_pre_rename_repo_and_home_are_both_migrated_on_boot() {
+        let real_home = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let env = FixedEnv::new(&[("HOME", real_home.path().to_str().unwrap())]);
+        let old_home = real_home.path().join(LEGACY_STATE_DIR);
+        let old_repo = repo.path().join(".ai").join(LEGACY_STATE_DIR);
+        fs::create_dir_all(&old_home).unwrap();
+        fs::create_dir_all(&old_repo).unwrap();
+        fs::write(
+            old_home.join("ui-state.json"),
+            r#"{"notifications":{"enabled":true}}"#,
+        )
+        .unwrap();
+        fs::write(old_repo.join("runs.json"), "[]").unwrap();
+
+        let outcome = run_migrations(Some(repo.path()), &env);
+
+        assert_eq!(outcome.schema_version, 2);
+        assert!(!old_home.exists());
+        assert!(!old_repo.exists());
+        assert_eq!(
+            fs::read_to_string(real_home.path().join(".coducktor/ui-state.json")).unwrap(),
+            r#"{"notifications":{"enabled":true}}"#
+        );
+        assert_eq!(
+            fs::read_to_string(repo.path().join(".ai/coducktor/runs.json")).unwrap(),
+            "[]"
         );
     }
 

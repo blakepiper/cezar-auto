@@ -1,5 +1,5 @@
 //! PR/issue-number extraction from a task prompt (spec 2026-07-17-task-auto-naming, step 0).
-//! Mirrors `packages/cezar/src/runs/task-refs.ts`.
+//! Mirrors `packages/coducktor/src/runs/task-refs.ts`.
 //!
 //! The always-available programmatic layer under the LLM namer. Pure — it runs inline at
 //! `startRun` and its result both prefixes the heuristic title and cross-checks the namer's
@@ -127,13 +127,13 @@ mod tests {
     fn reads_the_github_tab_templates_verbatim() {
         assert_eq!(
             extract_task_refs(
-                "Address GitHub pull request #454: show CI status\n\nhttps://github.com/open-mercato/cezar/pull/454"
+                "Address GitHub pull request #454: show CI status\n\nhttps://github.com/open-mercato/coducktor/pull/454"
             ),
             refs(Some(454), None, None)
         );
         assert_eq!(
             extract_task_refs(
-                "Fix GitHub issue #432: bad titles\n\nhttps://github.com/open-mercato/cezar/issues/432"
+                "Fix GitHub issue #432: bad titles\n\nhttps://github.com/open-mercato/coducktor/issues/432"
             ),
             refs(None, Some(432), None)
         );
@@ -142,7 +142,7 @@ mod tests {
     #[test]
     fn urls_are_the_strongest_signal_and_set_the_kind() {
         assert_eq!(
-            extract_task_refs("see https://github.com/open-mercato/cezar/pull/441 please"),
+            extract_task_refs("see https://github.com/open-mercato/coducktor/pull/441 please"),
             refs(Some(441), None, None)
         );
         assert_eq!(

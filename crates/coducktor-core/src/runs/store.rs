@@ -1,5 +1,5 @@
 //! `<repo>/.ai/coducktor/runs.json` — the run index. Mirrors the file-layer half of
-//! `packages/cezar/src/runs/store.ts`'s `RunStore`: loading, reconciling, and atomically
+//! `packages/coducktor/src/runs/store.ts`'s `RunStore`: loading, reconciling, and atomically
 //! saving the array of [`RunRecord`]s. The stateful half of that class — the `EventEmitter`
 //! fan-out, debounced saves, secret redaction, and the PR/issue janitor `createRun`/
 //! `updateRun`/`appendEvent` run on every write — is business logic that belongs with the
@@ -30,7 +30,7 @@ use crate::time::{is_zod_datetime, now_iso8601};
 const LEGACY_CLAUDE_CLI: &str = "claude-cli";
 
 /// Interrupted-run error text, verbatim from `store.ts::reconcileLoadedRun`.
-const INTERRUPTED_ERROR: &str = "interrupted — cezar process exited during the run";
+const INTERRUPTED_ERROR: &str = "interrupted — coducktor process exited during the run";
 
 /// `store.ts::MAX_RUNS_KEPT`.
 pub const MAX_RUNS_KEPT: usize = 300;

@@ -30,7 +30,7 @@
     "type": "item.delta",
     "itemId": "item_cmd_1",
     "field": "output",
-    "delta": "> cezar@0.1.0 test\n> vitest run\n"
+    "delta": "> coducktor@0.1.0 test\n> vitest run\n"
   },
   {
     "type": "item.delta",
@@ -54,7 +54,7 @@
           "npm test"
         ]
       },
-      "output": "> cezar@0.1.0 test\n> vitest run\nTest Files  4 passed (4)\n",
+      "output": "> coducktor@0.1.0 test\n> vitest run\nTest Files  4 passed (4)\n",
       "exitCode": 0
     }
   },

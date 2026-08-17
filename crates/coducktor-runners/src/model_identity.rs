@@ -1,5 +1,5 @@
 //! The canonical `provider/model` identity parser, ported from
-//! `packages/cezar/src/core/model-identity.ts`. Only [`parse_model_identity`] is ported here —
+//! `packages/coducktor/src/core/model-identity.ts`. Only [`parse_model_identity`] is ported here —
 //! the single pure function opencode's and (at B9a.2e) pi's runners import directly. The
 //! fail-loud `resolveModelIdentity`/`normalizeModelForBackend`/`toBackendModel` machinery is run
 //! wiring's job (the caller that resolves `spec.model` before a backend ever sees it — "arrives
