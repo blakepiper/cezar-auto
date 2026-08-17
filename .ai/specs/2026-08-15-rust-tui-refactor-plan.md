@@ -653,9 +653,10 @@ call it when doing the work.
 the mock streams them (not all at once at the end), and `cargo test --workspace` /
 clippy / fmt stay green throughout.
 **Commit(s):** `feat(runners): B9a.2a agent-runner seam (spawn/signal/termination
-helpers)` — pushed as `01a15b45`; then `B9a.2b claude backend`, `B9a.2c codex
-backend`, `B9a.2d opencode backend`, `B9a.2e pi backend` — none of these are done
-yet.
+helpers)` — pushed as `01a15b45`; `B9a.2b.1 ask-marker validation` — `f912a552`;
+`B9a.2b.2 least-privilege child env` — `95b4968c`; `B9a.2b claude backend` —
+`0653a0bf`; then `B9a.2c codex backend`, `B9a.2d opencode backend`, `B9a.2e pi
+backend` — none of these are done yet.
 **B9a.2a note:** shipped as `crates/coducktor-runners/src/agent_runner.rs` — the four
 primitives `agent-runner.ts` actually exports: `is_signal_termination_exit`,
 `prepend_system_prompt`, `ContentBlock`/`ImageSource` (the outbound Anthropic-shaped
@@ -680,6 +681,60 @@ verified via a poll counter) plus the crate's existing 14 tests, all green.
 `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`,
 and `cargo fmt --check` all green (the one pre-existing `coducktor-client/tests/
 transport.rs` drift noted since B2 is untouched by this step).
+
+**B9a.2b notes:** two prerequisites surfaced mid-step and shipped as their own commits
+before the backend itself, matching this section's own "own commit if that keeps diffs
+reviewable" guidance:
+- `B9a.2b.1` ports `packages/cezar/src/core/ask.ts` to `crates/coducktor-core/src/runs/
+  ask.rs` — `decide_turn_marker`'s `valid_ask` parameter needs to know whether a turn's
+  trailing marker is a schema-valid `AskRequest`, and nothing had ever ported that
+  validation (Phase A's TUI never needed it; the still-live Node server validated
+  server-side). No zod here: unlike this crate's other ported schemas, an invalid
+  `DUCK:ASK` payload degrades the WHOLE marker to plain text rather than being salvaged
+  field-by-field, so it's a plain all-or-nothing walk over `serde_json::Value`. 27 tests
+  port every case in `ask.test.ts`.
+- `B9a.2b.2` ports `packages/cezar/src/core/agent-env.ts` to `crates/coducktor-runners/
+  src/agent_env.rs` — the least-privilege child-env allowlist (#427) every spawned
+  backend must go through; spawning a real `claude` child without it would hand an
+  attacker-controlled prompt the host's `GITHUB_TOKEN`/`ANTHROPIC_API_KEY`/`AWS_*`. 24
+  tests port `agent-env.test.ts` case for case (Windows-shaped env casing, the #785
+  temp-directory override-not-shadow behavior, the Bedrock/Vertex toggles).
+
+The backend itself (`crates/coducktor-runners/src/claude_runner.rs`) also grew
+`AgentRunSpec` in `agent_runner.rs` — the Rust counterpart of `agent-runner.ts`'s shared
+spec type, needed by every backend but out of B9a.2a's narrower four-primitives scope.
+
+**Architecture note, not a scope cut:** `coducktor_core::workflows::run::AgentSession`
+(built at B6, before any backend existed) is turn-scoped — `turn()`/`send_message()`
+each block for exactly one turn and return — where `claude-cli-runner.ts`'s single
+`result` promise spans the whole session with turn boundaries visible only through the
+live `onEvent('turn-end')` callback. Because of that mismatch (not a deliberate
+narrowing), three TS mechanisms have no Rust counterpart: `TrackableChild`/
+`track_child_exit` (B9a.2a) go unused by this backend — `std::process::Child` has no
+`.killed`-delivery-vs-exit ambiguity to work around, `try_wait()` already answers the
+question directly — and `isSignalTerminationExit`/`terminatedByCezar`/
+`normalizeIntentionalTeardownResult` are dropped entirely, since the race they resolve
+(a separate timer callback signalling the child while the read loop is still consuming
+its stdout) cannot occur when the signalling code runs on the same call stack as the
+loop it signals, with `&mut self` ruling out any concurrent caller. A wall-clock timeout
+is a hard `Err` (fails the step) rather than TS's soft `done`-with-error-note outcome,
+because the trait has no is-session-open signal a caller could use to avoid resurrecting
+a session whose process was just killed.
+**Scope cut:** wiring a real `SessionFactory` into `coducktor-server` is deferred, per
+this step's own text ("or its own follow-up commit — call it when doing the work") — a
+separate concern from the backend implementation itself.
+**Accept, verified:** pure argv-builder tests port every case in
+`claude-cli-runner.test.ts`'s `buildClaudeArgs`/`buildAllowedTools` describe blocks; real
+subprocess tests spawn `node` against `packages/cezar/scripts/mock-claude.mjs` and the
+`stub-ignores-eof-exits-143.mjs` fixture (#703's own oracle) — first-turn streaming
+(text/tool-call/tool-result/image/token-usage/cost/turn-end events), a `CEZ:DONE`-marked
+turn completing the step, a follow-up turn, `finish()` closing a cooperative process
+promptly, `finish()`'s real SIGTERM (via `libc`, Unix)/SIGKILL escalation against a
+process that ignores EOF, a wall-clock timeout killing the process and failing the turn,
+and a friendly error for a missing binary. 53 tests in `coducktor-runners` (up from 8),
+`cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, and
+`cargo fmt --check` all green (the one pre-existing `coducktor-client/tests/
+transport.rs` drift noted since B2 is untouched).
 
 ### [ ] B10 — `cezar-cli`
 **Ships:** `serve`, `run`, `init`, `usage`, `projects` subcommands. `-p/--port` and
