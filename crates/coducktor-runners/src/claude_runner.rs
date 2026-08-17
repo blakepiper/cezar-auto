@@ -11,18 +11,21 @@
 //! live `onEvent('turn-end')` callback. `coducktor_core::workflows::run::AgentSession` (built at
 //! B6, before this backend existed) is turn-scoped instead: `turn()`/`send_message()` each block
 //! for exactly one turn and return. This is not a re-derivation of that trait's shape — it
-//! already existed — just this backend's job to satisfy it: [`ClaudeSession::open`] spawns the
+//! already existed — just this backend's job to satisfy it: [`open_claude_session`] spawns the
 //! process and sends the opening message (mirroring `startSession`'s synchronous `sendMessage`
 //! call before it returns), and each `turn`/`send_message` call reads the live stdout channel
 //! until the next `result` frame ends that turn, which is exactly where the real CLI pauses
 //! between turns anyway (it is waiting on the next stdin line), so nothing is lost by returning
 //! there instead of continuing to await the whole session.
 //!
-//! `TrackableChild`/`track_child_exit` (B9a.2a) are not used here: they exist to work around
-//! Node's `ChildProcess.killed` flag recording signal *delivery* rather than actual exit.
-//! `std::process::Child` has no such flag — `try_wait()` already answers "has this exited?"
-//! directly — so the workaround the TS pair exists for does not apply to this concrete type;
-//! this session polls `try_wait()` inline instead.
+//! Process plumbing (spawn, the stdout line channel, stderr collection, SIGTERM->SIGKILL
+//! escalation) lives in `child_process::ChildProcess`, shared with the codex backend rather than
+//! re-derived per file the way `claude-cli-runner.ts`/`codex-app-server-transport.ts` do in TS.
+//! `TrackableChild`/`track_child_exit` (B9a.2a) are not used by that shared plumbing either: they
+//! exist to work around Node's `ChildProcess.killed` flag recording signal *delivery* rather than
+//! actual exit. `std::process::Child` has no such flag — `try_wait()` already answers "has this
+//! exited?" directly — so the workaround the TS pair exists for does not apply to this concrete
+//! type; `ChildProcess` polls `try_wait()` inline instead.
 //!
 //! For the same reason, `isSignalTerminationExit`/`terminatedByCezar`/
 //! `normalizeIntentionalTeardownResult` are not ported here either. In `claude-cli-runner.ts`
@@ -37,20 +40,17 @@
 //! `cancel` are `&mut self`, so they can only run between turns, never during one).
 
 use std::collections::BTreeMap;
-use std::io::{self, BufRead, BufReader, Read, Write};
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::thread;
+use std::io;
 use std::time::{Duration, Instant};
 
-use coducktor_contract::{ConcreteReasoningEffort, Runner};
+use coducktor_contract::Runner;
 use coducktor_core::workflows::run::{
     AgentSession, EventInput, SessionOutcome, SessionReport, TurnMarkerDecision, decide_turn_marker,
 };
 use serde_json::{Map, Value};
 
-use crate::agent_env::{self, BuildChildEnvOptions};
-use crate::agent_runner::{AgentRunSpec, ContentBlock};
+use crate::agent_runner::{AgentRunSpec, ContentBlock, reasoning_effort_str};
+use crate::child_process::{ChildProcess, NextLine, SpawnConfig};
 use crate::claude::{stringify_tool_result_content, tool_result_image_blocks};
 use crate::usage::{self, RawUsage};
 
@@ -120,15 +120,6 @@ pub fn build_claude_args(spec: &AgentRunSpec, env: &BTreeMap<String, String>) ->
     args
 }
 
-fn reasoning_effort_str(effort: ConcreteReasoningEffort) -> &'static str {
-    match effort {
-        ConcreteReasoningEffort::Low => "low",
-        ConcreteReasoningEffort::Medium => "medium",
-        ConcreteReasoningEffort::High => "high",
-        ConcreteReasoningEffort::XHigh => "xhigh",
-    }
-}
-
 /// Map `allowed_tools` onto claude's `--allowedTools` syntax. `Bash` with a `bash_allowlist`
 /// becomes one `Bash(<prefix>:*)` entry per allowed prefix; `Bash` with no allowlist stays plain
 /// `Bash`.
@@ -189,18 +180,12 @@ fn wrap_spawn_error(error: &io::Error, program: &str) -> String {
 
 /// A live `claude` CLI session. Implements [`AgentSession`].
 pub struct ClaudeSession {
-    child: std::process::Child,
-    stdin: Option<std::process::ChildStdin>,
-    stdout_rx: mpsc::Receiver<String>,
-    stderr_handle: Option<thread::JoinHandle<String>>,
+    process: ChildProcess,
     session_id: Option<String>,
     /// Mirrors `claude-cli-runner.ts`'s `stdinOpen`: false once `finish()`/`cancel()` has run.
     open: bool,
     /// 0 disables the wall-clock kill switch entirely (interactive sessions).
     timeout_ms: u64,
-    eof_term_grace: Duration,
-    eof_kill_grace: Duration,
-    kill_grace: Duration,
 }
 
 /// Spawn a claude session and send the opening message — mirrors `startSession`'s synchronous
@@ -211,66 +196,30 @@ pub fn open_claude_session(
     spec: &AgentRunSpec,
     host_env: &BTreeMap<String, String>,
 ) -> Result<ClaudeSession, String> {
-    let args = build_claude_args(spec, host_env);
-    let child_env = agent_env::build_child_env(BuildChildEnvOptions {
-        backend: Runner::Claude,
-        extra_env: &spec.env,
-        source: host_env,
-    });
-
-    let mut command = Command::new(&config.program);
-    command
-        .args(&config.prefix_args)
-        .args(&args)
-        .current_dir(&spec.cwd)
-        .env_clear()
-        .envs(child_env)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut child = command
-        .spawn()
-        .map_err(|error| wrap_spawn_error(&error, &config.program))?;
-
-    let stdin = child.stdin.take().expect("stdin was piped");
-    let stdout = child.stdout.take().expect("stdout was piped");
-    let stderr = child.stderr.take().expect("stderr was piped");
-
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            match line {
-                Ok(line) => {
-                    if tx.send(line).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    });
-    let stderr_handle = thread::spawn(move || {
-        let mut buffer = String::new();
-        let mut stderr = stderr;
-        let _ = stderr.read_to_string(&mut buffer);
-        buffer
-    });
+    let mut args = config.prefix_args.clone();
+    args.extend(build_claude_args(spec, host_env));
+    let process = ChildProcess::spawn(
+        &SpawnConfig {
+            program: config.program.clone(),
+            args,
+            eof_term_grace: config.eof_term_grace,
+            eof_kill_grace: config.eof_kill_grace,
+            kill_grace: config.kill_grace,
+        },
+        Runner::Claude,
+        &spec.cwd,
+        &spec.env,
+        host_env,
+    )
+    .map_err(|error| wrap_spawn_error(&error, &config.program))?;
 
     let timeout_ms = spec.timeout_ms.unwrap_or(DEFAULT_RUN_TIMEOUT_MS);
 
     let mut session = ClaudeSession {
-        child,
-        stdin: Some(stdin),
-        stdout_rx: rx,
-        stderr_handle: Some(stderr_handle),
+        process,
         session_id: spec.session_id.clone(),
         open: true,
         timeout_ms,
-        eof_term_grace: config.eof_term_grace,
-        eof_kill_grace: config.eof_kill_grace,
-        kill_grace: config.kill_grace,
     };
 
     let mut opening = spec.images.clone();
@@ -426,9 +375,6 @@ fn truncate(text: &str, max: usize) -> String {
 
 impl ClaudeSession {
     fn write_message(&mut self, content: &[ContentBlock]) -> Result<(), String> {
-        let Some(stdin) = self.stdin.as_mut() else {
-            return Err("session is closed".to_owned());
-        };
         let mut message = Map::new();
         message.insert("role".to_owned(), Value::String("user".to_owned()));
         message.insert(
@@ -444,95 +390,15 @@ impl ClaudeSession {
         if let Some(session_id) = &self.session_id {
             envelope.insert("session_id".to_owned(), Value::String(session_id.clone()));
         }
-        let mut line =
+        let line =
             serde_json::to_string(&Value::Object(envelope)).map_err(|error| error.to_string())?;
-        line.push('\n');
-        stdin
-            .write_all(line.as_bytes())
-            .map_err(|error| format!("stdin write failed: {error}"))?;
-        Ok(())
-    }
-
-    fn has_exited(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(Some(_)))
-    }
-
-    /// Send a graceful stop signal. On Unix this is a real SIGTERM (the CLI installs its own
-    /// handler and can act on it); `std::process::Child::kill` has no SIGTERM concept off Unix,
-    /// so non-Unix targets fall back to the same hard kill `signal_kill` uses — there is no
-    /// softer option there.
-    fn signal_term(&mut self) {
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(self.child.id() as libc::pid_t, libc::SIGTERM);
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = self.child.kill();
-        }
-    }
-
-    fn signal_kill(&mut self) {
-        let _ = self.child.kill();
-    }
-
-    /// Poll `try_wait` for up to `budget`, sleeping briefly between checks. Returns whether the
-    /// child had exited by the time the budget elapsed.
-    fn wait_exited_within(&mut self, budget: Duration) -> bool {
-        let deadline = Instant::now() + budget;
-        loop {
-            if self.has_exited() {
-                return true;
-            }
-            if Instant::now() >= deadline {
-                return self.has_exited();
-            }
-            thread::sleep(
-                Duration::from_millis(20).min(deadline.saturating_duration_since(Instant::now())),
-            );
-        }
-    }
-
-    fn wait_for_exit(&mut self) -> Option<i32> {
-        self.child.wait().ok().and_then(|status| status.code())
-    }
-
-    fn take_stderr_tail(&mut self) -> String {
-        let Some(handle) = self.stderr_handle.take() else {
-            return String::new();
-        };
-        let raw = handle.join().unwrap_or_default();
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            return String::new();
-        }
-        let lines: Vec<&str> = trimmed.lines().collect();
-        let tail = &lines[lines.len().saturating_sub(3)..];
-        tail.join(" | ")
-    }
-
-    /// The EOF SIGTERM->SIGKILL watchdog `finish()` arms after closing stdin.
-    fn escalate_after_eof(&mut self) {
-        if self.wait_exited_within(self.eof_term_grace) {
-            return;
-        }
-        self.signal_term();
-        if self.wait_exited_within(self.eof_kill_grace) {
-            return;
-        }
-        self.signal_kill();
+        self.process.write_line(&line)
     }
 
     /// The wall-clock kill switch a live turn's read loop arms when `timeout_ms` elapses.
     fn escalate_after_timeout(&mut self) -> String {
         self.open = false;
-        if !self.has_exited() {
-            self.signal_term();
-        }
-        if !self.wait_exited_within(self.kill_grace) {
-            self.signal_kill();
-        }
-        self.wait_for_exit();
+        self.process.escalate_after_timeout();
         let minutes = (self.timeout_ms as f64 / 60_000.0 * 10.0).round() / 10.0;
         format!("claude CLI timed out after {minutes}m and was killed")
     }
@@ -580,25 +446,15 @@ impl ClaudeSession {
         let mut cost_usd: Option<f64> = None;
 
         loop {
-            let line = match deadline {
-                Some(dl) => {
-                    let now = Instant::now();
-                    if now >= dl {
-                        let message = self.escalate_after_timeout();
-                        on_event(EventInput::new("error").field("message", message.clone()))
-                            .map_err(|error| error.to_string())?;
-                        return Err(message);
-                    }
-                    match self.stdout_rx.recv_timeout(dl - now) {
-                        Ok(line) => line,
-                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                    }
+            let line = match self.process.next_line(deadline) {
+                Ok(NextLine::Line(line)) => line,
+                Ok(NextLine::Closed) => break,
+                Err(_timed_out) => {
+                    let message = self.escalate_after_timeout();
+                    on_event(EventInput::new("error").field("message", message.clone()))
+                        .map_err(|error| error.to_string())?;
+                    return Err(message);
                 }
-                None => match self.stdout_rx.recv() {
-                    Ok(line) => line,
-                    Err(_) => break,
-                },
             };
 
             let line = line.trim();
@@ -653,11 +509,11 @@ impl ClaudeSession {
         // stdout closed without a `result` frame — the process exited (or crashed) mid-turn.
         // No signal-termination bookkeeping to consult here: see the module doc's note on why
         // `terminatedByCezar` has no Rust counterpart in this turn-scoped session.
-        let exit_code = self.wait_for_exit();
+        let exit_code = self.process.wait_for_exit();
         if let Some(code) = exit_code
             && code != 0
         {
-            let stderr = self.take_stderr_tail();
+            let stderr = self.process.take_stderr_tail();
             let detail = if stderr.is_empty() {
                 String::new()
             } else {
@@ -706,17 +562,17 @@ impl AgentSession for ClaudeSession {
     ) -> Result<SessionOutcome, String> {
         if self.open {
             self.open = false;
-            self.stdin = None; // dropping ChildStdin closes the pipe (EOF to the child)
-            self.escalate_after_eof();
+            self.process.close_stdin(); // delivers EOF to the child
+            self.process.escalate_after_eof();
         }
-        self.wait_for_exit();
+        self.process.wait_for_exit();
         Ok(SessionOutcome::Completed(SessionReport::default()))
     }
 
     fn cancel(&mut self) {
         self.open = false;
-        if !self.has_exited() {
-            self.signal_term();
+        if !self.process.has_exited() {
+            self.process.signal_term();
         }
     }
 
@@ -728,6 +584,7 @@ impl AgentSession for ClaudeSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use coducktor_contract::ConcreteReasoningEffort;
     use std::path::PathBuf;
 
     fn mock_script(name: &str) -> String {

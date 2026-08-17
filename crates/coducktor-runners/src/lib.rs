@@ -8,6 +8,7 @@ mod wire;
 
 pub mod agent_env;
 pub mod agent_runner;
+pub mod child_process;
 pub mod claude;
 pub mod claude_runner;
 pub mod codex;

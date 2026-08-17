@@ -48,6 +48,18 @@ pub struct AgentRunSpec {
     pub resume: bool,
 }
 
+/// The wire spelling each backend's CLI/app-server expects for a reasoning-effort override
+/// (claude's `--effort`, codex's `turn/start` overrides). Shared because both backends use the
+/// same lowercase-variant-name convention.
+pub fn reasoning_effort_str(effort: ConcreteReasoningEffort) -> &'static str {
+    match effort {
+        ConcreteReasoningEffort::Low => "low",
+        ConcreteReasoningEffort::Medium => "medium",
+        ConcreteReasoningEffort::High => "high",
+        ConcreteReasoningEffort::XHigh => "xhigh",
+    }
+}
+
 /// One content block of a user message — mirrors the Anthropic wire format so it can be
 /// written to the claude CLI's stdin verbatim.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
