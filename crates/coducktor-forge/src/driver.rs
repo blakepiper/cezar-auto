@@ -46,7 +46,19 @@ pub struct SystemCommandRunner;
 
 impl CommandRunner for SystemCommandRunner {
     fn run(&self, binary: &str, cwd: &Path, args: &[String], _timeout: Duration) -> CommandOutput {
-        match Command::new(binary).current_dir(cwd).args(args).output() {
+        let executable = if binary == "gh" {
+            std::env::var("DUCK_GH_BIN")
+                .ok()
+                .filter(|path| !path.trim().is_empty())
+                .unwrap_or_else(|| binary.to_owned())
+        } else {
+            binary.to_owned()
+        };
+        match Command::new(executable)
+            .current_dir(cwd)
+            .args(args)
+            .output()
+        {
             Ok(output) => CommandOutput {
                 ok: output.status.success(),
                 stdout: String::from_utf8_lossy(&output.stdout).into_owned(),

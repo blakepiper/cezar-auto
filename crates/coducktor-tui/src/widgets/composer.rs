@@ -252,6 +252,11 @@ impl Composer {
                 self.refresh_menu(ctx);
                 ComposerEvent::Changed
             }
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let text = self.text.trim().to_owned();
+                self.close_menu();
+                ComposerEvent::Submit { text }
+            }
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 self.insert_char('\n');
                 self.refresh_menu(ctx);

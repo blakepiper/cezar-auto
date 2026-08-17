@@ -906,6 +906,9 @@ pub struct App {
     pub editor_handoff: Option<String>,
     pub filter_mode: bool,
     pub sort_picker_index: usize,
+    /// Whether keyboard navigation is currently in the shell's left navigation panel.
+    sidebar_focus: bool,
+    sidebar_selected: usize,
 }
 
 impl App {
@@ -968,6 +971,8 @@ impl App {
             editor_handoff: None,
             filter_mode: false,
             sort_picker_index: 0,
+            sidebar_focus: false,
+            sidebar_selected: 0,
         }
     }
 
@@ -1340,6 +1345,7 @@ impl App {
                         "New task",
                         None,
                         self.route_is(NavItem::NewTask),
+                        self.sidebar_item_focused(NavItem::NewTask),
                         self.nav_style(self.route_is(NavItem::NewTask)),
                     ),
                     Some(HitAction::NewTask),
@@ -1349,6 +1355,7 @@ impl App {
                         "Tasks",
                         None,
                         self.route_is(NavItem::Tasks),
+                        self.sidebar_item_focused(NavItem::Tasks),
                         self.nav_style(self.route_is(NavItem::Tasks)),
                     ),
                     Some(HitAction::Tasks),
@@ -1358,6 +1365,7 @@ impl App {
                         "Inbox",
                         Some(self.inbox_count()),
                         self.route_is(NavItem::Inbox),
+                        self.sidebar_item_focused(NavItem::Inbox),
                         self.nav_style(self.route_is(NavItem::Inbox)),
                     ),
                     Some(HitAction::Inbox),
@@ -1368,6 +1376,7 @@ impl App {
                             nav.label(),
                             None,
                             self.route_is(nav),
+                            self.sidebar_item_focused(nav),
                             self.nav_style(self.route_is(nav)),
                         ),
                         Some(nav_hit_action(nav)),
@@ -1382,6 +1391,7 @@ impl App {
                 "All tasks",
                 None,
                 matches!(self.route(), Route::GlobalTasks),
+                false,
                 self.nav_style(matches!(self.route(), Route::GlobalTasks)),
             ),
             Some(HitAction::GlobalTasks),
@@ -1393,6 +1403,7 @@ impl App {
                 "Active",
                 None,
                 self.task_filter == TaskFilter::Active,
+                false,
                 self.nav_style(self.task_filter == TaskFilter::Active),
             ),
             Some(HitAction::ActiveTasks),
@@ -1402,6 +1413,7 @@ impl App {
                 "Archived",
                 None,
                 self.task_filter == TaskFilter::Archived,
+                false,
                 self.nav_style(self.task_filter == TaskFilter::Archived),
             ),
             Some(HitAction::ArchivedTasks),
@@ -1823,6 +1835,17 @@ impl App {
             self.handle_command_key(key);
             return;
         }
+        if key.code == KeyCode::Left
+            && key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL)
+        {
+            self.focus_sidebar();
+            return;
+        }
+        if self.sidebar_focus && self.handle_sidebar_key(key) {
+            return;
+        }
         match self.route().clone() {
             Route::Tasks { .. } if crate::screens::tasks::handle_key(self, key) => return,
             Route::GlobalTasks if crate::screens::global_tasks::handle_key(self, key) => return,
@@ -1982,6 +2005,7 @@ impl App {
             ActionId::Workflows => self.navigate(NavItem::Workflows),
             ActionId::Settings => self.navigate(NavItem::Settings),
             ActionId::ToggleSidebar => self.toggle_sidebar(),
+            ActionId::FocusSidebar => self.focus_sidebar(),
             ActionId::Help => self.help_open = true,
             ActionId::Palette => crate::overlay::open(self),
             ActionId::Back => {
@@ -2211,11 +2235,54 @@ impl App {
     }
 
     fn toggle_sidebar(&mut self) {
+        self.sidebar_focus = false;
         if self.last_width == 0 || self.last_width < SIDEBAR_BREAKPOINT {
             self.sidebar_overlay_open = !self.sidebar_overlay_open;
         } else {
             self.sidebar_collapsed = !self.sidebar_collapsed;
         }
+    }
+
+    fn focus_sidebar(&mut self) {
+        if self.last_width != 0 && self.last_width < SIDEBAR_BREAKPOINT {
+            self.sidebar_overlay_open = true;
+        } else if self.last_width >= SIDEBAR_BREAKPOINT {
+            self.sidebar_collapsed = false;
+        }
+        self.sidebar_selected = NavItem::ALL
+            .iter()
+            .position(|nav| self.route_is(*nav))
+            .unwrap_or(0);
+        self.sidebar_focus = true;
+    }
+
+    fn handle_sidebar_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.sidebar_selected = (self.sidebar_selected + 1) % NavItem::ALL.len();
+                true
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.sidebar_selected =
+                    (self.sidebar_selected + NavItem::ALL.len() - 1) % NavItem::ALL.len();
+                true
+            }
+            KeyCode::Enter => {
+                let nav = NavItem::ALL[self.sidebar_selected];
+                self.sidebar_focus = false;
+                self.navigate(nav);
+                true
+            }
+            KeyCode::Esc | KeyCode::Right => {
+                self.sidebar_focus = false;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn sidebar_item_focused(&self, nav: NavItem) -> bool {
+        self.sidebar_focus && NavItem::ALL[self.sidebar_selected] == nav
     }
 
     fn request_quit(&mut self) {
@@ -2443,9 +2510,24 @@ fn sidebar_nav_line(
     label: &str,
     badge: Option<usize>,
     active: bool,
+    focused: bool,
     style: Style,
 ) -> Line<'static> {
-    let mut spans = vec![Span::styled(if active { "  > " } else { "    " }, style)];
+    let style = if focused {
+        style.add_modifier(Modifier::REVERSED)
+    } else {
+        style
+    };
+    let mut spans = vec![Span::styled(
+        if focused {
+            "  ▸ "
+        } else if active {
+            "  > "
+        } else {
+            "    "
+        },
+        style,
+    )];
     spans.push(Span::styled(label.to_owned(), style));
     if let Some(badge) = badge {
         spans.push(Span::styled(format!("  [{badge}]"), style));
@@ -2708,6 +2790,25 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         }));
         assert_eq!(app.sidebar_width(), 37);
+    }
+
+    #[test]
+    fn sidebar_can_be_focused_and_navigated_without_a_mouse() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Left,
+            KeyModifiers::CONTROL,
+        )));
+        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+
+        assert!(matches!(app.route(), Route::Inbox { project } if project == "main"));
     }
 
     #[test]

@@ -18,15 +18,16 @@ user bindings are merged over these defaults, key by key.
 | `c` | New task |
 | `i` | Inbox |
 | `Ctrl+B` | Toggle sidebar |
+| `Ctrl+Left` | Focus the left navigation panel; `j`/`k` or `Up`/`Down` move, `Enter` opens, `Esc` returns |
 | `?` | Help overlay (context-filtered) |
 | `:` | Open the command line |
 | `Ctrl+O` | Navigate back |
 | `Ctrl+I` | Navigate forward |
 | `Ctrl+K` | Command palette |
 
-Sidebar nav items without a global single-key binding today — reach them via mouse
-click, the command palette (`Ctrl+K`), or `:open <route>`: IDE, Git (repo), GitHub,
-Skills, Workflows, Settings.
+The left navigation panel is keyboard-accessible with `Ctrl+Left`; use `j`/`k` or `Up`/`Down`
+to move through its destinations and `Enter` to open one. The command palette (`Ctrl+K`) and
+`:open <route>` remain available too.
 
 ### Command line (`:`)
 

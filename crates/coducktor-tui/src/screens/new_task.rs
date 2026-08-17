@@ -1128,7 +1128,11 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         });
     }
 
-    let column_width = (area.width.saturating_sub(8)).min(72);
+    // The composer used to be capped at 72 cells. That made the pill and action
+    // rows overflow even on a comfortably wide terminal, and made the narrow
+    // layout especially hard to use. Keep a small breathing room at the edges,
+    // but let the screen use all of the space it was given.
+    let column_width = area.width.saturating_sub(4).max(1);
     let column = Rect::new(
         area.x + area.width.saturating_sub(column_width) / 2,
         area.y,
@@ -1136,9 +1140,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         area.height,
     );
     let composer_height = app.new_task_ui.composer.height() + 2;
-    let pill_height = 1;
-    let action_height = 1;
-    let suggestion_height = 1;
+    let pill_height = pill_row_height(column_width, &effective);
+    let action_height = action_row_height(column_width);
+    let suggestion_height = suggestion_row_height(column_width);
     let header = 2;
     let constraints = [
         Constraint::Length(header),
@@ -1201,7 +1205,60 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 
 fn render_pills(frame: &mut Frame<'_>, area: Rect, app: &mut App, effective: &Effective) {
     let theme = app.theme;
-    let pills: Vec<(PillId, String)> = vec![
+    let pills = pill_entries(effective);
+    let rows = layout_pills(&pills, area.width);
+    for (row_index, row) in rows.into_iter().enumerate() {
+        let Some(y) = area.y.checked_add(row_index as u16) else {
+            continue;
+        };
+        if y >= area.bottom() {
+            break;
+        }
+        let mut spans = Vec::new();
+        let mut column = area.x;
+        for (pill, label) in row {
+            let focused = app.new_task_ui.pill_focus == Some(pill);
+            let style = if focused {
+                Style::default()
+                    .fg(theme.palette.bg)
+                    .bg(theme.palette.accent)
+            } else if pill == PillId::Autonomous && label.ends_with('☑') {
+                Style::default().fg(theme.palette.accent)
+            } else {
+                Style::default().fg(theme.palette.soft_fg)
+            };
+            let width = (label.chars().count() + 4) as u16;
+            let display = if pill == PillId::Autonomous {
+                label
+            } else {
+                format!("{label} ▾")
+            };
+            spans.push(Span::styled(format!(" {display} "), style));
+            app.hitmap.register(
+                Rect::new(column, y, width.min(area.right().saturating_sub(column)), 1),
+                6,
+                HitAction::NewTaskScreen(match pill {
+                    PillId::Source => NewTaskAction::SourcePill,
+                    PillId::Runner => NewTaskAction::RunnerPill,
+                    PillId::Model => NewTaskAction::ModelPill,
+                    PillId::Reasoning => NewTaskAction::ReasoningPill,
+                    PillId::Variants => NewTaskAction::VariantsPill,
+                    PillId::Base => NewTaskAction::BasePill,
+                    PillId::Account => NewTaskAction::AccountPill,
+                    PillId::Autonomous => NewTaskAction::AutonomousPill,
+                }),
+            );
+            column = column.saturating_add(width);
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.palette.bg)),
+            Rect::new(area.x, y, area.width, 1),
+        );
+    }
+}
+
+fn pill_entries(effective: &Effective) -> Vec<(PillId, String)> {
+    let mut pills = vec![
         (
             PillId::Source,
             match &effective.source {
@@ -1234,66 +1291,66 @@ fn render_pills(frame: &mut Frame<'_>, area: Rect, app: &mut App, effective: &Ef
                 .unwrap_or_else(|| "default".to_owned()),
         ),
     ];
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    for (pill, label) in &pills {
-        let focused = app.new_task_ui.pill_focus == Some(*pill);
-        let style = if focused {
-            Style::default()
-                .fg(theme.palette.bg)
-                .bg(theme.palette.accent)
-        } else {
-            Style::default().fg(theme.palette.soft_fg)
-        };
-        spans.push(Span::styled(format!(" {label} ▾ "), style));
-    }
     let autonomous = if effective.autonomous_on {
         "☑"
     } else {
         "☐"
     };
-    let autonomous_style = if app.new_task_ui.pill_focus == Some(PillId::Autonomous) {
-        Style::default()
-            .fg(theme.palette.bg)
-            .bg(theme.palette.accent)
-    } else if effective.autonomous_on {
-        Style::default().fg(theme.palette.accent)
-    } else {
-        Style::default().fg(theme.palette.soft_fg)
-    };
-    spans.push(Span::styled(
-        format!(" autonomous {autonomous} "),
-        autonomous_style,
-    ));
-    frame.render_widget(
-        Paragraph::new(Line::from(spans.clone())).style(Style::default().bg(theme.palette.bg)),
-        area,
-    );
-    let mut column = area.x;
-    for (pill, label) in &pills {
-        let width = (label.len() + 4) as u16;
-        let action = match pill {
-            PillId::Source => NewTaskAction::SourcePill,
-            PillId::Runner => NewTaskAction::RunnerPill,
-            PillId::Model => NewTaskAction::ModelPill,
-            PillId::Reasoning => NewTaskAction::ReasoningPill,
-            PillId::Variants => NewTaskAction::VariantsPill,
-            PillId::Base => NewTaskAction::BasePill,
-            PillId::Account => NewTaskAction::AccountPill,
-            PillId::Autonomous => NewTaskAction::AutonomousPill,
-        };
-        app.hitmap.register(
-            Rect::new(column, area.y, width, area.height),
-            6,
-            HitAction::NewTaskScreen(action),
-        );
-        column += width;
+    pills.push((PillId::Autonomous, format!("autonomous {autonomous}")));
+    pills
+}
+
+fn layout_pills(pills: &[(PillId, String)], width: u16) -> Vec<Vec<(PillId, String)>> {
+    let width = usize::from(width.max(1));
+    let mut rows: Vec<Vec<(PillId, String)>> = Vec::new();
+    let mut row = Vec::new();
+    let mut row_width = 0_usize;
+    for (pill, label) in pills {
+        let item_width = label.chars().count() + 4;
+        if !row.is_empty() && row_width + item_width > width {
+            rows.push(std::mem::take(&mut row));
+            row_width = 0;
+        }
+        row_width += item_width;
+        row.push((*pill, label.clone()));
     }
-    let autonomous_width = 16;
-    app.hitmap.register(
-        Rect::new(column, area.y, autonomous_width, area.height),
-        6,
-        HitAction::NewTaskScreen(NewTaskAction::AutonomousPill),
-    );
+    if !row.is_empty() {
+        rows.push(row);
+    }
+    rows
+}
+
+fn pill_row_height(width: u16, effective: &Effective) -> u16 {
+    layout_pills(&pill_entries(effective), width).len().max(1) as u16
+}
+
+fn action_row_height(width: u16) -> u16 {
+    let content = " [Start] [Plan first]    Enter or Ctrl+Enter sends · Esc leaves the composer";
+    wrapped_height(content, width)
+}
+
+fn suggestion_row_height(width: u16) -> u16 {
+    let suggestions = [
+        "Fix a failing or flaky test",
+        "Summarize recent commits on this branch",
+        "Update the README for recent changes",
+    ];
+    let mut rows = 1_usize;
+    let mut row_width = 0_usize;
+    for suggestion in suggestions {
+        let item_width = suggestion.chars().count() + 2;
+        if row_width > 0 && row_width + item_width > usize::from(width.max(1)) {
+            rows += 1;
+            row_width = 0;
+        }
+        row_width += item_width + 2;
+    }
+    rows as u16
+}
+
+fn wrapped_height(content: &str, width: u16) -> u16 {
+    let width = usize::from(width.max(1));
+    content.chars().count().div_ceil(width).max(1) as u16
 }
 
 fn render_actions(frame: &mut Frame<'_>, area: Rect, app: &mut App, effective: &Effective) {
@@ -1316,7 +1373,9 @@ fn render_actions(frame: &mut Frame<'_>, area: Rect, app: &mut App, effective: &
         ),
     ]);
     frame.render_widget(
-        Paragraph::new(line).style(Style::default().bg(theme.palette.bg)),
+        Paragraph::new(line)
+            .wrap(Wrap { trim: false })
+            .style(Style::default().bg(theme.palette.bg)),
         area,
     );
     app.hitmap.register(
@@ -1353,18 +1412,30 @@ fn render_suggestions(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             .collect::<Vec<_>>(),
     );
     frame.render_widget(
-        Paragraph::new(line).style(Style::default().bg(theme.palette.bg)),
+        Paragraph::new(line)
+            .wrap(Wrap { trim: false })
+            .style(Style::default().bg(theme.palette.bg)),
         area,
     );
     let mut column = area.x;
+    let mut row = area.y;
     for (index, suggestion) in suggestions.iter().enumerate() {
         let width = (suggestion.len() + 2) as u16;
+        if column != area.x && column.saturating_add(width) > area.right() {
+            column = area.x;
+            row = row.saturating_add(1);
+        }
         app.hitmap.register(
-            Rect::new(column, area.y, width, area.height),
+            Rect::new(
+                column,
+                row,
+                width.min(area.right().saturating_sub(column)),
+                1,
+            ),
             6,
             HitAction::NewTaskScreen(NewTaskAction::Suggestion(index)),
         );
-        column += width + 2;
+        column = column.saturating_add(width + 2);
     }
 }
 
@@ -1734,6 +1805,93 @@ mod tests {
             "worktrees are the zero-config default"
         );
         assert_eq!(effective.base_branch, "main");
+    }
+
+    #[test]
+    fn model_picker_is_keyboard_selectable_for_the_active_runner() {
+        let mut app = app_with_new_task("t-model");
+        open_pill(&mut app, PillId::Model);
+        let target = app
+            .new_task_ui
+            .picker
+            .as_ref()
+            .and_then(|kind| {
+                kind.picker()
+                    .items
+                    .iter()
+                    .position(|item| item.value == "model:sonnet")
+            })
+            .expect("Claude's sonnet model should be in the picker");
+        for _ in 0..target {
+            handle_picker_key(
+                &mut app,
+                crossterm::event::KeyEvent::new(
+                    KeyCode::Down,
+                    crossterm::event::KeyModifiers::NONE,
+                ),
+            );
+        }
+        handle_picker_key(&mut app, enter_key());
+        assert_eq!(app.new_task_ui.draft.model.as_deref(), Some("sonnet"));
+    }
+
+    #[test]
+    fn model_picker_uses_the_discovered_catalog_after_switching_to_codex() {
+        let mut app = app_with_new_task("t-codex-model");
+        app.new_task_ui.data.provider_status = Some(ProviderStatusResponse {
+            providers: vec![
+                connected_provider(Runner::Claude),
+                connected_provider(Runner::Codex),
+            ],
+        });
+        app.new_task_ui.data.model_catalog = Some(RunnerModelCatalogResponse {
+            runner: Runner::Codex,
+            models: vec![coducktor_contract::RunnerModelOption {
+                id: "gpt-5.5-codex".to_owned(),
+                label: "GPT 5.5 Codex".to_owned(),
+                description: "discovered from Codex".to_owned(),
+                reasoning_efforts: None,
+            }],
+            source: coducktor_contract::ModelCatalogSource::Live,
+            stale: false,
+            reason: None,
+        });
+        app.new_task_ui.draft.runner = Some(RunnerSelection::Codex);
+        open_pill(&mut app, PillId::Model);
+        let items = app
+            .new_task_ui
+            .picker
+            .as_ref()
+            .map(|kind| kind.picker().items.clone())
+            .unwrap_or_default();
+        assert!(items.iter().any(|item| item.value == "model:gpt-5.5-codex"));
+        let selected = items
+            .iter()
+            .position(|item| item.value == "model:gpt-5.5-codex")
+            .expect("discovered Codex model should be selectable");
+        pick_index(&mut app, selected);
+        assert_eq!(
+            app.new_task_ui.draft.model.as_deref(),
+            Some("gpt-5.5-codex")
+        );
+    }
+
+    #[test]
+    fn narrow_new_task_layout_wraps_everything_under_the_composer() {
+        let mut app = app_with_new_task("t-layout");
+        let content = render(&mut app, 80, 24);
+        assert!(
+            content.contains("autonomous"),
+            "pill row must not clip its final field"
+        );
+        assert!(
+            content.contains("Esc leaves the composer"),
+            "action help must remain visible"
+        );
+        assert!(
+            content.contains("Update the README for recent changes"),
+            "suggestions must wrap instead of disappearing off the right edge"
+        );
     }
 
     #[test]

@@ -1697,10 +1697,11 @@ impl InProcessEngine {
 
     const GITHUB_UNAVAILABLE_REASON: &str = "GitHub is unavailable for this repository";
 
-    /// Resolve a driver from the repo's `origin` remote — synchronous, run only from inside a
-    /// `spawn_blocking` closure.
+    /// Resolve a driver from any configured GitHub remote — synchronous, run only from inside a
+    /// `spawn_blocking` closure. A repository may use `upstream` (or another remote name) as its
+    /// GitHub source, so limiting discovery to `origin` hides an otherwise valid checkout.
     fn github_driver_blocking(repo_root: &Path) -> Option<GithubDriver> {
-        let remote = git_output(repo_root, &["config", "--get", "remote.origin.url"]);
+        let remote = github_remote(repo_root);
         resolve_forge(repo_root.to_path_buf(), remote.as_deref())
     }
 
@@ -5917,13 +5918,17 @@ fn provider_state_from_output(
             }
         }
         Runner::OpenCode => {
+            // OpenCode's human-readable output is often decorated with box-drawing
+            // characters, for example `└  1 credentials`. Find the numeric/credential
+            // pair anywhere on the line instead of requiring the count to be column zero.
             let mut counts = lower
                 .lines()
                 .filter_map(|line| {
-                    let mut words = line.split_whitespace();
-                    let count = words.next()?.parse::<u64>().ok()?;
-                    words.next().filter(|word| word.starts_with("credential"))?;
-                    Some(count)
+                    let words = line.split_whitespace().collect::<Vec<_>>();
+                    words.windows(2).find_map(|pair| {
+                        let count = pair[0].parse::<u64>().ok()?;
+                        pair[1].starts_with("credential").then_some(count)
+                    })
                 })
                 .collect::<Vec<_>>();
             if counts.len() != 1 || exit_code != Some(0) {
@@ -6276,8 +6281,8 @@ fn read_repo_ui_state(repo_root: &Path) -> Map<String, Value> {
 fn health_payload(repo_root: &Path, version: &str, probe_backends: bool) -> HealthResponse {
     let repo_root_str = repo_root.to_string_lossy().into_owned();
     let branch = git_output(repo_root, &["branch", "--show-current"]);
-    let remote = git_output(repo_root, &["config", "--get", "remote.origin.url"]);
-    let forge_available = resolve_forge(repo_root.to_path_buf(), remote.as_deref()).is_some();
+    let remote = repository_remote(repo_root);
+    let forge_available = github_remote(repo_root).is_some();
     let repo = if branch.is_some() || remote.is_some() {
         Some(RepoInfo {
             root: repo_root_str.clone(),
@@ -6328,6 +6333,54 @@ fn health_payload(repo_root: &Path, version: &str, probe_backends: bool) -> Heal
         }],
         boot_project: "default".to_owned(),
     }
+}
+
+/// Return the checkout's preferred remote, retaining the old `origin` preference while
+/// gracefully handling repositories that only define `upstream` or another remote name.
+fn repository_remote(repo_root: &Path) -> Option<String> {
+    let names = git_capture(repo_root, &["remote"])
+        .ok()?
+        .lines()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let mut ordered = Vec::with_capacity(names.len());
+    for preferred in ["origin", "upstream"] {
+        if names.iter().any(|name| name == preferred) {
+            ordered.push(preferred.to_owned());
+        }
+    }
+    for name in names {
+        if !ordered.iter().any(|existing| existing == &name) {
+            ordered.push(name);
+        }
+    }
+    ordered.into_iter().find_map(|name| {
+        git_capture(repo_root, &["remote", "get-url", name.as_str()])
+            .ok()
+            .map(|remote| remote.trim().to_owned())
+            .filter(|remote| !remote.is_empty())
+    })
+}
+
+/// Find a GitHub remote regardless of its configured name. This intentionally only parses local
+/// Git config; authentication/network checks remain the forge driver's degraded capability.
+fn github_remote(repo_root: &Path) -> Option<String> {
+    let names = git_capture(repo_root, &["remote"])
+        .ok()?
+        .lines()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    names.into_iter().find_map(|name| {
+        let remote = git_capture(repo_root, &["remote", "get-url", name.as_str()])
+            .ok()?
+            .trim()
+            .to_owned();
+        resolve_forge(repo_root.to_path_buf(), Some(remote.as_str())).map(|_| remote)
+    })
 }
 
 fn backend_check(name: BackendCheckName, binary: &str) -> BackendCheck {
@@ -7118,6 +7171,23 @@ mod tests {
         );
         assert_eq!(
             provider_state_from_output(Runner::Codex, "Not logged in\n", "", Some(1)),
+            Some(ProviderConnectionState::Disconnected)
+        );
+    }
+
+    #[test]
+    fn provider_state_from_output_reads_decorated_opencodes_credential_count() {
+        assert_eq!(
+            provider_state_from_output(
+                Runner::OpenCode,
+                "┌  Credentials ~/.local/share/opencode/auth.json\n└  1 credentials\n",
+                "",
+                Some(0),
+            ),
+            Some(ProviderConnectionState::Connected)
+        );
+        assert_eq!(
+            provider_state_from_output(Runner::OpenCode, "└  0 credentials\n", "", Some(0)),
             Some(ProviderConnectionState::Disconnected)
         );
     }
