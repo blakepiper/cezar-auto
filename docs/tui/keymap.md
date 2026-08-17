@@ -19,14 +19,16 @@ user bindings are merged over these defaults, key by key.
 | `i` | Inbox |
 | `Ctrl+B` | Toggle sidebar |
 | `Ctrl+Left` | Focus the left navigation panel; `j`/`k` or `Up`/`Down` move, `Enter` opens, `Esc` returns |
+| `Up` / `Down` on Tasks | Focus and cycle the left navigation panel; `Enter` opens the highlighted destination |
 | `?` | Help overlay (context-filtered) |
 | `:` | Open the command line |
 | `Ctrl+O` | Navigate back |
 | `Ctrl+I` | Navigate forward |
 | `Ctrl+K` | Command palette |
 
-The left navigation panel is keyboard-accessible with `Ctrl+Left`; use `j`/`k` or `Up`/`Down`
-to move through its destinations and `Enter` to open one. The command palette (`Ctrl+K`) and
+The left navigation panel is keyboard-accessible with `Ctrl+Left`, or directly with `Up`/`Down`
+from the Tasks screens; use `j`/`k` or `Up`/`Down` to move through its destinations and `Enter` to
+open one. The command palette (`Ctrl+K`) and
 `:open <route>` remain available too.
 
 Clicking a non-active project row switches the sidebar context to that registered project and

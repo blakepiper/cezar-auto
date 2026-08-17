@@ -1889,6 +1889,14 @@ impl App {
             self.focus_sidebar();
             return;
         }
+        if !self.sidebar_focus
+            && matches!(self.route(), Route::Tasks { .. } | Route::GlobalTasks)
+            && matches!(key.code, KeyCode::Up | KeyCode::Down)
+        {
+            self.focus_sidebar();
+            self.handle_sidebar_key(key);
+            return;
+        }
         if self.sidebar_focus && self.handle_sidebar_key(key) {
             return;
         }
@@ -2924,6 +2932,22 @@ mod tests {
         )));
 
         assert!(matches!(app.route(), Route::Inbox { project } if project == "main"));
+    }
+
+    #[test]
+    fn task_screen_arrows_focus_and_cycle_the_sidebar() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)));
+        assert!(app.sidebar_focus);
+        assert_eq!(app.sidebar_selected, 0);
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert!(matches!(app.route(), Route::NewTask { project } if project == "main"));
     }
 
     #[test]
