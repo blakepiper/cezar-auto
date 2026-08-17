@@ -7,6 +7,7 @@
 pub mod app;
 pub mod cli;
 pub mod diff;
+pub mod headless;
 pub mod image;
 pub mod input;
 pub mod markdown;

@@ -771,6 +771,17 @@ pub async fn serve(
     axum::serve(listener, router(config)).await
 }
 
+/// Same as [`serve`], but over an already-built [`ServerState`] rather than a bare
+/// [`ServerConfig`] — for a caller (B10's `cezar-cli serve`) that needs to attach a real
+/// `SessionFactory` to the `RunManager` before it starts serving, which `ServerConfig` alone has
+/// no way to express.
+pub async fn serve_with_state(
+    listener: tokio::net::TcpListener,
+    state: ServerState,
+) -> Result<(), std::io::Error> {
+    axum::serve(listener, router_with_state(state)).await
+}
+
 async fn health(State(state): State<ServerState>) -> Response {
     let payload = health_payload(state.config());
     let mut response = Json(payload).into_response();

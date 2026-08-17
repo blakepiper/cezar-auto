@@ -896,13 +896,112 @@ untouched). This closes out B9a.2 — all four backends (claude/codex/opencode/p
 shipped; wiring a real `SessionFactory` into `coducktor-server` is B10's job.
 **Commit:** `feat(runners): B9a.2e pi backend` — pushed as `4f218be5`.
 
-### [ ] B10 — `cezar-cli`
+### [x] B10 — `cezar-cli`
 **Ships:** `serve`, `run`, `init`, `usage`, `projects` subcommands. `-p/--port` and
 `--no-open` are **not** ported (waived, §1.4). No `--server`, no `--token`.
 **Accept:** exit codes match the protected CLI contract; `--help` names every
 protected flag. **Blocked on B9a** — `run`/`serve` need a real `SessionFactory` to be
 anything but a shell that always fails.
-**Commit:** `feat(cli): B10 cezar-cli subcommands`
+**Note on packaging:** shipped on the SAME binary A13 already built
+(`crates/coducktor-tui`, bins `coducktor`/`duck`) rather than a separate `cezar-cli`
+crate — the spec's crate-list (§10) names one, but A13/A14 already collapsed CLI +
+TUI into one binary (decision 6, "one command"), and A13's own doc comment named these
+five subcommands as explicitly its job to finish. Read narrowly per this plan's own
+ground rule 0 (spec wins on disagreement, but established repo precedent wins on
+packaging calls A12/A13 already made the same way).
+**Prerequisite work, discovered mid-step (own commits, same "own commit for a
+prerequisite" convention as B9a):**
+- `B10.0` — `SessionRequest` (the `RunManager` → `SessionFactory` handoff, B6) never
+  carried a full `AgentRunSpec`'s `cwd`/`allowed_tools`/`bash_allowlist`/
+  `system_prompt`/`reasoning_effort` — nobody had wired a real factory into
+  `RunManager` before this step, so nobody had hit the gap. Extended `SessionRequest`
+  with those five fields rather than having the factory read `runs.json` out of band
+  (the workflow step and run record were already in scope at `execute_job`'s one
+  `SessionRequest` construction site). `cwd` is always `repo_root` — no worktree
+  orchestration exists in this crate yet (`RunRecord.worktree` is recorded intent,
+  never acted on); `allowed_tools`/`bash_allowlist` come from the workflow step,
+  falling back to `DEFAULT_ALLOWED_TOOLS` (matches `run.ts`'s
+  `step.allowedTools ?? DEFAULT_ALLOWED_TOOLS`); `system_prompt`/`reasoning_effort`
+  come from the run record (`reasoning_effort`'s `auto` maps to `None` — the level a
+  text/prompt heuristic would pick is not ported, a backend's own default answers
+  instead). Added `RunManager::repo_root()` (private; `data_dir` minus the
+  `.ai/coducktor` suffix `for_repo` appends). — pushed as `0914a15f` (+ a fmt-only
+  follow-up, `7b72d9e5`).
+- `B10.1` — `crates/coducktor-runners/src/session_factory.rs`'s `DefaultSessionFactory`
+  dispatches a `SessionRequest` to `open_claude_session`/`open_codex_session`/
+  `open_opencode_session`/`open_pi_session` by `RunnerSelection` (`Auto` falls back to
+  claude, the same default `execute_job` itself already applies). Binary resolution
+  mirrors each TS runner's own constructor exactly, **not** a symmetric convention:
+  claude/pi fall back to the bundled `CEZ_DRY_RUN=1` mock (resolved relative to
+  `SessionRequest.cwd`, since the mock scripts live in the still-live Node tree) when
+  no `CEZ_*_BIN` override is set; codex/opencode do **not** — `resolveCodexExecutable`
+  and `opencode-server-runner.ts`'s constructor never had a dry-run branch, confirmed
+  by reading both before assuming symmetry. — pushed as `2878f76f`.
+- `B10.2` — `crates/coducktor-core/src/workspace/projects.rs` ports
+  `workspace/projects.ts`'s registry (`register_project`/`list_projects`/
+  `remove_project`/`allocate_project_slug`/`should_register_project`) for the
+  `projects` subcommand. The per-root git/forge probe (branch, forge kind, repo URL,
+  TTL-cached) is **not** ported — needs `server/git.ts`'s `getRepoInfo` and
+  `server/forge/`, neither ported to this crate (same call B3 already made for
+  `server/{git,git-changes}.ts`); `probe_status` here is a plain filesystem check.
+  **Known duplication, not resolved here:** `coducktor-server`'s own
+  `register_project`/`list_projects`/`remove_project` route handlers already
+  independently reimplement this same registry logic (inlined at B9 before a core
+  module existed) — a future chunk should have those handlers delegate to this
+  module instead; out of scope for this diff (ground rule 0's Goal 8 boundary: don't
+  expand a chunk into a file it didn't already need to touch). — pushed as
+  `01410430`.
+**Ships (the CLI itself):**
+- `serve` — builds `RunManager::for_repo` + `DefaultSessionFactory`, hands it to a new
+  `coducktor_server::ServerState::with_manager`/`serve_with_state` (the latter added
+  alongside the existing `serve()`, additive, no route-handler changes — `serve()`
+  itself has no way to attach a pre-built `RunManager`), binds the first free port
+  from 4321 upward (`-p/--port` waived, spec §1.4). Prints a startup banner to the
+  real terminal — allowed here (unlike the TUI's supervised child, §7.7's silence
+  rule is about the TUI's alternate screen, not `serve` invoked directly).
+- `run "<task>"` — `RunManager::with_session_factory`, `workflows::load::load_workflows`
+  (falls back to the built-in `quick-task` when `--workflow` names nothing on disk),
+  `subscribe_events` prints text/tool-call/tool-result/note/error to stdout (mirrors
+  `index.ts`'s `runCommand` switch), exit 0 for `done`/`review`, 1 otherwise — the
+  protected exit-code contract, verified directly against the mock, not assumed.
+- `init` — `packages/cezar/src/index.ts`'s `initCommand` ported directly: scaffolds
+  `.ai/coducktor/{workflows/fix-and-verify.yaml,skills/project-conventions.md}` plus
+  the `.gitignore` ensure-list, content verbatim.
+- `projects [list|add [<dir>]|remove <id>|rm <id>]` — wired against B10.2. `tag` is
+  **not** ported — a secondary UX affordance (project grouping tags), not part of the
+  protected surface (spec §1.4 names the five commands, not their subcommands).
+- `usage` — **scope cut, not a rushed port.** `packages/cezar/src/core/quota/*` (nine
+  files: runtime/coordinator/router/policy/failure-classifier/usage-report/
+  usage-service/claude-usage-adapter/codex-usage-adapter/claude-credentials) is
+  read-only CLI telemetry display, orthogonal to session execution — `RunManager`'s
+  own quota *routing* (B6, `workflows::run::quota`) is a pure policy function with no
+  coordinator dependency. The subcommand parses (`--json`/`--refresh` included, so
+  `--help` still names it — spec §1.4 point 1 protects the command's existence) but
+  prints an honest "not yet implemented" notice to stderr and exits 1 rather than
+  fabricating telemetry.
+**Accept, verified:** `cli::tests::the_protected_commands_all_parse` and
+`help_names_every_flag_this_binary_actually_supports` cover the `--help`/parsing half;
+`headless::tests::run_command_reaches_done_and_exits_zero_against_the_dry_run_mock`
+proves the exit-code contract end-to-end against a fake repo carrying a real copy of
+`mock-claude.mjs` (proof the `SessionRequest` gap from B10.0 was actually closed, not
+just that the string-building helpers compute the right path) —
+`session_factory.rs`'s own `open_spawns_a_working_claude_session_under_dry_run` proves
+the same one level down. 19 new tests across this step (2 in `coducktor-core`'s
+`SessionRequest`, 11 in `coducktor-core`'s `workspace::projects`, 11 in
+`coducktor-runners`'s `session_factory`, 8 in `coducktor-tui`'s `headless`, 4 in
+`coducktor-tui`'s `cli`), full workspace `cargo test`/`cargo clippy --workspace
+--all-targets -- -D warnings`/`cargo fmt --all --check` green throughout (the one
+pre-existing `coducktor-client/tests/transport.rs` drift noted since B2 is untouched).
+**Scope note:** `WorkspaceSemaphore`/`CheckExecutor`/`DiffInspector`/
+`RepositoryRootLease` all stay unwired (`None`) — `RunManager` degrades gracefully
+without them (no cross-run capacity limiting, no `command:` check steps, no
+review-gate diff detection with `review_gate: false` the default) and none are named
+in B10's own "Ships" line; a future step's job if `run`/`serve` need them.
+**Commit(s):** `feat(core): B10.0 extend SessionRequest with cwd/tools/prompt/reasoning`
+— `0914a15f` (+ fmt follow-up `7b72d9e5`); `feat(runners): B10.1 DefaultSessionFactory
+— real backend dispatch` — `2878f76f`; `feat(core): B10.2 workspace::projects —
+registry port for the projects CLI` — `01410430`; `feat(cli): B10 cezar-cli
+subcommands` — this commit.
 
 *(B10a is a no-op — `server-install`/`server-deploy`/`server-uninstall` were
 removed from the Node tree at A15 and are never ported. No commit for this line.)*

@@ -45,9 +45,14 @@ impl DefaultSessionFactory {
     /// snapshot rather than re-querying `std::env` per session, matching how every backend's own
     /// test suite already passes a fixed `host_env` map rather than the live environment.
     pub fn new() -> Self {
-        Self {
-            host_env: std::env::vars().collect(),
-        }
+        Self::with_env(std::env::vars().collect())
+    }
+
+    /// Same as [`Self::new`], but over an explicit env snapshot rather than the live process
+    /// environment — the seam a caller (a test, or a future non-CLI embedder) uses to get
+    /// deterministic backend resolution without mutating global process state.
+    pub fn with_env(host_env: BTreeMap<String, String>) -> Self {
+        Self { host_env }
     }
 
     fn dry_run(&self) -> bool {
@@ -176,12 +181,12 @@ mod tests {
     use std::path::PathBuf;
 
     fn factory_with_env(pairs: &[(&str, &str)]) -> DefaultSessionFactory {
-        DefaultSessionFactory {
-            host_env: pairs
+        DefaultSessionFactory::with_env(
+            pairs
                 .iter()
                 .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
                 .collect(),
-        }
+        )
     }
 
     #[test]

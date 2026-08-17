@@ -817,6 +817,8 @@ dependencies = [
  "coducktor-contract",
  "coducktor-core",
  "coducktor-protocol",
+ "coducktor-runners",
+ "coducktor-server",
  "criterion",
  "crossterm",
  "futures-util",

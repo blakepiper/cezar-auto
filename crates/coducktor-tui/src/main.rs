@@ -14,12 +14,12 @@ use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::task::JoinHandle;
 
 use coducktor_tui::app::{self, App, PendingAction, QuickTask, WorkspaceEvent};
-use coducktor_tui::cli::Cli;
+use coducktor_tui::cli::{Cli, Command};
 use coducktor_tui::input::keymap::Keymap;
 use coducktor_tui::service::{ServiceConfig, ServiceState, ServiceSupervisor};
 use coducktor_tui::terminal::AppTerminal;
 use coducktor_tui::theme::Theme;
-use coducktor_tui::{cli, new_task_form, screens, terminal};
+use coducktor_tui::{cli, headless, new_task_form, screens, terminal};
 
 const FRAME_BUDGET: Duration = Duration::from_millis(33);
 
@@ -34,6 +34,39 @@ async fn main() -> io::Result<()> {
     {
         eprintln!("coducktor: --repo {} is not a directory", repo.display());
         std::process::exit(2);
+    }
+    // The non-interactive subcommands (B10) never open the alternate screen — they run
+    // straight in the caller's terminal, print to real stdout/stderr, and exit. Only
+    // `None`/`Tui` fall through to the interactive cockpit below.
+    match &cli.command {
+        Some(Command::Serve) => {
+            let repo_root = headless::resolve_repo_root(cli.repo.as_deref());
+            return headless::serve_command(repo_root).await;
+        }
+        Some(Command::Run { task }) => {
+            let repo_root = headless::resolve_repo_root(cli.repo.as_deref());
+            let code = headless::run_command(
+                repo_root,
+                task.join(" "),
+                cli.workflow.clone(),
+                cli.model.clone(),
+            )
+            .await;
+            std::process::exit(code);
+        }
+        Some(Command::Init) => {
+            let repo_root = headless::resolve_repo_root(cli.repo.as_deref());
+            headless::init_command(&repo_root);
+            return Ok(());
+        }
+        Some(Command::Usage { .. }) => {
+            std::process::exit(headless::usage_command());
+        }
+        Some(Command::Projects { action }) => {
+            let repo_root = headless::resolve_repo_root(cli.repo.as_deref());
+            std::process::exit(headless::projects_command(&repo_root, action.clone()));
+        }
+        None | Some(Command::Tui) => {}
     }
     terminal::install_panic_hook();
     let mut terminal = terminal::setup()?;

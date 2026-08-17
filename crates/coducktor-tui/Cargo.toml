@@ -24,6 +24,8 @@ coducktor-client = { path = "../coducktor-client" }
 coducktor-contract = { path = "../coducktor-contract" }
 coducktor-core = { path = "../coducktor-core" }
 coducktor-protocol = { path = "../coducktor-protocol" }
+coducktor-runners = { path = "../coducktor-runners" }
+coducktor-server = { path = "../coducktor-server" }
 crossterm.workspace = true
 futures-util.workspace = true
 image.workspace = true
