@@ -1703,6 +1703,9 @@ impl InProcessEngine {
     // to `gh`/`git`.
 
     const GITHUB_UNAVAILABLE_REASON: &str = "GitHub is unavailable for this repository";
+    const GITHUB_NO_REMOTE_REASON: &str =
+        "This project has no GitHub remote — open a project with a github.com remote to use GitHub";
+    const GITHUB_NOT_A_REPO_REASON: &str = "Not a Git repository — GitHub is unavailable here";
 
     /// Resolve a driver from any configured GitHub remote — synchronous, run only from inside a
     /// `spawn_blocking` closure. A repository may use `upstream` (or another remote name) as its
@@ -1712,10 +1715,23 @@ impl InProcessEngine {
         resolve_forge(repo_root.to_path_buf(), remote.as_deref())
     }
 
-    fn unavailable_github() -> GithubData {
+    /// Why the GitHub surface is down before any `gh` invocation: either the working directory
+    /// is not a Git checkout at all, or its remotes contain no github.com entry.
+    fn github_unavailable_reason(repo_root: &Path) -> &'static str {
+        let in_work_tree = git_capture(repo_root, &["rev-parse", "--is-inside-work-tree"])
+            .ok()
+            .is_some_and(|out| out.trim() == "true");
+        if in_work_tree {
+            Self::GITHUB_NO_REMOTE_REASON
+        } else {
+            Self::GITHUB_NOT_A_REPO_REASON
+        }
+    }
+
+    fn unavailable_github(reason: &'static str) -> GithubData {
         GithubData {
             available: false,
-            reason: Some(Self::GITHUB_UNAVAILABLE_REASON.to_owned()),
+            reason: Some(reason.to_owned()),
             repo: None,
             synced_at: None,
             issues: Vec::new(),
@@ -1728,7 +1744,7 @@ impl InProcessEngine {
         let repo_root = self.repo_root.clone();
         tokio::task::spawn_blocking(move || match Self::github_driver_blocking(&repo_root) {
             Some(driver) => driver.list(false, 30),
-            None => Self::unavailable_github(),
+            None => Self::unavailable_github(Self::github_unavailable_reason(&repo_root)),
         })
         .await
         .map_err(|error| EngineError::Transport(error.to_string()))
@@ -8338,7 +8354,9 @@ mod tests {
         assert!(!data.available);
         assert_eq!(
             data.reason.as_deref(),
-            Some("GitHub is unavailable for this repository")
+            Some(
+                "This project has no GitHub remote — open a project with a github.com remote to use GitHub"
+            )
         );
     }
 

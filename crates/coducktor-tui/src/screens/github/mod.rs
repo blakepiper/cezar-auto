@@ -246,7 +246,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 }
 
 fn render_unavailable(frame: &mut Frame<'_>, area: Rect, reason: &str, app: &mut App) {
-    let lines = vec![
+    let mut lines = vec![
         Line::from(Span::styled(
             "GitHub is unavailable",
             Style::default()
@@ -258,12 +258,20 @@ fn render_unavailable(frame: &mut Frame<'_>, area: Rect, reason: &str, app: &mut
             reason,
             Style::default().fg(app.theme.palette.soft_fg),
         )),
-        Line::from(""),
-        Line::from(Span::styled(
+    ];
+    // Only a gh CLI problem warrants the auth guidance; a missing GitHub remote has its own
+    // reason and must not read as "unauthenticated".
+    if reason.contains("gh CLI")
+        || reason.contains("gh not")
+        || reason.contains("gh auth")
+        || reason.contains("GitHub CLI")
+    {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
             "Install and authenticate the gh CLI (or set GITHUB_TOKEN) to enable this tab.",
             Style::default().fg(app.theme.palette.soft_fg),
-        )),
-    ];
+        )));
+    }
     frame.render_widget(Paragraph::new(lines), area);
 }
 
