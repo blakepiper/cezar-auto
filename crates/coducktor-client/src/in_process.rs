@@ -37,13 +37,16 @@ use coducktor_contract::{
     BackendCheck, BackendCheckName, CancelResponse, Capabilities, ChangedFile, ChangedFileStatus,
     ChangesPayload, ConfigResponse, CreateAgentProfileInput, CreateRunInput, CreateRunResponse,
     DeleteRunResponse, DeleteWorkflowResponse, EmptyRepoResponse, FinishResponse, ForgeInfo,
-    ForgeKind, GroupResponse, GroupVariant, HealthProject, HealthResponse, IdeDirectoryResponse,
-    IdeEntry, IdeEntryType, IdeFileResponse, LogEntry, MarkAllReadResponse, ModelCatalogSource,
-    ModelDiscoveryRunner, OpenAgentAccountFileInput, OpenAgentAccountFileResponse,
-    OpenProjectInResponse, OpenTargetsResponse, ParsedWorkflow, PatchRunInput, PickVariantRequest,
-    PickVariantResponse, PlanResponse, PresentRepoResponse, ProjectListEntry, ProjectSource,
-    ProjectStatus, ProjectsResponse, ProviderConnectionState, ProviderStatus,
-    ProviderStatusResponse, ReclaimWorktreesResponse, RemoveAgentProfileResponse,
+    ForgeKind, GithubChecksAvailable, GithubChecksData, GithubChecksUnavailable,
+    GithubCommentsData, GithubData, GithubItemKind, GithubMergeInput, GithubMergeResponse,
+    GithubPrChangesAvailable, GithubPrChangesData, GithubPrChangesUnavailable,
+    GithubPrMergeStateResponse, GithubRefStatusData, GroupResponse, GroupVariant, HealthProject,
+    HealthResponse, IdeDirectoryResponse, IdeEntry, IdeEntryType, IdeFileResponse, LogEntry,
+    MarkAllReadResponse, ModelCatalogSource, ModelDiscoveryRunner, OpenAgentAccountFileInput,
+    OpenAgentAccountFileResponse, OpenProjectInResponse, OpenTargetsResponse, ParsedWorkflow,
+    PatchRunInput, PickVariantRequest, PickVariantResponse, PlanResponse, PresentRepoResponse,
+    ProjectListEntry, ProjectSource, ProjectStatus, ProjectsResponse, ProviderConnectionState,
+    ProviderStatus, ProviderStatusResponse, ReclaimWorktreesResponse, RemoveAgentProfileResponse,
     RemoveTodoResponse, RemoveWorktreeResponse, RepoBranchRequest, RepoBranchResponse,
     RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse, RunIndexEntry, Runner,
     RunnerModelCatalogResponse, RunnerModelOption, RunnerSelection, RunsIndexResponse,
@@ -70,6 +73,10 @@ use coducktor_core::workspace::agent_accounts::{
     supports_profiles,
 };
 use coducktor_core::workspace::config::{PROVIDER_IDS, load_workspace_config};
+use coducktor_forge::{
+    ForgeMergeInput, ForgeMergeResult, ForgePrDiffResult, ForgePrMergeStateResult, GithubDriver,
+    resolve_forge,
+};
 use coducktor_runners::session_factory::DefaultSessionFactory;
 use serde_json::{Map, Value, json};
 use tokio::sync::broadcast;
@@ -1707,6 +1714,287 @@ impl InProcessEngine {
                 provider_label(provider)
             )
         })
+    }
+
+    // ---- GitHub forge (ported from `coducktor-server`'s github_* handlers, which delegate to
+    // `coducktor-forge`'s `GithubDriver`, B7). Every method's driver resolution and I/O runs
+    // inside `spawn_blocking` — `GithubDriver`'s own methods are synchronous (they shell out to
+    // `gh`/`git`), matching how this file's other git-shelling families (repo/run git browsing,
+    // C1.5) already isolate blocking work from the async executor. ----------------------------
+
+    const GITHUB_UNAVAILABLE_REASON: &str = "GitHub is unavailable for this repository";
+
+    /// Resolve a driver from the repo's `origin` remote — synchronous, run only from inside a
+    /// `spawn_blocking` closure.
+    fn github_driver_blocking(repo_root: &Path) -> Option<GithubDriver> {
+        let remote = git_output(repo_root, &["config", "--get", "remote.origin.url"]);
+        resolve_forge(repo_root.to_path_buf(), remote.as_deref())
+    }
+
+    fn unavailable_github() -> GithubData {
+        GithubData {
+            available: false,
+            reason: Some(Self::GITHUB_UNAVAILABLE_REASON.to_owned()),
+            repo: None,
+            synced_at: None,
+            issues: Vec::new(),
+            prs: Vec::new(),
+            label_colors: None,
+        }
+    }
+
+    pub async fn github(&self) -> Result<GithubData, EngineError> {
+        let repo_root = self.repo_root.clone();
+        tokio::task::spawn_blocking(move || match Self::github_driver_blocking(&repo_root) {
+            Some(driver) => driver.list(false, 30),
+            None => Self::unavailable_github(),
+        })
+        .await
+        .map_err(|error| EngineError::Transport(error.to_string()))
+    }
+
+    /// `prs` mirrors the trait's already-parsed `&[String]` — each entry must be a bare positive
+    /// integer, matching `parse_github_numbers`'s own validation (the HTTP path parses a
+    /// comma-joined query string into the same shape before this point).
+    pub async fn github_checks(&self, prs: &[String]) -> Result<GithubChecksData, EngineError> {
+        if prs.is_empty() || prs.len() > 100 {
+            return Err(EngineError::Conflict {
+                reason: "invalid prs query".to_owned(),
+            });
+        }
+        let numbers: Option<Vec<u64>> = prs
+            .iter()
+            .map(|value| value.parse::<u64>().ok().filter(|number| *number > 0))
+            .collect();
+        let Some(numbers) = numbers else {
+            return Err(EngineError::Conflict {
+                reason: "invalid prs query".to_owned(),
+            });
+        };
+        let repo_root = self.repo_root.clone();
+        tokio::task::spawn_blocking(move || {
+            let Some(driver) = Self::github_driver_blocking(&repo_root) else {
+                return GithubChecksData::Unavailable(GithubChecksUnavailable {
+                    available: false,
+                    reason: Self::GITHUB_UNAVAILABLE_REASON.to_owned(),
+                });
+            };
+            match driver.checks(&numbers) {
+                Ok(checks) => GithubChecksData::Available(GithubChecksAvailable {
+                    available: true,
+                    checks: checks
+                        .into_iter()
+                        .map(|(number, glyph)| (number.to_string(), glyph))
+                        .collect(),
+                }),
+                Err(reason) => GithubChecksData::Unavailable(GithubChecksUnavailable {
+                    available: false,
+                    reason,
+                }),
+            }
+        })
+        .await
+        .map_err(|error| EngineError::Transport(error.to_string()))
+    }
+
+    /// The `Engine` trait's `github_ref_status` takes no PR/issue numbers — matching
+    /// `HttpEngine`'s own already-shipped implementation, which sends `GET /github/ref-status`
+    /// with no query string at all. The `coducktor-server` handler this ports from 400s unless
+    /// at least one of `prs`/`issues` is non-empty, so as shipped this capability is a guaranteed
+    /// "missing prs or issues query" outcome on EITHER backend — an inherited gap in the trait's
+    /// own signature (it has nowhere to receive numbers from a caller), not something introduced
+    /// or "fixed" here. Faithfully reproduced rather than silently patched over.
+    pub async fn github_ref_status(&self) -> Result<GithubRefStatusData, EngineError> {
+        Err(EngineError::Conflict {
+            reason: "missing prs or issues query".to_owned(),
+        })
+    }
+
+    pub async fn github_comments(
+        &self,
+        kind: &str,
+        number: u64,
+    ) -> Result<GithubCommentsData, EngineError> {
+        let kind = match kind {
+            "issue" => GithubItemKind::Issue,
+            "pr" => GithubItemKind::Pr,
+            _ => {
+                return Err(EngineError::Conflict {
+                    reason: "invalid kind or number".to_owned(),
+                });
+            }
+        };
+        if number == 0 {
+            return Err(EngineError::Conflict {
+                reason: "invalid kind or number".to_owned(),
+            });
+        }
+        let repo_root = self.repo_root.clone();
+        tokio::task::spawn_blocking(move || {
+            Self::github_driver_blocking(&repo_root)
+                .map(|driver| driver.comments(kind, number, false))
+                .unwrap_or_else(|| GithubCommentsData {
+                    available: false,
+                    reason: Some(Self::GITHUB_UNAVAILABLE_REASON.to_owned()),
+                    comments: Vec::new(),
+                    truncated: None,
+                    events: None,
+                })
+        })
+        .await
+        .map_err(|error| EngineError::Transport(error.to_string()))
+    }
+
+    pub async fn github_pr_merge_state(
+        &self,
+        number: u64,
+    ) -> Result<GithubPrMergeStateResponse, EngineError> {
+        if number == 0 {
+            return Err(EngineError::Conflict {
+                reason: "invalid pull request number".to_owned(),
+            });
+        }
+        let repo_root = self.repo_root.clone();
+        tokio::task::spawn_blocking(move || {
+            let Some(driver) = Self::github_driver_blocking(&repo_root) else {
+                return GithubPrMergeStateResponse::Unavailable {
+                    available: false,
+                    reason: Self::GITHUB_UNAVAILABLE_REASON.to_owned(),
+                };
+            };
+            match driver.pr_merge_state(number, false) {
+                ForgePrMergeStateResult::Available(state) => {
+                    GithubPrMergeStateResponse::Available {
+                        available: true,
+                        merge_state: state,
+                    }
+                }
+                ForgePrMergeStateResult::Unavailable { reason } => {
+                    GithubPrMergeStateResponse::Unavailable {
+                        available: false,
+                        reason,
+                    }
+                }
+            }
+        })
+        .await
+        .map_err(|error| EngineError::Transport(error.to_string()))
+    }
+
+    /// The rejection branch of `coducktor-server`'s `merge_github_pr_for` carries a dynamic HTTP
+    /// status, an optional machine-readable `code`, and an optional `current` merge-state
+    /// snapshot in its JSON body — [`EngineError::Conflict`] only has room for a `reason` string,
+    /// so `code`/`current` are dropped here. A real, named reduction (same category as this
+    /// module's other documented cuts), not an oversight.
+    pub async fn github_merge_pr(
+        &self,
+        number: u64,
+        input: &GithubMergeInput,
+    ) -> Result<GithubMergeResponse, EngineError> {
+        if number == 0 {
+            return Err(EngineError::Conflict {
+                reason: "invalid pull request number".to_owned(),
+            });
+        }
+        if input.expected_head_sha.len() != 40
+            || !input
+                .expected_head_sha
+                .chars()
+                .all(|character| character.is_ascii_digit() || ('a'..='f').contains(&character))
+        {
+            return Err(EngineError::Conflict {
+                reason: "invalid merge request".to_owned(),
+            });
+        }
+        let repo_root = self.repo_root.clone();
+        let input = ForgeMergeInput {
+            method: input.method,
+            expected_head_sha: input.expected_head_sha.clone(),
+            override_rules: input.override_rules.unwrap_or(false),
+        };
+        tokio::task::spawn_blocking(move || {
+            let Some(driver) = Self::github_driver_blocking(&repo_root) else {
+                return Err(EngineError::Conflict {
+                    reason: "GitHub merge is unavailable".to_owned(),
+                });
+            };
+            match driver.merge_pr(number, &input) {
+                ForgeMergeResult::Merged {
+                    number,
+                    url,
+                    method,
+                    merge_commit_sha,
+                } => Ok(GithubMergeResponse {
+                    merged: true,
+                    number,
+                    url,
+                    method,
+                    merge_commit_sha,
+                }),
+                ForgeMergeResult::Rejected { error, .. } => {
+                    Err(EngineError::Conflict { reason: error })
+                }
+            }
+        })
+        .await
+        .map_err(|error| EngineError::Transport(error.to_string()))?
+    }
+
+    pub async fn github_pr_changes(&self, number: u64) -> Result<GithubPrChangesData, EngineError> {
+        if number == 0 {
+            return Err(EngineError::Conflict {
+                reason: "invalid pull request number or refresh flag".to_owned(),
+            });
+        }
+        let repo_root = self.repo_root.clone();
+        tokio::task::spawn_blocking(move || {
+            let Some(driver) = Self::github_driver_blocking(&repo_root) else {
+                return GithubPrChangesData::Unavailable(GithubPrChangesUnavailable {
+                    available: false,
+                    reason: Self::GITHUB_UNAVAILABLE_REASON.to_owned(),
+                });
+            };
+            match driver.pr_diff(number, false) {
+                ForgePrDiffResult::Available {
+                    number,
+                    head_sha,
+                    files,
+                    additions,
+                    deletions,
+                    truncated,
+                    reason,
+                } => GithubPrChangesData::Available(GithubPrChangesAvailable {
+                    available: true,
+                    number,
+                    head_sha,
+                    files: files
+                        .into_iter()
+                        .map(|file| coducktor_contract::GithubPrChange {
+                            path: file.path,
+                            previous_path: file.previous_path,
+                            status: file.status,
+                            additions: file.additions,
+                            deletions: file.deletions,
+                            patch: file.patch,
+                            patch_unavailable_reason: file.patch_unavailable_reason,
+                            truncated: file.truncated.then_some(true),
+                        })
+                        .collect(),
+                    additions,
+                    deletions,
+                    truncated,
+                    reason,
+                }),
+                ForgePrDiffResult::Unavailable { reason } => {
+                    GithubPrChangesData::Unavailable(GithubPrChangesUnavailable {
+                        available: false,
+                        reason,
+                    })
+                }
+            }
+        })
+        .await
+        .map_err(|error| EngineError::Transport(error.to_string()))
     }
 }
 
@@ -6588,5 +6876,232 @@ mod tests {
         assert!(response.fallback);
         assert_eq!(response.steps.len(), 1);
         assert_eq!(response.steps[0].prompt.as_deref(), Some("{{task}}"));
+    }
+
+    // ---- GitHub forge --------------------------------------------------------------------
+    // `fixture_repo()` has no `origin` remote, so every real call below exercises the
+    // `GithubDriver`-unavailable degrade path — the same "no GitHub configured" state most
+    // task worktrees are in. A live `gh`-backed round trip is out of scope for a unit suite;
+    // `coducktor-forge`'s own tests (B7) already cover `GithubDriver` itself with an injected
+    // command/GraphQL seam.
+
+    #[tokio::test]
+    async fn github_reports_unavailable_with_no_origin_remote() {
+        let dir = fixture_repo();
+        let engine = engine(&dir);
+        let data = engine.github().await.unwrap();
+        assert!(!data.available);
+        assert_eq!(
+            data.reason.as_deref(),
+            Some("GitHub is unavailable for this repository")
+        );
+    }
+
+    #[tokio::test]
+    async fn github_checks_rejects_an_empty_or_oversized_prs_list() {
+        let dir = fixture_repo();
+        let engine = engine(&dir);
+        assert_eq!(
+            engine.github_checks(&[]).await.unwrap_err(),
+            EngineError::Conflict {
+                reason: "invalid prs query".to_owned()
+            }
+        );
+        let too_many: Vec<String> = (1..=101).map(|n| n.to_string()).collect();
+        assert_eq!(
+            engine.github_checks(&too_many).await.unwrap_err(),
+            EngineError::Conflict {
+                reason: "invalid prs query".to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn github_checks_rejects_a_non_numeric_pr() {
+        let dir = fixture_repo();
+        let engine = engine(&dir);
+        let error = engine
+            .github_checks(&["12".to_owned(), "not-a-number".to_owned()])
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            EngineError::Conflict {
+                reason: "invalid prs query".to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn github_checks_reports_unavailable_with_no_origin_remote() {
+        let dir = fixture_repo();
+        let engine = engine(&dir);
+        let data = engine.github_checks(&["12".to_owned()]).await.unwrap();
+        match data {
+            GithubChecksData::Unavailable(unavailable) => {
+                assert!(!unavailable.available);
+                assert_eq!(
+                    unavailable.reason,
+                    "GitHub is unavailable for this repository"
+                );
+            }
+            GithubChecksData::Available(_) => panic!("expected Unavailable"),
+        }
+    }
+
+    #[tokio::test]
+    async fn github_ref_status_always_reports_missing_query_matching_the_trait_signature_gap() {
+        let dir = fixture_repo();
+        let engine = engine(&dir);
+        assert_eq!(
+            engine.github_ref_status().await.unwrap_err(),
+            EngineError::Conflict {
+                reason: "missing prs or issues query".to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn github_comments_rejects_an_invalid_kind_or_number() {
+        let dir = fixture_repo();
+        let engine = engine(&dir);
+        assert_eq!(
+            engine.github_comments("bogus", 1).await.unwrap_err(),
+            EngineError::Conflict {
+                reason: "invalid kind or number".to_owned()
+            }
+        );
+        assert_eq!(
+            engine.github_comments("pr", 0).await.unwrap_err(),
+            EngineError::Conflict {
+                reason: "invalid kind or number".to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn github_comments_reports_unavailable_with_no_origin_remote() {
+        let dir = fixture_repo();
+        let engine = engine(&dir);
+        let data = engine.github_comments("pr", 12).await.unwrap();
+        assert!(!data.available);
+        assert_eq!(
+            data.reason.as_deref(),
+            Some("GitHub is unavailable for this repository")
+        );
+    }
+
+    #[tokio::test]
+    async fn github_pr_merge_state_rejects_pr_number_zero() {
+        let dir = fixture_repo();
+        let engine = engine(&dir);
+        assert_eq!(
+            engine.github_pr_merge_state(0).await.unwrap_err(),
+            EngineError::Conflict {
+                reason: "invalid pull request number".to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn github_pr_merge_state_reports_unavailable_with_no_origin_remote() {
+        let dir = fixture_repo();
+        let engine = engine(&dir);
+        let response = engine.github_pr_merge_state(12).await.unwrap();
+        match response {
+            GithubPrMergeStateResponse::Unavailable { available, reason } => {
+                assert!(!available);
+                assert_eq!(reason, "GitHub is unavailable for this repository");
+            }
+            GithubPrMergeStateResponse::Available { .. } => panic!("expected Unavailable"),
+        }
+    }
+
+    fn merge_input(sha: &str) -> GithubMergeInput {
+        GithubMergeInput {
+            method: coducktor_contract::GithubMergeMethod::Merge,
+            expected_head_sha: sha.to_owned(),
+            override_rules: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn github_merge_pr_rejects_pr_number_zero() {
+        let dir = fixture_repo();
+        let engine = engine(&dir);
+        let sha = "a".repeat(40);
+        assert_eq!(
+            engine
+                .github_merge_pr(0, &merge_input(&sha))
+                .await
+                .unwrap_err(),
+            EngineError::Conflict {
+                reason: "invalid pull request number".to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn github_merge_pr_rejects_a_malformed_expected_head_sha() {
+        let dir = fixture_repo();
+        let engine = engine(&dir);
+        for sha in ["too-short", &"g".repeat(40), &"A".repeat(40)] {
+            let error = engine
+                .github_merge_pr(12, &merge_input(sha))
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error,
+                EngineError::Conflict {
+                    reason: "invalid merge request".to_owned()
+                }
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn github_merge_pr_reports_unavailable_with_no_origin_remote() {
+        let dir = fixture_repo();
+        let engine = engine(&dir);
+        let sha = "a".repeat(40);
+        let error = engine
+            .github_merge_pr(12, &merge_input(&sha))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            EngineError::Conflict {
+                reason: "GitHub merge is unavailable".to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn github_pr_changes_rejects_pr_number_zero() {
+        let dir = fixture_repo();
+        let engine = engine(&dir);
+        assert_eq!(
+            engine.github_pr_changes(0).await.unwrap_err(),
+            EngineError::Conflict {
+                reason: "invalid pull request number or refresh flag".to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn github_pr_changes_reports_unavailable_with_no_origin_remote() {
+        let dir = fixture_repo();
+        let engine = engine(&dir);
+        let data = engine.github_pr_changes(12).await.unwrap();
+        match data {
+            GithubPrChangesData::Unavailable(unavailable) => {
+                assert!(!unavailable.available);
+                assert_eq!(
+                    unavailable.reason,
+                    "GitHub is unavailable for this repository"
+                );
+            }
+            GithubPrChangesData::Available(_) => panic!("expected Unavailable"),
+        }
     }
 }
