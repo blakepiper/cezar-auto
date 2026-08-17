@@ -1379,6 +1379,57 @@ warnings` clean, `cargo fmt --check` clean.
 **Commit:** `feat(engine): C1.3 InProcessEngine — provider status, agent-profile
 accounts` — pushed as `db7f61c3`.
 
+**Status (C1.4):** partial, continuing C1.3. Ships two families: IDE
+(`ide_tree`/`ide_file`/`ide_save`) and per-repo config (`config`/`put_config`).
+Both ported from `coducktor-server`'s matching handlers
+(`list_ide_directory`/`read_ide_file`/`write_ide_file` and
+`get_config`/`update_config`), duplicating their private helpers byte-for-byte —
+same rationale as every prior C1 sub-step (`coducktor-server` is deleted whole at
+C2). `Scope` is dropped from every new method's signature, same convention every
+earlier C1 method already established (this crate serves exactly one repo root;
+`coducktor-server`'s own "scoped" IDE/config routes already ignore their
+`:project` path segment today for the same reason).
+**A genuine simplification found while porting, not a shortcut:** `put_config`
+here takes an already-typed `&SetConfigInput` directly (the `Engine` trait's own
+signature), unlike the HTTP handler, which has to reconstruct the "field absent
+vs. field present-but-null" distinction from a raw `Map<String, Value>` kept
+alongside the typed struct (an artifact of the JSON-parse boundary). Because the
+trait already hands over a real `SetConfigInput` with its `Option<Option<T>>`
+fields already correctly discriminated by the caller, `update_repo_config` here
+needs no parallel raw-object bookkeeping — it is a straightforward, smaller port
+of the same field-by-field merge logic, not a reduced version of it.
+**Scope note on `ide_save`:** matches the oracle exactly — `ide_write_file`
+resolves the target path (which requires the file to already exist) before
+writing, so `PUT /ide/file` edits an existing file, it does not create a new one.
+Proven by test (`ide_save_cannot_create_a_file_that_does_not_already_exist`), not
+just asserted in prose.
+**Still remaining:** repo git browsing/diff/compare (`repo`/`repo_changes`/
+`repo_commit`/`repo_branch`/`run_diff_text`/`run_changes`/`run_commit`/
+`run_files`/`run_file_raw`/`group`/`pick_variant`), agent-config
+(`agent_config`/`agent_config_file`/`put_agent_config_file`), `models` (host
+model catalog), GitHub forge detail reads, worktree management, open-targets,
+the remaining settings write paths (`put_workspace_config`/`workspace_config`/
+`workspace_ui_state`/`put_workspace_ui_state`/`update_project`/
+`remove_project`), task-thread write paths (`send_message`/
+`edit_queued_message`/`remove_queued_message`/`continue_run`/
+`cancel_auto_resume`/`git_commit`/`git_push`/`run_commits`/`create_pr`/
+`open_in_cli`/`open_in`), `run_history`/`run_history_context` (the task-thread
+paginated-event-history reads — investigated this round, deferred: the oracle's
+cursor encode/decode + boundary-seq pagination logic is its own meaningfully
+sized chunk, not a quick add-on to this round's IDE/config work), `plan`, and
+closing the `impl Engine for InProcessEngine` block itself.
+**Accept, verified (C1.4's own scope only):** 12 new tests — IDE directory
+listing (dirs-before-files, alphabetical, `.git` excluded but `.ai/coducktor`
+correctly included since the oracle only special-cases `.git`), file read
+(content + size, escape-the-project rejection, not-found), file save (overwrite
+an existing file, cannot create a new one), config defaults with no file on
+disk, a patch-then-reread round trip, null clears a previously-set field,
+`maxParallel` range validation, and the models-locked-by-repo-config rejection.
+59 total in `in_process::tests`. Full workspace green (all crates' `test
+result: ok`, zero failures), `cargo clippy --workspace --all-targets -- -D
+warnings` clean, `cargo fmt --check` clean.
+**Commit:** `feat(engine): C1.4 InProcessEngine — IDE, per-repo config`
+
 ### [ ] C2 — Switch default backend, delete `cezar-server`
 **Ships:** `cezar-tui`'s default backend becomes `InProcess`; then **delete
 `cezar-server` entirely** — the `axum` dependency, every handler, SSE/WS
