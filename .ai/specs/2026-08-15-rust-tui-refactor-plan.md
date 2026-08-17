@@ -1306,6 +1306,79 @@ green (705 + 12), `cargo clippy --workspace --all-targets -- -D warnings` clean,
 **Commit:** `feat(engine): C1.2 InProcessEngine — workspace_usage, workflow
 builder writes` — pushed as `25f890d6`.
 
+**Status (C1.3):** partial, continuing C1.2. Resolves the `provider_status`/
+`models`/`agent_profiles` cluster C1.2 explicitly deferred (with a concrete
+reason to change it this round, not another vague punt): ships `provider_status`,
+`agent_profiles`, `create_agent_profile`, `update_agent_profile`,
+`remove_agent_profile`, `select_agent_profile`, `agent_account_status`,
+`agent_account_details`, and `open_agent_account_file`, ported from
+`coducktor-server`'s `get_provider_status`/`list_agent_profiles`/
+`create_agent_profile`/`update_agent_profile`/`remove_agent_profile`/
+`select_agent_profile`/`get_agent_profile_status`/`get_agent_profile_details`/
+`open_agent_profile_file`. `models` (the host model-catalog family — its own
+TTL-cache-keyed cluster, `get_models`/`discover_opencode_models`/
+`discover_codex_models`) is a real, separate family and is still deferred, named
+explicitly rather than folded in under a vague "agent profiles" umbrella.
+**Duplication, same rationale as C1.2's workflow-builder helpers:**
+`ResolvedAgentProfile`, `default_agent_profile`, `resolved_agent_profile`,
+`profile_file_defs`/`profile_files`/`profile_dir_state`, `agent_profile_wire`,
+`selection_wire`/`selection_empty`/`set_profile_selection`,
+`agent_profiles_response`, `profile_path_error`/`same_profile_dir`/
+`profile_conflict`, `project_root_for_agent_selection`, `account_by_route_id`,
+`provider_executable`/`provider_probe_args`/`provider_install_hint`/
+`provider_state_from_output`/`provider_status_for_profile`,
+`capped_json_file`/`identity_text`/`agent_profile_details`, and
+`account_open_default` are all copied byte-for-byte from `coducktor-server`'s
+private functions of the same name — none were `pub`. `allocate_project_id`'s
+account-id counterpart (`allocate_account_id`/`account_slug`/
+`RESERVED_ACCOUNT_SLUG_IDS`) is also duplicated, deliberately preserving the
+oracle's own quirk of falling back to the word `"project"` (not `"account"`) for
+an unslugifiable label — the real server does this today, so byte-for-byte
+fidelity means keeping it, not "fixing" it here.
+**Scope simplification, named not hidden:** `open_agent_account_file` supports
+only the OS-default-opener path (`target: None`); an explicit `target` (pick a
+specific app) returns a clear `Conflict` rather than silently no-op'ing or
+mishandling it — that selection depends on the not-yet-ported open-targets
+registry (`open_targets`/`open_target`, its own family, a C1 follow-up).
+**A real, non-obvious testing constraint, documented in the test module itself:**
+`create_agent_profile`/`update_agent_profile`/`remove_agent_profile`/
+`select_agent_profile` resolve their storage path via
+`agent_accounts_path(&ProcessEnv)` — the REAL `~/.coducktor/agent-accounts.json`
+(or `$DUCK_HOME`/`$CEZ_HOME`), with no injectable override, matching the oracle's
+own hardcoded `ProcessEnv` usage. No test actually exercises a write against that
+real path — every write-path test here exercises validation that returns before
+any file I/O (unsupported provider, relative config dir, missing required field,
+unknown id/project — all NotFound/Conflict before ever touching disk). A full
+create/update/remove round-trip against an isolated `agent-accounts.json` isn't
+covered — it would need `agent_accounts_path` to accept an injected `EnvSource`
+the way `coducktor-core`'s lower-level `load_agent_accounts`/
+`merge_write_agent_accounts` already do, which is a real gap in the *oracle* this
+ports from (no such env-injection test pattern exists anywhere in this workspace
+today), not something introduced or worsened here.
+**Still remaining:** IDE, repo git browsing/diff/compare, agent-config, `models`
+(host model catalog), GitHub forge detail reads, worktree management,
+open-targets, per-repo `config`/`put_config`, the remaining settings write paths
+(`put_workspace_config`/`workspace_config`/`workspace_ui_state`/
+`put_workspace_ui_state`/`update_project`/`remove_project`), task-thread write
+paths (`send_message`/`edit_queued_message`/`remove_queued_message`/
+`continue_run`/`cancel_auto_resume`/`git_commit`/`git_push`/`run_commits`/
+`create_pr`/`open_in_cli`/`open_in`), `plan`, and closing the
+`impl Engine for InProcessEngine` block itself.
+**Accept, verified (C1.3's own scope only):** 25 new tests — write-path
+validation (unsupported provider, relative config dir, missing update field,
+unknown id/project for update/remove/select/status/details/open), read-only
+lookups against a real (possibly-empty) environment (`provider_status`,
+`agent_profiles`, `default:claude` synthetic-id resolution — matching the same
+"safe against a real environment" precedent `projects_reports_the_registry_snapshot`
+already established in C1.1), and pure unit tests for every duplicated helper
+that doesn't touch `ProcessEnv` (`account_slug`, `allocate_account_id`,
+`provider_state_from_output`, `identity_text`, `same_profile_dir`,
+`profile_dir_state`, `agent_profile_wire`). 48 total in `in_process::tests`. Full
+workspace: 740 tests green, `cargo clippy --workspace --all-targets -- -D
+warnings` clean, `cargo fmt --check` clean.
+**Commit:** `feat(engine): C1.3 InProcessEngine — provider status, agent-profile
+accounts` — pushed as `db7f61c3`.
+
 ### [ ] C2 — Switch default backend, delete `cezar-server`
 **Ships:** `cezar-tui`'s default backend becomes `InProcess`; then **delete
 `cezar-server` entirely** — the `axum` dependency, every handler, SSE/WS
