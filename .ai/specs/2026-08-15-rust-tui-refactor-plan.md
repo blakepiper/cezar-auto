@@ -1538,6 +1538,51 @@ task-thread write paths, `run_history`/`run_history_context`, `plan`, and
 closing the `impl Engine for InProcessEngine` block.
 **Commit:** `feat(engine): C1.7 InProcessEngine — worktree management`
 
+**Status (C1.8):** partial, continuing C1.7. A prior continuation had already
+ported `open_targets`/`open_project_in` (from `coducktor-server`'s
+`list_open_targets`/`open_project_in`, duplicating their private
+`open_targets`/`open_target_command`/`open_target`/`executable_on_path`/
+`configured_executable`/`installed_mac_app` helpers) but left it uncommitted
+and untested when the session paused; this round added test coverage
+(mirroring the server's own
+`open_target_routes_list_local_apps_and_reject_project_cli_handoffs` for the
+validation paths, plus host-independent unit tests for the pure helpers —
+`executable_on_path`/`open_target_command` — since most of the family's
+behavior depends on what's actually installed on the machine running the
+tests) and committed it.
+**Accept, verified (C1.8's own scope only):** 9 new tests — file-manager/
+terminal ordering, four `open_project_in` validation-error cases (empty,
+overlong, `cli:` prefix, unknown app), and pure-helper tests for
+`executable_on_path`/`open_target_command` that don't depend on host app
+installation. 101 total in `in_process::tests`. Full workspace green (791
+tests), `cargo clippy --workspace --all-targets -- -D warnings` clean, `cargo
+fmt --check` clean.
+**Commit:** `feat(engine): C1.8 InProcessEngine — open-targets` — pushed as
+`a7a87e57`.
+
+**Status (C1.9):** partial, continuing C1.8. Ships the variant-group family:
+`group`, `pick_variant` — ported from `coducktor-server`'s
+`group_variants`/`group_response`/`get_group` and
+`parse_pick_variant`/`pick_group_at` handlers, including the private
+`lifecycle_event` helper (duplicated, not `pub` in the oracle).
+**Accept, verified (C1.9's own scope only):** 6 new tests, mirroring the
+server's own `group_routes_compare_variants_and_archive_losers_on_pick` —
+not-found for an unknown group, variant listing sorted by variant letter
+with an empty diff-stat for a worktree-less run, blank/unknown-group/
+out-of-group `runId` rejection on `pick_variant`, and the full pick round
+trip (winner stays unarchived, loser gets archived). Test fixtures seed
+variants via `RunManager::create_run` directly (module-private access from
+`mod tests`), matching the oracle test's own fixture shape rather than
+routing through a real agent turn. 107 total in `in_process::tests`. Full
+workspace green (797 tests), `cargo clippy --workspace --all-targets -- -D
+warnings` clean, `cargo fmt --check` clean.
+**Still remaining:** `models` (host model catalog), GitHub forge detail
+reads, remaining settings write paths, task-thread write paths,
+`run_history`/`run_history_context`, `plan`, and closing the `impl Engine
+for InProcessEngine` block.
+**Commit:** `feat(engine): C1.9 InProcessEngine — variant groups` — pushed as
+`d99b6aee`.
+
 ### [ ] C2 — Switch default backend, delete `cezar-server`
 **Ships:** `cezar-tui`'s default backend becomes `InProcess`; then **delete
 `cezar-server` entirely** — the `axum` dependency, every handler, SSE/WS
