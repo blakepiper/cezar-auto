@@ -1477,7 +1477,40 @@ remaining settings write paths, task-thread write paths, `run_history`/
 `run_history_context`, `plan`, and closing the `impl Engine for
 InProcessEngine` block.
 **Commit:** `feat(engine): C1.5 InProcessEngine — repo/run git browsing, diff,
-compare`
+compare` — pushed as `d17dce9b`; doc update pushed as `6493dd1e`.
+
+**Status (C1.6):** partial, continuing C1.5. Ships the agent-config family:
+`agent_config`, `agent_config_file`, `put_agent_config_file` — ported from
+`coducktor-server`'s `list_agent_config`/`get_agent_config`/
+`update_agent_config` handlers, duplicating the private
+`AGENT_CONFIG_DEFINITIONS` catalog (all 14 entries — claude/codex/opencode
+settings, MCP, and memory files across user/project/local scope) and its
+supporting `resolve_agent_config_path`/`config_hash`/`agent_config_content`/
+`jsonc_without_comments`/`validate_agent_config`/`claude_state_path`/
+`user_mcp_listing`/`agent_config_listing`/`write_agent_config` helpers
+byte-for-byte (none were `pub`). Added `sha2`/`toml` as new
+`coducktor-client` dependencies (both already workspace deps used by
+`coducktor-server` for this exact purpose).
+**Scope note:** tests only exercise project/local-scoped definitions
+(resolved under the tempdir repo root) — user-scoped definitions resolve
+against the REAL `agent_home_paths`, and writing to a real environment's
+`~/.claude` etc. from a test is out of bounds, same precedent C1.3 already
+established for the agent-accounts family.
+**Accept, verified (C1.6's own scope only):** 12 new tests — the full
+14-definition listing shape, not-found for an unknown id, a missing project
+file reporting `exists: false`, a create-then-reread round trip, invalid-JSON
+rejection, stale-version-conflict rejection, refusing to empty a non-empty
+file, and pure unit tests for `validate_agent_config` (JSON/TOML/JSONC/
+Markdown), `jsonc_without_comments` (strips comments, leaves string content
+alone), and `config_hash` (deterministic, content-sensitive). 86 total in
+`in_process::tests`. Full workspace green, `cargo clippy --workspace
+--all-targets -- -D warnings` clean, `cargo fmt --check` clean.
+**Still remaining:** `group`/`pick_variant`, `models` (host model catalog),
+GitHub forge detail reads, worktree management, open-targets, remaining
+settings write paths, task-thread write paths, `run_history`/
+`run_history_context`, `plan`, and closing the `impl Engine for
+InProcessEngine` block.
+**Commit:** `feat(engine): C1.6 InProcessEngine — agent-config`
 
 ### [ ] C2 — Switch default backend, delete `cezar-server`
 **Ships:** `cezar-tui`'s default backend becomes `InProcess`; then **delete
