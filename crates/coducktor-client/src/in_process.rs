@@ -41,16 +41,16 @@ use coducktor_contract::{
     IdeEntry, IdeEntryType, IdeFileResponse, LogEntry, MarkAllReadResponse, ModelCatalogSource,
     ModelDiscoveryRunner, OpenAgentAccountFileInput, OpenAgentAccountFileResponse,
     OpenProjectInResponse, OpenTargetsResponse, ParsedWorkflow, PatchRunInput, PickVariantRequest,
-    PickVariantResponse, PresentRepoResponse, ProjectListEntry, ProjectSource, ProjectStatus,
-    ProjectsResponse, ProviderConnectionState, ProviderStatus, ProviderStatusResponse,
-    ReclaimWorktreesResponse, RemoveAgentProfileResponse, RemoveTodoResponse,
-    RemoveWorktreeResponse, RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoDiffStat,
-    RepoInfo, RepoResponse, RunIndexEntry, Runner, RunnerModelCatalogResponse, RunnerModelOption,
-    RunnerSelection, RunsIndexResponse, SaveWorkflowInput, SaveWorkflowResponse,
-    SelectAgentProfileInput, SetAgentConfigInput, SetConfigInput, Skill, StartTodoResponse,
-    StatusEntry, TodoItem, UpdateAgentProfileInput, UserMcpListing, WorkflowStepDef,
-    WorkflowsResponse, WorkspaceUsageResponse, WorktreeDirEntry, WorktreeEntry, WorktreeEntryType,
-    WorktreeInfo, WorktreeRunStatus, WorktreesResponse,
+    PickVariantResponse, PlanResponse, PresentRepoResponse, ProjectListEntry, ProjectSource,
+    ProjectStatus, ProjectsResponse, ProviderConnectionState, ProviderStatus,
+    ProviderStatusResponse, ReclaimWorktreesResponse, RemoveAgentProfileResponse,
+    RemoveTodoResponse, RemoveWorktreeResponse, RepoBranchRequest, RepoBranchResponse,
+    RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse, RunIndexEntry, Runner,
+    RunnerModelCatalogResponse, RunnerModelOption, RunnerSelection, RunsIndexResponse,
+    SaveWorkflowInput, SaveWorkflowResponse, SelectAgentProfileInput, SetAgentConfigInput,
+    SetConfigInput, Skill, StartTodoResponse, StatusEntry, TodoItem, UpdateAgentProfileInput,
+    UserMcpListing, WorkflowStepDef, WorkflowsResponse, WorkspaceUsageResponse, WorktreeDirEntry,
+    WorktreeEntry, WorktreeEntryType, WorktreeInfo, WorktreeRunStatus, WorktreesResponse,
 };
 use coducktor_core::config::load_config;
 use coducktor_core::handoff::followups_enabled;
@@ -1671,6 +1671,71 @@ impl InProcessEngine {
             });
         }
         Ok(model_catalog_wire(runner, models, source, stale, reason))
+    }
+
+    // ---- plan (ported from `coducktor-server`'s `create_plan_at` handler) ------------------
+
+    /// `POST /plan` — always the safe single-step fallback plan today (no live planner is
+    /// wired), gated only by task-length validation and the default runner's provider not
+    /// being disabled in Settings. Matches `fallback_plan`/`plan_provider_disabled` exactly.
+    pub async fn plan(&self, task: &str) -> Result<PlanResponse, EngineError> {
+        let trimmed = task.trim();
+        if trimmed.is_empty() || trimmed.chars().count() > 100_000 {
+            return Err(EngineError::Conflict {
+                reason: "task must be between 1 and 100000 characters".to_owned(),
+            });
+        }
+        if let Some(reason) = self.plan_provider_disabled() {
+            return Err(EngineError::Conflict { reason });
+        }
+        Ok(fallback_plan())
+    }
+
+    fn plan_provider_disabled(&self) -> Option<String> {
+        let workspace = workspace_config_for(&self.repo_root);
+        let config = load_config(&self.repo_root, &workspace.agent_defaults);
+        let provider = match config.default_runner {
+            RunnerSelection::Auto => return None,
+            RunnerSelection::Claude => Runner::Claude,
+            RunnerSelection::Codex => Runner::Codex,
+            RunnerSelection::OpenCode => Runner::OpenCode,
+            RunnerSelection::Pi => Runner::Pi,
+        };
+        workspace.disabled_providers.contains(&provider).then(|| {
+            format!(
+                "{} is disabled. Enable it in Settings → Agents → Providers.",
+                provider_label(provider)
+            )
+        })
+    }
+}
+
+fn fallback_plan() -> PlanResponse {
+    PlanResponse {
+        name: None,
+        steps: vec![WorkflowStepDef {
+            id: "task".to_owned(),
+            name: Some("Do the task".to_owned()),
+            prompt: Some("{{task}}".to_owned()),
+            skill: None,
+            model: None,
+            runner: None,
+            allowed_tools: None,
+            bash_allowlist: None,
+            command: None,
+            on_fail: None,
+        }],
+        rationale: "planner unavailable — single-step plan".to_owned(),
+        fallback: true,
+    }
+}
+
+fn provider_label(provider: Runner) -> &'static str {
+    match provider {
+        Runner::Claude => "Claude Code",
+        Runner::Codex => "Codex",
+        Runner::OpenCode => "OpenCode",
+        Runner::Pi => "pi",
     }
 }
 
@@ -6496,5 +6561,32 @@ mod tests {
         // Re-probed (the sandbox has no `codex` binary), so this is a fresh `Unavailable`
         // result, not the stale expired cache entry served as-is.
         assert_eq!(response.source, ModelCatalogSource::Unavailable);
+    }
+
+    // ---- plan ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn plan_rejects_an_empty_or_oversized_task() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        for task in ["", "   ", &"x".repeat(100_001)] {
+            let error = engine.plan(task).await.unwrap_err();
+            assert_eq!(
+                error,
+                EngineError::Conflict {
+                    reason: "task must be between 1 and 100000 characters".to_owned()
+                }
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn plan_returns_the_safe_single_step_fallback() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let response = engine.plan("build a widget").await.unwrap();
+        assert!(response.fallback);
+        assert_eq!(response.steps.len(), 1);
+        assert_eq!(response.steps[0].prompt.as_deref(), Some("{{task}}"));
     }
 }
