@@ -1,12 +1,10 @@
-//! `AgentSession` over `opencode serve` — a headless HTTP server (the same one the opencode TUI
-//! talks to) with an SSE event stream. Ported from
-//! `packages/coducktor/src/core/opencode-server-runner.ts`.
+//! `AgentSession` over `opencode serve` — the local OpenCode process with an SSE event stream.
 //!
 //! Auth is the host's opencode config/logins. The agent runs autonomously (auto-approved
 //! permissions); OpenCode has no per-tool allowlist, so `spec.allowed_tools`/`bash_allowlist` are
 //! ignored. `spec.model` is `provider/model`, split via [`crate::model_identity`].
 //!
-//! # Architecture notes vs. the TS source
+//! # Architecture notes
 //!
 //! Same turn-scoped adaptation as the claude/codex backends — see `claude_runner`'s doc for the
 //! general shape. Unlike codex's stdio JSON-RPC (every bootstrap step is a roundtrip over the
@@ -18,18 +16,16 @@
 //! (which is what supplies an event sink).
 //!
 //! **The prompt POST and the SSE stream run concurrently on purpose**, matching the real
-//! server's behavior the bundled test mock deliberately reproduces: the POST response can
-//! resolve BEFORE the turn's final SSE parts arrive. TS gets this concurrency for free from its
-//! single-threaded event loop; here, [`OpencodeSession::post_and_drain`] spawns the POST on its
+//! local process behavior the bundled test mock deliberately reproduces: the POST response can
+//! resolve BEFORE the turn's final SSE parts arrive. Here, [`OpencodeSession::post_and_drain`] spawns the POST on its
 //! own thread and merges it with the SSE channel on the calling thread — draining whatever has
 //! arrived, checking whether the POST has finished, in a short poll loop — so `on_event` still
 //! sees each part live rather than batched after the fact. `v1`'s `turn-end` is synthesized once
-//! that POST settles, same as TS (**not** from the SSE `session.idle`, which protocol v2 would use
-//! instead) — any part that hasn't reached `time.end` by then is flushed as-is, exactly like the
-//! TS `finally` block's own `textCoalescer.flush()`.
+//! that POST settles (**not** from the SSE `session.idle`) — any part that hasn't reached
+//! `time.end` by then is flushed as-is.
 //!
 //! `text_seen`/`tools_seen`/the coalescer are session-scoped fields here (not reset per turn),
-//! matching `opencode-server-runner.ts`'s own instance fields — a part id is assumed unique for
+//! matching the session's instance fields — a part id is assumed unique for
 //! the life of the session, not just one turn. `text_chunks` is session-scoped too; each turn's
 //! [`coducktor_core::workflows::run::SessionReport::turn_text`] is a slice of it from an index
 //! captured at that turn's start, and token/cost totals are session-cumulative counters with the
@@ -37,9 +33,8 @@
 //! cumulative-over-the-session, not per-turn deltas.
 //!
 //! One narrow, deliberate behavior difference, matching the same call already made for codex:
-//! TS's `sendMessage` swallows a follow-up prompt failure as a `note` event and leaves the
-//! session dangling; `send_message` here returns it as a hard `Err`. A second, opencode-specific
-//! one: TS's wall-clock timeout only ever sends one SIGTERM (`interrupt()`) with no SIGKILL
+//! A follow-up prompt failure is returned as a hard `Err`. A second, opencode-specific behavior:
+//! the wall-clock timeout sends SIGTERM (`interrupt()`) and then SIGKILL
 //! follow-up if the process ignores it — genuinely able to hang the whole `result` promise
 //! forever. This session escalates to SIGKILL after `kill_grace`, same as claude/codex's own
 //! timeout paths, closing that gap rather than reproducing it.
@@ -76,7 +71,7 @@ static VARIANT_ERROR_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Where to find the opencode binary. Production wiring resolves `program`/`prefix_args` from
-/// `DUCK_OPENCODE_BIN` (`coducktor-server`'s job, not this crate's); tests point `program` at
+/// `DUCK_OPENCODE_BIN` is resolved by the session factory; tests point `program` at
 /// `node` with `prefix_args: vec![mock_script_path]`.
 #[derive(Debug, Clone)]
 pub struct OpencodeSpawnConfig {
@@ -143,15 +138,14 @@ pub struct OpencodeSession {
     input_tokens_total: f64,
     output_tokens_total: f64,
     cost_total: f64,
-    /// Mirrors `opencode-server-runner.ts`'s `serverOpen`: false once `finish()`/`cancel()` has
-    /// run.
+    /// Whether the OpenCode session is still open.
     open: bool,
     /// 0 disables the wall-clock kill switch entirely (interactive sessions).
     timeout_ms: u64,
     kill_grace: Duration,
 }
 
-/// Spawn `opencode serve`, read its bound URL back off stdout, create a server-side session, and
+/// Spawn `opencode serve`, read its bound URL back off stdout, create an OpenCode session, and
 /// connect the SSE stream — all eagerly (see the module doc for why this differs from codex's
 /// deferred bootstrap). Nothing is sent to the model yet; the first `turn()` call does that.
 pub fn open_opencode_session(

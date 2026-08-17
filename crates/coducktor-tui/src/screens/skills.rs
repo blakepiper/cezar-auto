@@ -1,9 +1,7 @@
-//! The Skills screen (spec §8.11) — replaces `routes/skills.tsx` +
-//! `components/skill-detail.tsx`. A master/detail browser over locally discovered skills:
+//! The Skills screen: a master/detail browser over locally discovered skills:
 //! the list on the left with a source badge (project / global / team), the rendered body on
-//! the right, `/` to filter. Reads `GET /skills` only — no import panel, no update banner,
-//! no refresh action (decision 7 deleted the two network paths those served). Skills are
-//! files the user manages with their editor; this screen reads them.
+//! the right, `/` to filter. Skills are files the user manages with their editor; this screen
+//! reads them.
 
 use coducktor_contract::{Skill, SkillSource};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -40,7 +38,7 @@ impl Default for SkillsUi {
 }
 
 /// The source badge text — "project" for every project-local source, "global" for the
-/// global layer, "team" for a team repo (mirrors the web's `skill-detail.tsx` badge).
+/// global layer, "team" for a team repo.
 pub fn source_badge(source: SkillSource) -> &'static str {
     match source {
         SkillSource::Ai | SkillSource::Legacy | SkillSource::Agents => "project",

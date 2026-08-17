@@ -8,12 +8,8 @@ It owns durable JSON, NDJSON, Markdown and YAML state under `.ai/coducktor/` and
 ## Git workflow
 
 This is a solo-maintainer repository. Work directly on `main`, commit the completed change, and
-push it to `origin main`. Do not force-push, create feature branches, or batch completed numbered
-steps from `.ai/specs/`.
-
-For the Rust TUI refactor plan, one numbered step is one commit and one push. Mark its checkbox
-only after its acceptance criterion and checks pass, then record the pushed commit hash. Keep
-unrelated worktree changes intact.
+push it to `origin main`. Do not force-push or create feature branches. Keep unrelated worktree
+changes intact.
 
 ## Zero configuration
 
@@ -81,6 +77,6 @@ Review affected `insta` snapshots rather than accepting them blindly. For termin
 record real manual results in `docs/tui/terminals.md`; headless output is not evidence for an
 interactive terminal.
 
-When the final refactor checklist is being completed, also verify the repository-wide rename
-scan, the state-directory migration, the waiver entries in `CHANGELOG.md`, the compatibility
-docs, the terminal matrix, the deleted-surface inventory, and the absence of an npm tree.
+For documentation or cleanup work, verify that the remaining docs describe the shipped terminal
+binary and that no deleted browser, npm, server, or hosted-deployment surface is referenced as
+current behavior.

@@ -1,23 +1,13 @@
-//! The global follow-up inbox (spec 007). Mirrors the file-layer half of
-//! `packages/coducktor/src/todos.ts`: `.ai/coducktor/todos.json`, a flat JSON array agents
+//! The global follow-up inbox: `.ai/coducktor/todos.json`, a flat JSON array agents
 //! append to (via `DUCK_TODOS_FILE`). Agent entries are external data — each one is
 //! validated on read and malformed ones are skipped, never fatal. Writes land atomically
 //! (tmp + rename, the `runs::store` pattern).
 //!
-//! `todos.ts`'s per-`dataDir` `fs.watch` + `EventEmitter` change-notification mechanism
-//! (`onTodosChanged`/`todosWatchActive`) is runtime plumbing that turns a file write from
-//! another process into an SSE push to the cockpit — it has no synchronous-file-layer
-//! counterpart in this crate (which pulls in neither `tokio` nor a filesystem-watch crate)
-//! and belongs with whichever crate owns that fan-out, `coducktor-server` (B9), same as
-//! `runs::store`'s `EventEmitter` fan-out was deferred to the `RunManager` that owns it (B6).
+//! The terminal reads this file when refreshing the inbox; this synchronous file layer does
+//! not maintain a filesystem watcher.
 //!
-//! This crate also does not lock concurrent writers in-process (`todos.ts`'s `withLock`,
-//! a 15-line async mutex keyed by `dataDir`): every write here already goes through the
-//! same read-modify-write-atomic-rename sequence the lock exists to serialize, so the lock
-//! itself is single-process async-scheduling plumbing, not a behavior this crate's
-//! synchronous, one-call-at-a-time API needs to reproduce. A concurrent caller (the future
-//! `coducktor-server`) is responsible for serializing calls into this module the same way
-//! `todos.ts`'s route handlers rely on `withLock` today.
+//! Callers that perform concurrent writes are responsible for serializing them. Each write still
+//! uses the same read-modify-write and atomic-rename rules as the other durable state files.
 
 use std::fs;
 use std::path::{Path, PathBuf};

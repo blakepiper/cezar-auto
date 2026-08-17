@@ -1,8 +1,5 @@
-//! `<dataDir>/runs/<id>.ndjson` — the append-only per-run event log. Mirrors the file-layer
-//! half of `store.ts`'s `eventsPath`/`readEvents`/`appendEvent`/`rehydrateSeq`: raw NDJSON
-//! I/O and sequence-number bookkeeping. Redaction, the PR/issue janitor, and the live
-//! `EventEmitter` fan-out `appendEvent` also does are `RunManager`-facing business logic
-//! (B6), not file layer — a caller here hands in an already-finished [`RunEvent`].
+//! `<dataDir>/runs/<id>.ndjson` — the append-only per-run event log. This module owns raw NDJSON
+//! I/O and sequence-number bookkeeping; callers provide already-normalized [`RunEvent`] values.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -15,7 +12,7 @@ pub fn events_path(data_dir: &Path, run_id: &str) -> PathBuf {
     data_dir.join("runs").join(format!("{run_id}.ndjson"))
 }
 
-/// Read every persisted event for a run, oldest first. Mirrors `store.ts::readEvents`: a
+/// Read every persisted event for a run, oldest first. A
 /// missing file reads as no events, and an unparseable LINE is skipped rather than failing
 /// the whole read — one truncated line (e.g. a write cut short by a crash) must not hide
 /// every event before it.
@@ -29,10 +26,9 @@ pub fn read_events(path: &Path) -> Vec<RunEvent> {
         .collect()
 }
 
-/// Append one already-sequenced, already-redacted event line. Mirrors `appendFileSync`'s
+/// Append one already-sequenced, already-redacted event line. The
 /// synchronous append — local NDJSON appends at agent-event rates are effectively free, so
-/// there is no batching/async here, matching the TS source's own comment on why a write
-/// queue isn't needed. Creates `<dataDir>/runs/` on first use.
+/// local append is synchronous and creates `<dataDir>/runs/` on first use.
 pub fn append_event(path: &Path, event: &RunEvent) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
@@ -43,7 +39,7 @@ pub fn append_event(path: &Path, event: &RunEvent) -> io::Result<()> {
 }
 
 /// The highest `seq` persisted so far, or `0` for an empty/missing log. Mirrors
-/// `store.ts::rehydrateSeq` — the one file read a restarted process needs before its first
+/// The one file read a restarted process needs before its first
 /// post-restart append, so a fresh in-memory counter cannot collide with `seq`s a client
 /// already replayed (the frozen-transcript symptom class of #424).
 pub fn rehydrate_seq(path: &Path) -> f64 {

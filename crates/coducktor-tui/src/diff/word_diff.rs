@@ -1,8 +1,5 @@
-//! Word-level intra-line diff for paired del/add lines (spec §7.6 "Diffs": "Word-level
-//! intra-line diff via `similar` for changed lines"). Ports the guard thresholds of
-//! `packages/web/src/components/diff/word-diff.ts::diffWords` onto `similar`'s word tokenizer
-//! rather than hand-rolling the LCS: dissimilar lines (a full rewrite) get NO word marks,
-//! because marking 95% of a line tells the reader nothing.
+//! Word-level intra-line diff for paired del/add lines. Dissimilar lines (a full rewrite) get
+//! no word marks, because marking most of a line tells the reader nothing.
 
 use similar::{ChangeTag, TextDiff};
 

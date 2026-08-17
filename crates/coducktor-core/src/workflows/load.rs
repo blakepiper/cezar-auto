@@ -1,4 +1,4 @@
-//! The workflow catalog loader. Mirrors `packages/coducktor/src/workflows/load.ts`.
+//! The workflow catalog loader.
 //!
 //! Loads the built-in `quick-task` plus every `.ai/coducktor/workflows/*.{yaml,yml}` in the
 //! repo. File workflows win name collisions with built-ins. Invalid files are reported,
@@ -23,7 +23,7 @@ fn is_workflow_file(path: &Path) -> bool {
 fn load_one_workflow_file(path: &Path) -> Result<WorkflowDef, String> {
     let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
     let value: serde_json::Value = serde_yaml_ng::from_str(&raw).map_err(|e| e.to_string())?;
-    // `skills:` shorthand files become plain agent steps here (spec 012).
+    // `skills:` shorthand files become plain agent steps here.
     let (name, description, steps) = parse_workflow_file_doc(&value)?;
     // Steps referenced by onFail.retry must exist and come earlier; ids unique.
     if let Some(issue) = steps_issue(&steps) {

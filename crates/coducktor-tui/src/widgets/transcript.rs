@@ -1,5 +1,4 @@
-//! The virtualized transcript item list (spec §7.6 "Transcript virtualization", §8.4
-//! `transcript.rs`).
+//! The virtualized transcript item list.
 //!
 //! Threads reach thousands of items, so this widget never lays out more than the
 //! current viewport: a `(item revision, width)`-keyed height cache lets it skip
@@ -7,9 +6,8 @@
 //! buffer once and blitted into place — the same technique gives pixel/row-accurate
 //! scrolling even for an item that straddles the viewport's top or bottom edge.
 //!
-//! What this module does NOT do (left to spec §8.4's other sub-modules, built at A8):
-//! ask cards, review panels, provider-auth-required cards, and the v1/v2 thread
-//! reducer that turns a run's raw event log into the items rendered here.
+//! Ask cards, review panels, provider-auth-required cards, and event reduction live in the
+//! thread screen and reducer.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -25,8 +23,8 @@ use crate::markdown::RenderCache;
 use crate::theme::Theme;
 
 /// Finished tool output beyond this many lines clamps with a "+N more" note (mirrors
-/// `OUTPUT_CLAMP_LINES` in `thread-items.tsx`; the web's separate "Show all" toggle is
-/// left for A8, which owns interactive interior state for the thread screen).
+/// The output clamp limit; the separate "Show all" toggle is
+/// left for the thread screen, which owns interactive interior state.
 const OUTPUT_CLAMP_LINES: u16 = 12;
 /// Every image item reserves at most this many rows, regardless of its own aspect
 /// ratio, so transcript height math never depends on what the image protocol decides
@@ -35,7 +33,7 @@ const IMAGE_MAX_ROWS: u16 = 16;
 
 /// One transcript entry. Deliberately a small, closed set: this is the rendering
 /// primitive, not the thread reducer's full `ThreadEntry` union (no ask/provider-auth
-/// cards — those are interactive, run-aware, and belong to A8).
+/// cards — those are interactive, run-aware, and belong to the thread screen.
 pub enum TranscriptItem {
     Message(MessageItem),
     Reasoning(ReasoningItem),
@@ -96,7 +94,7 @@ impl TranscriptItem {
             }
             Self::Reasoning(item) => {
                 // A mapper regression that mints an empty reasoning item degrades quietly
-                // rather than rendering a bare, un-expandable row (mirrors thread-items.tsx).
+                // rather than rendering a bare, un-expandable row.
                 if item.text.trim().is_empty() {
                     return 0;
                 }
@@ -159,8 +157,8 @@ impl ReasoningItem {
     }
 }
 
-/// A tool invocation, display fields precomputed once via [`tool_display`] (spec
-/// §7.6's "tool cards from `tool-display`") rather than every render.
+/// A tool invocation with display fields precomputed once via [`tool_display`] rather than on
+/// every render.
 pub struct ToolItem {
     pub id: String,
     pub tool_kind: ToolKind,
@@ -209,7 +207,7 @@ impl ToolItem {
     }
 }
 
-/// Mirrors `defaultOpen` in `thread-items.tsx`: a running command with output already
+/// A running command with output already
 /// streaming in opens to show its live tail; everything else — edits, finished
 /// commands, and failures — starts closed but visible.
 fn tool_default_open(item: &ToolItem) -> bool {
@@ -498,7 +496,7 @@ pub struct Transcript {
     items: Vec<TranscriptItem>,
     scroll_offset: u32,
     /// Stays pinned to the bottom while the viewer hasn't scrolled up — mirrors
-    /// `thread-scroller.tsx`'s stick-to-bottom / preserve-anchor split.
+    /// stick-to-bottom / preserve-anchor behavior.
     sticky_bottom: bool,
     height_cache: HeightCache,
 }
@@ -527,7 +525,7 @@ impl Transcript {
         self.items.push(item);
     }
 
-    /// Reconcile against a freshly-built ordered item list (A8's reducer rebuilds this on
+    /// Reconcile against a freshly-built ordered item list. The thread screen rebuilds this on
     /// every new batch of events): items whose id already exists keep their user-toggled
     /// expand state; everything else is the new list verbatim. The height cache is dropped
     /// wholesale since ids can be reordered or removed between rebuilds.
@@ -926,7 +924,7 @@ mod tests {
 
     const SNAPSHOT_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
 
-    /// One of each item kind the A7 accept criterion names — message, reasoning, tool,
+    /// One of each supported item kind — message, reasoning, tool,
     /// image — collapsed or expanded, plus a note for good measure.
     fn snapshot_fixture(expanded: bool) -> Transcript {
         let mut transcript = Transcript::new();

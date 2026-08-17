@@ -1,25 +1,25 @@
 # Terminal support matrix
 
-Spec §13.8's manual verification checklist. coducktor feature-detects and degrades —
-it never assumes a capability — but detection needs a real interactive terminal to
-exercise, which this checklist tracks by hand.
+Coducktor feature-detects and degrades — it never assumes a terminal capability.
+Detection still needs a real interactive terminal to exercise, so this checklist
+records what is implemented and which terminal observations remain unverified.
 
-## What's actually implemented today (A0–A14)
+## Current implementation
 
-- **Color.** `ColorCapability::detect()` (`src/theme.rs`) reads `COLORTERM` for
+- **Color.** `ColorCapability::detect()` (`crates/coducktor-tui/src/theme.rs`) reads `COLORTERM` for
   `truecolor`/`24bit` → 24-bit RGB; else falls back to 256-color if `TERM` contains
   `"256"`, else 16-color. Three named themes (`light`/`dark`/`lazyvim`), no `system`
-  theme, no separate accent picker (spec §7.5).
-- **Images.** `ImageSupport::detect()` (`src/image.rs`) calls `ratatui-image`'s
+  theme, no separate accent picker.
+- **Images.** `ImageSupport::detect()` (`crates/coducktor-tui/src/image.rs`) calls `ratatui-image`'s
   `Picker::from_query_stdio()`, which probes the terminal (kitty graphics protocol,
   iTerm2 protocol, or sixel) over stdio at startup; falls back to a halfblock Unicode
   renderer on any color terminal, or a bordered placeholder + `o`-to-open otherwise.
   This probe **requires a real interactive TTY** — see the caveat below.
 - **Mouse.** `crossterm`'s mouse capture is enabled unconditionally in
-  `terminal::setup()` (`EnableMouseCapture`). Click/hover/drag work wherever the
+  `terminal::setup()` (`crates/coducktor-tui/src/terminal.rs`). Click/hover/drag work wherever the
   terminal reports mouse events at all; there's no separate capability gate.
 - **Alternate screen + raw mode.** Always on; restored via the panic hook and on
-  clean exit (`terminal::restore()`), per spec §7.7.
+  clean exit (`terminal::restore()`).
 
 ## Known gaps — not yet wired, not a detection failure
 

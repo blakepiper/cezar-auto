@@ -4,7 +4,7 @@ coducktor is a headless-CI-built Rust TUI — there is no real terminal in this
 sandbox to screenshot (see the same caveat in `terminals.md`). Rather than
 fabricate images, these are honest **plain-text renders** pulled straight from
 the app's own `insta` snapshot tests (`ratatui::backend::TestBackend` — the
-same mechanism spec §13.8 lists as the primary UI verification tool), which
+same mechanism used for the primary UI verification tool), which
 exercise the real render pipeline deterministically. Colors are not shown; the
 actual TUI runs in full theme color per `docs/tui/terminals.md`.
 

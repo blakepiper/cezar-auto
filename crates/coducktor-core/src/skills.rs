@@ -1,13 +1,12 @@
-//! Local skill discovery. Mirrors `packages/coducktor/src/skills.ts`.
+//! Local skill discovery.
 //!
 //! A skill is a Markdown file with optional YAML-ish frontmatter (`name`, `description`).
 //! Discovered from the repo's `.ai/coducktor/skills/` (this tool's own dir), `.ai/skills/`
 //! (shared with other agent tooling), the `npx skills` install dirs (`.agents/skills` plus
 //! the per-agent mirrors), and two global dirs under the user's home.
 //!
-//! Team skills from remote git repos are retired (A15, decision 7 — spec §16a Tier 2): local
-//! discovery is all that remains, so unlike `coducktor_contract::skills::Skill`'s `team`
-//! field (kept parseable for old records), nothing produced here ever sets it.
+//! Discovery is local-only. The contract's legacy `team` field remains parseable for old records,
+//! but newly discovered skills never use it.
 
 use std::collections::HashSet;
 use std::fs;
@@ -17,10 +16,8 @@ use coducktor_contract::skills::{Skill, SkillSource};
 
 use crate::paths::EnvSource;
 
-/// Precedence order — earlier dirs win name collisions. `npx skills` writes the canonical
-/// copy to `.agents/skills/<name>/SKILL.md` and mirrors it into each agent's dir (often as
-/// symlinks) — scanning them all and deduping by name yields exactly the union of unique
-/// skills. Mirrors `skills.ts::SKILL_DIRS`.
+/// Precedence order — earlier dirs win name collisions. Agent-specific directories are scanned
+/// as well as the shared project directory, then duplicate names are removed.
 pub const SKILL_DIRS: &[(&str, SkillSource)] = &[
     (".ai/coducktor/skills", SkillSource::Legacy),
     (".ai/skills", SkillSource::Ai),
@@ -33,13 +30,11 @@ pub const SKILL_DIRS: &[(&str, SkillSource)] = &[
 
 /// Deliberately the plain home dir ([`crate::paths::real_home_dir`]) and not an
 /// agent-profile-aware path: a skill is CONTENT — a playbook — not identity, and a second
-/// Claude login is not a second skill library. Mirrors `skills.ts::GLOBAL_SKILL_DIRS`.
+/// Claude login is not a second skill library.
 const GLOBAL_SKILL_DIRS: &[&str] = &[".agents/skills", ".claude/skills"];
 
-/// Discover the merged skill catalog for a repo. Name collisions resolve local-first:
-/// `.ai/coducktor/skills` → `.ai/skills` → `.agents/skills` + agent mirrors → global
-/// (`~/.agents/skills`, `~/.claude/skills`). Missing directories are fine — an empty catalog
-/// is fully supported. Mirrors `skills.ts::discoverSkills`.
+/// Discover the merged skill catalog for a repo. Name collisions resolve local-first and missing
+/// directories are fine; an empty catalog is fully supported.
 pub fn discover_skills(repo_root: &Path, env: &dyn EnvSource) -> Vec<Skill> {
     let home = crate::paths::real_home_dir(env);
     let mut lists: Vec<Vec<Skill>> = Vec::new();
@@ -67,7 +62,7 @@ pub fn discover_skills(repo_root: &Path, env: &dyn EnvSource) -> Vec<Skill> {
 /// Walk a skills dir for entrypoints, following directory symlinks. Once a directory
 /// contains `SKILL.md`, it is one directory-based skill and its supporting Markdown (for
 /// example `references/*.md`) is not scanned. Other directories retain the legacy recursive
-/// `*.md` discovery behavior. Mirrors `skills.ts::skillEntryPaths`.
+/// `*.md` discovery behavior.
 fn skill_entry_paths(dir: &Path, depth: i32, visited: &mut HashSet<PathBuf>) -> Vec<PathBuf> {
     if depth < 0 {
         return Vec::new();
@@ -194,8 +189,7 @@ impl FrontmatterValue {
 
 /// Tiny purpose-built frontmatter parser — a leading `---\n … \n---\n` block with
 /// `key: value` lines, `key: [a, b]` inline arrays and `key:` + `  - a` block arrays.
-/// Deliberately not full YAML so a parser dependency isn't needed for skill files. Mirrors
-/// `skills.ts::parseFrontmatter`.
+/// Deliberately not full YAML so a parser dependency isn't needed for skill files.
 fn parse_frontmatter(raw: &str) -> (std::collections::HashMap<String, FrontmatterValue>, String) {
     // Normalize CRLF and lone CR — otherwise frontmatter is silently dropped.
     let text = raw.replace("\r\n", "\n").replace('\r', "\n");

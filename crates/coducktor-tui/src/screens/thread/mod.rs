@@ -1,20 +1,9 @@
-//! The task thread screen (spec §8.4) — the full run lifecycle: header + actions, step
-//! rail, plan dock, subagent dock/sheet, ask card, review panel, queued messages,
-//! auto-resume hint, and the composer host. Replaces
-//! `packages/web/src/routes/task-thread/*` (~20 modules) — see `actions.rs` and
-//! `reducer.rs` for the ported pure logic, and `widgets.rs` for the presentational pieces.
+//! The task thread screen: the full run lifecycle, including actions, steps, plans, subagents,
+//! questions, review, queued messages, auto-resume, and composition. Pure policies live in
+//! `actions.rs` and `reducer.rs`; rendering helpers live in `widgets.rs`.
 //!
-//! **Scope notes carried from research, not oversights:**
-//! - The review panel has no embedded diff yet — A9 built the diff widget
-//!   (`crate::diff`) but wiring it into the review gate's summary is not part of that step's
-//!   own accept criterion; revisit alongside a future review-panel pass.
-//! - The composer sends text only; image attachments (screenshot paste) are not wired into
-//!   the thread's live-message path in this pass.
-//! - Queued-message editing (`PATCH .../queued-messages/:id`) is reachable on `Engine` but
-//!   this screen only wires the remove half; the web's inline text-edit affordance is not
-//!   ported.
-//! - `Changes` / `Files` / `Commits` tabs (A9) now navigate to `screens::task_git`, cycling
-//!   with `[`/`]` alongside Session; `screens::task_git` cycles back here at either end.
+//! The review panel exposes its actions without embedding a full diff. The composer sends text,
+//! and the task Git tabs provide Changes, Files, and Commits navigation.
 
 pub mod actions;
 pub mod reducer;
@@ -66,8 +55,8 @@ pub enum ThreadAction {
     RemoveQueuedMessage(String),
     FocusComposer,
     FocusReviewNotes,
-    /// Tab row (spec §8.4): Session is this screen; Changes/Files/Commits are `screens::
-    /// task_git` (A9) — leaving this screen is a navigation, not a local state change.
+    /// Tab row: Session is this screen; Changes/Files/Commits are `screens::task_git` — leaving
+    /// this screen is a navigation, not a local state change.
     OpenGitTab(crate::app::TaskGitTab),
 }
 
@@ -124,7 +113,7 @@ impl Default for ThreadUi {
 }
 
 impl ThreadUi {
-    /// Called on route entry, from a fresh `GET /runs/:id` + the first history page.
+    /// Called on thread entry, from a fresh run record and the first history page.
     pub fn load(
         &mut self,
         project: String,
@@ -150,13 +139,13 @@ impl ThreadUi {
         self.rebuild();
     }
 
-    /// Replace the loaded run record (a fresh `GET /runs/:id`, or a workspace `run` frame
+    /// Replace the loaded run record (a fresh engine read or a workspace run event
     /// for the currently-open thread).
     pub fn set_run(&mut self, run: ApiRun) {
         self.data.run = Some(run);
     }
 
-    /// Append one live event (from the per-run SSE stream) and re-fold.
+    /// Append one live run event and re-fold.
     pub fn push_event(&mut self, seq: f64, event: RunEvent) {
         if seq <= self.data.as_of_seq {
             return;
@@ -1108,7 +1097,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_at_the_three_a8_snapshot_sizes_running_with_plan_and_steps() {
+    fn renders_at_the_three_snapshot_sizes_running_with_plan_and_steps() {
         for (width, height) in [(80, 24), (120, 40), (200, 60)] {
             let mut app = app_with_run(RunStatus::Running);
             app.thread_ui.push_event(
@@ -1141,7 +1130,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_at_the_three_a8_snapshot_sizes_review() {
+    fn renders_at_the_three_snapshot_sizes_review() {
         for (width, height) in [(80, 24), (120, 40), (200, 60)] {
             let mut app = app_with_run(RunStatus::Review);
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();

@@ -1,8 +1,8 @@
-//! Syntax highlighting for the diff widget (spec §7.6, §6.1): `syntect` + `two-face`'s bundled
-//! `bat` syntax/theme assets. Mirrors `web/src/lib/highlighter.ts`'s role — the ONE highlighter
+//! Syntax highlighting for the diff widget: `syntect` + `two-face`'s bundled
+//! `bat` syntax/theme assets. This is the one highlighter
 //! instance the diff widget draws colors from — but there is no cross-widget singleton
 //! requirement in the TUI the way there was for the Shiki instance shared with chat code
-//! blocks, since markdown code fences render through `tui-markdown` (A7), not through this
+//! blocks, since markdown code fences render through `tui-markdown`, not through this
 //! module.
 
 use ratatui::style::Color;
@@ -12,7 +12,7 @@ use syntect::highlighting::Theme;
 use syntect::parsing::SyntaxSet;
 
 /// Past this many lines a file skips syntax highlighting entirely — plaintext beats jank.
-/// Mirrors `HIGHLIGHT_MAX_LINES` in `diff-view.tsx`.
+/// Maximum number of lines highlighted in one diff block.
 pub const HIGHLIGHT_MAX_LINES: usize = 1500;
 
 /// One highlighted run: text plus its resolved foreground color.

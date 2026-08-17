@@ -1,8 +1,7 @@
-//! Serde representations of the surviving HTTP contract.
+//! Serde representations for persisted state, runner requests, and normalized UI data.
 //!
-//! The source of truth for each wire shape remains the matching TypeScript module under
-//! `packages/contract/src/`. This crate deliberately does not include the deleted automation
-//! contract; the old run provenance stamp is defined in `runs` instead.
+//! This crate owns the compatible shapes shared by the core, client, runner, forge, and TUI
+//! crates. Legacy fields remain where they are needed to read existing state.
 
 pub mod agent_config;
 pub mod agent_profiles;

@@ -1,5 +1,5 @@
-//! `.ai/coducktor/config.json` — the optional per-repo config. Mirrors
-//! `packages/coducktor/src/config.ts`. Zero-config rule: a missing file behaves exactly like
+//! `.ai/coducktor/config.json` — the optional per-repo config. Zero-config rule: a missing file
+//! behaves exactly like
 //! the default below; an unreadable or invalid file degrades to the default too (never
 //! blocks startup).
 //!
@@ -21,11 +21,10 @@ use coducktor_contract::{Runner, RunnerModels, RunnerSelection};
 use crate::workspace::config::{AgentDefaultModels, AgentDefaults as WorkspaceAgentDefaults};
 use crate::zod;
 
-/// Last-resort retention when neither the repo nor the workspace says anything. Mirrors
-/// `config.ts::DEFAULT_WORKTREE_RETENTION`.
+/// Last-resort retention when neither the repo nor the workspace says anything.
 pub const DEFAULT_WORKTREE_RETENTION: u64 = 10;
 
-/// Mirrors `config.ts::CezConfig` — the parsed shape of `.ai/coducktor/config.json`.
+/// Parsed shape of `.ai/coducktor/config.json`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RepoConfig {
     pub max_parallel: u64,
@@ -62,7 +61,7 @@ impl Default for RepoConfig {
 }
 
 /// Auxiliary planner/namer calls are outside MVP quota routing and need a concrete
-/// backend. Mirrors `config.ts::auxiliaryRunner`.
+/// backend.
 pub fn auxiliary_runner(selection: RunnerSelection) -> Runner {
     match selection {
         RunnerSelection::Auto => Runner::Claude,
@@ -74,8 +73,8 @@ pub fn auxiliary_runner(selection: RunnerSelection) -> Runner {
 }
 
 /// Fold the machine-wide agent defaults under a repo's own raw config, before validation.
-/// Mirrors `config.ts::withMachineDefaults`: a repo key always wins, and `models` merges
-/// PER RUNNER rather than wholesale, so pinning claude's model in one repo doesn't
+/// A repo key always wins, and `models` merges per runner rather than wholesale, so pinning
+/// claude's model in one repo doesn't
 /// silently discard the machine's codex preset.
 fn with_machine_defaults(raw: &Value, machine: &WorkspaceAgentDefaults) -> Value {
     let mut own = raw.as_object().cloned().unwrap_or_default();
@@ -128,7 +127,7 @@ fn runner_models_to_map(models: &AgentDefaultModels) -> serde_json::Map<String, 
 
 /// All-or-nothing validation against `configSchema`: `None` means at least one of the
 /// seven non-`.catch`'d fields was present but invalid, so the caller must discard the
-/// entire raw object (`config.ts`'s `configSchema.safeParse` failing).
+/// entire raw object when strict validation fails.
 fn try_parse(raw: &Value) -> Option<RepoConfig> {
     let object = raw.as_object()?;
 
@@ -244,7 +243,7 @@ fn default_with_machine(machine: &WorkspaceAgentDefaults) -> RepoConfig {
 /// Read `.ai/coducktor/config.json` on demand — never cached, never throws. Also reads
 /// `~/.coducktor/config.json`'s `agentDefaults`, deliberately not cached for the same
 /// reason: it is shared by every coducktor process on the machine, so a snapshot is a
-/// staleness bug. Mirrors `config.ts::loadConfig`.
+/// staleness bug.
 pub fn load_config(repo_root: &std::path::Path, machine: &WorkspaceAgentDefaults) -> RepoConfig {
     let default = default_with_machine(machine);
     let raw = match std::fs::read_to_string(repo_root.join(".ai/coducktor/config.json")) {
@@ -259,8 +258,7 @@ pub fn load_config(repo_root: &std::path::Path, machine: &WorkspaceAgentDefaults
 
 /// The repo's OWN `worktreeRetention`, or `None` when it doesn't set one. `load_config`
 /// cannot answer this — `.catch(10)` materializes the key, so a parsed config can't tell
-/// "the user chose 10" from "the user said nothing". Mirrors `config.ts::ownWorktreeRetention`
-/// by probing the raw file instead.
+/// "the user chose 10" from "the user said nothing" by probing the raw file instead.
 fn own_worktree_retention(repo_root: &std::path::Path) -> Option<u64> {
     let raw = std::fs::read_to_string(repo_root.join(".ai/coducktor/config.json")).ok()?;
     let parsed: Value = serde_json::from_str(&raw).ok()?;
@@ -276,8 +274,7 @@ fn own_worktree_retention(repo_root: &std::path::Path) -> Option<u64> {
 
 /// Effective worktree retention for a repo: the repo's own value wins whenever it sets
 /// one; otherwise the workspace's `resources.worktreeRetentionDefault` seeds it; an
-/// absent/unreadable workspace config keeps the historical 10. Mirrors
-/// `config.ts::resolveWorktreeRetention`.
+/// absent/unreadable workspace config keeps the default 10.
 pub fn resolve_worktree_retention(
     repo_root: &std::path::Path,
     workspace_default: Option<u64>,

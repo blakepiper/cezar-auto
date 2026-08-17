@@ -1,5 +1,0 @@
-# Notifications — Cockpit UI redesign, Phase R2
-- 2026-07-14T17:11:52Z — **run start (R2)**. 8 Steps: v2 types, 3 backend emitters w/ golden fixtures, RunManager persistence w/ coalescing guardrails, titleSummary/diffStat/PATCH-title, systemPrompt e2e, web display model. Stacked on R1.
-- 2026-07-14T17:11:52Z — **decision**: executor dispatch stays SERIAL despite the three mappers being disjoint files — every Step commits to one branch and flips one PLAN.md, so parallel executors would collide on the git index/push; the one-Step-one-commit bisectability contract wins over wall-clock (skill rule: conflict avoidance trumps speed).
-- 2026-07-14T18:09:00Z — **checkpoint 1 (R2)** — Steps 1.1..1.4: all three backends emit protocol v2; parity rule executable; 800/800; v1 byte-identical (wiring tests). No UI change → e2e skipped this window (recorded).
-- 2026-07-14T19:27:28Z — **R2 COMPLETE** (8/8). 959/959 unit ×2, 44/44 e2e. Consolidated into PR #396 per user request (#397 closed; user's 2 branch fixes merged). Next run: R3 (thread view).

@@ -1,13 +1,8 @@
-//! The file tree pane shared by the Changes tab (task git and repo git) — spec §8.5's
-//! "file tree/list on the left", built from a structured diff's changed-file paths.
+//! The file tree pane shared by the Changes tab (task Git and repo Git), built from a structured
+//! diff's changed-file paths.
 //!
-//! Hand-rolled rather than `tui-tree-widget` — spec §6.1 names that crate's own listed
-//! fallback for exactly this widget, and `tui-tree-widget` 0.24's `Tree` implements
-//! `ratatui_core::widgets::StatefulWidget`, a trait `ratatui` 0.29 (this workspace's pinned
-//! version, fixed at A0 for `Paragraph::line_count`) does not accept from `Frame::
-//! render_stateful_widget`: the two crates' widget-trait generations don't line up. A flat,
-//! indented row list — the same shape the diff widget itself already renders as `Line`s —
-//! needs nothing from that ecosystem.
+//! Hand-rolled rather than `tui-tree-widget`: its widget trait does not match this workspace's
+//! pinned `ratatui` version, and a flat indented row list needs nothing from that ecosystem.
 
 use std::collections::BTreeMap;
 
@@ -46,7 +41,7 @@ struct Node {
 }
 
 /// Build the folder/file hierarchy for a set of changed files and flatten it into rows honoring
-/// `collapsed` (folder paths currently closed) — mirrors `changes-tree.tsx`'s `buildFileTree`
+/// `collapsed` (folder paths currently closed) —
 /// plus its own flatten-for-render step, without a virtual-DOM tree to keep state in.
 pub fn build_rows(
     files: &[ChangedFile],

@@ -1,5 +1,4 @@
-//! Least-privilege environment for spawned agent backends (#427). Ported from
-//! `packages/coducktor/src/core/agent-env.ts`.
+//! Least-privilege environment for spawned agent backends (#427).
 //!
 //! Every backend used to inherit the FULL parent environment, handing `GITHUB_TOKEN`,
 //! `ANTHROPIC_API_KEY`, `AWS_*` and any other host secret to a process an attacker-controlled
@@ -19,11 +18,7 @@ use std::sync::LazyLock;
 use coducktor_contract::Runner;
 use regex::Regex;
 
-/// Mirrors `packages/coducktor/src/core/secret-redaction.ts`'s `SECRET_NAME_RE` — the single source
-/// of truth for "is this env var name a credential?". Duplicated here (rather than depending on
-/// a ported `secret-redaction` module) because nothing in this crate needs that module's other
-/// job — scrubbing secret VALUES out of persisted transcript text; only the name pattern is
-/// shared. Deduplicate if/when `secret-redaction.ts` is ported.
+/// The single source of truth for "is this env var name a credential?" in the child-env filter.
 static SECRET_NAME_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|_KEY$|_KEY_|APIKEY|API_KEY|PRIVATE_KEY|ACCESS_KEY|_AUTH$|_AUTH_|SESSION|COOKIE|PASSPHRASE)")
         .expect("SECRET_NAME_RE is a fixed, valid pattern")

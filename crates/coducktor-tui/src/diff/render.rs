@@ -1,15 +1,6 @@
-//! The diff widget itself: per-file fold state, expanded context gaps, unified/split layout,
-//! word-level marks and syntax color composed into `ratatui::Line`s. Mirrors
-//! `web/src/components/diff/diff-view.tsx`'s behaviors (module doc there): per-file collapse,
-//! file-level stat, whitespace toggle (here: soft-wrap), and split-mode's ~140-column
-//! degradation (spec §7.6).
-//!
-//! No virtualization: Phase A's accept criterion for this step is content-identical rendering
-//! and the width-based mode degradation, not a scrolling-performance bound (that bound belongs
-//! to the transcript, A7, whose content is unbounded in a way a single diff view — capped by
-//! the server's own patch-truncation — is not). The whole diff renders into one `Vec<Line>`
-//! and the screen scrolls it with a plain offset, the same approach `DiffFallback` takes on
-//! the web side when its lazy engine chunk never loads.
+//! The diff widget: per-file fold state, expanded context gaps, unified/split layout, word-level
+//! marks, and syntax color composed into `ratatui::Line`s. The whole diff renders into one
+//! `Vec<Line>` and the screen scrolls it with a plain offset.
 
 use std::collections::{HashMap, HashSet};
 
@@ -43,14 +34,13 @@ impl DiffMode {
     }
 }
 
-/// Split mode degrades to unified below this width (spec §7.6: "degrades to unified below
-/// ~140 columns").
+/// Split mode degrades to unified below this width, where the side-by-side layout is difficult
+/// to read.
 pub const SPLIT_MIN_WIDTH: u16 = 140;
 
 /// The mode actually used at a given viewport width — `Split` only ever renders at or above
 /// `SPLIT_MIN_WIDTH`; narrower viewports get `Unified` regardless of what the user asked for.
-/// This is the accept criterion's "split mode degrades below 140 columns", made a pure
-/// function so it is unit-testable without a terminal.
+/// Kept pure so it is unit-testable without a terminal.
 pub fn effective_mode(requested: DiffMode, width: u16) -> DiffMode {
     if requested == DiffMode::Split && width < SPLIT_MIN_WIDTH {
         DiffMode::Unified
@@ -59,15 +49,13 @@ pub fn effective_mode(requested: DiffMode, width: u16) -> DiffMode {
     }
 }
 
-/// Stable identity for a file across refetches — mirrors `fileKey` in `diff-scroll.ts`.
+/// Stable identity for a file across data refreshes.
 pub fn file_key(file: &ChangedFile) -> String {
     format!("{}→{}", file.old_path.as_deref().unwrap_or(""), file.path)
 }
 
-/// Per-file interaction state a screen owns and mutates across renders — the Rust twin of
-/// `DiffView`'s `collapsed`/`expandedByFile` React state, since virtualization is not in play
-/// here there is no unmount risk, but the state still needs to survive a data refetch that
-/// returns the same files (an active run polls its `/changes` route every few seconds).
+/// Per-file interaction state a screen owns and mutates across renders. The state survives a
+/// data refresh that returns the same files while an active run is being monitored.
 #[derive(Debug, Clone, Default)]
 pub struct DiffViewState {
     pub collapsed: HashSet<String>,
@@ -176,7 +164,7 @@ fn render_file(
     let parsed = parse_patch(&file.patch);
     if parsed.hunks.is_empty() {
         let text = if parsed.truncated {
-            "Patch truncated by the server."
+            "Patch output was truncated."
         } else {
             "No content changes (metadata only)."
         };
@@ -228,7 +216,7 @@ fn render_file(
     }
     if parsed.truncated {
         lines.push(note_line(
-            "Patch truncated by the server — counts above remain exact.",
+            "Patch output was truncated — counts above remain exact.",
             theme,
         ));
     }
@@ -530,8 +518,8 @@ fn split_pair_line(
     Line::from(spans)
 }
 
-/// A soft background tint for whole add/del rows (spec §7.6: "overlay add/del background
-/// tint"), blended toward the theme's surface color. Only applied at true-color capability —
+/// A soft background tint for whole add/del rows, blended toward the theme's surface color. Only
+/// applied at true-color capability —
 /// on 256/16-color terminals the accent colors are too saturated to use as a full-row wash, so
 /// the marker plus the word-level marks (`content_spans`) carry the signal there instead.
 fn row_tint(kind: LineKind, theme: &Theme) -> Option<Color> {
@@ -573,7 +561,7 @@ fn tint_row(spans: Vec<Span<'static>>, color: Option<Color>) -> Vec<Span<'static
 }
 
 /// One renderable run of a diff line: text with an optional syntax color and a word mark.
-/// Ports `overlaySegments` from `word-diff.ts` — merges a line's syntax tokens with its word
+/// Merge a line's syntax tokens with its word
 /// spans by splitting at every boundary of either sequence, so highlighting and word emphasis
 /// compose instead of competing.
 struct RenderSegment {

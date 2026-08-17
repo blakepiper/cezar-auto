@@ -1,5 +1,5 @@
-//! Guards the A7 accept criterion (spec §10, §13): a 5,000-item transcript must scroll
-//! at ≥30 fps, i.e. each render must fit inside the 33ms frame budget `main.rs` runs to.
+//! Guards the terminal transcript performance target: a 5,000-item transcript must scroll
+//! at ≥30 fps, i.e. each render must fit inside a 33ms frame budget.
 //!
 //! `bench_scroll_steady_state` is the realistic case: the height cache is already warm
 //! (as it is on every frame after the first at a given width) and only the viewport
@@ -8,9 +8,7 @@
 //! per-item painting, stopped being cheap at 5,000 items.
 //!
 //! `bench_first_render_cold_cache` measures the one frame that isn't steady state: a
-//! freshly opened thread, where every visible item's height is computed for the first
-//! time. It is not held to the same 33ms bound — the spec's budget describes ongoing
-//! scrolling, not the initial paint — but is tracked to catch a pathological blow-up.
+//! freshly opened thread, where every visible item's height is computed for the first time.
 
 use std::hint::black_box;
 

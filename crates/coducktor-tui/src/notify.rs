@@ -1,5 +1,5 @@
-//! Notification plumbing (spec §9.2's "Browser tab title / favicon badge" parity row):
-//! desktop notifications via `notify-rust`, gated on Settings → Notifications, and a
+//! Notification plumbing: desktop notifications via `notify-rust`, gated on Settings →
+//! Notifications, and a
 //! terminal-title update via `OSC 0` (`crossterm::terminal::SetTitle`) that is always on —
 //! the same way a favicon badge never asks permission. Both are best-effort: a missing
 //! notification daemon or a terminal that ignores title escapes must never crash or block
@@ -28,7 +28,7 @@ pub fn notify(enabled: bool, summary: &str, body: &str) {
 }
 
 /// The always-on title, reflecting how many of the current project's tasks need the user —
-/// spec §9.2's favicon-badge parity, unconditional on the notification permission toggle.
+/// unconditional on the notification permission toggle.
 pub fn title_for(needs_you: usize) -> String {
     if needs_you == 0 {
         "coducktor".to_owned()

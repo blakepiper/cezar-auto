@@ -1,6 +1,5 @@
 //! `~/.coducktor/agent-accounts.json` — extra config dirs for a second login of the same
-//! agent CLI, plus which one each project uses. Mirrors
-//! `packages/coducktor/src/workspace/agent-accounts.ts`.
+//! agent CLI, plus which one each project uses.
 //!
 //! Its OWN file rather than a key in `config.json`, and that is the whole point: a
 //! coducktor build that has never heard of accounts does not open this file, so it
@@ -22,13 +21,11 @@ use coducktor_contract::{DEFAULT_AGENT_ACCOUNT_ID, Runner};
 use super::config::{atomic_write_json_sync, is_valid_slug};
 use crate::zod;
 
-/// `id` slug rule — the project rule, for the same URL/segment-safety reason. Mirrors
-/// `workspace/agent-accounts.ts::AGENT_ACCOUNT_ID_RE`.
+/// `id` slug rule — the project rule, for the same URL/segment-safety reason.
 pub use super::config::is_valid_slug as is_valid_account_id;
 
-/// C0 controls + DEL. A path containing one is never legitimate and would be
-/// interpolated into a shell command by the CLI handoff. Mirrors
-/// `workspace/agent-accounts.ts::CONTROL_CHARS_RE`.
+/// C0 controls + DEL. A path containing one is never legitimate and would be interpolated into a
+/// shell command by the CLI handoff.
 pub fn has_control_chars(value: &str) -> bool {
     value
         .chars()
@@ -36,15 +33,13 @@ pub fn has_control_chars(value: &str) -> bool {
 }
 
 /// Providers whose credentials follow their config dir, so more than one login is even
-/// representable. Mirrors `core/agent-profiles.ts::supportsProfiles`
-/// (`PROFILE_ENV_VAR`: claude → `CLAUDE_CONFIG_DIR`, codex → `CODEX_HOME`, opencode/pi →
-/// none).
+/// representable. Claude uses `CLAUDE_CONFIG_DIR`, Codex uses `CODEX_HOME`, and OpenCode/Pi do
+/// not support multiple config directories.
 pub fn supports_profiles(provider: Runner) -> bool {
     matches!(provider, Runner::Claude | Runner::Codex)
 }
 
-/// One extra config dir for a provider. Mirrors
-/// `workspace/agent-accounts.ts::agentAccountSchema`. `id`, `provider`, and `config_dir`
+/// One extra config dir for a provider. `id`, `provider`, and `config_dir`
 /// are load-bearing and carry no catch: a row missing any of them names no account and
 /// is dropped by the per-entry salvage. `config_dir` is stored AS WRITTEN — a literal `~`
 /// survives — every consumer expands it through `paths::expand_tilde`.
@@ -107,8 +102,7 @@ impl AgentAccount {
     }
 }
 
-/// One project's per-provider account choice. Mirrors
-/// `workspace/agent-accounts.ts::selectionSchema`. An absent key means the discovered
+/// One project's per-provider account choice. An absent key means the discovered
 /// default.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct AgentAccountSelection {
@@ -175,7 +169,7 @@ impl AgentAccountSelection {
 
 const STORE_KEYS: &[&str] = &["version", "accounts", "defaults", "selections"];
 
-/// Mirrors `workspace/agent-accounts.ts::storeSchema` — `~/.coducktor/agent-accounts.json`.
+/// The durable agent-account store in `~/.coducktor/agent-accounts.json`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentAccountStore {
     /// Format cursor for THIS file, independent of `workspace::config`'s
@@ -262,8 +256,7 @@ impl AgentAccountStore {
     }
 
     /// The selection stored for `repo_root`, matched on the literal spelling only —
-    /// realpath normalization is the caller's job (mirrors
-    /// `agent-accounts.ts::selectionForRoot`'s two-step lookup, split here because
+    /// realpath normalization is the caller's job. The two-step lookup is split here because
     /// realpath resolution needs filesystem access this pure function doesn't take).
     pub fn selection_for_root(&self, repo_root: &str) -> Option<&AgentAccountSelection> {
         self.selections
@@ -275,7 +268,6 @@ impl AgentAccountStore {
     /// The account `provider` uses for `repo_root` (already realpath-normalized by the
     /// caller), or `None` when nothing has an opinion. Repo first, then the machine-wide
     /// default — a repo that chose is never overruled by a later change to the default.
-    /// Mirrors `agent-accounts.ts::selectionFor`.
     pub fn selection_for(&self, repo_root: Option<&str>, provider: Runner) -> Option<&str> {
         repo_root
             .and_then(|root| self.selection_for_root(root))
@@ -285,11 +277,7 @@ impl AgentAccountStore {
 }
 
 /// Read the store on demand — never cached, never throws. A missing file returns the
-/// empty default (accounts predating this file are handled by the caller's legacy
-/// import — see the module-level note in `workspace/agent-accounts.ts`; this crate does
-/// not port that one-time migration, since it only ever fires for a `config.json` from
-/// before this file existed). A corrupt file degrades to the default, left on disk
-/// untouched. Mirrors `workspace/agent-accounts.ts::loadAgentAccounts`.
+/// empty default. A corrupt file degrades to the default, left on disk untouched.
 pub fn load_agent_accounts(path: &Path) -> AgentAccountStore {
     let Ok(raw) = fs::read_to_string(path) else {
         return AgentAccountStore::default();
@@ -300,8 +288,7 @@ pub fn load_agent_accounts(path: &Path) -> AgentAccountStore {
     AgentAccountStore::parse(&parsed)
 }
 
-/// Read-modify-write merge: re-read, apply `mutator`, atomic-rename write. Mirrors
-/// `workspace/agent-accounts.ts::mergeWriteAgentAccounts`.
+/// Read-modify-write merge: re-read, apply `mutator`, and atomically rename the write.
 pub fn merge_write_agent_accounts(
     path: &Path,
     mutator: impl FnOnce(&mut AgentAccountStore),

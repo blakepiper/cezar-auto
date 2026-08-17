@@ -6,7 +6,7 @@ use crate::reasoning::{ConcreteReasoningEffort, ReasoningEffort};
 use crate::workflows::{WorkflowDef, WorkflowStepDef};
 use crate::workspace::QuotaProvider;
 
-/// Mirrors `packages/contract/src/runs.ts::RunStatus`.
+/// `RunStatus` contract shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RunStatus {
@@ -20,14 +20,14 @@ pub enum RunStatus {
     Cancelled,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::RunActivity`.
+/// `RunActivity` contract shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RunActivity {
     Monitoring,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::ProviderQuotaBlockedReason`.
+/// `ProviderQuotaBlockedReason` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderQuotaBlockedReason {
@@ -45,7 +45,7 @@ pub enum ProviderQuotaBlockedReasonType {
     ProviderQuota,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::StepStatus`.
+/// `StepStatus` contract shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StepStatus {
@@ -59,7 +59,7 @@ pub enum StepStatus {
     Skipped,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::StepState`.
+/// `StepState` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StepState {
@@ -113,7 +113,7 @@ pub enum StepKind {
     Check,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::DiffStat`.
+/// `DiffStat` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiffStat {
@@ -124,7 +124,7 @@ pub struct DiffStat {
     pub repointed: Option<bool>,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::QueuedMessage`.
+/// `QueuedMessage` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueuedMessage {
@@ -135,7 +135,7 @@ pub struct QueuedMessage {
     pub created_at: String,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::ProcessUsage`.
+/// `ProcessUsage` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessUsage {
@@ -155,7 +155,7 @@ pub struct AutomationProvenance {
     pub github_url: String,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::RunRecord`.
+/// `RunRecord` contract shape.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunRecord {
@@ -268,7 +268,7 @@ pub struct RunRecord {
     pub workflow_def: Option<WorkflowDef>,
 }
 
-/// The title provenance enum from `packages/contract/src/runs.ts`.
+/// The title provenance enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TitleOrigin {
@@ -277,7 +277,7 @@ pub enum TitleOrigin {
     Marker,
 }
 
-/// The marker reference pair from `packages/contract/src/runs.ts`.
+/// The marker reference pair.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MarkerRefs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -286,7 +286,7 @@ pub struct MarkerRefs {
     pub issue: Option<f64>,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::ApiRun`.
+/// `ApiRun` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApiRun {
     #[serde(flatten)]
@@ -295,7 +295,7 @@ pub struct ApiRun {
     pub usage: Option<ProcessUsage>,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::ModelUsageEntry`.
+/// `ModelUsageEntry` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelUsageEntry {
@@ -312,7 +312,7 @@ pub struct ReferenceStatuses {
     pub issues: std::collections::BTreeMap<String, ReferenceStatus>,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::RunIndexEntry`.
+/// `RunIndexEntry` contract shape.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunIndexEntry {
@@ -371,7 +371,7 @@ pub struct RunIndexEntry {
     pub reasoning_effort: Option<ConcreteReasoningEffort>,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::RunsIndexResponse`.
+/// `RunsIndexResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunsIndexResponse {
@@ -381,7 +381,7 @@ pub struct RunsIndexResponse {
     pub truncated: Vec<String>,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::CreateRunResponse`.
+/// `CreateRunResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum CreateRunResponse {
@@ -389,49 +389,49 @@ pub enum CreateRunResponse {
     Group { runs: Vec<RunRecord> },
 }
 
-/// Mirrors `packages/contract/src/runs.ts::CancelResponse`.
+/// `CancelResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CancelResponse {
     pub cancelled: bool,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::CancelAutoResumeResponse`.
+/// `CancelAutoResumeResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CancelAutoResumeResponse {
     pub cancelled: bool,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::ArchiveFinishedResponse`.
+/// `ArchiveFinishedResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ArchiveFinishedResponse {
     pub archived: f64,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::MarkAllReadResponse`.
+/// `MarkAllReadResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MarkAllReadResponse {
     pub read: f64,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::DeleteRunResponse`.
+/// `DeleteRunResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeleteRunResponse {
     pub deleted: bool,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::FinishResponse`.
+/// `FinishResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FinishResponse {
     pub finished: bool,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::ContinueResponse`.
+/// `ContinueResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContinueResponse {
     pub continued: bool,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::CreatePrResponse`.
+/// `CreatePrResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreatePrResponse {
@@ -439,7 +439,7 @@ pub struct CreatePrResponse {
     pub dry_run: bool,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::MessageResponse`.
+/// `MessageResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MessageResponse {
@@ -455,39 +455,39 @@ pub enum MessageResponse {
     },
 }
 
-/// Mirrors `packages/contract/src/runs.ts::EditQueuedMessageResponse`.
+/// `EditQueuedMessageResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EditQueuedMessageResponse {
     pub message: QueuedMessage,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::RemoveQueuedMessageResponse`.
+/// `RemoveQueuedMessageResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoveQueuedMessageResponse {
     pub removed: bool,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::OpenInCliResponse`.
+/// `OpenInCliResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenInCliResponse {
     pub opened: bool,
     pub command: String,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::RemoveWorktreeResponse`.
+/// `RemoveWorktreeResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoveWorktreeResponse {
     pub removed: bool,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::GitCommitResponse`.
+/// `GitCommitResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitCommitResponse {
     pub committed: bool,
     pub sha: String,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::GitPushResponse`.
+/// `GitPushResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitPushResponse {
@@ -497,7 +497,7 @@ pub struct GitPushResponse {
     pub upstream_set: bool,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::RunCommit`.
+/// `RunCommit` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunCommit {
     pub sha: String,
@@ -506,7 +506,7 @@ pub struct RunCommit {
     pub when: String,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::RunCommitsResponse`.
+/// `RunCommitsResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunCommitsResponse {
     pub commits: Vec<RunCommit>,
@@ -515,7 +515,7 @@ pub struct RunCommitsResponse {
     pub pushed: bool,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::GroupVariant`.
+/// `GroupVariant` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupVariant {
@@ -535,7 +535,7 @@ pub struct GroupVariant {
     pub handoff_excerpt: String,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::GroupResponse`.
+/// `GroupResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupResponse {
@@ -543,23 +543,21 @@ pub struct GroupResponse {
     pub runs: Vec<GroupVariant>,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::PickVariantResponse`.
+/// `PickVariantResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PickVariantResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub winner: Option<RunRecord>,
 }
 
-/// The `POST /groups/:groupId/pick` request body (`pickSchema` in `server.ts`) — not exposed
-/// as a named contract type on the TS side (the route validates an inline `z.object`), but the
-/// Rust client needs a typed body the same way every other write does.
+/// The request body for selecting a winning run from a variant group.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PickVariantRequest {
     pub run_id: String,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::ImageInput`.
+/// `ImageInput` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageInput {
@@ -567,7 +565,7 @@ pub struct ImageInput {
     pub data: String,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::CreateRunInputBase`.
+/// `CreateRunInputBase` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateRunInputBase {
@@ -603,7 +601,7 @@ pub struct CreateRunInputBase {
 /// The refined create-run input has the same wire fields as its base schema.
 pub type CreateRunInput = CreateRunInputBase;
 
-/// Mirrors `packages/contract/src/runs.ts::MessageInput`.
+/// `MessageInput` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct MessageInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -612,7 +610,7 @@ pub struct MessageInput {
     pub images: Option<Vec<ImageInput>>,
 }
 
-/// Mirrors `packages/contract/src/runs.ts::PatchRunInput`.
+/// `PatchRunInput` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PatchRunInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -621,9 +619,8 @@ pub struct PatchRunInput {
     pub task: Option<String>,
 }
 
-/// Mirrors `continueSchema` in `packages/coducktor/src/server/server.ts` (§8.4 "Continue").
-/// Every field optional: an empty body reopens the last session on the run's own
-/// backend, exactly as `POST /runs/:id/continue` with no body does today.
+/// Continue input. Every field is optional: an empty value reopens the last session on the
+/// run's own backend.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ContinueInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -636,7 +633,7 @@ pub struct ContinueInput {
     pub model: Option<String>,
 }
 
-/// Mirrors `openInSchema` in `packages/coducktor/src/server/server.ts`.
+/// Request to open a project in a local target.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenInInput {
     pub target: String,
@@ -644,15 +641,13 @@ pub struct OpenInInput {
     pub path: Option<String>,
 }
 
-/// Mirrors `gitCommitSchema` in `packages/coducktor/src/server/server.ts`.
+/// Request to create a Git commit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitCommitInput {
     pub message: String,
 }
 
-/// Mirrors `queuedMessagePatchSchema` in `packages/coducktor/src/server/server.ts`. PATCH
-/// semantics: an omitted field keeps its current value — the cockpit edits text
-/// without re-uploading existing attachments.
+/// Patch for a queued message. An omitted field keeps its current value.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct QueuedMessagePatchInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -15,7 +15,7 @@ pub struct ToolDisplay {
     pub subtitle: Option<String>,
 }
 
-/// Pure, panic-free port of `packages/api-client/src/protocol/tool-display.ts`.
+/// Pure, panic-free tool-display mapping.
 pub fn tool_display(name: &str, input: Option<&Value>) -> ToolDisplay {
     let key = name.to_ascii_lowercase();
 

@@ -1,15 +1,12 @@
-//! The shared skill presentation rules — a faithful Rust port of
-//! `packages/web/src/lib/skills.ts` (the behavioral spec, #377/#380/#484/#519):
-//! what "project first" means, how a typed query narrows and ranks the list, and
-//! how the "Most used" tier is promoted. Every function here is a pure port and
-//! the test suite mirrors `lib/skills.test.ts` so a divergence between the two
-//! clients shows up as a failed test in whichever half changed.
+//! Shared skill presentation rules: project-first ordering, typed-query filtering and ranking,
+//! and promotion of the "Most used" tier. Every function here is pure and covered by focused
+//! tests.
 
 use std::collections::BTreeMap;
 
 use coducktor_contract::{Skill, SkillSource, WorkflowDef};
 
-/// Project-oriented skills first, user-global after — the #377/#555 ordering rule.
+/// Project-oriented skills first, user-global after.
 /// Team skills are configured and cached per project even though their files live
 /// in a shared remote repo, so they belong with project skills. Only `global`
 /// comes from the user's home catalog.
@@ -20,15 +17,15 @@ pub fn is_project_skill(source: SkillSource) -> bool {
     )
 }
 
-/// How many "Most used" skills a picker promotes above the locality groups (#519).
+/// How many "Most used" skills a picker promotes above the locality groups.
 pub const MOST_USED_LIMIT: usize = 5;
 
-/// The three display tiers every skill picker renders, in this order (#519).
+/// The three display tiers every skill picker renders, in this order.
 #[derive(Debug, Clone, Default)]
 pub struct SkillTiers<'a> {
     /// Skills actually picked before (`skillUsage` count > 0), frequency descending, capped.
     pub most_used: Vec<&'a Skill>,
-    /// Remaining project skills (#377 locality), in the incoming (server-alphabetical) order.
+    /// Remaining project skills, in the incoming alphabetical order.
     pub project: Vec<&'a Skill>,
     /// Remaining user-global skills, in the incoming order.
     pub global: Vec<&'a Skill>,
@@ -40,9 +37,9 @@ fn usage_count(usage: Option<&BTreeMap<String, f64>>, name: &str) -> f64 {
     usage.and_then(|map| map.get(name)).copied().unwrap_or(0.0)
 }
 
-/// A pure reducer over the ui-state `skillUsage` map (#408): bump one skill's count
-/// by one. The server's `PUT /ui-state` merge is shallow, so a successful run start
-/// always sends the WHOLE updated map back, never just the one changed entry.
+/// A pure reducer over the ui-state `skillUsage` map: bump one skill's count
+/// by one. The UI-state merge is shallow, so a successful run start always sends the whole
+/// updated map back, never just the one changed entry.
 pub fn bump_skill_usage(
     usage: Option<&BTreeMap<String, f64>>,
     name: &str,
@@ -53,8 +50,7 @@ pub fn bump_skill_usage(
 }
 
 /// Does `query` fuzzy-match `candidate`? Case-insensitive subsequence — `omfx`
-/// finds `om-fix-issue` — the same permissiveness cmdk gives the palette, minus
-/// its score-reordering.
+/// finds `om-fix-issue`, preserving the incoming order for matching candidates.
 pub fn fuzzy_match(candidate: &str, query: &str) -> bool {
     if query.is_empty() {
         return true;
@@ -116,7 +112,7 @@ pub fn match_score(text: &str, query: &str) -> u8 {
 
 /// A name hit outranks a description-only hit by this much, so an (almost-)exact
 /// name match always sorts above a skill that merely mentions the query in its
-/// description (#484).
+/// description.
 const NAME_MATCH_BONUS: f64 = 10.0;
 
 /// How well a name/description pair matches a typed query. The query is split on
@@ -152,7 +148,7 @@ pub fn query_score(name: &str, description: Option<&str>, query: &str) -> f64 {
     total
 }
 
-/// A heavily-used skill may win among comparably-scoring matches (#519), but never
+/// A heavily-used skill may win among comparably-scoring matches, but never
 /// outrank a clearly better name match: the bonus is bounded to `MOST_USED_LIMIT *
 /// USAGE_BONUS_STEP`, well under the `NAME_MATCH_BONUS` gap between match tiers.
 const USAGE_BONUS_STEP: f64 = 0.5;
@@ -192,8 +188,8 @@ impl<T: Matchable> Matchable for &T {
 }
 
 /// Filter a name/description list down to matches and rank them by match quality
-/// (#484), preserving the incoming order for an empty query and for equally-scored
-/// ties. When `usage` is given (#519), a bounded usage bonus is folded into the
+/// preserving the incoming order for an empty query and for equally-scored ties. When `usage`
+/// is given, a bounded usage bonus is folded into the
 /// score and the usage count breaks remaining ties, so a typed query no longer
 /// discards frequency entirely.
 fn rank_by_query<'a, T>(
@@ -228,8 +224,7 @@ where
 }
 
 /// Rank skills for a grouped picker by match quality, keeping the caller's incoming
-/// order for ties and the empty query — with the #519 usage tie-break when `usage`
-/// is given. Callers split the result into their own display groups.
+/// order for ties and the empty query. Callers split the result into their own display groups.
 pub fn search_skills<'a>(
     skills: &'a [Skill],
     query: &str,
@@ -243,12 +238,12 @@ pub fn search_workflows<'a>(workflows: &'a [WorkflowDef], query: &str) -> Vec<&'
     rank_by_query(workflows, query, None)
 }
 
-/// Partition skills into the picker display tiers (#519): **Most used** first —
+/// Partition skills into the picker display tiers: **Most used** first —
 /// skills with a `skillUsage` count > 0, frequency descending, ties broken
 /// locality-first then by incoming order, capped at `most_used_limit` — then
 /// **project**, then **global**, each remainder keeping the incoming order. A skill
 /// promoted into `most_used` is NOT repeated in its locality group. With no usage
-/// at all this degrades to the plain #377 project-first split.
+/// at all this degrades to the plain project-first split.
 pub fn partition_skills_for_display<'a>(
     skills: &'a [Skill],
     usage: Option<&BTreeMap<String, f64>>,
@@ -310,7 +305,7 @@ pub fn partition_skill_refs<'a>(
     }
 }
 
-/// The flat frequency order (#408, re-tiered by #519): the display tiers flattened —
+/// The flat frequency order: the display tiers flattened —
 /// most-used first (frequency descending, capped), then project, then global.
 pub fn order_skills_by_usage<'a>(
     skills: &'a [Skill],
@@ -321,8 +316,8 @@ pub fn order_skills_by_usage<'a>(
 }
 
 /// The `/` autocomplete's list for a typed query: ordered most-used → project →
-/// global (#519), then filtered and **ranked by match quality** (#484). Without
-/// `usage` this is exactly the pre-#519 project-first behavior.
+/// global, then filtered and **ranked by match quality**. Without `usage` this is the
+/// project-first behavior.
 pub fn filter_skills<'a>(
     skills: &'a [Skill],
     query: &str,
@@ -373,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn classifies_every_server_source_value() {
+    fn classifies_every_skill_source_value() {
         assert!(is_project_skill(SkillSource::Ai));
         assert!(is_project_skill(SkillSource::Legacy));
         assert!(is_project_skill(SkillSource::Agents));
@@ -456,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn equal_counts_inside_most_used_break_locality_first_then_server_order() {
+    fn equal_counts_inside_most_used_break_locality_first_then_input_order() {
         let skills = vec![
             s("g1", SkillSource::Global, None),
             s("p1", SkillSource::Agents, None),
@@ -492,7 +487,7 @@ mod tests {
     }
 
     #[test]
-    fn fuzzy_match_follows_the_web_table() {
+    fn fuzzy_match_handles_common_skill_queries() {
         let table: &[(&str, &str, bool)] = &[
             ("om-fix-issue", "", true),
             ("om-fix-issue", "fix", true),
@@ -500,7 +495,7 @@ mod tests {
             ("om-fix-issue", "OMFX", true),
             ("om-fix-issue", "xz", false),
             ("om-fix-issue", "issuefix", false),
-            ("src/server/server.ts", "srvts", true),
+            ("src/engine/state.rs", "srs", true),
         ];
         for (candidate, query, hit) in table {
             assert_eq!(

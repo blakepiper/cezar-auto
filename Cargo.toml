@@ -26,25 +26,25 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # Real SIGTERM on Unix child processes — std::process::Child::kill only sends SIGKILL.
 libc = "0.2"
 # `unstable-rendered-line-info` powers `Paragraph::line_count`, the transcript's only way to
-# measure a markdown block's wrapped height without rendering it (spec §7.6 RenderCache).
+# Measure a markdown block's wrapped height without rendering it.
 ratatui = { version = "0.29.0", features = ["unstable-rendered-line-info"] }
 ratatui-image = { version = "9.0.0", default-features = false, features = ["crossterm", "image-defaults"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-# Syntax highlighting for the diff widget (spec §6.1); `two-face` bundles `bat`'s syntax +
+# Syntax highlighting for the diff widget; `two-face` bundles `bat`'s syntax +
 # theme assets rather than shipping only syntect's tiny default set.
 syntect = { version = "5.3", default-features = false, features = ["parsing", "regex-fancy"] }
 two-face = "0.5"
-# Word-level intra-line diff for changed lines (spec §7.6 "Diffs").
+# Word-level intra-line diff for changed lines.
 similar = "3.1"
 tui-markdown = "=0.3.6"
-# Fuzzy matching for the command palette (spec §6.1, §8.15).
+# Fuzzy matching for the command palette.
 nucleo = "0.5"
-# Desktop notifications, replacing the web Notification API (spec §6.3, §8.14 Notifications).
+# Desktop notifications for task state changes.
 notify-rust = "4"
-# Open URLs in the OS default handler — external links from the GitHub screen (spec §6.3).
+# Open URLs in the OS default handler for external GitHub links.
 open = "5"
-# CLI argument parsing for the TUI binary (spec §6.3, §10 A13).
+# CLI argument parsing for the TUI binary.
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1.48", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
@@ -54,6 +54,6 @@ futures-util = { version = "0.3", features = ["sink"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 toml = "0.8"
 regex = "1"
-# Workflow YAML (Phase B). Maintained fork of `serde_yaml` (spec §6.2).
+# Workflow YAML. Maintained fork of `serde_yaml`.
 serde_yaml_ng = "0.10"
 sha2 = "0.10"

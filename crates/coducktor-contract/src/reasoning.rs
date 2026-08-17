@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Mirrors `packages/contract/src/reasoning.ts::ReasoningEffort`.
+/// `ReasoningEffort` contract shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ReasoningEffort {
@@ -12,7 +12,7 @@ pub enum ReasoningEffort {
     XHigh,
 }
 
-/// Mirrors `packages/contract/src/reasoning.ts::ConcreteReasoningEffort`.
+/// `ConcreteReasoningEffort` contract shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConcreteReasoningEffort {

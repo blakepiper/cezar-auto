@@ -246,7 +246,7 @@ async function respond(userText, imageCount) {
   // carry `parent_tool_use_id`, interleaved the way a real fan-out interleaves,
   // then their results. Makes the Agents dock and its drill-down sheet reachable
   // under DUCK_DRY_RUN=1 for QA, screenshots and the e2e smoke (spec
-  // `.ai/specs/2026-07-20-grouped-subagent-display.md` §"Testability hook", #474).
+  // Test hook for grouped sub-agent display.
   // Derived from the `subagent-task.ndjson` golden fixture's wire shape.
   if (userText.includes('mock:subagents')) {
     const agents = [

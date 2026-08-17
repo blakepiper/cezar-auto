@@ -1,8 +1,7 @@
 //! Timestamp helpers with no external dependency. The workspace pins no `chrono`/`time`
-//! crate (every persisted timestamp is just the ISO-8601 string `Date.toISOString()`
-//! produces in the TypeScript source), so [`now_iso8601`] and [`is_zod_datetime`] implement
-//! the two directions of that same format by hand rather than pulling one in for a single
-//! formatter/validator pair.
+//! crate (every persisted timestamp is an ISO-8601 string with millisecond precision), so
+//! [`now_iso8601`] and [`is_zod_datetime`] implement the format by hand rather than pulling one
+//! in for a single formatter/validator pair.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -23,8 +22,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (y, m, d)
 }
 
-/// The current instant as `Date.toISOString()` would render it:
-/// `YYYY-MM-DDTHH:mm:ss.sssZ`, always UTC, always millisecond precision.
+/// The current instant as `YYYY-MM-DDTHH:mm:ss.sssZ`, always UTC and millisecond precision.
 pub fn now_iso8601() -> String {
     let since_epoch = SystemTime::now()
         .duration_since(UNIX_EPOCH)

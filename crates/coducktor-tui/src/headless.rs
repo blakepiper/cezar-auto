@@ -1,6 +1,5 @@
-//! The non-interactive `coducktor`/`duck` subcommands: `run`, `init`, `usage`, `doctor`,
-//! `projects` (B10). The protected exit-code and task semantics are kept where they still apply;
-//! console wording is intentionally terminal-native.
+//! The non-interactive `coducktor`/`duck` subcommands: `run`, `init`, `usage`, `doctor`, and
+//! `projects`. Console wording is intentionally terminal-native.
 
 use std::path::{Path, PathBuf};
 use std::process::Command as ShellCommand;
@@ -16,10 +15,8 @@ use coducktor_runners::session_factory::DefaultSessionFactory;
 
 use crate::cli::ProjectsCommand;
 
-/// `resolve(values.repo ?? cwd)`, then prefer the enclosing git repo root over an arbitrary
-/// subdirectory the way `getRepoInfo` does — a bare `git rev-parse --show-toplevel` shell-out,
-/// not a port of `server/git.ts` (deliberately not ported to this crate yet, B3's own scope
-/// note). Falls back to the directory itself when it isn't inside a git repo at all.
+/// Resolve the requested directory, preferring its enclosing Git repository root over an
+/// arbitrary subdirectory. Falls back to the directory itself when it is not inside a Git repo.
 pub fn resolve_repo_root(explicit: Option<&Path>) -> PathBuf {
     let start = explicit
         .map(Path::to_path_buf)
@@ -44,7 +41,7 @@ pub fn resolve_repo_root(explicit: Option<&Path>) -> PathBuf {
 // ---- run (headless) -----------------------------------------------------------------------
 
 /// `coducktor run "<task>"` — headless execution. Returns the process exit code: 0 for `done`/
-/// `review` (spec §1.4's protected exit-code contract), 1 otherwise.
+/// `review`, 1 otherwise.
 pub async fn run_command(
     repo_root: PathBuf,
     task: String,
@@ -133,8 +130,7 @@ fn run_command_with_factory(
     }
 }
 
-/// Mirrors `index.ts`'s `runCommand`'s `store.on('event', …)` switch — same event-type
-/// vocabulary, terminal-friendly formatting instead of a browser transcript.
+/// Print normalized run events with terminal-friendly formatting.
 fn print_run_event(event: &coducktor_contract::RunEvent) {
     let text = |key: &str| -> String {
         event
@@ -193,7 +189,6 @@ fn first_line(text: &str) -> String {
 // ---- init ----------------------------------------------------------------------------------
 
 /// `coducktor init` — scaffold `.ai/coducktor/{workflows,skills}` with one worked example each.
-/// Ported from `index.ts`'s `initCommand`, content verbatim.
 pub fn init_command(repo_root: &Path) {
     let workflows_dir = repo_root.join(".ai/coducktor/workflows");
     let skills_dir = repo_root.join(".ai/coducktor/skills");
@@ -222,8 +217,7 @@ pub fn init_command(repo_root: &Path) {
     println!("\nDone. Start the cockpit with: coducktor");
 }
 
-/// Keep run data out of the user's repo history; workflows/skills stay committable. Ported
-/// from `index.ts`'s `ensureDataGitignore`, list verbatim.
+/// Keep run data out of the user's repo history; workflows and skills stay committable.
 fn ensure_data_gitignore(repo_root: &Path) {
     const WANTED: &[&str] = &[
         "runs.json",
@@ -263,17 +257,9 @@ fn ensure_data_gitignore(repo_root: &Path) {
 
 // ---- usage ---------------------------------------------------------------------------------
 
-/// `coducktor usage` — SCOPE CUT (B10): the quota-telemetry stack (`core/quota/*`, nine files —
-/// runtime/coordinator/router/policy/failure-classifier/usage-report/usage-service/
-/// claude-usage-adapter/codex-usage-adapter/claude-credentials) is read-only CLI display logic
-/// orthogonal to session execution and is not ported here. The subcommand still parses (spec
-/// §1.4 names `usage` as a protected command) but degrades honestly instead of lying about
-/// telemetry it does not have.
+/// `coducktor usage` — quota telemetry is not available in this build.
 pub fn usage_command() -> i32 {
-    eprintln!(
-        "coducktor usage: not yet implemented in the Rust build — see \
-         .ai/specs/2026-08-15-rust-tui-refactor-plan.md, step B10"
-    );
+    eprintln!("coducktor usage: quota telemetry is not available in this build");
     1
 }
 
@@ -281,9 +267,9 @@ pub fn usage_command() -> i32 {
 
 /// Inspect the local installation without opening a TUI or a listening socket.
 ///
-/// This is the terminal equivalent of the old health route. The update row is intentionally
-/// source-first: this build has no package registry or background updater, so the honest update
-/// action is to pull the checkout and rerun `install.sh`.
+/// The update row is intentionally source-first: this build has no package registry or
+/// background updater, so the honest update action is to pull the checkout and rerun
+/// `install.sh`.
 pub async fn doctor_command(repo_root: PathBuf, json: bool) -> i32 {
     let engine = InProcessEngine::new(repo_root, env!("CARGO_PKG_VERSION"));
     let health = match engine.diagnostic_health().await {
@@ -364,10 +350,8 @@ fn backend_check_label(name: BackendCheckName) -> &'static str {
 
 // ---- projects --------------------------------------------------------------------------------
 
-/// `coducktor projects [list|add [<dir>]|remove <id>|rm <id>]` — the terminal twin of Settings →
-/// Projects, no server required. Ported from `projects-cli.ts`'s `list`/`add`/`remove` (its
-/// `tag` subcommand is not ported — a secondary UX affordance, not part of the protected
-/// surface).
+/// `coducktor projects [list|add [<dir>]|remove <id>|rm <id>]` — the terminal project-registry
+/// commands. They operate directly on the per-user workspace config and need no service.
 pub fn projects_command(repo_root: &Path, action: Option<ProjectsCommand>) -> i32 {
     projects_command_at(&workspace_config_path(&ProcessEnv), repo_root, action)
 }

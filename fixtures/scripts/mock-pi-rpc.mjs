@@ -6,7 +6,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // `MOCK_PI_IGNORE_EOF=1` switches to the #703 teardown shape: the mock stays
 // deaf to stdin EOF (the CLI hang the EOF watchdog exists for) and handles
 // SIGTERM itself, exiting 143 rather than dying from the signal — mirrors
-// `packages/coducktor/src/core/__fixtures__/claude/stub-ignores-eof-exits-143.mjs`
+// The mock intentionally ignores EOF and exits with the same signal status as the agent stub.
 // and `mock-codex-app-server.mjs`'s `MOCK_CODEX_IGNORE_EOF` toggle.
 const ignoreEof = process.env.MOCK_PI_IGNORE_EOF === '1';
 if (ignoreEof) {

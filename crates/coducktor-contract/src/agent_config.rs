@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::health::Runner;
 
-/// Mirrors `packages/contract/src/agent-config.ts::AgentConfigFormat`.
+/// `AgentConfigFormat` contract shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentConfigFormat {
@@ -13,7 +13,7 @@ pub enum AgentConfigFormat {
     Markdown,
 }
 
-/// Mirrors `packages/contract/src/agent-config.ts::AgentConfigScope`.
+/// `AgentConfigScope` contract shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentConfigScope {
@@ -22,7 +22,7 @@ pub enum AgentConfigScope {
     Local,
 }
 
-/// Mirrors `packages/contract/src/agent-config.ts::AgentConfigKind`.
+/// `AgentConfigKind` contract shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentConfigKind {
@@ -31,7 +31,7 @@ pub enum AgentConfigKind {
     Mcp,
 }
 
-/// Mirrors `packages/contract/src/agent-config.ts::AgentConfigTracked`.
+/// `AgentConfigTracked` contract shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AgentConfigTracked {
@@ -40,7 +40,7 @@ pub enum AgentConfigTracked {
     OutsideRepo,
 }
 
-/// Mirrors `packages/contract/src/agent-config.ts::AgentConfigFile`.
+/// `AgentConfigFile` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConfigFile {
@@ -66,7 +66,7 @@ pub struct AgentConfigFile {
     pub read_only_reason: Option<String>,
 }
 
-/// Mirrors `packages/contract/src/agent-config.ts::UserMcpListing`.
+/// `UserMcpListing` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserMcpListing {
     pub path: String,
@@ -74,7 +74,7 @@ pub struct UserMcpListing {
     pub readable: bool,
 }
 
-/// Mirrors `packages/contract/src/agent-config.ts::AgentConfigListing`.
+/// `AgentConfigListing` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConfigListing {
@@ -83,7 +83,7 @@ pub struct AgentConfigListing {
     pub user_mcp: Option<UserMcpListing>,
 }
 
-/// Mirrors `packages/contract/src/agent-config.ts::AgentConfigFileContent`.
+/// `AgentConfigFileContent` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConfigFileContent {
@@ -94,7 +94,7 @@ pub struct AgentConfigFileContent {
     pub version: Option<String>,
 }
 
-/// Mirrors `packages/contract/src/agent-config.ts::SetAgentConfigInput`.
+/// `SetAgentConfigInput` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetAgentConfigInput {

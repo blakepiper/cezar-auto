@@ -1,10 +1,10 @@
-//! The IDE's editor widget (spec §8.8): multi-line text state with a row/col caret,
+//! The IDE's editor widget: multi-line text state with a row/col caret,
 //! syntax highlighting through the shared `Highlighter`, a right-aligned line-number
 //! gutter and a scroll offset — the pieces `screens/ide/` composes into the editor pane.
 //!
 //! The widget owns NO policy: keys arrive from the screen's `handle_key`, text stays
-//! byte-exact (the server's `PUT /ide/file` round-trips the draft verbatim — no newline
-//! normalization, which would corrupt a CRLF file on save). The caret is modeled as
+//! byte-exact (the engine round-trips the draft verbatim — no newline normalization, which would
+//! corrupt a CRLF file on save). The caret is modeled as
 //! `(row, col)` with `col` in chars within the line, so movement never needs byte-index
 //! bookkeeping across edits.
 
@@ -50,7 +50,7 @@ impl Editor {
     }
 
     /// Clamp the caret and scroll after an external text replacement — the draft survives
-    /// a server refetch only when the content is unchanged, so this is mostly a no-op.
+    /// a data refresh only when the content is unchanged, so this is mostly a no-op.
     pub fn sanitize(&mut self) {
         let lines = self.line_count();
         self.row = self.row.min(lines.saturating_sub(1));

@@ -1,17 +1,16 @@
 //! AskUser payload — the structured multiple-choice question an agent asks the user, so a
-//! client can render clickable option chips instead of the prose fallback. Mirrors
-//! `packages/coducktor/src/core/ask.ts`.
+//! client can render clickable option chips instead of the prose fallback.
 //!
 //! The agent emits this as a trailing `DUCK:ASK <compact-json>` control marker (a sibling of
 //! `DUCK:DONE` / `DUCK:MONITORING`), detected on the *assembled* turn text so delta-streaming
 //! backends can't split it. The legacy `DUCK:ASK` spelling parses identically (dual-read shim,
-//! spec §2.2.2). [`super::super::workflows::run::decide_turn_marker`]'s `valid_ask` parameter is
+//! the compatibility regex). [`super::super::workflows::run::decide_turn_marker`]'s `valid_ask`
+//! parameter is
 //! exactly [`parse_ask_marker`] returning `Some`.
 //!
-//! There is no zod here — unlike this crate's other ported schemas (`crate::zod`'s
-//! `.catch()`-style per-field salvage), a malformed `DUCK:ASK` payload degrades the WHOLE marker
-//! to plain text (never a partially-valid card), so [`validate_ask_request`] is a plain
-//! all-or-nothing structural walk over the decoded JSON.
+//! A malformed `DUCK:ASK` payload degrades the whole marker to plain text (never a
+//! partially-valid card), so [`validate_ask_request`] is a plain all-or-nothing structural walk
+//! over the decoded JSON.
 
 use std::collections::HashSet;
 use std::sync::LazyLock;

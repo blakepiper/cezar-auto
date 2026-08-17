@@ -1,23 +1,10 @@
-//! `InProcessEngine` — an `Engine` implementation that calls straight into `coducktor-core`
-//! (and, for the families that need them, `coducktor-runners`/`coducktor-forge`) instead of
-//! making an HTTP request. Spec §12/plan C1: because the `Engine` trait predates the server
-//! (A2), this is meant to be "an implementation, not an extraction" — in practice a large
-//! fraction of `coducktor-server`'s own handlers turned out to hold real business logic
-//! directly (git shelling, IDE file I/O, agent-config file listing, provider probing) rather
-//! than being thin `coducktor-core` delegates the way that crate's own module doc promises, so
-//! porting the *whole* `Engine` trait honestly is a bigger lift than this one step's text
-//! implies. The complete port now lives here: each family is implemented against the
-//! matching `coducktor-server` handler, with the final trait adapter in `engine.rs`.
+//! `InProcessEngine` implements the [`Engine`] trait by calling the core, runner, and forge
+//! crates directly. It is the production engine for the terminal UI and headless commands;
+//! there is no HTTP or service transport in front of it.
 //!
-//! **Status: complete.** `InProcessEngine` implements every method in `Engine`; scoped calls
-//! intentionally resolve against this instance's one configured repository, and the adapter
-//! converts the legacy raw JSON repository UI-state helpers to the typed trait contract.
-//!
-//! Every method here cites the `coducktor-server` handler it was ported from (that crate is
-//! this port's oracle, the same role `packages/coducktor` played for the rest of Phase B) —
-//! `coducktor-server` is deleted whole at C2, so duplicating its business logic here now
-//! (rather than trying to share it across an axum-shaped and a non-axum-shaped caller) is the
-//! right amount of engineering, not a shortcut.
+//! Each instance is scoped to one configured repository. Capability-specific failures are
+//! converted to the contract's degraded responses so optional GitHub tools, agent CLIs, and
+//! local integrations do not prevent the application from starting.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -97,8 +84,7 @@ use crate::Topic;
 use crate::error::EngineError;
 use crate::events::EngineEvent;
 
-/// Version string this engine reports through `health()` — set once at construction, same as
-/// `coducktor-server`'s `ServerConfig::version`.
+/// Version string this engine reports through `health()`, set once at construction.
 pub struct InProcessEngine {
     repo_root: PathBuf,
     version: String,
@@ -107,8 +93,7 @@ pub struct InProcessEngine {
     model_catalog: Arc<Mutex<Vec<CachedModelCatalog>>>,
 }
 
-/// Ported from `coducktor-server`'s private struct of the same name — a 5-minute TTL cache so a
-/// slow/failing `codex`/`opencode` model probe doesn't re-run on every keystroke of a picker.
+/// A 5-minute TTL cache so a slow or failing model probe does not re-run on every picker update.
 #[derive(Debug, Clone)]
 struct CachedModelCatalog {
     runner: ModelDiscoveryRunner,
@@ -137,9 +122,7 @@ fn io_err(error: std::io::Error) -> EngineError {
     EngineError::Transport(error.to_string())
 }
 
-/// Duplicated from `coducktor-server`'s private helper of the same name — used by the
-/// variant-group family (`pick_variant`) to record a `lifecycle` event without a full
-/// `EventInput` builder call at each site.
+/// Build a lifecycle event without repeating the full `EventInput` construction at each site.
 fn lifecycle_event(message: String) -> EventInput {
     let mut event = EventInput::new("lifecycle");
     event
@@ -149,11 +132,8 @@ fn lifecycle_event(message: String) -> EventInput {
 }
 
 impl InProcessEngine {
-    /// Build a manager over `repo_root` wired with the real [`DefaultSessionFactory`] (B10) —
-    /// the same production wiring `coducktor-tui`'s `serve`/`run` subcommands already use.
-    /// Mirrors `coducktor-server::ServerState::with_manager_and_workspace_dir`'s event-fan-out
-    /// wiring exactly, minus the WS/SSE transport: `subscribe_events`/`subscribe_runs`
-    /// closures publish straight onto an in-process `broadcast` channel.
+    /// Build a manager over `repo_root` wired with the real [`DefaultSessionFactory`]. Events
+    /// are published through an in-process broadcast channel.
     pub fn new(repo_root: impl Into<PathBuf>, version: impl Into<String>) -> Self {
         Self::with_session_factory(repo_root, version, DefaultSessionFactory::new())
     }
@@ -205,7 +185,7 @@ impl InProcessEngine {
         &self.repo_root
     }
 
-    // ---- health (ported from `coducktor-server::health_payload`/`backend_check`) ----------
+    // ---- health -----------------------------------------------------------------------------
 
     pub async fn health(&self) -> Result<HealthResponse, EngineError> {
         let repo_root = self.repo_root.clone();
@@ -227,7 +207,7 @@ impl InProcessEngine {
             .map_err(|error| EngineError::Transport(error.to_string()))
     }
 
-    // ---- runs family (ported from the matching handlers in `coducktor-server::lib`) -------
+    // ---- runs ------------------------------------------------------------------------------
 
     pub async fn list_runs(&self) -> Result<Vec<ApiRun>, EngineError> {
         let manager = self.manager.lock().map_err(|_| lock_err())?;
@@ -412,7 +392,7 @@ impl InProcessEngine {
         Ok(FinishResponse { finished })
     }
 
-    /// Ported from `workspace_runs_index` — the cross-project global Tasks scan. Opens a
+    /// Build the cross-project global Tasks index. Opens a
     /// fresh, throwaway `RunManager` for every OTHER registered project (this engine's own
     /// manager already holds the boot project's live state, so that one is reused instead of
     /// reopened).
@@ -459,7 +439,7 @@ impl InProcessEngine {
         })
     }
 
-    // ---- workflows + skills (ported from `list_workflows`/`list_skills`) -------------------
+    // ---- workflows + skills ----------------------------------------------------------------
 
     pub async fn workflows(&self) -> Result<WorkflowsResponse, EngineError> {
         let (workflows, issues) = load_workflows(&self.repo_root);
@@ -470,14 +450,9 @@ impl InProcessEngine {
         Ok(discover_skills(&self.repo_root, &ProcessEnv))
     }
 
-    // ---- workflow builder writes (ported from `save_workflow_at`/`delete_workflow_at`/
-    // `parse_workflow_input`) ----------------------------------------------------------------
+    // ---- workflow builder writes ------------------------------------------------------------
 
-    /// Ported from `save_workflow_at`. `workflow_slug`/`workflow_step_issue`/`workflow_input`/
-    /// `workflow_yaml` below are copied from `coducktor-server`'s own (private, non-`pub`)
-    /// helpers of the same name rather than shared — that crate is deleted whole at C2, so
-    /// duplicating this validation/YAML-generation logic now is the same deliberate call this
-    /// module's doc already makes for the rest of C1, not an oversight.
+    /// Validate and save a workflow definition as YAML.
     pub async fn save_workflow(
         &self,
         input: &SaveWorkflowInput,
@@ -513,7 +488,7 @@ impl InProcessEngine {
         })
     }
 
-    /// Ported from `delete_workflow_at`.
+    /// Delete a user-authored workflow.
     pub async fn delete_workflow(&self, name: &str) -> Result<DeleteWorkflowResponse, EngineError> {
         let (workflows, _) = load_workflows(&self.repo_root);
         let workflow = workflows
@@ -539,7 +514,7 @@ impl InProcessEngine {
         })
     }
 
-    /// Ported from `parse_workflow_input`.
+    /// Parse and validate workflow YAML.
     pub async fn parse_workflow(&self, yaml: &str) -> Result<ParsedWorkflow, EngineError> {
         if yaml.trim().is_empty() || yaml.chars().count() > 100_000 {
             return Err(EngineError::Conflict {
@@ -559,7 +534,7 @@ impl InProcessEngine {
         })
     }
 
-    // ---- ui-state (ported from `get_ui_state`/`update_ui_state`) ---------------------------
+    // ---- ui-state --------------------------------------------------------------------------
 
     pub async fn ui_state(&self) -> Result<Value, EngineError> {
         Ok(Value::Object(read_repo_ui_state(&self.repo_root)))
@@ -585,7 +560,7 @@ impl InProcessEngine {
         Ok(Value::Object(current))
     }
 
-    // ---- follow-up inbox (ported from `list_todos`/`delete_todo`/`start_todo`) -------------
+    // ---- follow-up inbox --------------------------------------------------------------------
 
     pub async fn todos(&self) -> Result<Vec<TodoItem>, EngineError> {
         if !followups_enabled(&ProcessEnv) {
@@ -613,7 +588,7 @@ impl InProcessEngine {
 
     /// Runs the todo's own suggested skill (or a bare quick-task) with its saved prompt.
     /// The `Engine` trait intentionally exposes no runner/model override for this action, so
-    /// the saved todo workflow supplies those choices just as it does for the HTTP no-body path.
+    /// the saved todo workflow supplies those choices.
     pub async fn start_todo(&self, id: &str) -> Result<StartTodoResponse, EngineError> {
         if !followups_enabled(&ProcessEnv) {
             return Err(EngineError::Conflict {
@@ -655,7 +630,7 @@ impl InProcessEngine {
         }
     }
 
-    // ---- workspace: projects (ported from `list_projects`; read-only for now) --------------
+    // ---- workspace: projects ----------------------------------------------------------------
 
     pub async fn projects(&self) -> Result<ProjectsResponse, EngineError> {
         let config = load_workspace_config(
@@ -671,19 +646,12 @@ impl InProcessEngine {
         })
     }
 
-    /// Ported from `get_workspace_usage` — the quota-telemetry stack (`core/quota/*`) was
-    /// scope-cut entirely at B10 (unrelated to session execution, a meaningfully separate
-    /// porting effort), so the server's own route already answers with an empty provider list
-    /// rather than real telemetry. This mirrors that exactly, not a new gap introduced here.
+    /// Quota telemetry is not available in this build, so the provider list is empty.
     pub async fn workspace_usage(&self) -> Result<WorkspaceUsageResponse, EngineError> {
         Ok(WorkspaceUsageResponse { providers: vec![] })
     }
 
-    // ---- provider status + agent-profile accounts (ported from the matching handlers in
-    // `coducktor-server::lib`: `get_provider_status`, `list_agent_profiles`,
-    // `create_agent_profile`, `update_agent_profile`, `remove_agent_profile`,
-    // `select_agent_profile`, `get_agent_profile_status`, `get_agent_profile_details`,
-    // `open_agent_profile_file`) -------------------------------------------------------------
+    // ---- provider status + agent-profile accounts ------------------------------------------
 
     pub async fn provider_status(&self) -> Result<ProviderStatusResponse, EngineError> {
         tokio::task::spawn_blocking(provider_status_response)
@@ -695,7 +663,7 @@ impl InProcessEngine {
         Ok(agent_profiles_response())
     }
 
-    /// Ported from `create_agent_profile`.
+    /// Create an agent account profile.
     pub async fn create_agent_profile(
         &self,
         input: &CreateAgentProfileInput,
@@ -765,7 +733,7 @@ impl InProcessEngine {
         })
     }
 
-    /// Ported from `update_agent_profile`.
+    /// Update an agent account profile.
     pub async fn update_agent_profile(
         &self,
         id: &str,
@@ -830,7 +798,7 @@ impl InProcessEngine {
         })
     }
 
-    /// Ported from `remove_agent_profile`.
+    /// Remove an agent account profile.
     pub async fn remove_agent_profile(
         &self,
         id: &str,
@@ -868,7 +836,7 @@ impl InProcessEngine {
         })
     }
 
-    /// Ported from `select_agent_profile`.
+    /// Select an agent account profile for a project.
     pub async fn select_agent_profile(
         &self,
         input: &SelectAgentProfileInput,
@@ -928,9 +896,8 @@ impl InProcessEngine {
         })
     }
 
-    /// Ported from `get_agent_profile_status`. `refresh` is accepted for signature parity with
-    /// network engine but has no effect — the oracle's own handler ignores it too (there is no
-    /// caching layer for provider status on either side; every call already probes fresh).
+    /// Return the current status for an agent account. `refresh` is accepted for engine API
+    /// compatibility but has no effect because every call already probes fresh.
     pub async fn agent_account_status(
         &self,
         id: &str,
@@ -948,7 +915,7 @@ impl InProcessEngine {
         .map_err(|error| EngineError::Transport(error.to_string()))?
     }
 
-    /// Ported from `get_agent_profile_details`.
+    /// Return details for an agent account profile.
     pub async fn agent_account_details(
         &self,
         id: &str,
@@ -963,8 +930,8 @@ impl InProcessEngine {
         .map_err(|error| EngineError::Transport(error.to_string()))?
     }
 
-    /// Ported from `open_agent_profile_file`; explicit app targets reuse this module's
-    /// `open_targets` registry and launcher, while `target: None` uses the OS default opener.
+    /// Open an agent account file. Explicit app targets reuse this module's `open_targets`
+    /// registry and launcher, while `target: None` uses the OS default opener.
     pub async fn open_agent_account_file(
         &self,
         id: &str,
@@ -1055,13 +1022,8 @@ impl InProcessEngine {
         )
     }
 
-    // ---- IDE: project file browser + editor (spec §8.8, A10) --------------------------------
-    // Ported from `coducktor-server`'s `ide_list_directory`/`ide_read_file`/`ide_write_file` +
-    // their shared `resolve_ide_path`/`normalize_ide_path`/`ide_display_path` helpers. `Scope`
-    // is dropped the same way every other method here drops it — `coducktor-server`'s own
-    // "scoped" IDE routes already ignore their `:project` path segment and always resolve
-    // against `state.config.repo_root`, since this crate (like that one) serves exactly one
-    // repo root per instance.
+    // ---- IDE: project file browser + editor ------------------------------------------------
+    // Paths are always resolved against this engine's configured repository root.
 
     pub async fn ide_tree(&self, path: Option<&str>) -> Result<IdeDirectoryResponse, EngineError> {
         let repo_root = self.repo_root.clone();
@@ -1092,13 +1054,9 @@ impl InProcessEngine {
             .map_err(|error| EngineError::Transport(error.to_string()))?
     }
 
-    // ---- per-repo config (spec §8.14, settings) ----------------------------------------------
-    // Ported from `coducktor-server`'s `config_response`/`parse_set_config_input`/
-    // `config_models_locked`/`read_repo_config` handlers. Unlike the HTTP handler, `put_config`
-    // here receives an already-typed `&SetConfigInput` directly (no JSON-parse boundary), so
-    // the outer/inner `Option<Option<T>>` "field absent vs. field present-but-null" distinction
-    // the handler has to reconstruct from a raw `Map<String, Value>` alongside the typed struct
-    // is already exactly right on the struct itself — no parallel raw-object bookkeeping needed.
+    // ---- per-repo config --------------------------------------------------------------------
+    // `put_config` receives an already-typed input, so absent and explicit-null fields are
+    // represented directly by the contract type.
 
     pub async fn config(&self) -> Result<ConfigResponse, EngineError> {
         let repo_root = self.repo_root.clone();
@@ -1115,13 +1073,7 @@ impl InProcessEngine {
             .map_err(|error| EngineError::Transport(error.to_string()))?
     }
 
-    // ---- diff engine: task git, repo git, compare (spec §8.5-§8.7, A9) -----------------------
-    // Ported from `coducktor-server`'s `run_diff`/`run_changes`/`run_commit`/`run_files`/
-    // `get_repo`/`get_repo_changes`/`get_repo_commit`/`create_repo_branch` handlers, plus their
-    // shared `repo_info_at`/`repo_status`/`repo_log`/`repo_branches`/`collect_git_changes`/
-    // `repo_commit_payload`/`read_worktree_path` helpers (all duplicated below — none were
-    // `pub`). `group`/`pick_variant` below are the separate, more involved cluster (they mutate
-    // run state — cancel/archive losing variants, remove their worktrees, touch the review gate).
+    // ---- diff engine: task git, repo git, compare -------------------------------------------
 
     fn run_record(&self, run_id: &str) -> Result<coducktor_contract::RunRecord, EngineError> {
         let manager = self.manager.lock().map_err(|_| lock_err())?;
@@ -1205,8 +1157,8 @@ impl InProcessEngine {
         .map_err(|error| EngineError::Transport(error.to_string()))?
     }
 
-    /// Raw bytes for an image the worktree file browser can preview (matches the oracle's own
-    /// `run_files?raw=1` restriction: "raw serving is limited to images").
+    /// Return raw bytes for an image the worktree file browser can preview. Raw serving is
+    /// limited to images.
     pub async fn run_file_raw(&self, run_id: &str, path: &str) -> Result<Vec<u8>, EngineError> {
         let run = self.run_record(run_id)?;
         let Some(root) = self.run_working_directory(&run) else {
@@ -1269,8 +1221,7 @@ impl InProcessEngine {
             .map_err(|error| EngineError::Transport(error.to_string()))?
     }
 
-    // ---- agent-config (spec §8.14 "Agent config" section) -------------------------------------
-    // Ported from `coducktor-server`'s `list_agent_config`/`get_agent_config`/
+    // ---- agent-config ----------------------------------------------------------------------
     // `update_agent_config` handlers, duplicating their private `AGENT_CONFIG_DEFINITIONS`
     // catalog and `resolve_agent_config_path`/`config_hash`/`agent_config_content`/
     // `jsonc_without_comments`/`validate_agent_config`/`claude_state_path`/`user_mcp_listing`/
@@ -1315,12 +1266,8 @@ impl InProcessEngine {
         .map_err(|error| EngineError::Transport(error.to_string()))?
     }
 
-    // ---- worktree management (spec §8.7, A9) --------------------------------------------------
-    // Ported from `coducktor-server`'s `list_worktrees`/`reclaim_worktrees`/`remove_run_worktree`
-    // handlers. Reuses `coducktor_core::runs::retention::{is_reclaimable, reclaim_worktrees}`
-    // and `coducktor_core::config::resolve_worktree_retention` directly (already ported at
-    // B2/B3) — only the response-shaping glue (`worktree_run_status`/`worktree_keep`) is
-    // duplicated, since it was never `pub` in the oracle.
+    // ---- worktree management ----------------------------------------------------------------
+    // Reuses the core retention helpers and adds response-shaping glue for the client contract.
 
     fn worktree_keep(&self) -> u64 {
         let workspace = workspace_config_for(&self.repo_root);
@@ -1430,10 +1377,7 @@ impl InProcessEngine {
         Ok(RemoveWorktreeResponse { removed: true })
     }
 
-    // ---- variant groups (spec §8.6 compare) -------------------------------------------------
-    // Ported from `coducktor-server`'s `group_variants`/`group_response`/`get_group` and
-    // `parse_pick_variant`/`pick_group_at` handlers. `lifecycle_event` (below) duplicates the
-    // server's own tiny helper of the same name — not `pub` in the oracle.
+    // ---- variant groups ---------------------------------------------------------------------
 
     fn group_variants(
         &self,
@@ -1587,13 +1531,8 @@ impl InProcessEngine {
         })
     }
 
-    // ---- open-targets (spec §8.7 "open in") -------------------------------------------------
-    // Ported from `coducktor-server`'s `list_open_targets`/`open_project_in` handlers,
-    // duplicating their private `open_targets`/`open_target_command`/`open_target`/
-    // `executable_on_path`/`configured_executable`/`installed_mac_app` helpers byte-for-byte —
-    // none were `pub`. `open_project_in` here takes `target: &str` directly (the `Engine`
-    // trait's own signature), so there's no `OpenProjectInRequest` JSON body to parse/validate
-    // the way the HTTP handler does.
+    // ---- open-targets -----------------------------------------------------------------------
+    // `open_project_in` takes the validated target id directly from the contract.
 
     pub async fn open_targets(&self) -> Result<OpenTargetsResponse, EngineError> {
         tokio::task::spawn_blocking(|| OpenTargetsResponse {
@@ -1643,9 +1582,9 @@ impl InProcessEngine {
         })
     }
 
-    // ---- host model catalog (ported from `coducktor-server`'s `get_models` handler) --------
+    // ---- host model catalog -----------------------------------------------------------------
 
-    /// `GET /models?runner=` — a 5-minute-TTL-cached host-discovered model catalog for
+    /// A 5-minute-TTL-cached host-discovered model catalog for
     /// `codex`/`opencode` (`claude`/`pi` have no discovery path and are rejected, matching
     /// `runner_discovers_models`). Live discovery shells out to the real CLI; a failure falls
     /// back to the last good cached catalog (stale-but-something beats nothing).
@@ -1717,11 +1656,10 @@ impl InProcessEngine {
         Ok(model_catalog_wire(runner, models, source, stale, reason))
     }
 
-    // ---- plan (ported from `coducktor-server`'s `create_plan_at` handler) ------------------
+    // ---- plan ------------------------------------------------------------------------------
 
-    /// `POST /plan` — always the safe single-step fallback plan today (no live planner is
-    /// wired), gated only by task-length validation and the default runner's provider not
-    /// being disabled in Settings. Matches `fallback_plan`/`plan_provider_disabled` exactly.
+    /// Return the safe single-step fallback plan. It is gated by task-length validation and the
+    /// default runner's provider not being disabled in Settings.
     pub async fn plan(&self, task: &str) -> Result<PlanResponse, EngineError> {
         let trimmed = task.trim();
         if trimmed.is_empty() || trimmed.chars().count() > 100_000 {
@@ -1753,11 +1691,9 @@ impl InProcessEngine {
         })
     }
 
-    // ---- GitHub forge (ported from `coducktor-server`'s github_* handlers, which delegate to
-    // `coducktor-forge`'s `GithubDriver`, B7). Every method's driver resolution and I/O runs
-    // inside `spawn_blocking` — `GithubDriver`'s own methods are synchronous (they shell out to
-    // `gh`/`git`), matching how this file's other git-shelling families (repo/run git browsing,
-    // C1.5) already isolate blocking work from the async executor. ----------------------------
+    // ---- GitHub forge -----------------------------------------------------------------------
+    // Driver resolution and I/O run inside `spawn_blocking` because the forge methods shell out
+    // to `gh`/`git`.
 
     const GITHUB_UNAVAILABLE_REASON: &str = "GitHub is unavailable for this repository";
 
@@ -1791,8 +1727,7 @@ impl InProcessEngine {
     }
 
     /// `prs` mirrors the trait's already-parsed `&[String]` — each entry must be a bare positive
-    /// integer, matching `parse_github_numbers`'s own validation (the HTTP path parses a
-    /// comma-joined query string into the same shape before this point).
+    /// integer, matching `parse_github_numbers`'s validation.
     pub async fn github_checks(&self, prs: &[String]) -> Result<GithubChecksData, EngineError> {
         if prs.is_empty() || prs.len() > 100 {
             return Err(EngineError::Conflict {
@@ -1976,11 +1911,7 @@ impl InProcessEngine {
         .map_err(|error| EngineError::Transport(error.to_string()))
     }
 
-    /// The rejection branch of `coducktor-server`'s `merge_github_pr_for` carries a dynamic HTTP
-    /// status, an optional machine-readable `code`, and an optional `current` merge-state
-    /// snapshot in its JSON body — [`EngineError::Conflict`] only has room for a `reason` string,
-    /// so `code`/`current` are dropped here. A real, named reduction (same category as this
-    /// module's other documented cuts), not an oversight.
+    /// Merge a GitHub pull request. Conflict details are reduced to the engine error's reason.
     pub async fn github_merge_pr(
         &self,
         number: u64,
@@ -2092,7 +2023,7 @@ impl InProcessEngine {
         .map_err(|error| EngineError::Transport(error.to_string()))
     }
 
-    // ---- remaining settings writes (ported from `coducktor-server`'s workspace_config/
+    // ---- remaining settings writes ---------------------------------------------------------
     // workspace_ui_state/remove_project/update_project handlers) ----------------------------
 
     pub async fn workspace_config(&self) -> Result<WorkspaceConfigResponse, EngineError> {
@@ -2228,7 +2159,7 @@ impl InProcessEngine {
         })
     }
 
-    // ---- task-thread write paths (ported from `coducktor-server`'s send_message/
+    // ---- task-thread write paths -----------------------------------------------------------
     // edit_queued_message/remove_queued_message/continue_run/cancel_auto_resume/
     // run_git_commit/run_git_push/run_commits/run_pr/run_history/run_history_context/
     // open_run_in_cli/open_run_in handlers) ---------------------------------------------
@@ -2490,8 +2421,7 @@ impl InProcessEngine {
         }
     }
 
-    /// `create_pr` (`POST /runs/:id/pr`, `coducktor-server`'s `run_pr` handler) — publishes a
-    /// draft PR via `coducktor-forge`'s `create_draft_pr` and records the outcome on the run.
+    /// Publish a draft PR via `coducktor-forge` and record the outcome on the run.
     pub async fn create_pr(&self, run_id: &str) -> Result<CreatePrResponse, EngineError> {
         let run = self.run_record(run_id)?;
         {
@@ -3684,7 +3614,7 @@ async fn discover_codex_models(repo_root: &Path) -> Result<Vec<RunnerModelOption
     result
 }
 
-// ---- open-targets helpers, duplicated from `coducktor-server`'s private functions of the same
+// ---- open-targets helpers ------------------------------------------------------------------
 // name (renamed `open_targets` -> `open_targets_list` to avoid colliding with the method above)
 
 fn executable_on_path(binary: &str) -> bool {
@@ -3948,7 +3878,7 @@ fn open_target(root: &Path, target: &str) -> bool {
         .is_ok()
 }
 
-// ---- worktree helpers, duplicated from `coducktor-server`'s private functions of the same name
+// ---- worktree helpers ----------------------------------------------------------------------
 
 fn worktree_run_status(status: coducktor_contract::RunStatus) -> WorktreeRunStatus {
     match status {
@@ -3977,7 +3907,7 @@ fn worktree_size_bytes(path: &Path) -> Option<u64> {
     Some(total)
 }
 
-// ---- repo/run git helpers, duplicated from `coducktor-server`'s private functions of the same
+// ---- repo/run git helpers ------------------------------------------------------------------
 // name (git shelling, worktree browsing, diff/compare) ------------------------------------
 
 const NO_WORKTREE: &str = "no worktree — this task ran directly in the repo working tree";
@@ -4380,9 +4310,8 @@ fn image_content_type(path: &Path) -> &'static str {
     }
 }
 
-/// Ported from `run_files`'s `wants_raw` branch: raw bytes are only ever served for an image
-/// that isn't over the content cap — everything else is a `Conflict`, matching the oracle's own
-/// `raw serving is limited to images` / `file too large to serve raw` messages.
+/// Raw bytes are only served for an image that is within the content cap; everything else is a
+/// conflict.
 fn read_worktree_raw(root: &Path, relative: &str) -> Result<Vec<u8>, EngineError> {
     let entry =
         read_worktree_path(root, relative).map_err(|reason| EngineError::Conflict { reason })?;
@@ -4503,7 +4432,7 @@ fn create_repo_branch(
     })
 }
 
-// ---- agent-config helpers, duplicated from `coducktor-server`'s private AGENT_CONFIG_DEFINITIONS
+// ---- agent-config helpers -----------------------------------------------------------------
 // catalog and its supporting functions --------------------------------------------------------
 
 #[derive(Debug, Clone, Copy)]
@@ -5038,7 +4967,7 @@ fn write_agent_config(
     agent_config_content(definition, repo_root).map_err(EngineError::Transport)
 }
 
-// ---- IDE helpers, duplicated from `coducktor-server`'s private ide_* functions -----------
+// ---- IDE helpers --------------------------------------------------------------------------
 
 const IDE_FILE_MAX_BYTES: usize = 1_000_000;
 const IDE_DIRECTORY_MAX_ENTRIES: usize = 2_000;
@@ -5217,7 +5146,7 @@ fn ide_write_file(root: &Path, path: &str, content: &str) -> Result<IdeFileRespo
     ide_read_file(root, path)
 }
 
-// ---- per-repo config helpers, duplicated from `coducktor-server`'s private config_response/
+// ---- per-repo config helpers --------------------------------------------------------------
 // parse_set_config_input/config_models_locked/read_repo_config functions -------------------
 
 fn repo_config_path(repo_root: &Path) -> PathBuf {
@@ -5448,7 +5377,7 @@ fn update_repo_config(
     Ok(config_response(repo_root))
 }
 
-// ---- workflow builder helpers, duplicated from `coducktor-server`'s private functions of the
+// ---- workflow builder helpers -------------------------------------------------------------
 // same name (see `save_workflow`'s own doc comment for why duplication, not sharing, is right
 // here) ------------------------------------------------------------------------------------
 
@@ -5585,7 +5514,7 @@ fn workflow_yaml(
     serde_yaml_ng::to_string(&Value::Object(document)).map_err(|error| error.to_string())
 }
 
-// ---- agent-profile + provider-status helpers, duplicated from `coducktor-server`'s private
+// ---- agent-profile + provider-status helpers ----------------------------------------------
 // functions of the same name (same non-sharing rationale as the workflow builder helpers
 // above) --------------------------------------------------------------------------------------
 
@@ -5860,9 +5789,9 @@ fn account_slug(value: &str) -> String {
         .collect::<String>()
 }
 
-/// Ported from `coducktor-server`'s private `allocate_project_id` — account ids share the same
-/// slug-collision-avoidance scheme (and, quirk inherited from the oracle rather than introduced
-/// here, the same "project" fallback word for an unslugifiable label) project ids use.
+/// Allocate an account id; account ids share the same
+/// slug-collision-avoidance scheme (including the `project` fallback for an unslugifiable label)
+/// project ids use.
 fn allocate_account_id(value: &str, taken: &std::collections::BTreeSet<String>) -> String {
     let base = {
         let slug = account_slug(value);
@@ -6188,7 +6117,7 @@ fn agent_profile_details(profile: &ResolvedAgentProfile) -> AgentAccountDetailsR
     }
 }
 
-/// Best-effort "open with the OS default app" — mirrors `coducktor-server`'s
+/// Best-effort "open with the OS default app" —
 /// `account_open_default` exactly (fire-and-forget `spawn`, success = the process launched, not
 /// that the user actually saw a window).
 fn account_open_default(path: &Path) -> bool {
@@ -6295,8 +6224,8 @@ fn boot_project_id(
         .unwrap_or_else(|| "default".to_owned())
 }
 
-/// Ported from `coducktor-server::project_entry` — resolves each project's live git status/
-/// branch on every call, same as the oracle (no caching either side of this port does).
+/// Resolve each project's live Git status/
+/// branch on every call; this view deliberately does not cache Git status.
 fn project_entry(
     project: &coducktor_core::workspace::config::WorkspaceProject,
 ) -> ProjectListEntry {
@@ -6802,7 +6731,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workspace_usage_reports_no_providers_matching_the_b10_scope_cut() {
+    async fn workspace_usage_reports_no_providers() {
         let dir = TempDir::new().unwrap();
         let engine = engine(&dir);
         assert_eq!(engine.workspace_usage().await.unwrap().providers, vec![]);
@@ -6935,7 +6864,7 @@ mod tests {
     // ---- provider status + agent-profile accounts ------------------------------------------
     //
     // `create_agent_profile`/`update_agent_profile`/`remove_agent_profile`/`select_agent_profile`
-    // (like the `coducktor-server` handlers they're ported from) resolve their storage path via
+    // resolve their storage path via
     // `agent_accounts_path(&ProcessEnv)` — the REAL `~/.coducktor/agent-accounts.json` (or
     // `$DUCK_HOME` if set), with no injectable override. No test here calls one of
     // these methods down a path that would actually write to it: every write-path test below
@@ -6946,7 +6875,7 @@ mod tests {
     // `agent-accounts.json` is not covered here — it would need `agent_accounts_path`/
     // `workspace_config_path` to accept an injected `EnvSource` the way `coducktor-core`'s lower-
     // level `load_agent_accounts`/`merge_write_agent_accounts` already do, which is a real gap in
-    // the *oracle* this ports from, not something introduced here.
+    // the current engine behavior, not something introduced by this test.
 
     #[tokio::test]
     async fn provider_status_reports_one_entry_per_provider() {
@@ -7158,7 +7087,7 @@ mod tests {
 
     #[test]
     fn allocate_account_id_falls_back_to_project_for_an_unslugifiable_label() {
-        // Matches the oracle's own quirk (see `allocate_account_id`'s doc comment) verbatim.
+        // Preserve the documented fallback for unslugifiable labels.
         assert_eq!(
             allocate_account_id("!!!", &std::collections::BTreeSet::new()),
             "project"
@@ -7273,12 +7202,12 @@ mod tests {
         assert!(wire.is_default);
     }
 
-    // ---- IDE (C1 continuation) -----------------------------------------------------------
+    // ---- IDE ----------------------------------------------------------------------------
 
     #[tokio::test]
     async fn ide_tree_lists_directories_before_files_alphabetically() {
         let dir = TempDir::new().unwrap();
-        let engine = engine(&dir); // creates `.ai/coducktor/**` as a side effect — expected in the listing, `.git` is the only exclusion the oracle makes
+        let engine = engine(&dir); // creates `.ai/coducktor/**` as a side effect; `.git` is the only exclusion
         std::fs::create_dir(dir.path().join("src")).unwrap();
         std::fs::write(dir.path().join("README.md"), b"hi").unwrap();
         std::fs::write(dir.path().join("a.txt"), b"a").unwrap();
@@ -7334,8 +7263,7 @@ mod tests {
 
     #[tokio::test]
     async fn ide_save_cannot_create_a_file_that_does_not_already_exist() {
-        // Matches the oracle exactly: `ide_write_file` resolves the target path (which requires
-        // it to already exist) before writing — `PUT /ide/file` edits, it does not create.
+        // `ide_save` resolves the target path, which must already exist, before writing.
         let dir = TempDir::new().unwrap();
         let engine = engine(&dir);
         let error = engine
@@ -7345,7 +7273,7 @@ mod tests {
         assert_eq!(error, EngineError::NotFound);
     }
 
-    // ---- per-repo config (C1 continuation) -------------------------------------------------
+    // ---- per-repo config ------------------------------------------------------------------
 
     #[tokio::test]
     async fn config_reports_defaults_when_no_config_file_exists() {
@@ -7433,7 +7361,7 @@ mod tests {
         assert!(matches!(error, EngineError::Conflict { .. }));
     }
 
-    // ---- repo/run git (C1 continuation) ----------------------------------------------------
+    // ---- repo/run git ---------------------------------------------------------------------
 
     /// Mirrors `coducktor-core::git::worktree`'s own `fixture_repo()` test helper: tempdir →
     /// `git init -q -b main` → commit a base file with an explicit test identity.
@@ -7697,11 +7625,11 @@ mod tests {
         assert!(!contains_git_component("src/gitignore.txt"));
     }
 
-    // ---- agent-config (C1 continuation) ----------------------------------------------------
+    // ---- agent-config ---------------------------------------------------------------------
     // Tests below only exercise project/local-scoped definitions (resolved under the tempdir
     // repo root) — user-scoped definitions resolve against the REAL `agent_home_paths`, and
     // writing to a real environment's `~/.claude` etc. from a test is out of bounds, same
-    // precedent C1.3 already established for the agent-accounts family.
+    // The same pattern is used for the agent-accounts family.
 
     #[tokio::test]
     async fn agent_config_lists_every_definition_with_a_user_mcp_listing() {
@@ -7854,7 +7782,7 @@ mod tests {
         assert_ne!(config_hash(b"a"), config_hash(b"b"));
     }
 
-    // ---- worktree management (C1 continuation) ---------------------------------------------
+    // ---- worktree management --------------------------------------------------------------
 
     #[tokio::test]
     async fn worktrees_reports_empty_when_no_run_has_a_worktree() {
@@ -7941,7 +7869,7 @@ mod tests {
         assert_eq!(worktree_size_bytes(dir.path()), Some(12));
     }
 
-    // ---- open-targets (mirrors coducktor-server's
+    // ---- open-targets ---------------------------------------------------------------------
     // `open_target_routes_list_local_apps_and_reject_project_cli_handoffs`) --------------------
 
     #[tokio::test]
@@ -8035,7 +7963,7 @@ mod tests {
         }
     }
 
-    // ---- variant groups (mirrors coducktor-server's
+    // ---- variant groups -------------------------------------------------------------------
     // `group_routes_compare_variants_and_archive_losers_on_pick`) -----------------------------
 
     fn seed_group(engine: &InProcessEngine, group_id: &str) -> Vec<String> {
@@ -8195,10 +8123,10 @@ mod tests {
     #[tokio::test]
     async fn models_falls_back_to_unavailable_when_the_cli_cannot_be_spawned() {
         // No `codex`/`opencode` binary is installed in this sandbox (same assumption this
-        // repo's other backend tests already document, e.g. B9a's runner tests) — live
+        // repo's other backend tests already document) — live
         // discovery fails to spawn, and with no prior cache entry the result is `Unavailable`
         // with a reason, never an `Err` (a missing CLI degrades gracefully, matching the
-        // `coducktor-server` oracle's own `get_models` handler).
+        // model catalog behavior).
         let dir = TempDir::new().unwrap();
         let engine = engine(&dir);
         let response = engine.models(Runner::Codex).await.unwrap();
@@ -8284,7 +8212,7 @@ mod tests {
     // `fixture_repo()` has no `origin` remote, so every real call below exercises the
     // `GithubDriver`-unavailable degrade path — the same "no GitHub configured" state most
     // task worktrees are in. A live `gh`-backed round trip is out of scope for a unit suite;
-    // `coducktor-forge`'s own tests (B7) already cover `GithubDriver` itself with an injected
+    // `coducktor-forge`'s own tests already cover `GithubDriver` itself with an injected
     // command/GraphQL seam.
 
     #[tokio::test]

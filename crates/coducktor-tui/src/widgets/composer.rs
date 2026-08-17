@@ -1,14 +1,5 @@
-//! The SHARED composer widget — one component, two hosts (§8.3 New task hero +
-//! §8.4 thread). Behavioral spec: `packages/web/src/components/composer/composer.tsx`
-//! plus the pure caret math ported from `composer-text.ts`.
-//!
-//! Keeps the web's contract: auto-growing text area, `Enter` sends / `Shift+Enter`
-//! newline / `Ctrl+Enter` + `Alt+Enter` also send (§7.3), `/` opens the skills
-//! autocomplete, `@` opens file mentions behind a provider seam (the New task host
-//! feeds none, so `@` stays plain text — exactly the web's /new behavior), `Alt+A` /
-//! `Alt+C` fire the quick replies, and the paperclip attaches image files by path
-//! (the terminal's stand-in for the web's paste/drag-drop, which has no clipboard
-//! image source here).
+//! Shared composer widget for the New Task and thread screens. It owns terminal-native editing,
+//! skill completion, quick replies, and image-file attachment behavior.
 //!
 //! The host owns the draft (`NewTaskDraft`): every `TextChanged` event tells it to
 //! copy `composer.text` into the draft and persist it, so navigation never loses a
@@ -36,10 +27,9 @@ pub struct Attachment {
     pub path: String,
 }
 
-/// The caret math behind the `/` and `@` autocomplete (#380) — ported from
-/// `composer-text.ts::detectTrigger`: the token starts at the nearest trigger char at
-/// a WORD BOUNDARY (start of text, or after whitespace/newline) scanning left from
-/// the caret, and must contain no whitespace. Mid-word triggers stay inert.
+/// The caret math behind `/` and `@` autocomplete: the token starts at the nearest trigger char
+/// at a word boundary (start of text, or after whitespace/newline) scanning left from the caret,
+/// and must contain no whitespace. Mid-word triggers stay inert.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TriggerState {
     pub trigger: char,
@@ -499,7 +489,7 @@ impl Composer {
     }
 
     /// The number of text rows the composer occupies: grows with content between a
-    /// three-line floor and an eight-line cap (the web's min-height / 1/3-screen cap).
+    /// three-line floor and an eight-line cap suitable for the terminal layout.
     pub fn height(&self) -> u16 {
         let lines = self.text.split('\n').count() + usize::from(self.attaching.is_some());
         lines.clamp(3, 8) as u16
@@ -890,7 +880,7 @@ mod tests {
         assert_eq!(menu.items.len(), 2);
 
         // A '/' inside the token is a mid-word trigger: it commits the token and
-        // closes the menu — the web's detectTrigger rule, verbatim.
+        // closes the menu because the slash starts a new path-like token.
         for character in "/ma".chars() {
             composer.handle_key(key(KeyCode::Char(character), KeyModifiers::NONE), &ctx);
         }

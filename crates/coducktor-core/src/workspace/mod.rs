@@ -1,5 +1,5 @@
-//! `~/.coducktor/` — the per-user workspace: config + project registry, global UI state,
-//! migrations, and agent accounts. Mirrors `packages/coducktor/src/workspace/`.
+//! `~/.coducktor/` — the per-user workspace: config and project registry, global UI state,
+//! migrations, and agent accounts.
 
 pub mod agent_accounts;
 pub mod config;

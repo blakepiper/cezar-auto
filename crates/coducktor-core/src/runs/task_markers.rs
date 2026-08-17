@@ -1,12 +1,11 @@
-//! In-band task-reference markers (spec 2026-07-18-task-ref-markers). Mirrors
-//! `packages/coducktor/src/runs/task-markers.ts`.
+//! In-band task-reference markers.
 //!
 //! The main agent thread declares its subject PR/issue — and optionally a title — the same
 //! way it declares completion with `DUCK:DONE`. Parsed from the accumulated turn text only
 //! (the agent's own words, never tool output), so a task that merely *reads* the marker
 //! contract cannot poison its record. Marker values outrank the fuzzy discovery layers.
 //!
-//! The legacy marker spelling parses identically (dual-read shim, spec §2.2.2).
+//! The legacy marker spelling parses identically through the compatibility regex.
 
 use std::sync::LazyLock;
 
@@ -24,7 +23,7 @@ pub struct TaskMarkers {
 // Line-anchored so prose that mentions a marker never parses; the instruction fragment's
 // own `DUCK:PR=<number>` placeholder is non-numeric and inert.
 //
-// DUAL-READ SHIM (spec §2.2.2): this is the one marker-vocabulary compatibility regex. It
+// This is the one marker-vocabulary compatibility regex. It
 // canonicalizes both the current and legacy prefixes before the narrower parsers below run,
 // so in-flight sessions and unrewritten skills keep working without letting old spelling leak
 // into newly emitted prompts.
@@ -56,8 +55,8 @@ static ISSUE_MARKER_RE: LazyLock<Regex> =
 static TITLE_MARKER_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)^DUCK:TITLE=(.+)$").unwrap());
 
-// Report-tier reference lines (spec 2026-07-21-report-ref-discovery): the human-friendly
-// chaining lines pipeline skills end their reports with — `PR: #12 (link: https://…/pull/12)`
+// Report-tier reference lines: the human-friendly chaining lines pipeline skills end their
+// reports with — `PR: #12 (link: https://…/pull/12)`
 // — plus the legacy env-style markers older skill versions printed. Same trust boundary as
 // marker lines (parsed from the agent's own turn text only), one notch below in precedence: an
 // explicit DUCK:PR / DUCK:ISSUE in the same turn wins.

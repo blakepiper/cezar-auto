@@ -6,14 +6,11 @@ and pushed to `origin main`.
 
 ## Work loop
 
-1. Read the applicable source map in `AGENTS.md` and the relevant spec.
+1. Read the applicable source map in `AGENTS.md` and the relevant crate or product docs.
 2. Inspect the current behavior and preserve unrelated worktree changes.
 3. Implement a focused change with a regression test for the diagnosed behavior.
 4. Run the focused tests, then the full Rust gate.
 5. Review snapshots and compatibility docs, commit with a spec-oriented message, and push.
-
-Numbered steps in `.ai/specs/` use one commit and one push per step. Do not mark a step complete
-until its acceptance criterion and checks are green and the pushed hash is recorded.
 
 ## Validation gate
 
@@ -21,6 +18,7 @@ until its acceptance criterion and checks are green and the pushed hash is recor
 cargo test --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
+cargo tree --workspace
 ```
 
 User-facing terminal work also requires a manual result in `docs/tui/terminals.md` when a real

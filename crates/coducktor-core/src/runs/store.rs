@@ -1,15 +1,9 @@
-//! `<repo>/.ai/coducktor/runs.json` — the run index. Mirrors the file-layer half of
-//! `packages/coducktor/src/runs/store.ts`'s `RunStore`: loading, reconciling, and atomically
-//! saving the array of [`RunRecord`]s. The stateful half of that class — the `EventEmitter`
-//! fan-out, debounced saves, secret redaction, and the PR/issue janitor `createRun`/
-//! `updateRun`/`appendEvent` run on every write — is business logic that belongs with the
-//! `RunManager` it serves (`workflows/run.ts`), not the file layer; it lands at B6.
+//! `<repo>/.ai/coducktor/runs.json` — the run index. This module loads, reconciles, and
+//! atomically saves the array of [`RunRecord`] values. Run orchestration, event fan-out, and
+//! redaction belong to the workflow manager.
 //!
-//! `RunRecord` itself is **not** redefined here: `coducktor_contract::runs::RunRecord`
-//! (ported at A1 from `packages/contract/src/runs.ts`, which `store.ts`'s own
-//! `runRecordSchema` is kept parity-checked against) is already the exact wire/disk shape.
-//! What the persistence layer adds on top of that plain shape is `runRecordSchema`'s zod
-//! semantics that a plain `#[derive(Deserialize)]` can't express — see
+//! `RunRecord` itself is defined in `coducktor_contract::runs`; this persistence layer adds
+//! the normalization rules that a plain `#[derive(Deserialize)]` cannot express — see
 //! [`normalize_run_record_value`].
 
 use std::fs;
@@ -23,18 +17,16 @@ use coducktor_contract::{RunStatus, StepStatus};
 
 use crate::time::{is_zod_datetime, now_iso8601};
 
-/// `runRecordSchema`'s `RUNNER_IDS` member that no longer names a runner (#547): the legacy
+/// The legacy
 /// spelling of `claude`, still accepted on the way IN and folded to `claude` on the way
 /// through, so an old `runs.json` stays parseable without a fourth runner id ever reaching a
 /// consumer.
 const LEGACY_CLAUDE_CLI: &str = "claude-cli";
 
-/// Interrupted-run error text, verbatim from `store.ts::reconcileLoadedRun`.
+/// Interrupted-run error text stored on reconciled runs.
 const INTERRUPTED_ERROR: &str = "interrupted — coducktor process exited during the run";
 
-/// `store.ts::MAX_RUNS_KEPT`.
 pub const MAX_RUNS_KEPT: usize = 300;
-/// `store.ts::MAX_ARCHIVED_KEPT`.
 pub const MAX_ARCHIVED_KEPT: usize = 500;
 
 /// `<dataDir>/runs.json`.
@@ -42,17 +34,14 @@ pub fn index_path(data_dir: &Path) -> PathBuf {
     data_dir.join("runs.json")
 }
 
-/// Read `runs.json` on demand — never cached. Mirrors `RunStore.open`'s loader (the array
-/// half; opening the `runs/` directory and building an in-memory `Map` is the runtime
-/// concern of the crate that owns the event bus). `keep_live` mirrors `RunStore.open`'s
-/// `opts.keepLive` — see [`reconcile_loaded_run`].
+/// Read `runs.json` on demand — never cached. `keep_live` retains active records instead of
+/// marking them interrupted; see [`reconcile_loaded_run`].
 ///
 /// A missing file, unreadable file, malformed JSON, non-array JSON, or **any** element that
-/// fails `runRecordSchema` all degrade to an empty list — `store.ts` validates with
-/// `z.array(runRecordSchema).safeParse(raw)`, a single parse of the WHOLE array, so one bad
+/// fails validation all degrade to an empty list. A single parse of the whole array means one bad
 /// record does not salvage its siblings; the whole file is treated as if it never loaded.
 /// This is deliberately unlike the per-entry `safeParse` salvage other persisted arrays in
-/// this codebase use (`workspace/config.ts`'s `projects[]`) — `runs.json` is re-derived from
+/// this codebase use for other persisted arrays — `runs.json` is re-derived from
 /// this same parse on every save (`saveNow`), so a single genuinely corrupt record here is
 /// safer left completely alone on disk than silently rewritten with that record missing.
 pub fn load_run_index(index_path: &Path, keep_live: bool) -> Vec<RunRecord> {
@@ -105,9 +94,8 @@ pub fn write_run_index(index_path: &Path, runs: &[RunRecord]) -> io::Result<()> 
 }
 
 /// Reconcile one record just read off disk with the fact that whichever process wrote it is
-/// gone. Mirrors `store.ts::reconcileLoadedRun` exactly, including the doc comment's warning:
-/// this is shared by the stateful store's loader AND the read-only workspace-index reader
-/// (`run-index.ts`), and the two must never diverge on what a `running` row on disk means.
+/// gone. This is shared by the stateful store's loader and the read-only workspace-index reader,
+/// and the two must never diverge on what a `running` row on disk means.
 ///
 /// `keep_live` (#367): leave `queued`/`running`/`waiting` untouched so a caller with a
 /// `RunManager` can recover them. Everywhere else — one-shot CLI paths, and the read-only
@@ -298,7 +286,7 @@ mod tests {
 
     #[test]
     fn one_invalid_record_drops_the_whole_array_not_just_itself() {
-        // The regression store.test.ts guards directly: the loader safeParses the WHOLE
+        // The regression test guards directly: the loader parses the WHOLE
         // array, so one bad record must not silently evict its siblings from the file NOR
         // salvage itself — the entire load aborts.
         let dir = tempfile::tempdir().unwrap();

@@ -5,8 +5,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::runs::RunRecord;
 
-/// Mirrors `packages/contract/src/skills.ts::SkillSource` without introducing the legacy
-/// product spelling into new Rust identifiers.
+/// Skill source, without introducing the legacy product spelling into new Rust identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillSource {
     Ai,
@@ -64,7 +63,7 @@ impl<'de> Deserialize<'de> for SkillSource {
     }
 }
 
-/// Mirrors `packages/contract/src/skills.ts::Skill`.
+/// `Skill` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Skill {
@@ -92,7 +91,7 @@ pub struct TeamSkillSource {
     pub commit: Option<String>,
 }
 
-/// Mirrors `packages/contract/src/skills.ts::ImportableSkill`.
+/// `ImportableSkill` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportableSkill {
     pub name: String,
@@ -100,7 +99,7 @@ pub struct ImportableSkill {
     pub description: Option<String>,
 }
 
-/// Mirrors `packages/contract/src/skills.ts::TodoItem`.
+/// `TodoItem` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TodoItem {
@@ -126,13 +125,13 @@ pub struct TodoItem {
     pub started_task_id: Option<String>,
 }
 
-/// Mirrors `packages/contract/src/skills.ts::RemoveTodoResponse`.
+/// `RemoveTodoResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoveTodoResponse {
     pub removed: bool,
 }
 
-/// Mirrors `packages/contract/src/skills.ts::StartTodoResponse`.
+/// `StartTodoResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StartTodoResponse {
     pub run: RunRecord,

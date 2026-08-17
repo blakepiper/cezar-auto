@@ -1,8 +1,6 @@
 //! Pure helpers shared by the Tasks and Global tasks screens.
 //!
-//! Behaviour is ported from `packages/web/src/lib/tasks-table.ts`,
-//! `lib/task-groups.ts` and `lib/attention.ts` — the parity bar is that this
-//! module prints the same text for the same record. No rendering here.
+//! Shared task-table, grouping, attention, and formatting helpers. No rendering here.
 
 use coducktor_contract::{ApiRun, DiffStat, ProcessUsage, RunStatus};
 
@@ -15,8 +13,8 @@ const USAGE_LIVE_STATUSES: [RunStatus; 2] = [RunStatus::Running, RunStatus::Wait
 const FINISHED_STATUSES: [RunStatus; 3] =
     [RunStatus::Done, RunStatus::Failed, RunStatus::Cancelled];
 
-/// The run a surface calls it — `titleSummary` is the display title when the
-/// server wrote one, except for the malformed auto/legacy summaries whose
+/// The run a surface calls it — `titleSummary` is the display title when a
+/// persisted record contains one, except for malformed auto/legacy summaries whose
 /// sentence punctuation was persisted without following whitespace (#623).
 pub fn run_title(run: &ApiRun) -> String {
     let record = &run.record;
@@ -38,7 +36,7 @@ pub fn run_title(run: &ApiRun) -> String {
     }
 }
 
-/// The status pill's attention grammar (`lib/attention.ts`).
+/// The status pill's attention grammar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Attention {
     pub label: &'static str,
@@ -159,7 +157,7 @@ pub fn format_cost(usd: Option<f64>) -> String {
     }
 }
 
-/// `612 MB`, `1.2 GB` — ported from the legacy `fmtBytes`.
+/// Format memory usage as `612 MB` or `1.2 GB`.
 pub fn format_mem(bytes: Option<f64>) -> String {
     match bytes {
         Some(bytes) if bytes > 0.0 => {
@@ -282,7 +280,7 @@ pub fn usage_cells(run: &ApiRun, sample: Option<&ProcessUsage>) -> (UsageCell, U
     )
 }
 
-/// The strongest tracker reference (`lib/tasks-table.ts::taskReference`).
+/// The strongest tracker reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskReference {
     pub kind: &'static str,
@@ -443,7 +441,7 @@ pub fn filter_runs<'a>(runs: &'a [ApiRun], query: &str) -> Vec<&'a ApiRun> {
         .collect()
 }
 
-/// Default ordering — `sortRuns` from `lib/task-groups.ts`: needs-you first,
+/// Default ordering: needs-you first,
 /// then the pipeline, then outcomes; ties break on recency.
 pub fn sort_runs(runs: &[ApiRun], view: TaskView) -> Vec<usize> {
     let mut indexed: Vec<usize> = runs
@@ -513,7 +511,7 @@ pub fn queue_positions(runs: &[ApiRun]) -> std::collections::HashMap<String, usi
         .collect()
 }
 
-/// `3s`, `12m`, `4h`, `2d` — the web's `shortAge`, with negative clamped.
+/// `3s`, `12m`, `4h`, `2d`, with negative elapsed time clamped to zero.
 pub fn short_age(iso: &str, now_epoch_secs: i64) -> String {
     let Some(then) = parse_iso_seconds(iso) else {
         return String::new();
@@ -632,7 +630,7 @@ mod tests {
     }
 
     #[test]
-    fn cost_and_memory_format_like_the_web() {
+    fn cost_and_memory_format_for_terminal_display() {
         assert_eq!(format_cost(Some(0.31)), "$0.31");
         assert_eq!(format_cost(Some(12.0)), "$12");
         assert_eq!(format_cost(None), "");
@@ -680,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn attention_maps_statuses_like_the_web() {
+    fn attention_maps_statuses_for_terminal_display() {
         assert_eq!(
             attention(&run("w", RunStatus::Waiting, "now")).label,
             "needs you"
@@ -720,7 +718,7 @@ mod tests {
     }
 
     #[test]
-    fn unread_and_finished_sweeps_follow_the_web_rules() {
+    fn unread_and_finished_sweeps_follow_status_rules() {
         let mut done = run("d", RunStatus::Done, "2026-08-15T00:00:00Z");
         done.record.seen_at = None;
         let mut read = run("r", RunStatus::Done, "2026-08-15T00:00:00Z");

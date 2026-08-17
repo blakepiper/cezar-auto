@@ -1,24 +1,7 @@
-//! Project registry operations over `~/.coducktor/config.json`. Ported from
-//! `packages/coducktor/src/workspace/projects.ts` for the `coducktor projects` CLI subcommand (B10) —
-//! the terminal twin of Settings → Projects, working with no server running.
-//!
-//! **Scope cut (B10):** `projects.ts`'s per-root git/forge probe (branch, forge kind, repo URL,
-//! all behind a 5s TTL cache) is not ported — it needs `server/git.ts`'s `getRepoInfo` and
-//! `server/forge/`, neither ported to this crate (B3's own scope note already deferred
-//! `server/{git,git-changes}.ts` as "server-route-adjacent logic"). [`probe_status`] here is a
-//! plain filesystem check (`missing`/`not-git`/`ok`, no cache, no branch/forge/repo-url) — good
-//! enough for a headless listing; `coducktor-server`'s own `list_projects` route handler already
-//! has its own richer (if independently-derived, not shared with this module) probe for the HTTP
-//! API / TUI project switcher. `normalizeProjectTags`/`coducktor projects tag` is not ported either —
-//! a secondary UX affordance, not part of the protected CLI surface (spec §1.4 names `serve`/
-//! `run`/`init`/`usage`/`projects`, not its subcommands).
-//!
-//! **Known duplication, not resolved here:** `coducktor-server`'s own route handlers
-//! (`register_project`/`list_projects`/`remove_project` in `crates/coducktor-server/src/lib.rs`)
-//! already independently reimplement the registry read-modify-write and slug allocation this
-//! module also implements — that duplication predates B10 (B9's route-family work inlined it
-//! rather than reaching for a core module that didn't exist yet) and is not this step's file to
-//! fix; a future chunk should have those handlers delegate here instead.
+//! Project registry operations over `~/.coducktor/config.json`. The helpers are shared by the
+//! interactive project switcher and the `coducktor projects` command, and work without a service.
+//! Status probing is intentionally lightweight: it reports whether a registered path exists and
+//! is a Git repository.
 
 use std::path::{Path, PathBuf};
 

@@ -1,4 +1,4 @@
-//! The command palette (spec §8.15) — `Ctrl+K`, `nucleo`-scored, over Tasks
+//! The command palette — `Ctrl+K`, `nucleo`-scored, over Tasks
 //! (cross-project, from `/workspace/runs-index`), Views, Projects and Actions. Every entry
 //! shares a stable action with `:` command-line equivalents where one exists (`execute_command`
 //! is `pub(crate)` for exactly this reuse) and the keymap.

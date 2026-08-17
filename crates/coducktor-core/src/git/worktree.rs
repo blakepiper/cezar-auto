@@ -1,11 +1,9 @@
-//! Git worktree per task (spec 006). Mirrors `packages/coducktor/src/git-worktree.ts`. Each run
+//! Git worktree per task. Each run
 //! gets its own branch `duck/<id8>` checked out into `.ai/coducktor/worktrees/<runId>` so
 //! agents never touch the user's working tree. Everything degrades: helpers never fail
 //! except [`create_worktree`], whose failure the caller turns into a note.
 //!
-//! Task branches that predate the rename are `duck/<id8>` (dual-read shim, spec §2.2.2): the
-//! WRITER here only ever emits `duck/` — recognizing the old `duck/` prefix when reading a
-//! branch name back is a concern for whatever surface does that reading, not this module.
+//! The writer emits `duck/`; readers retain compatibility with the former task-branch prefix.
 
 use std::collections::HashSet;
 use std::fs;
@@ -21,8 +19,7 @@ use super::run_git;
 /// Repo-relative home of all task worktrees (gitignored via `.ai/coducktor/.gitignore`).
 pub const WORKTREES_DIR: &str = ".ai/coducktor/worktrees";
 
-/// Cap on `worktree_diff`'s output, matching the TS default — the protected
-/// `GET /api/v1/runs/:id/diff` surface.
+/// Cap on `worktree_diff` output.
 pub const DIFF_CAP: usize = 400_000;
 
 /// Largest file the autosave conflict-marker scan will read. Autosave runs as often as
@@ -568,9 +565,8 @@ fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
 ///
 /// Deliberately does NOT take the repointed-HEAD guard that [`worktree_shortstat`] resolves
 /// through `diff_base::resolve_task_diff_base` — this is the whole-branch anchor on
-/// purpose. Its text output is `GET /api/v1/runs/:id/diff`, a protected surface
-/// (`BACKWARD_COMPATIBILITY.md` §2), so narrowing it would silently change what every
-/// existing consumer reads.
+/// purpose. Its text output is a compatibility-sensitive durable run diff, so narrowing it would
+/// silently change what existing consumers read.
 pub fn worktree_diff(worktree_path: &Path, base_branch: &str, cap: usize) -> String {
     if !is_safe_git_ref(base_branch) {
         return "(diff failed: refusing option-like base ref)".to_owned();
@@ -592,9 +588,9 @@ pub fn worktree_diff(worktree_path: &Path, base_branch: &str, cap: usize) -> Str
     }
 }
 
-/// `git diff --stat` version of [`worktree_diff`] (spec 010 — the variant comparison
-/// columns). Same merge-base anchoring, and stays whole-branch for the same reason: variants
-/// are sibling worktrees on their own `duck/*` branches, and the column exists to compare
+/// `git diff --stat` version of [`worktree_diff`]. Same merge-base anchoring, and stays
+/// whole-branch for the same reason: variants are sibling worktrees on their own `duck/*`
+/// branches, and the column exists to compare
 /// their *committed* work against one another. Returns `""` on any failure.
 pub fn worktree_diff_stat(worktree_path: &Path, base_branch: &str) -> String {
     if !is_safe_git_ref(base_branch) {
@@ -730,8 +726,8 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    /// Mirrors `git-worktree.test.ts`'s `fixtureRepo()`: tempdir → `git init -q -b main` →
-    /// commit a base file with an explicit test identity (so autosave's identity fallback
+    /// Create a temporary repository with a base commit and explicit test identity (so autosave's
+    /// identity fallback
     /// path is never exercised by accident in these tests).
     fn fixture_repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();

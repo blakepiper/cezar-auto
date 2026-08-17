@@ -147,7 +147,7 @@ steps:
     runner: codex
   - id: verify
     name: Verify
-    command: "npm test"
+    command: "cargo test --workspace --all-targets"
     onFail: { retry: implement, max: 2 }
 ```
 

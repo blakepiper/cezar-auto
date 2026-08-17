@@ -1,9 +1,5 @@
-//! The backend-agnostic seam shared by every agent-CLI backend runner. Ported from
-//! `packages/coducktor/src/core/agent-runner.ts`, ahead of the concrete backends
-//! (B9a.2b-2e) so each one plugs into the same spawn/signal/termination-tracking
-//! primitives instead of re-deriving them. `RunnerId`/`AgentBackend` are not
-//! re-ported here: `coducktor_contract::Runner`/`RunnerSelection` already cover
-//! that enumeration (A1).
+//! The backend-agnostic seam shared by every agent-CLI backend runner. Each backend plugs into
+//! the same spawn, signal, and termination-tracking primitives.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -11,9 +7,7 @@ use std::path::PathBuf;
 use coducktor_contract::ConcreteReasoningEffort;
 use serde::{Deserialize, Serialize};
 
-/// Everything one agent-CLI backend needs to spawn and drive a session. Ported from
-/// `agent-runner.ts`'s `AgentRunSpec`, shared by every backend (claude first, at B9a.2b;
-/// codex/opencode/pi follow at 2c-2e).
+/// Everything one agent-CLI backend needs to spawn and drive a session.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AgentRunSpec {
     /// Appended to the CLI's default system prompt (`--append-system-prompt` for claude;
@@ -82,8 +76,8 @@ pub struct ImageSource {
 
 /// Backends without a dedicated system-prompt channel (codex app-server, opencode serve)
 /// deliver `system_prompt` as a leading block of the opening user message — the documented
-/// per-backend mapping (spec protocol v2: claude = `--append-system-prompt`, codex/opencode =
-/// prepended here).
+/// per-backend mapping: Claude uses `--append-system-prompt`, while Codex and OpenCode receive
+/// it as a leading message block.
 pub fn prepend_system_prompt(system_prompt: Option<&str>, user_prompt: &str) -> String {
     match system_prompt {
         Some(system_prompt) => format!("{system_prompt}\n\n---\n\n{user_prompt}"),

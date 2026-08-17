@@ -7,7 +7,7 @@ build:
     cargo build --workspace --release
 
 # Install `coducktor` and `duck` onto PATH from this checkout (same as ./install.sh
-# minus the rustup/Node prerequisite checks).
+# minus the rustup prerequisite check).
 install:
     cargo install --path crates/coducktor-tui --locked --force
 

@@ -1,4 +1,4 @@
-//! Per-task handoff journal. Mirrors `packages/coducktor/src/handoff.ts`.
+//! Per-task handoff journal.
 //!
 //! `.ai/coducktor/runs/<runId>.handoff.md`, next to the run's NDJSON events and outside the
 //! task worktree — it survives worktree removal. Coducktor seeds the skeleton and appends
@@ -17,7 +17,7 @@ pub fn handoff_path(data_dir: &Path, run_id: &str) -> PathBuf {
 }
 
 /// The fields `seed_handoff_file` needs from a run record — deliberately not
-/// `coducktor_contract::runs::RunRecord` itself, mirroring `handoff.ts::HandoffSeed`.
+/// `coducktor_contract::runs::RunRecord` itself.
 pub struct HandoffSeed<'a> {
     pub id: &'a str,
     pub title: &'a str,
@@ -87,9 +87,8 @@ pub fn read_handoff(data_dir: &Path, run_id: &str) -> String {
     fs::read_to_string(handoff_path(data_dir, run_id)).unwrap_or_default()
 }
 
-/// First few non-empty lines under "## Progress log" (spec 010 — the variant comparison
-/// columns). Stops at the next `## ` header; `""` when there's no Progress log section or
-/// it's empty.
+/// First few non-empty lines under "## Progress log". Stops at the next `## ` header; `""` when
+/// there's no Progress log section or it's empty.
 pub fn handoff_progress_excerpt(text: &str, max_lines: usize) -> String {
     let marker = "## Progress log";
     let Some(idx) = text.find(marker) else {
@@ -125,15 +124,11 @@ pub fn delete_handoff(data_dir: &Path, run_id: &str) {
 /// `DUCK_FOLLOWUPS` — the TUI's own Inbox screen tells the user to set this. An exact `"1"`
 /// opts in — the house spelling.
 ///
-/// B12 dropped the `DUCK_FOLLOWUPS` dual-read this function carried through the whole of
-/// Phase B: it existed only so a user following the TUI's on-screen `DUCK_FOLLOWUPS=1`
-/// instruction wouldn't silently fail to enable the inbox against the still-live Node server
-/// (`packages/coducktor`, which read only `DUCK_FOLLOWUPS`). That server is deleted now.
 pub fn followups_enabled(env: &dyn EnvSource) -> bool {
     env.get("DUCK_FOLLOWUPS").as_deref() == Some("1")
 }
 
-/// Appended to every agent step's `--append-system-prompt` (spec 007). The matching
+/// Appended to every agent step's `--append-system-prompt`. The matching
 /// handoff/task env vars are set on every agent process; `DUCK_TODOS_FILE` carries a usable
 /// path only when follow-up generation is enabled (#444, #471) — opted-out runs get it
 /// empty, never absent, so an inherited value from a parent coducktor cannot shine through.
@@ -267,7 +262,7 @@ mod tests {
 
     #[test]
     fn handoff_instructions_documents_every_agent_writable_todo_field() {
-        // Mirrors handoff.test.ts: HANDOFF_INSTRUCTIONS is the only thing that tells an
+        // HANDOFF_INSTRUCTIONS is the only thing that tells an
         // agent what to append to todos.json, so a field can be added to the schema and
         // still never be written by anyone.
         let server_managed = ["id", "startedTaskId"];

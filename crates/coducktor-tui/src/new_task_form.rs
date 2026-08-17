@@ -1,7 +1,5 @@
-//! The new-task composer's picker rules and its POST body — a faithful Rust port
-//! of `packages/web/src/routes/new-task-form.ts` and `new-task-draft.ts`. Every
-//! rule lives here as a pure function so drift from the web client is a diff in
-//! ONE file, not a scavenger hunt.
+//! The new-task composer's picker rules and request body. Every rule lives here as a pure
+//! function and is covered by focused tests.
 //!
 //! Draft persistence (per-project, survives navigation for the lifetime of the
 //! cockpit) lives on `App::new_task_drafts` — see `screens::new_task::sync_draft`.
@@ -44,11 +42,10 @@ pub fn push_recent_source(
     next
 }
 
-/// The agent-backend catalog in `RUNNERS` order (legacy `RUNNERS`).
+/// The agent-backend catalog in stable `RUNNERS` order.
 pub const RUNNERS: [Runner; 4] = [Runner::Claude, Runner::Codex, Runner::OpenCode, Runner::Pi];
 
-/// Runners whose provider is both connected and enabled, in `RUNNERS` order —
-/// the port of `lib/provider-status.ts::usableRunners`.
+/// Runners whose provider is both connected and enabled, in `RUNNERS` order.
 pub fn usable_runners(status: Option<&ProviderStatusResponse>) -> Vec<Runner> {
     let Some(status) = status else {
         return Vec::new();
@@ -76,7 +73,7 @@ pub struct ModelPreset {
     pub reasoning_efforts: Option<Vec<String>>,
 }
 
-/// The static presets per runner (legacy `MODELS_BY_RUNNER`). `id: ""` is always
+/// The static presets per runner. `id: ""` is always
 /// "auto" — no model flag, the runner decides.
 pub fn static_models_for(runner: Runner) -> Vec<ModelPreset> {
     let preset = |id: &'static str, label: &'static str, desc: &'static str| ModelPreset {
@@ -178,15 +175,15 @@ pub fn models_for_runner(
         base.push(ModelPreset {
             id: (*id).to_owned(),
             label: (*id).to_owned(),
-            desc: "Custom or legacy model".to_owned(),
+            desc: "Custom model".to_owned(),
             reasoning_efforts: None,
         });
     }
     base
 }
 
-/// The effective runner: the user's pick when still installed, else the configured
-/// default when installed, else the first available (legacy preselection order).
+/// The effective runner: the user's pick when still installed, else the configured default when
+/// installed, else the first available.
 pub fn resolve_runner(picked: Option<Runner>, available: &[Runner], preferred: Runner) -> Runner {
     if let Some(picked) = picked
         && available.contains(&picked)
@@ -390,7 +387,7 @@ pub fn resolve_source(
     TaskSource::Baseline
 }
 
-/// The assembled `POST /runs` body options, mirroring `buildCreateRunBody`'s opts.
+/// The assembled run-request options.
 #[derive(Debug, Clone)]
 pub struct CreateRunBodyOpts {
     pub task: String,
@@ -425,7 +422,7 @@ fn task_step(id: &str, name: &str, skill: Option<&str>) -> WorkflowStepDef {
     }
 }
 
-/// The exact `POST /api/v1/runs` body the composer sends — the port of
+/// The exact run-request body the composer sends — built from
 /// `buildCreateRunBody`: a skill runs as a one-step inline chain; a workflow goes by
 /// name; `model`/`variants`/`images` only when they say something.
 pub fn build_create_run_body(opts: &CreateRunBodyOpts) -> CreateRunInput {
@@ -470,8 +467,7 @@ pub fn build_create_run_body(opts: &CreateRunBodyOpts) -> CreateRunInput {
     }
 }
 
-/// Where a successful POST navigates: the run's thread — for ×2/×3 the FIRST
-/// variant's thread, exactly what legacy `handleStarted` selects.
+/// Where a successful start navigates: the run's thread — for ×2/×3 the first variant's thread.
 pub fn started_run_id(response: &CreateRunResponse) -> Option<String> {
     match response {
         CreateRunResponse::Single(record) => Some(record.id.clone()),
@@ -688,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_model_catalog_matches_the_web_order() {
+    fn claude_model_catalog_has_stable_order() {
         let ids: Vec<String> = models_for_runner(Runner::Claude, None, &[])
             .into_iter()
             .map(|model| model.id)

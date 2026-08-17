@@ -1,6 +1,4 @@
-//! The run header's action policy — WHICH actions a run offers, as a pure function of the
-//! record. Ports `packages/web/src/routes/task-thread/run-actions.ts` verbatim so the two
-//! cockpits agree; every rule lives here so a table test can pin it per status.
+//! The run header's action policy — which actions a run offers, as a pure function of the record.
 
 use coducktor_contract::{RunRecord, RunStatus, Runner};
 
@@ -24,7 +22,7 @@ pub fn last_session_id(run: &RunRecord) -> Option<&str> {
         .find_map(|step| step.session_id.as_deref())
 }
 
-/// Mirrors the server's `SAFE_SESSION_ID` (server.ts, #431) — kept in lockstep by hand.
+/// Validate a session id before placing it in a shell command.
 fn is_safe_session_id(id: &str) -> bool {
     let mut chars = id.chars();
     let Some(first) = chars.next() else {
@@ -37,9 +35,8 @@ fn is_safe_session_id(id: &str) -> bool {
     first_ok && chars.all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
 }
 
-/// The per-backend take-over command — mirrors the server's `resumeCommand`. Records without
-/// a runner predate the runner choice and default to Claude. `None` for an id the server would
-/// refuse (fails closed rather than offering a shell splice of an untrusted string).
+/// Build the per-backend take-over command. Records without a runner predate the runner choice and
+/// default to Claude. Return `None` for an unsafe id rather than splicing it into a shell command.
 pub fn resume_command(runner: Option<Runner>, session_id: &str) -> Option<String> {
     if !is_safe_session_id(session_id) {
         return None;

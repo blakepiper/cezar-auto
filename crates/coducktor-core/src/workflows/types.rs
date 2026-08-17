@@ -1,12 +1,9 @@
-//! The slice of `packages/coducktor/src/workflows/types.ts` that [`super::load`] needs: turning
-//! a raw parsed YAML/JSON document into a validated [`WorkflowDef`], and the built-in
-//! `quick-task` workflow it falls back to.
+//! Workflow file validation and normalization: turning a raw YAML/JSON document into a validated
+//! [`WorkflowDef`], plus the built-in `quick-task` workflow used as a fallback.
 //!
 //! `coducktor_contract::workflows` already carries every WIRE shape (`WorkflowDef`,
-//! `WorkflowStepDef`, `WorkflowOnFail`) — ported at A1 from `packages/contract/src/
-//! workflows.ts`, which `types.ts`'s own zod schemas are kept parity-checked against — so
-//! this module adds only the validation and normalization `types.ts` layers on top of that
-//! shape, scoped to exactly what the FILE LOADER exercises:
+//! `WorkflowStepDef`, and `WorkflowOnFail`) — so this module adds the validation and
+//! normalization that the file loader needs:
 //!
 //! - `skillsToSteps` / `normalizeWorkflowDoc` — resolving the `steps` XOR `skills`
 //!   shorthand into plain steps.
@@ -17,13 +14,8 @@
 //!   there is no `zod`-compat helper module needed here the way `runs::store` needed one).
 //! - `QUICK_TASK_WORKFLOW`.
 //!
-//! **Deliberately not ported here:** `skillStackOf` (the inverse of `skillsToSteps`, used by
-//! the compact-YAML-export UI, not the loader — and already independently reimplemented at
-//! Phase A in `coducktor-tui`'s `screens/workflows.rs` since this crate had no
-//! `workflows` module yet), `chainStepNote` and `DEFAULT_ALLOWED_TOOLS` (both consumed at
-//! run EXECUTION time, i.e. `workflows::run` — B6 territory). Revisit consolidating the TUI's
-//! copy of `skillStackOf` onto this crate's `WorkflowStepDef` re-export once B6 lands and
-//! `coducktor-tui` has a reason to depend on more of `workflows` than just the loader.
+//! Runtime-only helpers such as `chainStepNote` and `DEFAULT_ALLOWED_TOOLS` live with the run
+//! executor. The TUI keeps its presentation-specific workflow helpers in its own crate.
 
 use std::collections::HashSet;
 
@@ -32,8 +24,7 @@ use serde_json::Value;
 use coducktor_contract::runs::StepKind;
 use coducktor_contract::workflows::{WorkflowDef, WorkflowSource, WorkflowStepDef};
 
-/// `skills: [a, b]` → agent steps, one per skill, each running `{{task}}`. Mirrors
-/// `types.ts::skillsToSteps`.
+/// `skills: [a, b]` → agent steps, one per skill, each running `{{task}}`.
 pub fn skills_to_steps(skills: &[String]) -> Vec<WorkflowStepDef> {
     let mut used: HashSet<String> = HashSet::new();
     skills
@@ -64,7 +55,7 @@ pub fn skills_to_steps(skills: &[String]) -> Vec<WorkflowStepDef> {
 
 /// Structural checks beyond the per-step schema: ids must be unique and every
 /// `onFail.retry` must reference an *earlier* step (loops only go backwards). Returns a
-/// human-readable problem, or `None` when the list is sound. Mirrors `types.ts::stepsIssue`.
+/// human-readable problem, or `None` when the list is sound.
 pub fn steps_issue(steps: &[WorkflowStepDef]) -> Option<String> {
     let ids: Vec<&str> = steps.iter().map(|s| s.id.as_str()).collect();
     let dup = ids
@@ -142,8 +133,7 @@ pub fn chain_step_note(steps: &[WorkflowStepDef], index: usize) -> Option<String
     Some(note)
 }
 
-/// The zero-config workflow: one agent step that just does the task. Mirrors
-/// `types.ts::QUICK_TASK_WORKFLOW`.
+/// The zero-config workflow: one agent step that just does the task.
 pub fn quick_task_workflow() -> WorkflowDef {
     WorkflowDef {
         name: "quick-task".to_owned(),
@@ -189,8 +179,8 @@ fn validate_step_doc(value: &Value) -> Result<WorkflowStepDef, String> {
 
 /// Validates a raw parsed workflow-file document (`workflowFileSchema`'s `.refine()` rule:
 /// `steps` XOR `skills`) and resolves it into `(name, description, steps)` — the
-/// `normalizeWorkflowDoc` half of `types.ts`, folded into the same pass since both need the
-/// same XOR check. Field-level shape errors (wrong types, an unrecognized `runner`) surface
+/// the normalization pass, folded into the same function since both need the same XOR check.
+/// Field-level shape errors (wrong types, an unrecognized `runner`) surface
 /// through [`validate_step_doc`]'s `serde_json` error, same as every other schema in this
 /// crate that has no `.catch()` to salvage a bad field with.
 pub fn parse_workflow_file_doc(

@@ -1,7 +1,6 @@
 //! New Task screen — `screens/new_task.rs`.
 //!
-//! Behavioral spec: `packages/web/src/routes/new-task.tsx` plus the pure helpers
-//! ported into `new_task_form` and `skills`. Layout (§8.3): a centered hero with
+//! Layout: a centered hero with
 //! "What should the agent work on?", the shared composer card (auto-growing text
 //! area, attachment row — no Dictation, per decision 2), a pill row —
 //! `skill/workflow ▾` · `runner ▾` · `model ▾` · `reasoning ▾` · `×N variants ▾` ·
@@ -137,7 +136,7 @@ pub struct NewTaskUi {
 }
 
 /// The fully-resolved composer values (draft + config + catalogs), mirroring the
-/// web's derived state in `new-task.tsx`.
+/// the derived picker state used by the new-task screen.
 pub struct Effective {
     pub source: TaskSource,
     pub runners: Vec<Runner>,
@@ -1562,7 +1561,7 @@ mod tests {
     }
 
     #[test]
-    fn submitting_a_task_queues_start_run_with_the_web_shaped_body() {
+    fn submitting_a_task_queues_start_run_with_the_expected_body() {
         let mut app = app_with_new_task("t-1");
         assert!(
             app.new_task_ui.composer_focused,
@@ -1679,7 +1678,7 @@ mod tests {
     }
 
     #[test]
-    fn source_picker_groups_and_ranks_like_the_web() {
+    fn source_picker_groups_and_ranks_skills() {
         let mut app = app_with_new_task("t-5");
         let mut usage = std::collections::BTreeMap::new();
         usage.insert("om-open-pr".to_owned(), 3.0);
@@ -1697,8 +1696,8 @@ mod tests {
                 .and_then(|state| state.skill_usage.as_ref()),
         );
         let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
-        // Baseline leads (the web shows it for the empty query), then Most used
-        // across localities, then project, then workflows, then global.
+        // Baseline leads for an empty query, then Most used across localities, then project,
+        // workflows, and global entries.
         assert_eq!(labels, ["Baseline", "om-open-pr", "om-fix", "quick-task"]);
 
         let tiers: Vec<&str> = items
@@ -1772,8 +1771,8 @@ mod tests {
                 .any(|action| matches!(action, PendingAction::StartRun { .. }))
         );
 
-        // The server answers: the SSE `run` event carries the queued run, and the
-        // shell's own task list picks it up in place.
+        // The workspace run event carries the queued run, and the shell's own task list picks it
+        // up in place.
         let project = app.current_project().to_owned();
         let run = crate::app::WorkspaceEvent::Run {
             project: project.clone(),

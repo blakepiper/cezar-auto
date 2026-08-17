@@ -1,8 +1,7 @@
-//! GitHub's `gh` integration, ported from `packages/coducktor/src/server/forge/github.ts`.
-//!
-//! The boundary is deliberately small: GitHub JSON is parsed at the driver edge, pure
-//! normalization and policy functions are injectable, and every shell/API failure becomes a
-//! degraded value instead of a server-facing panic. `GithubDriver` keeps caches per repository
+//! GitHub's `gh` integration. The boundary is deliberately small: GitHub JSON is parsed at the
+//! driver edge, pure normalization and policy functions are injectable, and every shell/API
+//! failure becomes a
+//! degraded value instead of a panic. `GithubDriver` keeps caches per repository
 //! instance, so two projects cannot leak one another's issues, comments, or reference status.
 
 mod driver;

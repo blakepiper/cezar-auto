@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-/// The checks glyph enum from `packages/contract/src/github.ts`.
+/// The checks glyph enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ChecksGlyph {
@@ -11,7 +11,7 @@ pub enum ChecksGlyph {
     Pending,
 }
 
-/// Mirrors `packages/contract/src/github.ts::GithubItem`.
+/// `GithubItem` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GithubItem {
@@ -34,7 +34,7 @@ pub struct GithubItem {
     pub checks: Option<Option<ChecksGlyph>>,
 }
 
-/// The issue/PR kind discriminator from `packages/contract/src/github.ts`.
+/// The issue/PR kind discriminator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GithubItemKind {
@@ -42,7 +42,7 @@ pub enum GithubItemKind {
     Pr,
 }
 
-/// Mirrors `packages/contract/src/github.ts::GithubData`.
+/// `GithubData` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GithubData {
@@ -74,7 +74,7 @@ pub struct GithubChecksUnavailable {
     pub reason: String,
 }
 
-/// Mirrors `packages/contract/src/github.ts::GithubChecksData`.
+/// `GithubChecksData` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum GithubChecksData {
@@ -82,7 +82,7 @@ pub enum GithubChecksData {
     Unavailable(GithubChecksUnavailable),
 }
 
-/// Mirrors `packages/contract/src/github.ts::ReferenceStatus`.
+/// `ReferenceStatus` contract shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ReferenceStatus {
@@ -121,7 +121,7 @@ pub struct GithubRefStatusUnavailable {
     pub recheck_after_ms: Option<f64>,
 }
 
-/// Mirrors `packages/contract/src/github.ts::GithubRefStatusData`.
+/// `GithubRefStatusData` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum GithubRefStatusData {
@@ -129,7 +129,7 @@ pub enum GithubRefStatusData {
     Unavailable(GithubRefStatusUnavailable),
 }
 
-/// Mirrors `packages/contract/src/github.ts::GithubComment`.
+/// `GithubComment` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GithubComment {
@@ -145,7 +145,7 @@ pub struct GithubComment {
     pub url: String,
 }
 
-/// The comment/review discriminator from `packages/contract/src/github.ts`.
+/// The comment/review discriminator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GithubCommentKind {
@@ -153,7 +153,7 @@ pub enum GithubCommentKind {
     Review,
 }
 
-/// The review state discriminator from `packages/contract/src/github.ts`.
+/// The review state discriminator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GithubReviewState {
@@ -163,7 +163,7 @@ pub enum GithubReviewState {
     Dismissed,
 }
 
-/// Mirrors `packages/contract/src/github.ts::GithubTimelineEventKind`.
+/// `GithubTimelineEventKind` contract shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GithubTimelineEventKind {
@@ -189,7 +189,7 @@ pub struct GithubTimelineLabel {
     pub color: Option<String>,
 }
 
-/// Mirrors `packages/contract/src/github.ts::GithubTimelineEvent`.
+/// `GithubTimelineEvent` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GithubTimelineEvent {
@@ -219,7 +219,7 @@ pub struct GithubTimelineEvent {
     pub ref_is_pr: Option<bool>,
 }
 
-/// Mirrors `packages/contract/src/github.ts::GithubCommentsData`.
+/// `GithubCommentsData` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GithubCommentsData {
@@ -233,7 +233,7 @@ pub struct GithubCommentsData {
     pub events: Option<Vec<GithubTimelineEvent>>,
 }
 
-/// Mirrors `packages/contract/src/github.ts::GithubMergeMethod`.
+/// `GithubMergeMethod` contract shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GithubMergeMethod {
@@ -252,7 +252,7 @@ impl std::fmt::Display for GithubMergeMethod {
     }
 }
 
-/// Mirrors `packages/contract/src/github.ts::GithubPrCheck`.
+/// `GithubPrCheck` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GithubPrCheck {
@@ -263,7 +263,7 @@ pub struct GithubPrCheck {
     pub url: Option<String>,
 }
 
-/// The check state enum from `packages/contract/src/github.ts`.
+/// The check state enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GithubCheckState {
@@ -273,7 +273,7 @@ pub enum GithubCheckState {
     Unknown,
 }
 
-/// Mirrors `packages/contract/src/github.ts::GithubPrMergeState`.
+/// `GithubPrMergeState` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GithubPrMergeState {
@@ -296,7 +296,7 @@ pub struct GithubPrMergeState {
     pub can_override: bool,
 }
 
-/// PR lifecycle state from `packages/contract/src/github.ts`.
+/// PR lifecycle state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GithubPrState {
@@ -305,7 +305,7 @@ pub enum GithubPrState {
     Merged,
 }
 
-/// Mergeability state from `packages/contract/src/github.ts`.
+/// Mergeability state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GithubMergeable {
@@ -314,7 +314,7 @@ pub enum GithubMergeable {
     Unknown,
 }
 
-/// Review decision from `packages/contract/src/github.ts`.
+/// Review decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GithubReviewDecision {
@@ -324,7 +324,7 @@ pub enum GithubReviewDecision {
     Unknown,
 }
 
-/// Merge eligibility from `packages/contract/src/github.ts`.
+/// Merge eligibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GithubMergeEligibility {
@@ -336,14 +336,14 @@ pub enum GithubMergeEligibility {
     Unknown,
 }
 
-/// A merge blocker from `packages/contract/src/github.ts`.
+/// A merge blocker.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GithubBlocker {
     pub code: String,
     pub message: String,
 }
 
-/// Mirrors `packages/contract/src/github.ts::GithubPrMergeStateResponse`.
+/// `GithubPrMergeStateResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum GithubPrMergeStateResponse {
@@ -358,7 +358,7 @@ pub enum GithubPrMergeStateResponse {
     },
 }
 
-/// Mirrors `packages/contract/src/github.ts::GithubMergeResponse`.
+/// `GithubMergeResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GithubMergeResponse {
@@ -370,7 +370,7 @@ pub struct GithubMergeResponse {
     pub merge_commit_sha: Option<String>,
 }
 
-/// Mirrors `packages/contract/src/github.ts::GithubPrChange`.
+/// `GithubPrChange` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GithubPrChange {
@@ -388,7 +388,7 @@ pub struct GithubPrChange {
     pub truncated: Option<bool>,
 }
 
-/// Changed-file status from `packages/contract/src/github.ts`.
+/// Changed-file status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GithubChangeStatus {
@@ -431,7 +431,7 @@ pub struct GithubPrChangesUnavailable {
     pub reason: String,
 }
 
-/// Mirrors `packages/contract/src/github.ts::GithubPrChangesData`.
+/// `GithubPrChangesData` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum GithubPrChangesData {
@@ -439,7 +439,7 @@ pub enum GithubPrChangesData {
     Unavailable(GithubPrChangesUnavailable),
 }
 
-/// The `POST /github/prs/:number/merge` request body (`mergeBodySchema` in `server.ts`).
+/// The request body for merging a GitHub pull request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GithubMergeInput {

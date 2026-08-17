@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde::de::{DeserializeOwned, Deserializer};
 use serde_json::{Map, Value};
 
-/// Unknown keys captured by a TypeScript `looseObject`/`catchall` shape.
+/// Unknown keys preserved alongside a permissive persisted contract shape.
 pub type ExtraFields = Map<String, Value>;
 
 /// Implements the per-field fallback behavior of Zod's `.catch(default)`.

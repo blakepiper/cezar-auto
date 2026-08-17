@@ -1,43 +1,12 @@
-//! `AgentSession` over the Claude Code CLI in headless stream-json mode. Ported from
-//! `packages/coducktor/src/core/claude-cli-runner.ts`. Auth is the host's logged-in Pro/Max
+//! `AgentSession` over the Claude Code CLI in headless stream-json mode. Auth is the host's
+//! logged-in Pro/Max
 //! subscription (no API key needed). Sandboxing is `--allowedTools` (default-deny for anything
 //! not listed) + running inside the repo `cwd`; `Bash` is narrowed to `Bash(<prefix>:*)`
 //! patterns only when `bash_allowlist` is set.
 //!
-//! # Architecture note vs. the TS source
-//!
-//! `claude-cli-runner.ts`'s single `result: Promise<AgentRunResult>` spans the WHOLE session —
-//! every turn, until the process actually exits — with turn boundaries visible only through the
-//! live `onEvent('turn-end')` callback. `coducktor_core::workflows::run::AgentSession` (built at
-//! B6, before this backend existed) is turn-scoped instead: `turn()`/`send_message()` each block
-//! for exactly one turn and return. This is not a re-derivation of that trait's shape — it
-//! already existed — just this backend's job to satisfy it: [`open_claude_session`] spawns the
-//! process and sends the opening message (mirroring `startSession`'s synchronous `sendMessage`
-//! call before it returns), and each `turn`/`send_message` call reads the live stdout channel
-//! until the next `result` frame ends that turn, which is exactly where the real CLI pauses
-//! between turns anyway (it is waiting on the next stdin line), so nothing is lost by returning
-//! there instead of continuing to await the whole session.
-//!
-//! Process plumbing (spawn, the stdout line channel, stderr collection, SIGTERM->SIGKILL
-//! escalation) lives in `child_process::ChildProcess`, shared with the codex backend rather than
-//! re-derived per file the way `claude-cli-runner.ts`/`codex-app-server-transport.ts` do in TS.
-//! `TrackableChild`/`track_child_exit` (B9a.2a) are not used by that shared plumbing either: they
-//! exist to work around Node's `ChildProcess.killed` flag recording signal *delivery* rather than
-//! actual exit. `std::process::Child` has no such flag — `try_wait()` already answers "has this
-//! exited?" directly — so the workaround the TS pair exists for does not apply to this concrete
-//! type; `ChildProcess` polls `try_wait()` inline instead.
-//!
-//! For the same reason, `isSignalTerminationExit`/`terminatedByCoducktor`/
-//! `normalizeIntentionalTeardownResult` are not ported here either. In `claude-cli-runner.ts`
-//! those exist to resolve an AMBIGUITY: the EOF watchdog, wall-clock timeout, and the ongoing
-//! stdout read loop are three independent callbacks racing on the same event loop, so by the
-//! time the read loop's final frame arrives, it has no idea whether the process died on its own
-//! or because something else just signalled it — the flag bridges that gap. This session has no
-//! such race: `escalate_after_timeout` is called FROM WITHIN the same blocking read loop it
-//! signals, on the same call stack, so the signalling code already knows synchronously that it
-//! just sent SIGTERM/SIGKILL and returns its own `Err` directly — there is no later frame to
-//! reinterpret, and no other call can be signalling the same session concurrently (`finish`/
-//! `cancel` are `&mut self`, so they can only run between turns, never during one).
+//! Each call to `turn()` or `send_message()` consumes one Claude result frame. Shared process
+//! plumbing handles stdout, stderr, EOF, and timeout escalation; this module maps Claude's
+//! stream-json frames into the normalized event protocol.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -141,7 +110,7 @@ pub fn build_allowed_tools(allowed_tools: &[String], bash_allowlist: &[String]) 
 }
 
 /// Where to find the claude binary. Production wiring resolves `program`/`prefix_args` from
-/// `DUCK_CLAUDE_BIN`/`DUCK_DRY_RUN` (that resolution is `coducktor-server`'s job, not this crate's
+/// `DUCK_CLAUDE_BIN`/`DUCK_DRY_RUN` (resolved by the session factory,
 /// — it is the same "injected by the integration layer" seam `SessionFactory` already is); tests
 /// point `program` at `node` with `prefix_args: vec![mock_script_path]`.
 #[derive(Debug, Clone)]
@@ -182,7 +151,7 @@ fn wrap_spawn_error(error: &io::Error, program: &str) -> String {
 pub struct ClaudeSession {
     process: ChildProcess,
     session_id: Option<String>,
-    /// Mirrors `claude-cli-runner.ts`'s `stdinOpen`: false once `finish()`/`cancel()` has run.
+    /// Whether stdin is still open for this session.
     open: bool,
     /// 0 disables the wall-clock kill switch entirely (interactive sessions).
     timeout_ms: u64,
@@ -248,11 +217,9 @@ fn parse_raw_usage(value: Option<&Value>) -> Option<RawUsage> {
     })
 }
 
-/// Mirrors `claude-cli-runner.ts`'s `handleClaudeMessage`. Every accessor here is `Option`-based
-/// rather than an indexing/`unwrap` that could panic on an unexpected shape — agent processes are
-/// external and their wire formats evolve, so a malformed frame is silently ignored rather than
-/// taking down the run (same policy as this crate's other wire mappers, `claude.rs` et al.); the
-/// TS try/catch this mirrors exists only to guard against that same class of failure.
+/// Map a Claude message into normalized events. Every accessor is `Option`-based rather than an
+/// indexing operation that could panic on an unexpected shape: agent processes are external and
+/// their wire formats evolve, so malformed frames are ignored rather than taking down the run.
 fn handle_claude_message(msg: &Value, text_chunks: &mut Vec<String>) -> ClaudeMessageResult {
     let mut events = Vec::new();
     match msg.get("type").and_then(Value::as_str) {
@@ -624,7 +591,7 @@ mod tests {
         }
     }
 
-    // ---- pure argv-building tests (mirrors claude-cli-runner.test.ts) --------------------
+    // ---- pure argv-building tests ---------------------------------------------------------
 
     #[test]
     fn build_claude_args_emits_append_system_prompt_when_set() {

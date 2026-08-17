@@ -6,7 +6,7 @@ fn default_retry_max() -> u32 {
     2
 }
 
-/// Mirrors `packages/contract/src/workflows.ts::WorkflowStepDef`.
+/// `WorkflowStepDef` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowStepDef {
@@ -40,7 +40,7 @@ pub struct WorkflowOnFail {
     pub max: u32,
 }
 
-/// Mirrors `packages/contract/src/workflows.ts::WorkflowDef`.
+/// `WorkflowDef` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowDef {
@@ -61,21 +61,21 @@ pub enum WorkflowSource {
     File,
 }
 
-/// Mirrors `packages/contract/src/workflows.ts::WorkflowLoadIssue`.
+/// `WorkflowLoadIssue` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowLoadIssue {
     pub path: String,
     pub message: String,
 }
 
-/// Mirrors `packages/contract/src/workflows.ts::WorkflowsResponse`.
+/// `WorkflowsResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowsResponse {
     pub workflows: Vec<WorkflowDef>,
     pub issues: Vec<WorkflowLoadIssue>,
 }
 
-/// Mirrors `packages/contract/src/workflows.ts::SaveWorkflowInput`.
+/// `SaveWorkflowInput` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveWorkflowInput {
@@ -90,14 +90,14 @@ pub struct SaveWorkflowInput {
     pub overwrite: Option<bool>,
 }
 
-/// Mirrors `packages/contract/src/workflows.ts::SaveWorkflowResponse`.
+/// `SaveWorkflowResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SaveWorkflowResponse {
     pub path: String,
     pub name: String,
 }
 
-/// Mirrors `packages/contract/src/workflows.ts::ParsedWorkflow`.
+/// `ParsedWorkflow` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParsedWorkflow {
     pub name: String,
@@ -106,27 +106,26 @@ pub struct ParsedWorkflow {
     pub steps: Vec<WorkflowStepDef>,
 }
 
-/// The `POST /workflows/parse` request body (`parseWorkflowSchema` in `server.ts`) — the
-/// builder's import path: pasted YAML in either form, parsed and normalized server-side.
+/// The request body for parsing and normalizing pasted workflow YAML.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParseWorkflowInput {
     pub yaml: String,
 }
 
-/// The planning prompt accepted by `POST /api/v1/plan`.
+/// The planning prompt accepted by the engine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanInput {
     pub task: String,
 }
 
-/// Mirrors `packages/contract/src/workflows.ts::DeleteWorkflowResponse`.
+/// `DeleteWorkflowResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeleteWorkflowResponse {
     pub ok: bool,
     pub path: String,
 }
 
-/// Mirrors `packages/contract/src/workflows.ts::PlanResponse`.
+/// `PlanResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlanResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]

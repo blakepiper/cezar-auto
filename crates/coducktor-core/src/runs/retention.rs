@@ -1,19 +1,10 @@
-//! Count-based worktree retention (#483). Mirrors `packages/coducktor/src/runs/retention.ts`:
+//! Count-based worktree retention (#483):
 //! which finished worktrees are over budget and should have their *directory* reclaimed
 //! (the `duck/<id8>` branch stays, so the work is always recoverable via
 //! `git worktree add`).
 //!
-//! [`reclaim_worktrees`] and [`rematerialize_reclaimed_worktree`] are the B3 I/O half,
-//! wired against `crate::git::worktree` now that it exists. They deliberately do **not**
-//! match `reclaimWorktrees`/`rematerializeReclaimedWorktree`'s TS signatures: those take an
-//! injectable `store` (`RetentionStore`/`RematerializeStore`, backed by the real `RunStore`
-//! class) and mutate it directly via `store.updateRun(id, { worktreeReclaimedAt })`. No
-//! live run store exists in Rust yet — `RunManager` is **B6** — so these functions return
-//! what changed (reclaimed run ids + timestamps, or the rematerialized `WorktreeInfo`)
-//! instead of persisting it; B6's `RunManager` is what will call these and write the result
-//! through `runs::store::write_run_index`. That keeps this step honest about which layer
-//! actually exists right now rather than inventing a store trait whose real shape is B6's
-//! to decide.
+//! The pure selector returns the worktrees over budget, while the I/O helpers reclaim or
+//! rematerialize directories. Callers persist the resulting run-index updates.
 
 use std::path::Path;
 
@@ -64,7 +55,7 @@ pub fn select_reclaimable_worktrees(runs: &[RunRecord], keep: u64) -> Vec<String
 /// Enforce the retention budget: reclaim the *directory* of every over-limit finished
 /// worktree (branch kept — `worktree::remove_worktree` is called without a branch arg).
 /// Returns `(run_id, reclaimed_at)` for each run actually reclaimed, for the caller to
-/// persist and log/SSE.
+/// persist and log as part of the run lifecycle.
 ///
 /// Never panics (helper discipline). `remove_worktree` is best-effort and does not report
 /// failure, so a run is reported reclaimed only once its directory is confirmed gone — a

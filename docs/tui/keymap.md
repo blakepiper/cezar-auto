@@ -199,10 +199,3 @@ Sort picker: `j`/`k`/`Down`/`Up` to move, `Enter` to apply, `Esc` to cancel.
 | `d` | Delete the focused row (accounts, projects, etc.) |
 | `Ctrl+S` (agent-config editor) | Save the config file |
 | `Esc` | Back |
-
-## A stray finding, not fixed here
-
-`screens/tasks.rs`'s `o` key still shows `"diff view lands in A9"` — a placeholder
-notice left over from before A9 shipped diffs (task git tabs already cover this).
-Out of scope for A14 (this doc only touches `docs/` and install tooling); worth a
-one-line fix in a later pass.

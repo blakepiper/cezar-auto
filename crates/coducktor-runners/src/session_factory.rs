@@ -1,25 +1,14 @@
 //! A concrete `coducktor_core::workflows::run::SessionFactory` dispatching to the four real
-//! backends (claude/codex/opencode/pi) by `RunnerSelection`. This is the wiring the B9a.2 module
-//! docs each deferred to "coducktor-server's job" / B10 — every backend's `open_*_session` has
-//! existed since B9a.2, but nothing before B10 constructed one from a live [`SessionRequest`].
+//! backends (claude/codex/opencode/pi) by `RunnerSelection`.
 //!
-//! Binary resolution mirrors each TS runner's own constructor exactly, not a symmetric
-//! convention invented here:
+//! Binary resolution follows each runner's supported configuration:
 //! - claude/pi: `DUCK_CLAUDE_BIN`/`DUCK_PI_BIN` override, else — when `DUCK_DRY_RUN=1` — the bundled
-//!   Node mock script, else the bare binary name on PATH. (`claude-cli-runner.ts`'s
-//!   `mockClaudePath()`/`pi-runner.ts`'s `mockPiPath()`.)
+//!   bundled mock script, else the bare binary name on PATH.
 //! - codex/opencode: `DUCK_CODEX_BIN`/`DUCK_OPENCODE_BIN` override, else the bare binary name on
-//!   PATH — **no** `DUCK_DRY_RUN` fallback. `codex-app-server-transport.ts`'s
-//!   `resolveCodexExecutable` and `opencode-server-runner.ts`'s constructor really do skip it;
-//!   this is not an oversight to "fix" here, it is the oracle.
+//!   PATH — these runners have no `DUCK_DRY_RUN` fallback.
 //!
-//! The dry-run mock scripts live under this monorepo's root-level `fixtures/` directory (B12
-//! relocated them there from the since-deleted `packages/coducktor/scripts/`, the only reason those
-//! two files survived the TypeScript deletion), so resolving them relative to `SessionRequest.cwd`
-//! (the repo root a run operates in) rather than this binary's own install location is deliberate
-//! — `DUCK_DRY_RUN=1` is a development/testing affordance that only makes sense run from inside
-//! this monorepo checkout in the first place, same premise Phase A/B's dual-implementation
-//! testing already assumed throughout.
+//! The dry-run mock scripts live under the repository's root-level `fixtures/` directory. They
+//! are resolved relative to `SessionRequest.cwd`, which is the repository root for a run.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -240,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_config_has_no_dry_run_fallback_matching_the_ts_oracle() {
+    fn codex_config_has_no_dry_run_fallback() {
         let factory = factory_with_env(&[("DUCK_DRY_RUN", "1")]);
         let config = factory.codex_config();
         assert_eq!(config.program, "codex");
@@ -248,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn opencode_config_has_no_dry_run_fallback_matching_the_ts_oracle() {
+    fn opencode_config_has_no_dry_run_fallback() {
         let factory = factory_with_env(&[("DUCK_DRY_RUN", "1")]);
         let config = factory.opencode_config();
         assert_eq!(config.program, "opencode");

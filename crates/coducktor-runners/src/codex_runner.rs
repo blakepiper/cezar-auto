@@ -1,46 +1,30 @@
 //! `AgentSession` over `codex app-server` — the same JSON-RPC 2.0 (newline-delimited) transport
-//! the VS Code extension and desktop app use. Ported from
-//! `packages/coducktor/src/core/codex-app-server-runner.ts` +
-//! `packages/coducktor/src/core/codex-app-server-transport.ts`.
+//! the VS Code extension and desktop app use.
 //!
 //! Auth is the host's logged-in ChatGPT/Codex session (or `CODEX_API_KEY`). The agent runs
 //! autonomously via `sandbox: danger-full-access` + `approvalPolicy: never`; `DUCK_CODEX_NETWORK=0`
 //! retains the previous network-blocked `workspace-write` sandbox as an explicit restriction.
 //! Codex has no per-tool allowlist, so `spec.allowed_tools`/`bash_allowlist` are ignored, and it
-//! has no way to receive pasted images at task start (`spec.images` is unused here too — a
-//! pre-existing TS limitation, not something this port changes).
+//! has no way to receive pasted images at task start (`spec.images` is unused here too).
 //!
-//! # Architecture notes vs. the TS source
+//! # Architecture notes
 //!
-//! Same turn-scoped adaptation as the claude backend (B9a.2b) — see that module's doc for the
-//! general shape. Two further consequences specific to codex's richer protocol:
+//! The turn-scoped adapter has two consequences specific to Codex's richer protocol:
 //!
-//! - **Bootstrap is deferred into the first `turn()` call.** `codex-app-server-runner.ts` does
-//!   the `initialize` -> `thread/start` -> `turn/start` handshake in its constructor, because TS's
-//!   session object can start consuming its read loop (and therefore resolving those RPC
-//!   promises) immediately. This session has no event sink until a trait method hands it one, so
-//!   [`open_codex_session`] only spawns the process; the first call to [`AgentSession::turn`]
-//!   performs the whole handshake before reading toward the first turn's end. This mirrors how
-//!   claude's `open_claude_session` sends its opening message eagerly (no read needed for a
-//!   fire-and-forget write) while codex's equivalent genuinely cannot be eager (every bootstrap
-//!   step is a request/response roundtrip).
-//! - **`item/tool/requestUserInput` ends the read loop.** In TS, receiving this request just
-//!   stores `pendingUserInput` and keeps the ONE session-spanning read loop running — there is
-//!   nothing to "return" from. Here, since a turn must return something, receiving it stops
-//!   [`CodexSession::drive`] with [`StopReason::UserInputRequested`], producing a `Waiting` outcome
-//!   with `decision: Ask` (bypassing text-marker detection entirely — a structured RPC request is
-//!   a stronger signal than a trailing marker). The next `send_message` answers it via RPC instead
-//!   of starting a new turn, then resumes reading exactly like any other follow-up.
+//! - **Bootstrap is deferred into the first `turn()` call.** The session has no event sink until
+//!   a trait method hands it one, so [`open_codex_session`] only spawns the process; the first
+//!   call to [`AgentSession::turn`] performs the `initialize` -> `thread/start` -> `turn/start`
+//!   handshake before reading toward the first turn's end.
+//! - **`item/tool/requestUserInput` ends the read loop.** Receiving this request stops
+//!   [`CodexSession::drive`] with [`StopReason::UserInputRequested`], producing a `Waiting`
+//!   outcome with `decision: Ask`. The next `send_message` answers it via RPC instead of starting
+//!   a new turn, then resumes reading like any other follow-up.
 //!
-//! `isSignalTerminationExit`/`terminatedByCoducktor`/the EOF-watchdog "did not exit on its own" note
-//! are dropped for the same reason claude's port drops them (see that module's doc): no call can
-//! signal this session while a read loop is in flight, so there is no ambiguity to resolve.
+//! The session does not need a separate signal-termination marker: no call can signal it while a
+//! read loop is in flight, so there is no ambiguity to resolve.
 //!
-//! One narrow, deliberate behavior difference: TS's `sendMessage` swallows a `turn/steer`/
-//! `turn/start` RPC failure as a `note` event and leaves the session dangling (nothing further
-//! will happen until the caller times out or cancels). `send_message` here returns that failure
-//! as a hard `Err`, matching how a bootstrap RPC failure is already treated — a clean failure
-//! beats a session that silently stops producing events.
+//! A failed `turn/steer` or `turn/start` RPC is returned as a hard `Err`, matching bootstrap RPC
+//! failures; a clean failure is preferable to a session that silently stops producing events.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -67,7 +51,7 @@ const NON_TOOL_ITEMS: &[&str] = &["agentMessage", "userMessage", "reasoning", "p
 const REASONING_SUMMARIES: &[&str] = &["auto", "concise", "detailed", "none"];
 
 /// Where to find the codex binary. Production wiring resolves `program`/`prefix_args` from
-/// `DUCK_CODEX_BIN` (`coducktor-server`'s job, not this crate's); tests point `program` at `node`
+/// `DUCK_CODEX_BIN` is resolved by the session factory; tests point `program` at `node`
 /// with `prefix_args: vec![mock_script_path]`. `app-server` is always appended as the final arg
 /// regardless — matching `spawnCodexAppServer`'s own `nodeSpawn(bin, ['app-server'], ...)`.
 #[derive(Debug, Clone)]
@@ -137,8 +121,7 @@ pub struct CodexSession {
     thread_id: Option<String>,
     active_turn_id: Option<String>,
     pending_user_input: Option<PendingUserInput>,
-    /// Mirrors `codex-app-server-runner.ts`'s `stdinOpen`: false once `finish()`/`cancel()` has
-    /// run.
+    /// Whether stdin is still open for this session.
     open: bool,
     /// 0 disables the wall-clock kill switch entirely (interactive sessions).
     timeout_ms: u64,
@@ -255,8 +238,8 @@ fn turn_usage_last(params: &Value) -> Option<(f64, f64, f64)> {
     Some((input, output, total))
 }
 
-/// Mirrors `codex-app-server-runner.ts`'s `codexAskQuestions`: builds a candidate request shape
-/// from the app-server's own question wire format, then re-validates it through the SAME strict
+/// Build a candidate request shape from the app-server's question wire format, then re-validate
+/// it through the same strict
 /// schema (`coducktor_core::runs::ask`) a text-marker ask uses — one source of truth for what a
 /// valid ask looks like, regardless of which backend produced it.
 fn codex_ask_questions(value: &Value) -> Option<Vec<AskQuestion>> {
@@ -301,8 +284,8 @@ fn codex_ask_questions(value: &Value) -> Option<Vec<AskQuestion>> {
     ask::parse_ask_request(&json!({ "questions": questions })).map(|request| request.questions)
 }
 
-/// Mirrors `codex-app-server-runner.ts`'s `userInputAnswers`: a structured `Header: value` line
-/// per question, or (when there is exactly one question and no structured line matched) the
+/// Build a structured `Header: value` line per question, or (when there is exactly one question
+/// and no structured line matched) the
 /// whole free-text reply as that question's answer.
 fn user_input_answers(questions: &[AskQuestion], text: &str) -> Value {
     let lines: Vec<&str> = text.lines().collect();
@@ -394,7 +377,7 @@ impl CodexSession {
             if line.is_empty() {
                 continue;
             }
-            // Not JSON-RPC — skip silently, matching codex-app-server-runner.ts's read loop.
+            // Not JSON-RPC — skip silently.
             let Ok(msg) = serde_json::from_str::<Value>(line) else {
                 continue;
             };

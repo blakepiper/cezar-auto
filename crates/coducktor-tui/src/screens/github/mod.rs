@@ -1,8 +1,7 @@
-//! The GitHub screen (spec §8.9) — replaces `routes/github/github.tsx` (1.5k lines) +
-//! `hand-to-agent.tsx`. Three panes: the Issues/Pull-requests tab strip, the item list,
+//! The GitHub screen: Issues and Pull Requests, item details, and the hand-to-agent action.
+//! Three panes: the Issues/Pull-requests tab strip, the item list,
 //! and the detail (title, labels, markdown body, comment/timeline, check rollup, the
-//! hand-to-agent card). PR detail adds a Changes tab (the A9 diff engine over
-//! `/github/prs/:number/changes`) and a Merge action with its confirm dialog.
+//! hand-to-agent card). PR detail adds a Changes tab and a Merge action with its confirm dialog.
 //!
 //! Every surface degrades per the `{available, reason}` contract — the aggregate read, the
 //! comments read, the merge gate and the changes read each render their reason verbatim
@@ -26,7 +25,7 @@ use crate::input::hitmap::{GithubAction, HitAction};
 use crate::markdown::RenderCache;
 use crate::theme::Theme;
 
-/// The web's `MAX_CHAIN_STEPS` — a skills-as-chain hand-off carries at most 8 steps.
+/// A skills-as-chain hand-off carries at most 8 steps.
 const MAX_CHAIN_STEPS: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,7 +66,7 @@ pub struct GithubUi {
     pub merge_method: GithubMergeMethod,
     pub queued: Option<String>,
 
-    // Hand-to-agent pickers (spec §8.9 "Hand this to the agent").
+    // Hand-to-agent pickers.
     pub workflows: Vec<WorkflowDef>,
     pub skills: Vec<Skill>,
     pub picked_workflow: Option<usize>,
@@ -144,9 +143,8 @@ fn checks_glyph(item: &GithubItem) -> Option<&str> {
     })
 }
 
-/// `githubTaskRef` (`web/src/lib/github-task.ts`, #524): the item's identity — verb, `#N`,
-/// title, URL — with no body quoted. The wording is load-bearing: the server's task-ref
-/// regexes recover the run's PR/issue attribution from it verbatim.
+/// Build the item's task reference — verb, `#N`, title, and URL — with no body quoted. The
+/// wording is load-bearing because task-marker parsing recovers PR/issue attribution from it.
 pub fn github_task_ref(item: &GithubItem) -> String {
     let verb = match item.kind {
         coducktor_contract::GithubItemKind::Pr => "Address GitHub pull request",
@@ -155,8 +153,7 @@ pub fn github_task_ref(item: &GithubItem) -> String {
     format!("{verb} #{}: {}\n\n{}", item.number, item.title, item.url)
 }
 
-/// `skillChainSteps` (`web/src/lib/github-task.ts`): one `{{task}}` step per skill, ids
-/// deduped the way the legacy builder deduped them, capped at `MAX_CHAIN_STEPS`.
+/// Build one `{{task}}` step per skill, deduplicating ids and capping at `MAX_CHAIN_STEPS`.
 pub fn skill_chain_steps(names: &[String]) -> Vec<WorkflowStepDef> {
     let mut steps: Vec<WorkflowStepDef> = Vec::new();
     for name in names.iter().take(MAX_CHAIN_STEPS) {
@@ -183,7 +180,7 @@ pub fn skill_chain_steps(names: &[String]) -> Vec<WorkflowStepDef> {
     steps
 }
 
-/// The `POST /runs` body for one hand-off (the web's `githubRunBody` three-way rule).
+/// The run request for one hand-off, including the selected GitHub task context.
 fn handoff_run_body(ui: &GithubUi, item: &GithubItem) -> CreateRunInput {
     let task = github_task_ref(item);
     let skill_names: Vec<String> = ui
@@ -877,8 +874,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             app.pending.push(PendingAction::LoadGithub { project });
             true
         }
-        // External open (spec §6.3, A12): a GitHub URL opens in the OS browser exactly
-        // like the web app's own plain `<a target="_blank">` — no server round-trip.
+        // External open: a GitHub URL opens in the OS browser without a run round-trip.
         KeyCode::Char('o') => {
             if let Some(url) = items(&app.github_ui)
                 .get(app.github_ui.list_selected)
@@ -908,7 +904,7 @@ fn handle_skill_picker_key(app: &mut App, key: KeyEvent) -> bool {
         }
         KeyCode::Char(' ') => {
             // Toggle the first filtered skill (the picker list is short; cycling with
-            // j/k + space is the full affordance the web's checkbox list has).
+            // j/k + space is the full affordance for this picker.
             let first = app
                 .github_ui
                 .skills

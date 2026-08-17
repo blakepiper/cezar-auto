@@ -1,14 +1,12 @@
-//! The first, backend-neutral RunManager foundation.
+//! Backend-neutral run management.
 //!
-//! This is the stateful half that B2 deliberately left for B6. It keeps a project-local map of
-//! [`RunRecord`]s in front of the existing `runs.json` and NDJSON primitives, so lifecycle code can
-//! update a record, publish the update to in-process observers, and know that the durable file was
-//! written before the call returns. It does not start a process, know about HTTP/TUI, or depend on
-//! any runner implementation.
+//! The manager keeps a project-local map of [`RunRecord`] values in front of the `runs.json` and
+//! NDJSON primitives, publishes updates to in-process observers, and ensures durable state is
+//! written before the call returns. It does not know about the TUI or any concrete runner.
 //!
 //! The queue, marker, review, account-hold, and prompt helpers below are intentionally pure. They
 //! are the small decisions the eventual session/lifecycle modules can share without recreating
-//! the TypeScript `RunManager`'s rules in each caller.
+//! the run lifecycle rules in each caller.
 
 pub mod auto_resume;
 pub mod context_refresh;
@@ -252,7 +250,7 @@ impl QueueState {
     }
 
     /// Move one queued id into the starting set. The set covers the period before a session has
-    /// registered as active, matching the TypeScript pump's slot accounting.
+    /// registered as active, keeping queue accounting explicit during startup.
     pub fn take_next(&mut self) -> Option<String> {
         let run_id = self.queue.pop_front()?;
         self.starting.insert(run_id.clone());
@@ -309,8 +307,8 @@ pub fn fifo_run_ids(runs: &[RunRecord]) -> Vec<String> {
     queued.into_iter().map(|run| run.id.clone()).collect()
 }
 
-/// Count slots using the TypeScript `busySlots` rule: ordinary waiting runs do not hold a slot,
-/// and only the configured number of monitoring sessions receive that same exemption.
+/// Count occupied slots: ordinary waiting runs do not hold a slot, and only the configured number
+/// of monitoring sessions receive that same exemption.
 pub fn busy_slots(
     active: usize,
     starting: usize,
@@ -474,10 +472,8 @@ impl ContinueResult {
 /// `allowed_tools`, `system_prompt`, …) — those fields either already had a single source of
 /// truth available at this call site (the workflow step, the run record) with nowhere else that
 /// needed them, so they ride along here, or (`images`, `additional_directories`, `timeout_ms`)
-/// have no source at all yet in this crate (no worktree orchestration, no handoff-directory
-/// wiring) and are a concrete `SessionFactory`'s job to default sensibly (B10) until a later step
-/// gives them a real home. Extend this struct, don't invent a second out-of-band lookup, the day
-/// `RunManager` gains something a factory needs that only it can see.
+/// have no source at this layer and are a concrete `SessionFactory`'s job to default sensibly.
+/// Extend this struct when a factory needs data that only the run manager can see.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRequest {
     pub run_id: String,
@@ -487,27 +483,20 @@ pub struct SessionRequest {
     pub model: Option<String>,
     pub session_id: Option<String>,
     pub continuation: bool,
-    /// The directory the agent should run in. Always the repo root today — no step here ever
-    /// creates a git worktree yet (`RunRecord.worktree` is recorded as an intent but nothing
-    /// acts on it), so there is no isolated per-run checkout to point at instead (B10 scope
-    /// note; worktree orchestration is unclaimed future work).
+    /// The directory the agent should run in. The current manager passes the configured
+    /// repository root; worktree selection is handled by higher-level orchestration.
     pub cwd: PathBuf,
     /// From `step.allowed_tools`, falling back to `workflows::types::DEFAULT_ALLOWED_TOOLS`
-    /// exactly as `run.ts`'s own `step.allowedTools ?? DEFAULT_ALLOWED_TOOLS` does.
+    /// using the workflow's default allowed tools when the step omits them.
     pub allowed_tools: Vec<String>,
     /// From `step.bash_allowlist`, verbatim (empty when unset).
     pub bash_allowlist: Vec<String>,
-    /// From `RunRecord.system_prompt`, verbatim. `run.ts`'s own `composeSystemPrompt` also folds
-    /// in a skill body and the handoff/todos contract instructions — neither is threaded through
-    /// here yet (skills execution and the handoff loop are not wired into this crate's
-    /// `RunManager` today), so a factory sees only the run-level override, not the full TS
-    /// composition.
+    /// From `RunRecord.system_prompt`, verbatim. Skill and handoff instructions are assembled by
+    /// the caller that owns those features.
     pub system_prompt: Option<String>,
     /// From `RunRecord.reasoning_effort`, mapped from the `auto`-inclusive contract enum to the
     /// concrete one a backend spawn actually takes (`Auto` becomes `None`, letting the backend
-    /// use its own default) — `run.ts`'s own `resolveReasoningEffort` additionally inspects the
-    /// task/prompt text to pick a level for `auto`; that heuristic is not ported here, so `auto`
-    /// simply defers to the backend's default rather than being resolved to a concrete level.
+    /// use its own default).
     pub reasoning_effort: Option<ConcreteReasoningEffort>,
 }
 
@@ -575,7 +564,7 @@ pub trait AgentSession: Send {
     }
 }
 
-/// Factory seam for session creation. It is injected by the CLI/server integration layer or by a
+/// Factory seam for session creation. It is injected by the CLI/engine integration layer or by a
 /// deterministic test fake; no backend-specific runner type crosses this boundary.
 pub trait SessionFactory: Send {
     fn open(&mut self, request: SessionRequest) -> Result<Box<dyn AgentSession + Send>, String>;
@@ -642,7 +631,7 @@ struct RuntimeActive {
     auto_continues: u32,
 }
 
-/// A stateful, synchronous facade over the B2 file layer.
+/// A stateful, synchronous facade over the durable run files.
 pub struct RunManager {
     data_dir: PathBuf,
     runs: BTreeMap<String, RunRecord>,
@@ -669,8 +658,7 @@ pub struct RunManager {
 }
 
 impl RunManager {
-    /// Open a live manager. Live records are retained for the future B6 recovery path; the
-    /// manager itself does not execute recovery or start a backend yet.
+    /// Open a live manager. Active records are retained so callers can reconcile or resume them.
     pub fn open(data_dir: impl Into<PathBuf>) -> Self {
         Self::open_with_keep_live(data_dir, true)
     }
@@ -791,9 +779,7 @@ impl RunManager {
             .collect()
     }
 
-    /// Remove a run and its append-only event log. The server uses this only after checking the
-    /// run is not active; keeping the deletion here makes the persistence boundary explicit and
-    /// gives the future in-process engine the same operation without reimplementing file cleanup.
+    /// Remove a run and its append-only event log. Callers must check that the run is not active.
     pub fn remove_run(&mut self, run_id: &str) -> io::Result<bool> {
         let Some(run) = self.runs.remove(run_id) else {
             return Ok(false);
@@ -959,8 +945,7 @@ impl RunManager {
     }
 
     /// Start up to the three built-in variants in one queue pass. Variant B/C receive the same
-    /// fixed diversification hints as the TypeScript manager; the runtime still treats them as
-    /// ordinary queued jobs.
+    /// fixed diversification hints while the runtime still treats them as ordinary queued jobs.
     pub fn start_variants(
         &mut self,
         workflow: &WorkflowDef,
@@ -1057,8 +1042,7 @@ impl RunManager {
         Ok(true)
     }
 
-    /// Update a step and recompute all run-level usage/cost aggregates exactly as the TypeScript
-    /// `RunStore.updateStep` does.
+    /// Update a step and recompute all run-level usage and cost aggregates.
     pub fn update_step(
         &mut self,
         run_id: &str,
@@ -1261,7 +1245,7 @@ impl RunManager {
     /// is what makes `session.turn()`'s event-sink parameter meaningful: without it, only the
     /// aggregated [`SessionReport::turn_text`] would exist, once, after the turn already ended.
     ///
-    /// Mirrors `run.ts`'s `onEvent` handler: a `text`-typed event is marker-stripped per chunk
+    /// A `text`-typed event is marker-stripped per chunk
     /// (so `DUCK:DONE`/`DUCK:MONITORING`/task markers never flash in the live transcript, matching
     /// [`Self::apply_session_markers`]'s aggregate-side detection) and dropped if that empties it;
     /// every other event type passes through unchanged.
@@ -1291,7 +1275,7 @@ impl RunManager {
         }
     }
 
-    /// Read the raw event history through the shared B2 reader.
+    /// Read the raw event history through the shared event reader.
     pub fn read_events(&self, run_id: &str) -> Vec<RunEvent> {
         events::read_events(&events::events_path(&self.data_dir, run_id))
     }
@@ -1685,7 +1669,7 @@ impl RunManager {
     }
 
     /// Drain queued jobs while an injected runtime slot is available. The method is synchronous on
-    /// purpose: a real server can call it from its scheduler, while unit tests can observe every
+    /// purpose: the engine can call it from its scheduler, while unit tests can observe every
     /// transition without sleeps or a process-wide executor.
     pub fn pump(&mut self) -> io::Result<()> {
         loop {
@@ -2893,7 +2877,7 @@ impl RunManager {
     }
 
     /// Apply parsed agent-owned PR/issue markers to a record. URL candidate discovery remains a
-    /// separate B6/session concern; this method preserves the authoritative marker fields and
+    /// separate session concern; this method preserves the authoritative marker fields and
     /// resolves any candidate set already present on the record.
     pub fn apply_marker_refs(
         &mut self,
@@ -2966,9 +2950,7 @@ impl RunManager {
     }
 }
 
-/// `Auto` has no single concrete level here (unlike `run.ts`'s `resolveReasoningEffort`, this
-/// crate does not inspect the task/prompt text to pick one) — `None` lets the backend fall back
-/// to its own default, same as an unset override always has.
+/// `Auto` has no single concrete level here; `None` lets the backend fall back to its own default.
 fn concrete_reasoning_effort(effort: ReasoningEffort) -> Option<ConcreteReasoningEffort> {
     match effort {
         ReasoningEffort::Auto => None,
@@ -3257,7 +3239,7 @@ fn task_mentions_number(task: &str, number: i64) -> bool {
         .any(|candidate| candidate == number)
 }
 
-/// Apply the marker title normalization used by the TypeScript namer contract.
+/// Apply the marker title normalization used for task references.
 pub fn post_validate_marker_title(title: &str, ref_number: Option<i64>) -> Option<String> {
     let mut normalized = title
         .trim()
@@ -3694,7 +3676,7 @@ mod tests {
     /// Emits the outcome's raw `turn_text` as one `text` event — a real backend would call
     /// `on_event` per chunk as its process streams; the fake collapses that to a single call,
     /// which is enough to exercise `event_sink`'s per-chunk marker stripping (the sink, not the
-    /// fake, is what strips it) without every B6 test needing to script a whole fake stream.
+    /// fake, is what strips it) without every test needing to script a whole fake stream.
     fn emit_fake_text(
         outcome: &SessionOutcome,
         on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
@@ -3973,7 +3955,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let (factory, requests) = fake_factory(vec![completed_session("session-1")]);
         // `for_repo` (not `with_session_factory`'s raw-`data_dir` shortcut) so `repo_root()`
-        // round-trips back to `dir.path()` — this is exactly the production path (§B10).
+        // round-trips back to `dir.path()`, matching the production path.
         let mut manager = RunManager::for_repo(dir.path());
         manager.set_session_factory(factory);
         let mut step = agent_workflow_step("implement");

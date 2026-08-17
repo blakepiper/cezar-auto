@@ -1,4 +1,4 @@
-//! Mirrors the ref-safety and task-branch readers from the former git layer.
+//! Ref-safety and task-branch readers.
 
 use std::sync::LazyLock;
 
@@ -15,7 +15,7 @@ pub fn is_safe_git_ref(ref_: &str) -> bool {
     !ref_.is_empty() && !ref_.starts_with('-')
 }
 
-// DUAL-READ SHIM (spec §2.2.2): task branches written after the rename use `duck/`, while
+// Task branches written with the current name use `duck/`, while
 // existing repositories may still contain the legacy prefix. Writers never call this helper;
 // readers use it so old worktrees remain discoverable.
 static TASK_BRANCH_RE: LazyLock<Regex> =

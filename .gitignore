@@ -1,33 +1,18 @@
-node_modules/
-dist/
 target/
-*.tsbuildinfo
 .idea
 
-# Build artifact: the one README lives at the repo root and is copied into the published
-# package by packages/cezar/scripts/sync-readme.mjs. Never edit the copy.
-/packages/cezar/README.md
+# Coducktor runtime state in this repo (runs, worktrees, and config).
+.ai/coducktor/
 
-# cezar runtime state in this repo (runs, worktrees, launch-key)
+# Legacy state is retained only long enough for the startup migration to move it.
 .ai/cezar/
 
-# locally installed agent skills (per-machine installs, not repo content)
+# Locally installed agent skills (per-machine installs, not repo content).
 .agents/
 skills-lock.json
 
-# agent-pipeline scratch state (worktrees, per-run QA artifacts, test-env working files)
-.ai/tmp/
-.ai/qa/artifacts_*/
-.ai/qa/test-env.json
-.ai/qa/test-env.lock/
-# Any app log an agent parks here, not just the generated test-env ones — a narrower
-# `test-env-*.log` let a hand-named boot log get swept into a commit by the autosave.
-.ai/qa/*.log
-.ai/qa/.build-cache
-.ai/qa/cez-home/
-
-# local symlink into .agents/skills
+# Local symlink into .agents/skills.
 .claude/skills
 
-# mock-agent output from dry-run e2e (scripts/mock-claude.mjs appends here)
+# Mock-agent output from local dry-run experiments.
 /notes.md

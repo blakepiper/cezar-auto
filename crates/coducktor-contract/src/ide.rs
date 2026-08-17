@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Mirrors `packages/contract/src/ide.ts::IdeDirectoryQuery`.
+/// `IdeDirectoryQuery` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IdeDirectoryQuery {
@@ -8,14 +8,14 @@ pub struct IdeDirectoryQuery {
     pub path: Option<String>,
 }
 
-/// Mirrors `packages/contract/src/ide.ts::IdeFileQuery`.
+/// `IdeFileQuery` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IdeFileQuery {
     pub path: String,
 }
 
-/// Mirrors `packages/contract/src/ide.ts::IdeFileInput`.
+/// `IdeFileInput` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IdeFileInput {
@@ -23,7 +23,7 @@ pub struct IdeFileInput {
     pub content: String,
 }
 
-/// Mirrors `packages/contract/src/ide.ts::IdeEntry`.
+/// `IdeEntry` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IdeEntry {
@@ -43,7 +43,7 @@ pub enum IdeEntryType {
     File,
 }
 
-/// Mirrors `packages/contract/src/ide.ts::IdeDirectoryResponse`.
+/// `IdeDirectoryResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IdeDirectoryResponse {
@@ -52,7 +52,7 @@ pub struct IdeDirectoryResponse {
     pub truncated: bool,
 }
 
-/// Mirrors `packages/contract/src/ide.ts::IdeFileResponse`.
+/// `IdeFileResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IdeFileResponse {

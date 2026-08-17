@@ -1,5 +1,4 @@
-//! `AgentSession` over pi's documented RPC mode. Ported from
-//! `packages/coducktor/src/core/pi-runner.ts`.
+//! `AgentSession` over pi's documented RPC mode.
 //!
 //! Contract: <https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/rpc.md>.
 //! pi has its own command/event vocabulary (not claude stream-json, not codex's JSON-RPC
@@ -7,11 +6,10 @@
 //! and there is no per-tool prefix-allowlist syntax the way claude's `Bash(<prefix>:*)` has — a
 //! `bash_allowlist` fails the whole `Bash` tool closed rather than narrowing it (`pi_tools`).
 //!
-//! # Architecture notes vs. the TS source
+//! # Architecture notes
 //!
-//! Same turn-scoped adaptation as claude (B9a.2b) — see that module's doc for the general shape:
-//! `pi-runner.ts`'s single `readNdjson(child.stdout)` loop spans the WHOLE session, with turn
-//! boundaries visible only through the live `onEvent`/`agent_settled` frame; here,
+//! The session reads one live channel for the whole process, with turn boundaries visible through
+//! `agent_settled` frames; here,
 //! [`PiSession::read_until_turn_end`] reads the SAME live channel but returns as soon as one
 //! turn's `agent_settled` arrives, exactly like `ClaudeSession::read_until_turn_end` returns on a
 //! `"result"` frame. [`open_pi_session`] writes the `get_state` probe and the opening prompt
@@ -57,7 +55,7 @@ use crate::usage::{self, RawUsage};
 use crate::wire::{as_nonempty_str, as_record};
 
 /// Where to find the pi binary. Production wiring resolves `program`/`prefix_args` from
-/// `DUCK_PI_BIN`/`DUCK_DRY_RUN` (that resolution is `coducktor-server`'s job, not this crate's);
+/// `DUCK_PI_BIN`/`DUCK_DRY_RUN` are resolved by the session factory;
 /// tests point `program` at `node` with `prefix_args: vec![mock_script_path]`.
 #[derive(Debug, Clone)]
 pub struct PiSpawnConfig {
@@ -97,7 +95,7 @@ fn wrap_spawn_error(error: &io::Error, program: &str) -> String {
 pub struct PiSession {
     process: ChildProcess,
     session_id: Option<String>,
-    /// Mirrors `pi-runner.ts`'s `open`: false once `finish()`/`cancel()` has run.
+    /// Whether stdin is still open for this session.
     open: bool,
     /// 0 disables the wall-clock kill switch entirely (interactive sessions).
     timeout_ms: u64,
@@ -147,7 +145,7 @@ pub fn open_pi_session(
     Ok(session)
 }
 
-/// Ported from `buildPiArgs`.
+/// Build the arguments for a Pi RPC session.
 pub fn build_pi_args(spec: &AgentRunSpec) -> Vec<String> {
     let mut args = vec!["--mode".to_owned(), "rpc".to_owned()];
     if let Some(session_id) = &spec.session_id {
@@ -193,7 +191,7 @@ fn pi_tool_name(tool: &str) -> String {
     }
 }
 
-/// Ported from `piTools`. pi can allow/deny the whole bash tool but has no command-prefix
+/// Build Pi's tool list. Pi can allow or deny the whole Bash tool but has no command-prefix
 /// equivalent — fail closed when a workflow requests that narrower mode.
 fn pi_tools(tools: &[String], bash_allowlist: &[String]) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
@@ -210,7 +208,7 @@ fn pi_tools(tools: &[String], bash_allowlist: &[String]) -> Vec<String> {
     out
 }
 
-/// Ported from `toPiPrompt`.
+/// Convert prompt content to Pi's text and image payloads.
 fn to_pi_prompt(content: &[ContentBlock]) -> (String, Vec<Value>) {
     let mut text_parts = Vec::new();
     let mut images = Vec::new();
@@ -227,7 +225,7 @@ fn to_pi_prompt(content: &[ContentBlock]) -> (String, Vec<Value>) {
     (text_parts.join("\n"), images)
 }
 
-/// Ported from `usageValues`: `undefined` only when `value` isn't a record at all.
+/// Read usage and cost values when the payload is a record.
 fn usage_values(value: Option<&Value>) -> Option<(f64, f64)> {
     let record = as_record(value?)?;
     let raw = RawUsage {
@@ -246,7 +244,7 @@ fn usage_values(value: Option<&Value>) -> Option<(f64, f64)> {
     Some((weighted, cost))
 }
 
-/// Ported from the local `contentText` helper in `pi-runner.ts`.
+/// Extract text from a Pi content payload.
 fn content_text(value: Option<&Value>) -> Option<String> {
     match value {
         Some(Value::String(text)) => Some(text.clone()),
@@ -276,7 +274,7 @@ struct PiImage {
     data: String,
 }
 
-/// Ported from `emitImages`. pi's tool-result image shape (`data`/`mimeType` directly on the
+/// Extract Pi tool-result images. Pi's image shape (`data`/`mimeType` directly on the
 /// part) is distinct from claude's Anthropic-shaped `source.media_type`/`source.data`.
 fn tool_result_images(value: Option<&Value>) -> Vec<PiImage> {
     let Some(Value::Array(parts)) = value else {
@@ -299,7 +297,7 @@ fn tool_result_images(value: Option<&Value>) -> Vec<PiImage> {
         .collect()
 }
 
-/// Ported from `rpcError`.
+/// Extract a useful message from a failed Pi RPC record.
 fn rpc_error_message(record: &Map<String, Value>) -> String {
     if let Some(error) = record.get("error").and_then(as_record)
         && let Some(message) = as_nonempty_str(error.get("message"))
@@ -660,7 +658,7 @@ mod tests {
         }
     }
 
-    // ---- pure argv-building tests (mirrors pi-runner.test.ts's "pi RPC argv" block) -------
+    // ---- pure argv-building tests ---------------------------------------------------------
 
     #[test]
     fn build_pi_args_passes_the_selected_thinking_level() {

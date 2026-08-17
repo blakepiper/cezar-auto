@@ -7,7 +7,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::compat::ExtraFields;
 use crate::health::{Runner, RunnerSelection};
 
-/// Mirrors `packages/contract/src/workspace.ts::WorkspaceConfigResponse`.
+/// `WorkspaceConfigResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceConfigResponse {
@@ -85,7 +85,7 @@ impl<'de> Deserialize<'de> for InheritedAutonomous {
     }
 }
 
-/// The workspace resource limits from `packages/contract/src/workspace.ts`.
+/// The workspace resource limits.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceResources {
@@ -115,7 +115,7 @@ pub struct QuotaRouting {
     pub unknown_usage_policy: UnknownUsagePolicy,
 }
 
-/// Mirrors the unknown-usage policy enum from `packages/contract/src/workspace.ts`.
+/// The unknown-usage policy enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UnknownUsagePolicy {
@@ -133,7 +133,7 @@ pub struct AgentDefaults {
     pub models: Option<RunnerModels>,
 }
 
-/// Mirrors `packages/contract/src/workspace.ts::SetWorkspaceConfigInput`.
+/// `SetWorkspaceConfigInput` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SetWorkspaceConfigInput {
@@ -209,7 +209,7 @@ pub struct WorkspaceResourcesPatch {
     pub worktree_retention_default: Option<u64>,
 }
 
-/// Mirrors `packages/contract/src/workspace.ts::ProviderUsageSnapshot`.
+/// `ProviderUsageSnapshot` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderUsageSnapshot {
@@ -224,7 +224,7 @@ pub struct ProviderUsageSnapshot {
     pub error: Option<ProviderUsageError>,
 }
 
-/// Provider quota health from `packages/contract/src/workspace.ts`.
+/// Provider quota health.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderUsageHealth {
@@ -265,7 +265,7 @@ pub struct ProviderUsageError {
     pub message: String,
 }
 
-/// Mirrors `packages/contract/src/workspace.ts::WorkspaceUsageResponse`.
+/// `WorkspaceUsageResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceUsageResponse {
     pub providers: Vec<ProviderUsageSnapshot>,
@@ -282,7 +282,7 @@ pub struct Appearance {
     pub width: Option<ReadingWidth>,
 }
 
-/// Appearance accent from `packages/contract/src/workspace.ts`.
+/// Appearance accent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Accent {
@@ -290,7 +290,7 @@ pub enum Accent {
     Violet,
 }
 
-/// Appearance density from `packages/contract/src/workspace.ts`.
+/// Appearance density.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Density {
@@ -299,7 +299,7 @@ pub enum Density {
     Ultra,
 }
 
-/// Appearance reading width from `packages/contract/src/workspace.ts`.
+/// Appearance reading width.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ReadingWidth {
@@ -307,7 +307,7 @@ pub enum ReadingWidth {
     Wide,
 }
 
-/// Mirrors `packages/contract/src/workspace.ts::TaskSource`.
+/// `TaskSource` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "source")]
 pub enum TaskSource {
@@ -346,7 +346,7 @@ pub struct PromptTemplate {
     pub skills: Option<Vec<String>>,
 }
 
-/// Mirrors `packages/contract/src/workspace.ts::UiState`.
+/// `UiState` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct UiState {
@@ -390,7 +390,7 @@ pub enum GithubView {
     Prs,
 }
 
-/// Mirrors `packages/contract/src/workspace.ts::WorkspaceLastLocation`.
+/// `WorkspaceLastLocation` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkspaceLastLocation {
@@ -433,7 +433,7 @@ pub struct NotificationsUiState {
     pub extra: ExtraFields,
 }
 
-/// Mirrors `packages/contract/src/workspace.ts::WorkspaceUiState`.
+/// `WorkspaceUiState` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceUiState {
@@ -456,7 +456,7 @@ pub struct WorkspaceUiState {
 /// The write-side workspace UI state uses the same open wire bag.
 pub type SetWorkspaceUiStateInput = WorkspaceUiState;
 
-/// Mirrors `packages/contract/src/workspace.ts::RunnerModels`.
+/// `RunnerModels` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct RunnerModels {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -469,7 +469,7 @@ pub struct RunnerModels {
     pub pi: Option<String>,
 }
 
-/// Mirrors `packages/contract/src/workspace.ts::ConfigResponse`.
+/// `ConfigResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigResponse {
@@ -488,7 +488,7 @@ pub struct ConfigResponse {
 /// The response to a config write has the same shape as `ConfigResponse`.
 pub type SetConfigResponse = ConfigResponse;
 
-/// Mirrors `packages/contract/src/workspace.ts::SetConfigInput`.
+/// `SetConfigInput` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SetConfigInput {
@@ -512,10 +512,10 @@ pub struct SetConfigInput {
     pub review_gate: Option<Option<bool>>,
 }
 
-/// The provider id alias from `packages/contract/src/workspace.ts`.
+/// The provider id alias.
 pub type ProviderId = Runner;
 
-/// Mirrors `packages/contract/src/workspace.ts::ProviderConnectionState`.
+/// `ProviderConnectionState` contract shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProviderConnectionState {
@@ -525,7 +525,7 @@ pub enum ProviderConnectionState {
     Unknown,
 }
 
-/// Mirrors `packages/contract/src/workspace.ts::ProviderStatus`.
+/// `ProviderStatus` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderStatus {
@@ -541,20 +541,20 @@ pub struct ProviderStatus {
     pub profile_id: Option<String>,
 }
 
-/// Mirrors `packages/contract/src/workspace.ts::ProviderStatusResponse`.
+/// `ProviderStatusResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderStatusResponse {
     pub providers: Vec<ProviderStatus>,
 }
 
-/// Mirrors the optional query accepted by `GET /api/v1/providers/status`.
+/// Optional provider-status refresh input.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ProviderStatusQuery {
     #[serde(default)]
     pub refresh: Option<String>,
 }
 
-/// Mirrors `packages/contract/src/workspace.ts::ProviderEnabledInput`.
+/// `ProviderEnabledInput` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderEnabledInput {
     pub enabled: bool,
@@ -567,7 +567,7 @@ pub struct ProviderRetryInput {
     pub auth_failure_id: String,
 }
 
-/// Mirrors `packages/contract/src/workspace.ts::ProviderConnectInput`.
+/// `ProviderConnectInput` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderConnectInput {
@@ -591,7 +591,7 @@ pub struct ProviderConnectAlreadyConnected {
     pub command: String,
 }
 
-/// Mirrors `packages/contract/src/workspace.ts::ProviderConnectResponse`.
+/// `ProviderConnectResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ProviderConnectResponse {
@@ -599,7 +599,7 @@ pub enum ProviderConnectResponse {
     Opened(ProviderConnectOpened),
 }
 
-/// Mirrors `packages/contract/src/workspace.ts::ModelDiscoveryRunner`.
+/// `ModelDiscoveryRunner` contract shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelDiscoveryRunner {
@@ -612,7 +612,7 @@ pub enum ModelDiscoveryRunner {
 pub const MODEL_DISCOVERY_RUNNERS: [ModelDiscoveryRunner; 2] =
     [ModelDiscoveryRunner::Codex, ModelDiscoveryRunner::OpenCode];
 
-/// The query accepted by `GET /api/v1/models`.
+/// The runner whose models should be discovered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelDiscoveryQuery {
     pub runner: ModelDiscoveryRunner,
@@ -623,7 +623,7 @@ pub fn runner_discovers_models(runner: Runner) -> bool {
     matches!(runner, Runner::Codex | Runner::OpenCode)
 }
 
-/// Mirrors `packages/contract/src/workspace.ts::RunnerModelOption`.
+/// `RunnerModelOption` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunnerModelOption {
@@ -634,7 +634,7 @@ pub struct RunnerModelOption {
     pub reasoning_efforts: Option<Vec<String>>,
 }
 
-/// Mirrors `packages/contract/src/workspace.ts::RunnerModelCatalogResponse`.
+/// `RunnerModelCatalogResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunnerModelCatalogResponse {
@@ -655,7 +655,7 @@ pub enum ModelCatalogSource {
     Unavailable,
 }
 
-/// Mirrors `packages/contract/src/workspace.ts::OpenTarget`.
+/// `OpenTarget` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenTarget {
     pub id: String,
@@ -664,19 +664,19 @@ pub struct OpenTarget {
     pub icon: Option<String>,
 }
 
-/// Mirrors `packages/contract/src/workspace.ts::OpenTargetsResponse`.
+/// `OpenTargetsResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenTargetsResponse {
     pub targets: Vec<OpenTarget>,
 }
 
-/// Mirrors `packages/contract/src/workspace.ts::OpenProjectInRequest`.
+/// `OpenProjectInRequest` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenProjectInRequest {
     pub target: String,
 }
 
-/// Mirrors `packages/contract/src/workspace.ts::OpenProjectInResponse`.
+/// `OpenProjectInResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenProjectInResponse {
     pub opened: bool,

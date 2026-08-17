@@ -1,6 +1,4 @@
-//! The repo git screen (spec §8.6) — the same Changes/Commits pattern as `task_git`, over the
-//! MAIN working tree instead of one run's worktree, plus a Branches tab. Replaces
-//! `packages/web/src/routes/repo-git/*`.
+//! The repo Git screen — Changes, Commits, and Branches over the main working tree.
 
 use coducktor_contract::{LogEntry, RepoCommitPayload, RepoResponse};
 use crossterm::event::{KeyCode, KeyEvent};
@@ -19,8 +17,8 @@ pub struct RepoGitUi {
     pub project: String,
     pub tab: RepoGitTab,
     pub repo: Option<RepoResponse>,
-    /// The MAIN working tree's structured diff (`GET /repo/changes`) — separate from `repo`
-    /// (`GET /repo`, which carries status/log/branches but no per-file patches).
+    /// The main working tree's structured diff, separate from repository status, log, and branch
+    /// metadata.
     pub repo_changes_files: Vec<coducktor_contract::ChangedFile>,
     pub diff_state: DiffViewState,
     pub diff_scroll: usize,

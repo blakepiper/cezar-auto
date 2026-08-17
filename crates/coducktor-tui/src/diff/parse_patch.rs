@@ -1,10 +1,9 @@
-//! Pure parsing + row building for the diff widget: one file's unified-diff section (the
-//! server's `ChangedFile.patch` — `diff --git` headers plus `@@` hunks) → hunks with per-side
+//! Pure parsing + row building for the diff widget: one file's unified-diff section (`diff --git`
+//! headers plus `@@` hunks) → hunks with per-side
 //! line numbers → renderable rows for the unified and split layouts, with word-level spans
 //! attached to paired del/add lines and context gaps materialized for expansion.
 //!
-//! Ports `packages/web/src/components/diff/parse-patch.ts` 1:1 — same algorithm, same row
-//! shapes. No terminal, no git library: this module only ever sees the patch text already on
+//! No terminal or Git library is needed: this module only sees patch text already on a
 //! `ChangedFile`.
 
 use std::collections::HashMap;
@@ -43,7 +42,7 @@ pub struct Hunk {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ParsedPatch {
     pub hunks: Vec<Hunk>,
-    /// The server capped the patch (`… (patch truncated)` marker) — tell the reader.
+    /// The patch source capped the patch (`… (patch truncated)` marker) — tell the reader.
     pub truncated: bool,
 }
 
@@ -509,12 +508,9 @@ mod tests {
         assert!(right.as_ref().unwrap().line.kind == LineKind::Add);
     }
 
-    /// Operationalizes A9's accept criterion — "a worktree diff renders identically in
-    /// content to `GET /runs/:id/diff`": that route and `ChangedFile.patch` (what this parser
-    /// consumes) are documented as the same unified-diff bytes (`server.ts`: "This file's
-    /// unified-diff section"). Reconstructing the hunk section from the parsed structure and
-    /// comparing it byte-for-byte against the original patch text is the strongest form of
-    /// that check at the parsing layer that owns content fidelity.
+    /// Ensure that parsing preserves the unified-diff hunk content byte-for-byte. Reconstructing
+    /// the hunk section from the parsed structure and comparing it with the original patch text
+    /// is the strongest fidelity check available at this parsing layer.
     #[test]
     fn hunks_round_trip_to_the_original_patch_bytes() {
         let hunk_only = &SAMPLE_PATCH[SAMPLE_PATCH.find("@@").unwrap()..];

@@ -2,10 +2,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::compat::ExtraFields;
 
-/// The fixed page size from `packages/contract/src/events.ts::RUN_HISTORY_PAGE_ITEMS`.
+/// The fixed page size.
 pub const RUN_HISTORY_PAGE_ITEMS: u64 = 100;
 
-/// Mirrors the open `RunEvent` envelope from `packages/contract/src/events.ts`.
+/// The open `RunEvent` envelope.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunEvent {
@@ -19,7 +19,7 @@ pub struct RunEvent {
     pub extra: ExtraFields,
 }
 
-/// Mirrors `packages/contract/src/events.ts::RunIdParam`.
+/// `RunIdParam` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunIdParam {
     pub id: String,
@@ -28,14 +28,14 @@ pub struct RunIdParam {
 /// A history cursor accepted by the history and event routes.
 pub type RunHistoryCursor = String;
 
-/// Mirrors `packages/contract/src/events.ts::RunHistoryQuery`.
+/// `RunHistoryQuery` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunHistoryQuery {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<RunHistoryCursor>,
 }
 
-/// Mirrors `packages/contract/src/events.ts::RunEventsQuery`.
+/// `RunEventsQuery` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunEventsQuery {
@@ -45,7 +45,7 @@ pub struct RunEventsQuery {
     pub after_seq: Option<f64>,
 }
 
-/// Mirrors the open history event envelope from `packages/contract/src/events.ts`.
+/// The open history event envelope.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunHistoryEvent {
@@ -59,7 +59,7 @@ pub struct RunHistoryEvent {
     pub extra: ExtraFields,
 }
 
-/// Mirrors `packages/contract/src/events.ts::RunHistoryPage`.
+/// `RunHistoryPage` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunHistoryPage {
@@ -74,7 +74,7 @@ pub struct RunHistoryPage {
     pub has_older: bool,
 }
 
-/// Mirrors `packages/contract/src/events.ts::RunHistoryContext`.
+/// `RunHistoryContext` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunHistoryContext {
@@ -82,7 +82,7 @@ pub struct RunHistoryContext {
     pub as_of_seq: u64,
 }
 
-/// Mirrors the checkout phase enum from `packages/contract/src/events.ts`.
+/// The checkout phase enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CheckoutPhase {
@@ -91,7 +91,7 @@ pub enum CheckoutPhase {
     Error,
 }
 
-/// Mirrors `packages/contract/src/events.ts::CheckoutProgressEvent`.
+/// `CheckoutProgressEvent` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckoutProgressEvent {

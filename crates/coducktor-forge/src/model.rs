@@ -6,9 +6,9 @@ use coducktor_contract::{
     ReferenceStatus, RunRecord,
 };
 
-/// The forge-driver seam used by the server and TUI integrations. GitHub is the first
-/// implementation; keeping these values outside the HTTP layer makes a later GitLab driver a
-/// local addition rather than a route-wide rewrite.
+/// The forge-driver seam used by the client and TUI integrations. GitHub is the first
+/// implementation; keeping these values outside transport details makes a later GitLab driver a
+/// local addition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ForgeKind {
     Github,
@@ -166,7 +166,7 @@ pub type GithubPrChanges = GithubPrChangesData;
 pub type CheckState = GithubCheckState;
 pub type PrCheck = GithubPrCheck;
 
-/// Common forge operations consumed by the server. Methods return owned values because the
+/// Common forge operations consumed by the client. Methods return owned values because the
 /// implementation may have filled them from a bounded cache or a subprocess response.
 pub trait ForgeDriver: Send + Sync {
     fn kind(&self) -> ForgeKind;

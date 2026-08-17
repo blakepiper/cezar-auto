@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::health::ForgeKind;
 
-/// Mirrors `packages/contract/src/projects.ts::ProjectListEntry`.
+/// `ProjectListEntry` contract shape.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectListEntry {
@@ -25,7 +25,7 @@ pub struct ProjectListEntry {
     pub tags: Option<Vec<String>>,
 }
 
-/// The project source discriminator from `packages/contract/src/projects.ts`.
+/// The project source discriminator.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProjectSource {
@@ -34,7 +34,7 @@ pub enum ProjectSource {
     Checkout,
 }
 
-/// The project health discriminator from `packages/contract/src/projects.ts`.
+/// The project health discriminator.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProjectStatus {
@@ -44,7 +44,7 @@ pub enum ProjectStatus {
     NotGit,
 }
 
-/// Mirrors `packages/contract/src/projects.ts::ProjectsResponse`.
+/// `ProjectsResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectsResponse {
@@ -53,14 +53,14 @@ pub struct ProjectsResponse {
     pub projects_dir: String,
 }
 
-/// Mirrors `packages/contract/src/projects.ts::RegisterProjectInput`.
+/// `RegisterProjectInput` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RegisterProjectInput {
     pub root: String,
 }
 
-/// Mirrors `packages/contract/src/projects.ts::RegisterProjectResponse`.
+/// `RegisterProjectResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RegisterProjectResponse {
@@ -69,7 +69,7 @@ pub struct RegisterProjectResponse {
     pub error: Option<String>,
 }
 
-/// Mirrors `packages/contract/src/projects.ts::RemoveProjectResponse`.
+/// `RemoveProjectResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoveProjectResponse {
@@ -77,7 +77,7 @@ pub struct RemoveProjectResponse {
     pub id: String,
 }
 
-/// Mirrors `packages/contract/src/projects.ts::UpdateProjectResponse`.
+/// `UpdateProjectResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateProjectResponse {
@@ -90,7 +90,7 @@ pub const PROJECT_TAG_MAX_LENGTH: usize = 32;
 /// The maximum number of tags on one project.
 pub const PROJECT_TAGS_MAX: usize = 20;
 
-/// Mirrors `packages/contract/src/projects.ts::UpdateProjectInput`.
+/// `UpdateProjectInput` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateProjectInput {
@@ -100,7 +100,7 @@ pub struct UpdateProjectInput {
     pub tags: Option<Option<Vec<String>>>,
 }
 
-/// Mirrors `packages/contract/src/projects.ts::CheckoutProjectInput`.
+/// `CheckoutProjectInput` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckoutProjectInput {

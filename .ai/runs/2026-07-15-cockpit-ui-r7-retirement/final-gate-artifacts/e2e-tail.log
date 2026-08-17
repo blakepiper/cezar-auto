@@ -1,8 +1,0 @@
-
-
- Test Files  3 failed | 19 passed (22)
-      Tests  5 failed | 149 passed (154)
-   Start at  15:14:15
-   Duration  118.40s (transform 194ms, setup 0ms, import 411ms, tests 116.26s, environment 1ms)
-
-TEST_E2E_STATUS=failed

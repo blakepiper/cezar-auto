@@ -1,16 +1,11 @@
-//! The thread reducer: folds one run's ordered event list into renderable turns. Ports
-//! `packages/web/src/routes/task-thread/thread-state.ts`'s protocol-v2 path (`item.*`,
+//! The thread reducer folds one run's ordered event list into renderable turns. It handles
+//! protocol-v2 events (`item.*`,
 //! `turn.*`, `plan.updated`, `ask.requested`) plus every v1 line that has no v2 counterpart
 //! (`user-message`, `note`/`lifecycle`, `error`, `image`, `check-output`,
 //! `provider-auth-required`).
 //!
-//! **Deliberate scope cut vs. the TS source:** the TS reducer also carries a v1 FALLBACK path
-//! (`text`/`tool-call`/`tool-result` item synthesis, cross-turn dedup against v2 twins, and a
-//! delta-reassembly repair for pre-coalescing codex/opencode recordings) that exists only to
-//! render transcripts recorded before the v2 UI-event mappers existed. Every runner this port
-//! talks to already emits v2 for every item, so that path is not ported here — a run with no
-//! v2 items for a turn simply shows nothing for that turn's items instead of a v1
-//! reconstruction. Revisit if the TUI needs to read genuinely pre-v2 history.
+//! Legacy v1 events without v2 equivalents remain supported where they are part of the durable
+//! event vocabulary; malformed events cost one event and never panic the reducer.
 //!
 //! Pure and total: called with the full event list, it must never panic on a malformed event —
 //! one bad event costs one event, never the fold.
@@ -494,9 +489,9 @@ pub fn reduce_thread(events: &[RunEvent], options: ThreadReduceOptions) -> Threa
             }
             // Pure engine control-flow / header material — never rendered in the body.
             "step-start" | "token-usage" | "cost" | "turn-end" | "done" | "session" => {}
-            // Legacy v1 item-ish fallback (`text`, `tool-call`, `tool-result`): deliberately
-            // not ported — see module doc. `session.started`, `usage.updated`, `permission.*`
-            // and anything future: header/telemetry material, not guessed at in the body.
+            // Legacy v1 item-ish fallback (`text`, `tool-call`, `tool-result`) and
+            // `session.started`, `usage.updated`, `permission.*`: header/telemetry material,
+            // not guessed at in the body.
             _ => {}
         }
     }

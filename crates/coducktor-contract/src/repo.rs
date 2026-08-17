@@ -3,14 +3,14 @@ use serde_json::Value;
 
 use crate::health::RepoInfo;
 
-/// Mirrors `packages/contract/src/repo.ts::StatusEntry`.
+/// `StatusEntry` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusEntry {
     pub status: String,
     pub path: String,
 }
 
-/// Mirrors `packages/contract/src/repo.ts::LogEntry`.
+/// `LogEntry` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogEntry {
     pub hash: String,
@@ -41,7 +41,7 @@ pub struct PresentRepoResponse {
     pub base_branch: Option<String>,
 }
 
-/// Mirrors `packages/contract/src/repo.ts::RepoResponse`.
+/// `RepoResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RepoResponse {
@@ -49,15 +49,14 @@ pub enum RepoResponse {
     Present(PresentRepoResponse),
 }
 
-/// Mirrors `packages/contract/src/repo.ts::RepoBranchResponse`.
+/// `RepoBranchResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoBranchResponse {
     pub branch: String,
     pub created: bool,
 }
 
-/// The `POST /repo/branch` request body (`repoBranchSchema` in `server.ts`) — inline on the TS
-/// side, typed here the same way every other write's body is.
+/// The request body for creating or checking out a repository branch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoBranchRequest {
     pub name: String,
@@ -65,7 +64,7 @@ pub struct RepoBranchRequest {
     pub from: Option<String>,
 }
 
-/// Mirrors the module-local diff-stat shape from `packages/contract/src/repo.ts`.
+/// The module-local diff-stat shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RepoDiffStat {
     pub adds: f64,
@@ -73,7 +72,7 @@ pub struct RepoDiffStat {
     pub files: f64,
 }
 
-/// Mirrors `packages/contract/src/repo.ts::ChangedFile`.
+/// `ChangedFile` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChangedFile {
@@ -89,7 +88,7 @@ pub struct ChangedFile {
     pub patch: String,
 }
 
-/// Changed-file status from `packages/contract/src/repo.ts`.
+/// Changed-file status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ChangedFileStatus {
@@ -100,7 +99,7 @@ pub enum ChangedFileStatus {
     Copied,
 }
 
-/// Mirrors `packages/contract/src/repo.ts::ChangesPayload`.
+/// `ChangesPayload` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChangesPayload {
@@ -118,7 +117,7 @@ pub struct RepointedHead {
     pub task_branch: String,
 }
 
-/// Mirrors `packages/contract/src/repo.ts::RepoCommitPayload`.
+/// `RepoCommitPayload` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoCommitPayload {
@@ -130,7 +129,7 @@ pub struct RepoCommitPayload {
     pub stat: RepoDiffStat,
 }
 
-/// Mirrors `packages/contract/src/repo.ts::WorktreeDirEntry`.
+/// `WorktreeDirEntry` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeDirEntry {
@@ -149,7 +148,7 @@ pub enum WorktreeEntryType {
     File,
 }
 
-/// Mirrors `packages/contract/src/repo.ts::WorktreeEntry`.
+/// `WorktreeEntry` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum WorktreeEntry {
@@ -181,7 +180,7 @@ pub enum WorktreeRunStatus {
     Cancelled,
 }
 
-/// Mirrors `packages/contract/src/repo.ts::WorktreeInfo`.
+/// `WorktreeInfo` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeInfo {
@@ -194,7 +193,7 @@ pub struct WorktreeInfo {
     pub reclaimable: bool,
 }
 
-/// Mirrors `packages/contract/src/repo.ts::WorktreesResponse`.
+/// `WorktreesResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreesResponse {
@@ -203,7 +202,7 @@ pub struct WorktreesResponse {
     pub keep: u64,
 }
 
-/// Mirrors `packages/contract/src/repo.ts::ReclaimWorktreesResponse`.
+/// `ReclaimWorktreesResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReclaimWorktreesResponse {
     pub reclaimed: Vec<String>,

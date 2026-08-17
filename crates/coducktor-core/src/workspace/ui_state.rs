@@ -1,8 +1,6 @@
-//! `~/.coducktor/ui-state.json` — global GUI state, the workspace twin of the per-repo
-//! `.ai/coducktor/ui-state.json`. Mirrors `packages/coducktor/src/workspace/ui-state.ts`.
-//! Cross-project prefs (appearance, notifications, curated skills) live here; per-project
-//! prefs stay in each repo's own file, and prefs that describe the BROWSER rather than
-//! the workspace stay in that browser's `localStorage`.
+//! `~/.coducktor/ui-state.json` — global UI state, the workspace twin of the per-repo
+//! `.ai/coducktor/ui-state.json`. Cross-project preferences live here; per-project preferences
+//! stay in each repository's own file.
 
 use std::fs;
 use std::io;
@@ -14,7 +12,7 @@ use super::config::atomic_write_json_sync;
 
 /// Read `~/.coducktor/ui-state.json` on demand — never cached, never throws. Missing,
 /// unreadable, malformed, or non-object all degrade to the empty bag. Deliberately NOT
-/// schema-validated on read (mirrors the TS source's own comment): a single malformed
+/// schema-validated on read: a single malformed
 /// pref must not discard the whole bag, and `WorkspaceUiState`'s fields are already all
 /// optional, so a partially-unparseable object still yields whatever fields DID parse.
 pub fn read_workspace_ui_state(path: &Path) -> WorkspaceUiState {
@@ -25,8 +23,7 @@ pub fn read_workspace_ui_state(path: &Path) -> WorkspaceUiState {
 }
 
 /// Read-modify-write for `~/.coducktor/ui-state.json`, written through the same atomic
-/// per-writer tmp+rename `0600` pattern as `workspace::config`'s writer. Mirrors
-/// `workspace/ui-state.ts::mergeWriteWorkspaceUiState`.
+/// per-writer tmp+rename `0600` pattern as `workspace::config`'s writer.
 ///
 /// `path` is resolved once by the caller for the same reason
 /// `workspace::config::merge_write_workspace_config` documents.

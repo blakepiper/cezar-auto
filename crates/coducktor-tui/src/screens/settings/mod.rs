@@ -1,20 +1,12 @@
-//! The Settings screen (spec §8.14) — replaces `routes/settings/*`. A registry-driven
+//! The Settings screen. A registry-driven
 //! nav over nine sections; four describe THIS project (Agents, Agent config, Worktrees,
 //! Prompt templates), five describe the user/machine (Accounts, Appearance, Notifications,
-//! Resources, Projects). Writes go through the same routes the web app uses
-//! (`/config`, `/ui-state`, `/workspace/config`, `/workspace/ui-state`,
-//! `/workspace/agent-profiles*`, `/agent-config/:id`), so the two clients stay
-//! interoperable while both exist (Phase A/B).
+//! Resources, Projects). Writes go through the in-process engine and durable workspace files.
 //!
-//! **Section list, per spec §8.14 verbatim**: the settings screen contains only the nine
-//! sections listed above. Terminal-only concerns such as keymaps and external-link safety
-//! stay in their owning screens or local configuration rather than becoming settings panels.
-//!
-//! **Deliberate scope cuts, documented like A8's:** the Theme control changes `app.theme`
-//! for the running session only, matching the web app's own comment in
-//! `packages/contract/src/workspace.ts` that theme "stays in localStorage — it is
-//! per-browser by design" — there is no shared server field for it to round-trip through.
-//! Provider usage graphs (`GET /workspace/usage`) are not rendered in Resources — only the
+//! The screen contains only the nine sections listed above. Terminal-only concerns such as
+//! keymaps and external-link safety stay in their owning screens or local configuration. The
+//! Theme control changes `app.theme` for the running session only.
+//! Provider usage graphs are not rendered in Resources — only the
 //! editable knobs are. Per-project account overrides are read-only here; the "Default
 //! account" rows write the WORKSPACE default (`projectId: None`) only, not a per-project
 //! pin. The Agent config file editor has no dirty-guard confirm (unlike the IDE's) — `Esc`

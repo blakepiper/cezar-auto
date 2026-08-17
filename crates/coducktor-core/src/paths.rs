@@ -1,6 +1,7 @@
-//! Mirrors `packages/coducktor/src/paths.ts` (deleted at B12). Every path the workspace layer
-//! touches goes through here so `DUCK_HOME` (see [`coducktor_home_dir`]) is resolved in
-//! exactly one place — do not re-derive `home_dir()` elsewhere.
+//! Centralized path resolution for Coducktor state and agent configuration.
+//!
+//! Every path the workspace layer touches goes through here so `DUCK_HOME` (see
+//! [`coducktor_home_dir`]) is resolved in exactly one place.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -39,18 +40,13 @@ pub fn real_home_dir(env: &dyn EnvSource) -> PathBuf {
     PathBuf::from(".")
 }
 
-/// Per-user coducktor home. Literal `~/.coducktor` on every platform — no XDG, no
-/// `%LOCALAPPDATA%` branch, mirroring `paths.ts::coducktorHomeDir`'s one rule.
+/// Per-user Coducktor home. Literal `~/.coducktor` on every platform — no XDG and no
+/// `%LOCALAPPDATA%` branch.
 ///
-/// `DUCK_HOME` (spec §2.2.1 decision 6) wins if set, else the real home directory. An
+/// `DUCK_HOME` wins if set, else the real home directory. An
 /// **empty** override falls back rather than resolving to a relative cwd path, matching the
 /// TS `env.DUCK_HOME || undefined` guard's own empty-string handling.
 ///
-/// B12 dropped the `DUCK_HOME` dual-read this function carried through the whole of Phase B —
-/// it existed only so the still-live Node server (`packages/coducktor`, which read `DUCK_HOME`
-/// and nothing else) and this crate resolved the SAME `~/.coducktor` while both implementations
-/// coexisted. `packages/coducktor` is deleted now, so there is no second reader left to stay in
-/// sync with.
 pub fn coducktor_home_dir(env: &dyn EnvSource) -> PathBuf {
     if let Some(duck_home) = non_empty(env.get("DUCK_HOME")) {
         return PathBuf::from(duck_home);
@@ -59,24 +55,21 @@ pub fn coducktor_home_dir(env: &dyn EnvSource) -> PathBuf {
 }
 
 /// Per-user workspace config: schema version, global defaults, and the project registry.
-/// Mirrors `paths.ts::workspaceConfigPath`.
 pub fn workspace_config_path(env: &dyn EnvSource) -> PathBuf {
     coducktor_home_dir(env).join("config.json")
 }
 
-/// Global GUI state — the workspace twin of the per-repo `.ai/coducktor/ui-state.json`.
-/// Mirrors `paths.ts::workspaceUiStatePath`.
+/// Global UI state — the workspace twin of the per-repo `.ai/coducktor/ui-state.json`.
 pub fn workspace_ui_state_path(env: &dyn EnvSource) -> PathBuf {
     coducktor_home_dir(env).join("ui-state.json")
 }
 
-/// Extra config dirs for a second login of the same agent CLI, plus which one each
-/// project uses. Mirrors `paths.ts::agentAccountsPath`.
+/// Extra config dirs for a second login of the same agent CLI, plus which one each project uses.
 pub fn agent_accounts_path(env: &dyn EnvSource) -> PathBuf {
     coducktor_home_dir(env).join("agent-accounts.json")
 }
 
-/// Expand a leading `~` to the user's home. Mirrors `paths.ts::expandTilde` — the
+/// Expand a leading `~` to the user's home — the
 /// workspace checkout root is stored as the user wrote it (a literal `~`), so every
 /// consumer that must touch the real directory expands it through this one helper.
 pub fn expand_tilde(path: &str, env: &dyn EnvSource) -> PathBuf {
@@ -89,7 +82,7 @@ pub fn expand_tilde(path: &str, env: &dyn EnvSource) -> PathBuf {
     }
 }
 
-/// Where each coding agent keeps its per-user config. Mirrors `paths.ts::agentHomePaths`.
+/// Where each coding agent keeps its per-user config.
 pub struct AgentHomePaths {
     pub claude: PathBuf,
     pub codex: PathBuf,
@@ -124,7 +117,7 @@ pub fn agent_home_paths(env: &dyn EnvSource) -> AgentHomePaths {
 }
 
 /// True when `path` is absolute on `windows` (posix otherwise) — the account routes' one
-/// path rule. Mirrors `workspace/agent-accounts.ts::isAbsoluteConfigDir`: a leading-`/`
+/// path rule: a leading-`/`
 /// test alone wrongly refuses real Windows paths (`C:\Users\me\...`) and UNC paths.
 pub fn is_absolute_config_dir(path: &str, windows: bool) -> bool {
     if windows {

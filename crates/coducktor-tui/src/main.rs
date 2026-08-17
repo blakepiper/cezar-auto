@@ -27,7 +27,7 @@ const FRAME_BUDGET: Duration = Duration::from_millis(33);
 async fn main() -> io::Result<()> {
     let cli = Cli::parse_args();
     // A bad `--repo` is a startup misconfiguration, not a runtime event — reject it
-    // before the alternate screen opens, same as a spawn failure (spec §7.7): the
+    // before the alternate screen opens: the
     // TUI never took the screen, so there is nothing to restore.
     if let Some(repo) = &cli.repo
         && !repo.is_dir()
@@ -39,7 +39,7 @@ async fn main() -> io::Result<()> {
     for message in run_migrations(Some(&repo_root), &ProcessEnv).messages {
         eprintln!("coducktor: {message}");
     }
-    // The non-interactive subcommands (B10) never open the alternate screen — they run
+    // The non-interactive subcommands never open the alternate screen — they run
     // straight in the caller's terminal, print to real stdout/stderr, and exit. Only
     // `None`/`Tui` fall through to the interactive cockpit below.
     match &cli.command {
@@ -238,13 +238,11 @@ fn apply_prime_snapshot(app: &mut App, snapshot: PrimeSnapshot) {
     }
 }
 
-/// Apply `--repo`/`--workflow`/`--model` (spec §10 A13) once the background bootstrap has loaded
+/// Apply `--repo`/`--workflow`/`--model` once the background bootstrap has loaded
 /// the project registry. `--repo` switches the active project — re-fetching its
 /// tasks and New Task data if it differs from the one `prime_app` already loaded —
-/// or leaves a clear notice if the directory isn't a registered project rather than
-/// silently staying put. `--workflow`/`--model` preselect the New Task screen,
-/// covering the same "hand a task to the agent from outside the TUI" use case the
-/// deleted browser-launch surface used to (spec §9.3 point 2).
+/// or leaves a clear notice if the directory isn't a registered project rather than silently
+/// staying put. `--workflow`/`--model` preselect the New Task screen.
 async fn apply_launch_args(engine: &dyn Engine, app: &mut App, cli: &Cli) {
     if let Some(repo) = &cli.repo {
         match cli::resolve_repo(&app.project_registry, repo) {
@@ -1086,8 +1084,8 @@ async fn load_settings(engine: &dyn Engine, app: &mut App, project: &str) {
     }
 }
 
-/// Every thread-mutating action re-fetches the run record so the header/actions/dock reflect
-/// the server's answer immediately, rather than waiting for the next workspace `run` frame.
+/// Every thread-mutating action re-fetches the run record so the header, actions, and dock reflect
+/// the current state immediately rather than waiting for the next workspace event.
 async fn refresh_thread_run(engine: &dyn Engine, app: &mut App, project: &str, id: &str) {
     if app.thread_ui.data.project != project || app.thread_ui.data.run_id != id {
         return;
@@ -1186,7 +1184,7 @@ fn backend_check_name(name: BackendCheckName) -> String {
     }
 }
 
-/// The currently open thread's live event stream (§8.4 A8) — opened when the route enters
+/// The currently open thread's live event stream — opened when the route enters
 /// `Route::Thread`, aborted the moment it leaves. Unlike the workspace listener (one for the
 /// whole session), this one is per-navigation.
 struct ThreadListener {
@@ -1310,7 +1308,7 @@ async fn run(
             coducktor_tui::notify::set_title(&coducktor_tui::notify::title_for(needs_you));
             last_needs_you = needs_you;
         }
-        // The IDE's `Ctrl+E` escape hatch (spec §8.8): main owns the terminal, so the
+        // The IDE's `Ctrl+E` escape hatch: main owns the terminal, so the
         // suspend → $EDITOR → resume dance lives here, not in the screen or the engine.
         if let Some(path) = app.take_editor_handoff() {
             run_editor_handoff(terminal, &path)?;
@@ -1345,10 +1343,8 @@ async fn run(
     Ok(())
 }
 
-/// Save or export the workflows draft. Both write `POST /workflows`; the export path is the
-/// same write answered with the file path it landed in (spec §8.13). The body honors the
-/// portable compact form: `skills:` when every step is a plain skill step, `steps:` otherwise
-/// (mirrors the server's own `skillStackOf`, spec 012 — a protected format property).
+/// Save or export the workflows draft. The export path returns the file path it wrote. The body
+/// uses the compact `skills:` form when every step is a plain skill step and `steps:` otherwise.
 async fn save_or_export_workflow(engine: &dyn Engine, app: &mut App, project: &str, export: bool) {
     let name = if app.workflows_ui.draft_name.trim().is_empty() {
         app.workflows_ui
@@ -1370,8 +1366,7 @@ async fn save_or_export_workflow(engine: &dyn Engine, app: &mut App, project: &s
         app.notice = Some("nothing to save — add steps first".to_owned());
         return;
     }
-    // The portable compact form is XOR with the full form (the server's schema: "provide
-    // either steps or skills, not both").
+    // The compact form is exclusive with the full form: provide either steps or skills, not both.
     let input = match screens::workflows::skill_stack_of(&steps) {
         Some(skills) => coducktor_contract::SaveWorkflowInput {
             name,
@@ -1412,9 +1407,9 @@ fn current_epoch_seconds() -> i64 {
 }
 
 /// Suspend the TUI (raw mode + alternate screen off), run `$VISUAL`/`$EDITOR`/`vi` on the
-/// file in the real terminal, then re-enter raw mode and the alternate screen. The
-/// supervised `coducktor serve` child keeps its piped stdout throughout, so nothing foreign
-/// reaches the terminal (one-terminal rule, §7.7).
+/// file in the real terminal, then re-enter raw mode and the alternate screen. The editor is
+/// the only foreground handoff; Coducktor has no service child whose output can leak into the
+/// terminal.
 fn run_editor_handoff(terminal: &mut AppTerminal, path: &str) -> io::Result<()> {
     use crossterm::cursor;
     use crossterm::event::EnableMouseCapture;

@@ -5,10 +5,10 @@ use serde::{Deserialize, Serialize};
 use crate::health::Runner;
 use crate::workspace::ProviderStatus;
 
-/// The reserved discovered-account id from `packages/contract/src/agent-profiles.ts`.
+/// The reserved discovered-account id.
 pub const DEFAULT_AGENT_ACCOUNT_ID: &str = "default";
 
-/// Mirrors `packages/contract/src/agent-profiles.ts::AgentAccountFile`.
+/// `AgentAccountFile` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentAccountFile {
     pub id: String,
@@ -17,7 +17,7 @@ pub struct AgentAccountFile {
     pub exists: bool,
 }
 
-/// Mirrors `packages/contract/src/agent-profiles.ts::AgentProfile`.
+/// `AgentProfile` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentProfile {
@@ -52,7 +52,7 @@ fn runner_name(runner: Runner) -> &'static str {
     }
 }
 
-/// Mirrors `packages/contract/src/agent-profiles.ts::AgentAccountSelection`.
+/// `AgentAccountSelection` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AgentAccountSelection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -65,7 +65,7 @@ pub struct AgentAccountSelection {
     pub pi: Option<String>,
 }
 
-/// Mirrors `packages/contract/src/agent-profiles.ts::AgentProfilesResponse`.
+/// `AgentProfilesResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentProfilesResponse {
@@ -76,7 +76,7 @@ pub struct AgentProfilesResponse {
     pub defaults: AgentAccountSelection,
 }
 
-/// Mirrors `packages/contract/src/agent-profiles.ts::SelectAgentProfileInput`.
+/// `SelectAgentProfileInput` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SelectAgentProfileInput {
@@ -85,14 +85,14 @@ pub struct SelectAgentProfileInput {
     pub profile_id: Option<String>,
 }
 
-/// Mirrors `packages/contract/src/agent-profiles.ts::AgentProfileSelectionsResponse`.
+/// `AgentProfileSelectionsResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentProfileSelectionsResponse {
     pub selections: BTreeMap<String, AgentAccountSelection>,
     pub defaults: AgentAccountSelection,
 }
 
-/// Mirrors `packages/contract/src/agent-profiles.ts::AgentAccountStatusResponse`.
+/// `AgentAccountStatusResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentAccountStatusResponse {
     pub status: ProviderStatus,
@@ -105,7 +105,7 @@ pub struct AgentAccountDetailField {
     pub value: String,
 }
 
-/// Mirrors `packages/contract/src/agent-profiles.ts::AgentAccountDetailsResponse`.
+/// `AgentAccountDetailsResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentAccountDetailsResponse {
     pub available: bool,
@@ -114,7 +114,7 @@ pub struct AgentAccountDetailsResponse {
     pub fields: Vec<AgentAccountDetailField>,
 }
 
-/// Mirrors `packages/contract/src/agent-profiles.ts::OpenAgentAccountFileInput`.
+/// `OpenAgentAccountFileInput` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenAgentAccountFileInput {
@@ -123,14 +123,14 @@ pub struct OpenAgentAccountFileInput {
     pub target: Option<String>,
 }
 
-/// Mirrors `packages/contract/src/agent-profiles.ts::OpenAgentAccountFileResponse`.
+/// `OpenAgentAccountFileResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenAgentAccountFileResponse {
     pub opened: bool,
     pub path: String,
 }
 
-/// Mirrors `packages/contract/src/agent-profiles.ts::CreateAgentProfileInput`.
+/// `CreateAgentProfileInput` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateAgentProfileInput {
@@ -140,13 +140,13 @@ pub struct CreateAgentProfileInput {
     pub config_dir: String,
 }
 
-/// Mirrors `packages/contract/src/agent-profiles.ts::AgentProfileResponse`.
+/// `AgentProfileResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentProfileResponse {
     pub profile: AgentProfile,
 }
 
-/// Mirrors `packages/contract/src/agent-profiles.ts::UpdateAgentProfileInput`.
+/// `UpdateAgentProfileInput` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateAgentProfileInput {
@@ -156,7 +156,7 @@ pub struct UpdateAgentProfileInput {
     pub config_dir: Option<String>,
 }
 
-/// Mirrors `packages/contract/src/agent-profiles.ts::RemoveAgentProfileResponse`.
+/// `RemoveAgentProfileResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoveAgentProfileResponse {
     pub removed: bool,

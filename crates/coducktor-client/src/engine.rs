@@ -86,55 +86,55 @@ pub trait Engine: Send + Sync {
     async fn models(&self, runner: Runner) -> Result<RunnerModelCatalogResponse, EngineError>;
     async fn github(&self, scope: &Scope) -> Result<GithubData, EngineError>;
 
-    // ---- GitHub detail reads (spec §8.9, A11) ----------------------------------------------
-    /// `GET /github/checks?prs=` — one glyph per PR number, from the server's cache.
+    // ---- GitHub detail reads ---------------------------------------------------------------
+    /// Return one status glyph per PR number.
     async fn github_checks(
         &self,
         scope: &Scope,
         prs: &[String],
     ) -> Result<GithubChecksData, EngineError>;
-    /// `GET /github/ref-status` — reference status (draft/review/checks/merged…) per PR/issue.
+    /// Return reference status (draft/review/checks/merged…) per PR or issue.
     async fn github_ref_status(
         &self,
         scope: &Scope,
         prs: &[String],
         issues: &[String],
     ) -> Result<GithubRefStatusData, EngineError>;
-    /// `GET /github/comments/:kind/:number` — the comment + timeline detail for one item.
+    /// Return comment and timeline detail for one GitHub item.
     async fn github_comments(
         &self,
         scope: &Scope,
         kind: &str,
         number: u64,
     ) -> Result<GithubCommentsData, EngineError>;
-    /// `GET /github/prs/:number/merge-state` — the PR merge gate, checks and eligibility.
+    /// Return the PR merge gate, checks, and eligibility.
     async fn github_pr_merge_state(
         &self,
         scope: &Scope,
         number: u64,
     ) -> Result<GithubPrMergeStateResponse, EngineError>;
-    /// `POST /github/prs/:number/merge` — merge with an explicit method + expected head sha.
+    /// Merge a PR with an explicit method and expected head SHA.
     async fn github_merge_pr(
         &self,
         scope: &Scope,
         number: u64,
         input: &GithubMergeInput,
     ) -> Result<GithubMergeResponse, EngineError>;
-    /// `GET /github/prs/:number/changes` — the PR's file diff (the Changes tab).
+    /// Return a PR's file diff for the Changes tab.
     async fn github_pr_changes(
         &self,
         scope: &Scope,
         number: u64,
     ) -> Result<GithubPrChangesData, EngineError>;
 
-    // ---- follow-up inbox (spec §8.12, A11) -------------------------------------------------
+    // ---- follow-up inbox -------------------------------------------------------------------
     async fn todos(&self, scope: &Scope) -> Result<Vec<TodoItem>, EngineError>;
     async fn delete_todo(&self, scope: &Scope, id: &str)
     -> Result<RemoveTodoResponse, EngineError>;
-    /// `POST /todos/:id/start` — no body: the server runs the todo's own suggested task.
+    /// Start the todo's suggested task.
     async fn start_todo(&self, scope: &Scope, id: &str) -> Result<StartTodoResponse, EngineError>;
 
-    // ---- workflow builder writes (spec §8.13, A11) -----------------------------------------
+    // ---- workflow builder writes -----------------------------------------------------------
     async fn save_workflow(
         &self,
         scope: &Scope,
@@ -155,7 +155,7 @@ pub trait Engine: Send + Sync {
     async fn put_ui_state(&self, scope: &Scope, state: &UiState) -> Result<UiState, EngineError>;
     async fn plan(&self, scope: &Scope, task: &str) -> Result<PlanResponse, EngineError>;
 
-    // ---- task thread (§8.4) ------------------------------------------------------------
+    // ---- task thread ----------------------------------------------------------------------
     async fn run_history(
         &self,
         scope: &Scope,
@@ -226,7 +226,7 @@ pub trait Engine: Send + Sync {
     async fn create_pr(&self, scope: &Scope, run_id: &str)
     -> Result<CreatePrResponse, EngineError>;
 
-    // ---- diff engine: task git, repo git, compare (§8.5–§8.7, A9) -----------------------
+    // ---- diff engine: task git, repo git, compare ------------------------------------------
     async fn run_diff_text(&self, scope: &Scope, run_id: &str) -> Result<String, EngineError>;
     async fn run_changes(&self, scope: &Scope, run_id: &str)
     -> Result<ChangesPayload, EngineError>;
@@ -265,16 +265,16 @@ pub trait Engine: Send + Sync {
         input: &PickVariantRequest,
     ) -> Result<PickVariantResponse, EngineError>;
 
-    // ---- IDE: project file browser + editor (spec §8.8, A10) ----------------------------
-    /// `GET /ide/tree` — one directory listing at the given project-relative path (`None` = root).
+    // ---- IDE: project file browser + editor ------------------------------------------------
+    /// Return one directory listing at the given project-relative path (`None` = root).
     async fn ide_tree(
         &self,
         scope: &Scope,
         path: Option<&str>,
     ) -> Result<IdeDirectoryResponse, EngineError>;
-    /// `GET /ide/file` — one file's content, capped at 1 MB by the server.
+    /// Return one file's content, capped at 1 MB.
     async fn ide_file(&self, scope: &Scope, path: &str) -> Result<IdeFileResponse, EngineError>;
-    /// `PUT /ide/file` — save `content` to `path`, returning the stored file's metadata.
+    /// Save `content` to `path`, returning the stored file's metadata.
     async fn ide_save(
         &self,
         scope: &Scope,
@@ -287,97 +287,96 @@ pub trait Engine: Send + Sync {
         run_id: &str,
     ) -> Result<CancelAutoResumeResponse, EngineError>;
 
-    // ---- Settings (spec §8.14, A12) ------------------------------------------------------
-    /// `PUT /workspace/config` — the global settings slice (Accounts defaults, Resources,
-    /// Projects' checkout root).
+    // ---- Settings --------------------------------------------------------------------------
+    /// Update the global settings slice (account defaults, resources, and project checkout root).
     async fn put_workspace_config(
         &self,
         input: &SetWorkspaceConfigInput,
     ) -> Result<WorkspaceConfigResponse, EngineError>;
-    /// `GET /workspace/ui-state` — the cross-project GUI state (Notifications, appearance).
+    /// Return cross-project UI state (notifications and appearance).
     async fn workspace_ui_state(&self) -> Result<WorkspaceUiState, EngineError>;
-    /// `PUT /workspace/ui-state` — shallow top-level merge, same semantics as `put_ui_state`.
+    /// Shallow-merge cross-project UI state.
     async fn put_workspace_ui_state(
         &self,
         input: &SetWorkspaceUiStateInput,
     ) -> Result<WorkspaceUiState, EngineError>;
-    /// `GET /agent-config` — the selected project's agent-owned config catalog.
+    /// Return the selected project's agent-owned config catalog.
     async fn agent_config(&self, scope: &Scope) -> Result<AgentConfigListing, EngineError>;
-    /// `GET /agent-config/:id` — one config file's raw contents.
+    /// Return one agent config file's raw contents.
     async fn agent_config_file(
         &self,
         scope: &Scope,
         id: &str,
     ) -> Result<AgentConfigFileContent, EngineError>;
-    /// `PUT /agent-config/:id` — save one config file.
+    /// Save one agent config file.
     async fn put_agent_config_file(
         &self,
         scope: &Scope,
         id: &str,
         input: &SetAgentConfigInput,
     ) -> Result<AgentConfigFileContent, EngineError>;
-    /// `POST /workspace/agent-profiles` — register an extra config dir as an account.
+    /// Register an extra config directory as an account.
     async fn create_agent_profile(
         &self,
         input: &CreateAgentProfileInput,
     ) -> Result<AgentProfileResponse, EngineError>;
-    /// `PATCH /workspace/agent-profiles/:id` — rename an account or repoint its folder.
+    /// Rename an account or repoint its folder.
     async fn update_agent_profile(
         &self,
         id: &str,
         input: &UpdateAgentProfileInput,
     ) -> Result<AgentProfileResponse, EngineError>;
-    /// `DELETE /workspace/agent-profiles/:id` — deregister an account.
+    /// Deregister an account.
     async fn remove_agent_profile(
         &self,
         id: &str,
     ) -> Result<RemoveAgentProfileResponse, EngineError>;
-    /// `GET /workspace/agent-profiles/:id/status` — one account's auth state, probed for real.
+    /// Return one account's auth state, probed for real.
     async fn agent_account_status(
         &self,
         id: &str,
         refresh: bool,
     ) -> Result<AgentAccountStatusResponse, EngineError>;
-    /// `GET /workspace/agent-profiles/:id/details` — who an account is signed in as.
+    /// Return who an account is signed in as.
     async fn agent_account_details(
         &self,
         id: &str,
     ) -> Result<AgentAccountDetailsResponse, EngineError>;
-    /// `POST /workspace/agent-profiles/:id/open` — open one of an account's config files.
+    /// Open one of an account's config files.
     async fn open_agent_account_file(
         &self,
         id: &str,
         input: &OpenAgentAccountFileInput,
     ) -> Result<OpenAgentAccountFileResponse, EngineError>;
-    /// `PUT /workspace/agent-profiles/selection` — point one project's provider at an account.
+    /// Point one project's provider at an account.
     async fn select_agent_profile(
         &self,
         input: &SelectAgentProfileInput,
     ) -> Result<AgentProfileSelectionsResponse, EngineError>;
-    /// `DELETE /projects/:projectId` — deregister a project (registry-only).
+    /// Deregister a project from the workspace registry.
     async fn remove_project(&self, project_id: &str) -> Result<RemoveProjectResponse, EngineError>;
-    /// `PATCH /projects/:projectId` — the per-project concurrency ceiling and tags.
+    /// Update a project's concurrency ceiling and tags.
     async fn update_project(
         &self,
         project_id: &str,
         input: &UpdateProjectInput,
     ) -> Result<UpdateProjectResponse, EngineError>;
-    /// `GET /worktrees` — every materialized task worktree, disk usage and retention state.
+    /// Return every materialized task worktree, disk usage, and retention state.
     async fn worktrees(&self, scope: &Scope) -> Result<WorktreesResponse, EngineError>;
-    /// `POST /worktrees/reclaim` — force the retention enforcer to reclaim over-limit worktrees.
+    /// Force the retention enforcer to reclaim over-limit worktrees.
     async fn reclaim_worktrees(
         &self,
         scope: &Scope,
     ) -> Result<ReclaimWorktreesResponse, EngineError>;
-    /// `POST /runs/:id/remove-worktree` — reclaim one run's worktree and its branch.
+    /// Reclaim one run's worktree and its branch.
     async fn remove_run_worktree(
         &self,
         scope: &Scope,
         run_id: &str,
     ) -> Result<RemoveWorktreeResponse, EngineError>;
-    /// `GET /open-targets` — the local editors/file-manager/terminal this machine can open.
+    /// Return the local editors, file managers, and terminals this machine can open.
     async fn open_targets(&self, scope: &Scope) -> Result<OpenTargetsResponse, EngineError>;
-    /// `POST /open-in` — open the active project's own folder in the chosen local app.
+    /// Open the active project's folder in the chosen local app.
     async fn open_project_in(
         &self,
         scope: &Scope,

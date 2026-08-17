@@ -1,14 +1,13 @@
-//! The `coducktor` binary's argument surface (spec §6.3, §10 A13, §11.1 B10).
+//! The `coducktor` binary's argument surface.
 //!
 //! Bare invocation and an explicit `tui` subcommand behave identically, and three
 //! launch-time flags (`--repo`, `--workflow`, `--model`) carry real, testable meaning
-//! into the first frame rather than being decorative. `-p/--port` and `--no-open` —
-//! protected on the Node CLI (`BACKWARD_COMPATIBILITY.md` §1) — are not reproduced
-//! here: spec §1.4 waives both, since neither means anything without a server this
-//! binary itself opens a browser for.
+//! into the first frame rather than being decorative. The retired `-p/--port` and
+//! `--no-open` flags are not reproduced because this binary owns the terminal UI and
+//! opens no listener or browser.
 //!
-//! `run`/`init`/`usage`/`doctor`/`projects` (B10/C3) dispatch to `headless::*` before the
-//! TUI ever opens the alternate screen — see `main.rs`'s early match on `cli.command`.
+//! `run`/`init`/`usage`/`doctor`/`projects` dispatch to `headless::*` before the TUI ever
+//! opens the alternate screen — see `main.rs`'s early match on `cli.command`.
 
 use std::path::{Path, PathBuf};
 
@@ -83,8 +82,7 @@ pub enum ProjectsCommand {
 
 impl Cli {
     /// Parse `argv`, exiting the process on `--help`/`--version`/a bad flag —
-    /// the same startup-only escape hatch `main.rs` already uses elsewhere
-    /// (spec §0 Definition of Done footnote on `unwrap`/`expect` in `main.rs`).
+    /// the same startup-only escape hatch `main.rs` already uses elsewhere.
     pub fn parse_args() -> Self {
         Self::parse()
     }
@@ -236,7 +234,7 @@ mod tests {
                 "help text missing {needle:?}: {rendered}"
             );
         }
-        // The waived flags (spec §1.4) must not resurface here.
+        // Unsupported transport flags must not resurface here.
         for needle in ["--port", "--no-open"] {
             assert!(
                 !rendered.contains(needle),

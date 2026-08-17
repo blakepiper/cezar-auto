@@ -204,7 +204,7 @@ fn assert_json_equivalent(left: &Value, right: &Value, context: &str) {
 }
 
 #[test]
-fn claude_fixtures_match_the_typescript_mapper_output() {
+fn claude_fixtures_match_the_normalized_mapper_output() {
     for fixture in CLAUDE_FIXTURES {
         let actual = serde_json::to_value(replay_claude(fixture)).expect("events must serialize");
         let expected_path = fixture_root()
@@ -219,7 +219,7 @@ fn claude_fixtures_match_the_typescript_mapper_output() {
 }
 
 #[test]
-fn codex_fixtures_match_the_typescript_mapper_output() {
+fn codex_fixtures_match_the_normalized_mapper_output() {
     for fixture in CODEX_FIXTURES {
         let actual = serde_json::to_value(replay_codex(fixture)).expect("events must serialize");
         let expected_path = fixture_root()
@@ -234,7 +234,7 @@ fn codex_fixtures_match_the_typescript_mapper_output() {
 }
 
 #[test]
-fn opencode_fixtures_match_the_typescript_mapper_output() {
+fn opencode_fixtures_match_the_normalized_mapper_output() {
     for fixture in OPENCODE_FIXTURES {
         let actual = serde_json::to_value(replay_opencode(fixture)).expect("events must serialize");
         let expected_path = fixture_root()
@@ -249,7 +249,7 @@ fn opencode_fixtures_match_the_typescript_mapper_output() {
 }
 
 #[test]
-fn pi_fixtures_match_the_typescript_mapper_output() {
+fn pi_fixtures_match_the_normalized_mapper_output() {
     for fixture in PI_FIXTURES {
         let actual = serde_json::to_value(replay_pi(fixture)).expect("events must serialize");
         let expected_path = fixture_root()

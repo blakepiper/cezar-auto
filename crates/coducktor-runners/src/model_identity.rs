@@ -1,11 +1,5 @@
-//! The canonical `provider/model` identity parser, ported from
-//! `packages/coducktor/src/core/model-identity.ts`. Only [`parse_model_identity`] is ported here —
-//! the single pure function opencode's and (at B9a.2e) pi's runners import directly. The
-//! fail-loud `resolveModelIdentity`/`normalizeModelForBackend`/`toBackendModel` machinery is run
-//! wiring's job (the caller that resolves `spec.model` before a backend ever sees it — "arrives
-//! already normalised to canonical provider/model", per `opencode-server-runner.ts`'s own
-//! comment), not a concrete backend's — out of scope here, same deferral as `SessionFactory`
-//! wiring into `coducktor-server`.
+//! Canonical `provider/model` identity parsing shared by the OpenCode and Pi runners. The run
+//! wiring resolves the selected model before a backend receives it.
 
 /// A backend-agnostic model identity. Serialized as `provider/model`. Treated as an identifier,
 /// never display text.

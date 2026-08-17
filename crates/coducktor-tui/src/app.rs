@@ -19,7 +19,7 @@ const SIDEBAR_DEFAULT_WIDTH: u16 = 28;
 const SIDEBAR_MIN_WIDTH: u16 = 20;
 const SIDEBAR_MAX_WIDTH: u16 = 44;
 
-/// Shell navigation targets. Content screens replace the placeholder route as later plan steps land.
+/// Shell navigation targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavItem {
     NewTask,
@@ -90,8 +90,8 @@ impl NavItem {
     }
 }
 
-/// The routed identity used by the TUI. Later screens keep this URL-shaped seam.
-/// A `screens/task_git` sub-tab (spec §8.5) — Changes / Files / Commits.
+/// The routed identity used by the TUI. Routes retain a stable URL-shaped seam for navigation.
+/// A `screens/task_git` sub-tab — Changes / Files / Commits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskGitTab {
     Changes,
@@ -118,7 +118,7 @@ impl TaskGitTab {
     }
 }
 
-/// A `screens/repo_git` sub-tab (spec §8.6) — Changes / Commits / Branches.
+/// A `screens/repo_git` sub-tab — Changes / Commits / Branches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RepoGitTab {
     Changes,
@@ -440,10 +440,9 @@ impl QuickTask {
     }
 }
 
-/// A run's status transition worth surfacing as a desktop notification (spec §9.2's
-/// "Browser tab title / favicon badge" → `notify-rust` mapping): "needs you" (waiting on an
-/// answer or a review) or "finished" (done/failed/cancelled) — but only the FIRST time a run
-/// enters one of those states, never on every SSE echo of the same status.
+/// A run's status transition worth surfacing as a desktop notification: "needs you" (waiting on
+/// an answer or a review) or "finished" (done/failed/cancelled) — but only the first time a run
+/// enters one of those states, never on every repeated status event.
 fn notification_for_transition(old: RunStatus, task: &QuickTask) -> Option<(String, String)> {
     if old == task.status {
         return None;
@@ -544,7 +543,7 @@ pub enum PendingAction {
         project: String,
         base_branch: Option<String>,
     },
-    /// Load a run's detail + first history page and open its live event stream (§8.4 A8).
+    /// Load a run's detail, first history page, and live event stream.
     LoadThread {
         project: String,
         id: String,
@@ -587,7 +586,7 @@ pub enum PendingAction {
         project: String,
         id: String,
     },
-    /// Load the task-git screen's Changes tab (spec §8.5 A9).
+    /// Load the task-git screen's Changes tab.
     LoadTaskGitChanges {
         project: String,
         id: String,
@@ -609,17 +608,17 @@ pub enum PendingAction {
         id: String,
         sha: String,
     },
-    /// `POST /runs/:id/git/commit` from the Changes tab's commit dialog.
+    /// Commit the Changes tab's selected worktree changes.
     TaskGitCommit {
         project: String,
         id: String,
     },
-    /// `POST /runs/:id/git/push` from the Changes tab's toolbar.
+    /// Push the Changes tab's task branch.
     TaskGitPush {
         project: String,
         id: String,
     },
-    /// Load the repo-git screen (spec §8.6 A9).
+    /// Load the repo-git screen.
     LoadRepoGit {
         project: String,
     },
@@ -630,40 +629,40 @@ pub enum PendingAction {
         project: String,
         sha: String,
     },
-    /// `POST /repo/branch` from the Branches tab.
+    /// Create or check out a branch from the Branches tab.
     RepoGitBranch {
         project: String,
         name: String,
         from: Option<String>,
     },
-    /// Load the compare-variants screen (spec §8.7 A9).
+    /// Load the compare-variants screen.
     LoadCompare {
         project: String,
         group_id: String,
     },
-    /// `POST /groups/:groupId/pick` from the compare view.
+    /// Pick a winning run from the compare view.
     PickVariant {
         project: String,
         group_id: String,
         run_id: String,
     },
-    /// Load one compare variant's full structured diff on demand (spec §8.7 "full diff").
+    /// Load one compare variant's full structured diff on demand.
     LoadCompareVariantDiff {
         project: String,
         group_id: String,
         run_id: String,
     },
-    /// The IDE's explorer (`GET /ide/tree`) at a project-relative directory (`None` = root).
+    /// Load the IDE's explorer at a project-relative directory (`None` = root).
     LoadIdeDirectory {
         project: String,
         path: Option<String>,
     },
-    /// The IDE's file read (`GET /ide/file`) — replaces the draft, cleared dirty.
+    /// Load the IDE's file — replace the draft and clear dirty state.
     LoadIdeFile {
         project: String,
         path: String,
     },
-    /// The IDE's save (`PUT /ide/file`) — the editor's `Ctrl+S` round-trip.
+    /// Save the IDE's file from the editor's `Ctrl+S` action.
     SaveIdeFile {
         project: String,
         path: String,
@@ -674,16 +673,16 @@ pub enum PendingAction {
         project: String,
         path: String,
     },
-    /// Unsaved-changes guard resolutions (spec §8.8): the user confirmed discarding the
+    /// Unsaved-changes guard resolutions: the user confirmed discarding the
     /// IDE draft, now perform the deferred navigation.
     IdeDiscardThenNavigate(Box<Route>),
     IdeDiscardThenBack,
     IdeDiscardThenForward,
-    /// `GET /github` — the GitHub screen's aggregate read.
+    /// Load the GitHub screen's aggregate data.
     LoadGithub {
         project: String,
     },
-    /// The hand-to-agent pickers (`GET /workflows` + `GET /skills`).
+    /// Load the hand-to-agent workflow and skill pickers.
     LoadGithubPickers {
         project: String,
     },
@@ -700,7 +699,7 @@ pub enum PendingAction {
         project: String,
         number: u64,
     },
-    /// `POST /github/prs/:number/merge` — the merge-gate confirm's action.
+    /// Merge a GitHub pull request from the merge-gate confirmation.
     GithubMerge {
         project: String,
         number: u64,
@@ -714,7 +713,7 @@ pub enum PendingAction {
         project: String,
         input: coducktor_contract::CreateRunInput,
     },
-    /// The Inbox's combined read: health (for the followups capability) + `/todos`.
+    /// Load the Inbox's capability status and follow-ups.
     LoadInbox {
         project: String,
     },
@@ -735,7 +734,7 @@ pub enum PendingAction {
     LoadWorkflowSkills {
         project: String,
     },
-    /// `POST /workflows` — save the draft in `skills:` form when portable, `steps:` otherwise.
+    /// Save the draft in `skills:` form when portable and `steps:` otherwise.
     SaveWorkflow {
         project: String,
     },
@@ -751,7 +750,7 @@ pub enum PendingAction {
         project: String,
         yaml: String,
     },
-    /// Load every Settings data source for the current project + workspace (spec §8.14, A12).
+    /// Load every Settings data source for the current project and workspace.
     LoadSettings {
         project: String,
     },
@@ -848,7 +847,7 @@ struct ProviderBadge {
     available: bool,
 }
 
-/// The A4 shell state. Content screens can consume its navigation and live summaries later.
+/// The terminal shell state shared by content screens.
 pub struct App {
     pub history: History,
     pub hitmap: HitMap,
@@ -897,7 +896,7 @@ pub struct App {
     pub settings_ui: crate::screens::settings::SettingsUi,
     pub palette: crate::overlay::Palette,
     /// Settings → Notifications' toggle, loaded once at startup and kept live by every write
-    /// (spec §8.14). Gates `pending_notifications`, never the terminal-title update.
+    /// Gates `pending_notifications`, never the terminal-title update.
     pub notifications_enabled: bool,
     /// (summary, body) pairs main.rs drains once per tick and fires via `notify-rust`.
     pub pending_notifications: Vec<(String, String)>,
@@ -1015,7 +1014,7 @@ impl App {
             .collect();
     }
 
-    /// Replace the current project's run list (from `GET /runs`).
+    /// Replace the current project's run list.
     pub fn set_tasks(&mut self, runs: Vec<ApiRun>) {
         self.tasks = runs;
         self.tasks_ui.table.select(self.tasks_ui.table.selected);
@@ -1037,7 +1036,7 @@ impl App {
         std::mem::take(&mut self.pending_notifications)
     }
 
-    /// Navigate, guarding the IDE's unsaved draft (spec §8.8): leaving a dirty file asks
+    /// Navigate, guarding the IDE's unsaved draft: leaving a dirty file asks
     /// first, and the confirm's action resolves into the deferred `history.navigate` in
     /// main.rs. Every path that can move the app away from `Route::Ide` routes through this
     /// or `request_back`/`request_forward`.
@@ -1115,9 +1114,7 @@ impl App {
     }
 
     /// Open a URL in the platform browser, best-effort.
-    /// Open a URL in the OS default handler — the `open` crate (spec §6.3), the one local
-    /// "external open" the whole app has no server round-trip for (unlike `open_in`/
-    /// `open_in_cli`, which are the Engine's server-side handoffs for a run's worktree).
+    /// Open a URL in the OS default handler. This is best-effort and does not affect the run.
     pub fn open_url(&mut self, url: &str) {
         self.notice = if open::that(url).is_ok() {
             None
@@ -1126,7 +1123,7 @@ impl App {
         };
     }
 
-    /// Copy text to the clipboard, best-effort (the `open-in-*` handoff is A12;
+    /// Copy text to the clipboard, best-effort (the `open-in-*` handoff is
     /// the clipboard here is what makes the Branch chip's "click to copy" real).
     pub fn copy_text(&mut self, text: &str) {
         let copied = copy_to_clipboard(text);
@@ -2170,7 +2167,7 @@ impl App {
                     project: project.clone(),
                 });
                 self.pending.push(PendingAction::RefreshNewTask { project });
-                // The hero auto-focuses the composer (spec §7.3).
+                // The hero auto-focuses the composer.
                 self.new_task_ui.composer_focused = true;
                 self.new_task_ui.composer.focus();
             }
@@ -2714,7 +2711,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_at_the_three_a4_snapshot_sizes() {
+    fn renders_at_the_three_snapshot_sizes() {
         for (width, height) in [(80, 24), (120, 40), (200, 60)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             let mut app = App::new("main", Theme::detect(), Keymap::default());
@@ -2738,8 +2735,7 @@ mod tests {
             content
         };
 
-        // Queued first: a run event (exactly what `POST /runs` rides the SSE
-        // stream with) makes a row appear.
+        // A queued run event makes a row appear.
         app.apply_workspace_event(run_event(
             "main",
             "run-1",

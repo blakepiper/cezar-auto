@@ -1,4 +1,4 @@
-//! Streaming-safe markdown rendering (spec §7.6 "Streaming markdown").
+//! Streaming-safe markdown rendering.
 //!
 //! Agent text arrives as `item.delta` events, and re-parsing the whole message on every
 //! delta is O(n²) on long turns. `RenderCache` keeps the last parsed [`Text`] and only
@@ -11,12 +11,12 @@ use std::collections::HashMap;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
 
-/// Per-item markdown render cache (spec §7.6).
+/// Per-item markdown render cache.
 ///
 /// `source_len` is a cheap staleness check rather than a content hash: transcript text
 /// only ever grows by delta-append, so a length change is exactly a content change here.
 ///
-/// A further optimization the spec names — re-rendering only the tail block on an append,
+/// A further optimization would re-render only the tail block on an append,
 /// instead of re-parsing the whole source — needs block-level reuse from `tui-markdown`'s
 /// parser that the crate doesn't expose; this cache re-parses in full on change, which is
 /// still O(1) amortized per rendered frame since parsing only happens when `source` differs

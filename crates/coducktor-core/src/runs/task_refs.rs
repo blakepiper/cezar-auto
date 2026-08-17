@@ -1,5 +1,4 @@
-//! PR/issue-number extraction from a task prompt (spec 2026-07-17-task-auto-naming, step 0).
-//! Mirrors `packages/coducktor/src/runs/task-refs.ts`.
+//! PR/issue-number extraction from a task prompt.
 //!
 //! The always-available programmatic layer under the LLM namer. Pure — it runs inline at
 //! `startRun` and its result both prefixes the heuristic title and cross-checks the namer's

@@ -1,6 +1,6 @@
-//! Workspace config migrations. Mirrors `packages/coducktor/src/workspace/migrations.ts`.
-//! Deliberately tiny and config-files-only — run state (`runs.json`, NDJSON) keeps the
-//! additive-zod convention and never migrates. Rules, verbatim from the TS module docs:
+//! Ordered workspace migrations for user and repository state. Migrations are deliberately
+//! small and config-files-only; run state (`runs.json`, NDJSON) remains readable in place.
+//! They are:
 //!
 //! - **idempotent** — every migration is safe to re-run after a crash mid-way;
 //! - **additive** — never deletes or rewrites the user's per-repo files;
@@ -10,11 +10,8 @@
 //!   path as all workspace writes, and two processes racing the same idempotent step
 //!   converge.
 //!
-//! Unlike the TS source (which `console.warn`/`console.log`s directly), every diagnostic
-//! here comes back as a `String` in [`MigrationRunOutcome::messages`] — this crate has no
-//! business deciding where a message belongs (stderr, a TUI toast, a CLI's stdout); that
-//! is the caller's call, matching the "no business logic in the presentation layer, but
-//! also no presentation opinions in core" rule the refactor spec states for this crate.
+//! Every diagnostic comes back as a `String` in [`MigrationRunOutcome::messages`]. The caller
+//! decides whether it belongs on stderr, in a TUI notice, or in CLI output.
 
 use std::fs;
 use std::io;
@@ -42,9 +39,7 @@ struct MigrationContext<'a> {
 
 const LEGACY_STATE_DIR: &str = concat!(".", "ce", "zar");
 
-/// All known migrations, in ascending `to` order (pinned by a test below — see
-/// `migrations.test.ts`'s own explicit test not to add a no-op migration reflexively for
-/// a purely-additive schema key).
+/// All known migrations, in ascending `to` order.
 const WORKSPACE_MIGRATIONS: &[Migration] = &[
     Migration {
         to: 1,
@@ -66,8 +61,7 @@ fn read_raw_object(path: &Path) -> Option<Map<String, Value>> {
 
 /// One on-disk state-dir rename. Idempotent and never destructive: old absent → nothing
 /// to do; both present → the new dir wins, the stray old one is reported but never
-/// deleted; old present/new absent → rename and report. Mirrors
-/// `migrations.ts::migrateStateDir`.
+/// deleted; old present/new absent → rename and report.
 fn migrate_state_dir(old: &Path, new: &Path, label: &str) -> Option<String> {
     if !old.exists() {
         return None;
@@ -98,11 +92,6 @@ fn migrate_state_dir(old: &Path, new: &Path, label: &str) -> Option<String> {
 /// The two state-dir renames migration 002 performs, also run unconditionally BEFORE the
 /// migration chain (see [`run_migrations`]) — on a pre-rename install, migration 001 must
 /// not create a fresh `.ai/coducktor` config while the real one is still under the legacy path.
-/// Mirrors `migrations.ts::migrateStateDirs`.
-///
-/// The TS version takes a `home: string` parameter it never actually reads (the home-dir
-/// rename branch recomputes `homedir()` directly) — dropped here rather than carried
-/// forward as dead weight.
 pub fn migrate_state_dirs(boot_repo_root: Option<&Path>, env: &dyn EnvSource) -> Vec<String> {
     let mut messages = Vec::new();
     // Only meaningful when neither home override is set — an explicit `DUCK_HOME` is the
@@ -138,7 +127,7 @@ struct RepoResourceKeys {
 
 /// The boot repo's `.ai/coducktor/config.json` resource keys, read RAW so only values the
 /// user explicitly set are imported — a defaulted value must not masquerade as a
-/// preference. Mirrors `migrations.ts::readRepoResourceKeys`.
+/// preference.
 fn read_repo_resource_keys(repo_root: &Path) -> RepoResourceKeys {
     let raw = read_raw_object(&repo_root.join(".ai/coducktor/config.json")).unwrap_or_default();
     let bounded = |key: &str, lo: i64, hi: i64| {
@@ -159,7 +148,7 @@ fn read_repo_resource_keys(repo_root: &Path) -> RepoResourceKeys {
 /// ui-state keys into `~/.coducktor/ui-state.json`. Keys already set globally are NEVER
 /// overwritten — presence is checked against the RAW global file (before defaults are
 /// applied), which is what makes a crash-interrupted re-run safe. Every per-repo file is
-/// left untouched. Mirrors `migrations.ts`'s `migration001`.
+/// left untouched.
 fn migration_001(ctx: &MigrationContext) -> io::Result<()> {
     let config_path = paths::workspace_config_path(ctx.env);
     let raw_global = read_raw_object(&config_path);
@@ -219,11 +208,11 @@ fn migration_001(ctx: &MigrationContext) -> io::Result<()> {
     Ok(())
 }
 
-/// Migration 002 — `schemaVersion 1 → 2`, the coducktor rename: move the on-disk state
-/// dirs from their coducktor-era names to the coducktor ones. Registered as a normal
+/// Migration 002 — `schemaVersion 1 → 2`, the product rename: move the on-disk state
+/// dirs from their legacy names to the current ones. Registered as a normal
 /// migration too (on top of `run_migrations` calling `migrate_state_dirs`
 /// unconditionally first) so the framework's record bumps `schema_version` to 2 and
-/// re-running it is the same idempotent no-op. Mirrors `migrations.ts`'s `migration002`.
+/// re-running it is the same idempotent no-op.
 fn migration_002(ctx: &MigrationContext) -> io::Result<()> {
     migrate_state_dirs(ctx.boot_repo_root, ctx.env);
     Ok(())
@@ -243,7 +232,7 @@ pub struct MigrationRunOutcome {
 /// in ascending order, and persists the new `schema_version` after EACH one, so a crash
 /// resumes exactly where it left off. A failing migration stops the chain (later
 /// migrations may depend on earlier ones); the caller boots degraded on in-memory
-/// defaults. Never panics. Mirrors `migrations.ts::runMigrations`.
+/// defaults. Never panics.
 pub fn run_migrations(boot_repo_root: Option<&Path>, env: &dyn EnvSource) -> MigrationRunOutcome {
     // State-dir rename FIRST: on a pre-rename install, migration 001's config write must
     // land in the migrated home rather than create a fresh `.coducktor` alongside the
@@ -304,7 +293,7 @@ mod tests {
 
     #[test]
     fn the_migration_list_is_frozen_at_one_and_two() {
-        // Pinned deliberately (mirrors migrations.test.ts): a purely-additive schema key
+        // Pinned deliberately: a purely-additive schema key
         // does not get a reflexive no-op migration.
         let versions: Vec<u32> = WORKSPACE_MIGRATIONS.iter().map(|m| m.to).collect();
         assert_eq!(versions, vec![1, 2]);

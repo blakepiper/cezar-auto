@@ -1,14 +1,6 @@
-//! The Workflows screen (spec §8.13) — replaces `routes/workflows/workflows.tsx`. Left: the
-//! saved-chain tab strip (+ new). Center: the ordered step list — index, kind glyph, name,
-//! prompt/command, `x` to delete, `Alt+j`/`Alt+k` to reorder or press-drag-release with the
-//! mouse (the web's dnd-kit replacement). Right: the skills palette with a filter field;
-//! Enter appends a `{{task}}` skill step. Import/Export/Save/Delete over `GET|POST
-//! /workflows`, `DELETE /workflows/:name`, `POST /workflows/parse`.
-//!
-//! The save path honors the portable compact `skills:` form: `skill_stack_of` mirrors the
-//! server's `skillStackOf` (packages/coducktor/src/workflows/types.ts) and, when every step is a
-//! plain skill step, the client POSTs `{skills: [...]}` instead of `{steps: [...]}` — the
-//! server then writes the file in the compact form (spec 012, a protected format property).
+//! The Workflows screen: saved workflows, ordered steps, skill insertion, and YAML
+//! import/export/save/delete. The save path preserves the compact `skills:` form when every
+//! step is a plain skill step.
 
 use coducktor_contract::{Skill, WorkflowDef, WorkflowSource, WorkflowStepDef};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -80,8 +72,8 @@ impl Default for WorkflowsUi {
     }
 }
 
-/// `skillStackOf` (`packages/coducktor/src/workflows/types.ts`) — the inverse of
-/// `skillsToSteps`: when every step is a plain "apply this skill" agent step, return the
+/// `skill_stack_of` — the inverse of `skills_to_steps`: when every step is a plain "apply this
+/// skill" agent step, return the
 /// skill list so the file can be written in the portable compact `skills:` form. Anything
 /// richer (checks, custom prompts, per-step models/tools, loops) returns `None`.
 pub fn skill_stack_of(steps: &[WorkflowStepDef]) -> Option<Vec<String>> {

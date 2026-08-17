@@ -1,6 +1,5 @@
-//! The diff engine (spec §7.6, §10 A9): parsing, word-level intra-line diff, syntax
-//! highlighting and row layout for the Changes/Files/Commits tabs, repo git, and compare.
-//! Replaces `web/src/components/diff/{parse-patch,word-diff,diff-view,diff-scroll}.ts(x)`.
+//! The diff engine: parsing, word-level intra-line diff, syntax highlighting, and row layout
+//! for the Changes/Files/Commits tabs, repo Git, and compare.
 
 pub mod highlight;
 pub mod parse_patch;

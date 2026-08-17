@@ -1,9 +1,7 @@
 //! Global tasks screen — `screens/global_tasks.rs`.
 //!
-//! Behavioural spec: `packages/web/src/routes/global-tasks.tsx`. Reads the
-//! workspace runs index (`GET /workspace/runs-index`), the same table plus a
-//! PROJECT column, a project-tag facet filter, grouping by tag, and an honest
-//! "capped" note when `truncated` names projects.
+//! Reads the workspace runs index, adds a PROJECT column and project-tag filtering, and shows
+//! an honest "capped" note when the index is truncated.
 
 use coducktor_contract::{ProcessUsage, ProjectListEntry, RunIndexEntry, RunsIndexResponse};
 use ratatui::Frame;

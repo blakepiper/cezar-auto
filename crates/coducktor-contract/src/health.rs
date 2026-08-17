@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Mirrors `packages/contract/src/health.ts::Runner`.
+/// `Runner` contract shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Runner {
@@ -11,7 +11,7 @@ pub enum Runner {
     Pi,
 }
 
-/// Mirrors `packages/contract/src/health.ts::RunnerSelection`.
+/// `RunnerSelection` contract shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RunnerSelection {
@@ -23,7 +23,7 @@ pub enum RunnerSelection {
     Auto,
 }
 
-/// Mirrors `packages/contract/src/health.ts::RepoInfo`.
+/// `RepoInfo` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoInfo {
     pub root: String,
@@ -32,7 +32,7 @@ pub struct RepoInfo {
     pub remote: Option<String>,
 }
 
-/// The backend name allowlist from `packages/contract/src/health.ts`.
+/// The backend name allowlist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BackendCheckName {
@@ -45,7 +45,7 @@ pub enum BackendCheckName {
     Git,
 }
 
-/// Mirrors `packages/contract/src/health.ts::BackendCheck`.
+/// `BackendCheck` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackendCheck {
     pub name: BackendCheckName,
@@ -56,7 +56,7 @@ pub struct BackendCheck {
     pub hint: Option<String>,
 }
 
-/// Mirrors `packages/contract/src/health.ts::ForgeInfo`.
+/// `ForgeInfo` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForgeInfo {
     pub kind: ForgeKind,
@@ -73,14 +73,14 @@ pub enum ForgeKind {
     GitHub,
 }
 
-/// Mirrors `packages/contract/src/health.ts::Capabilities`.
+/// `Capabilities` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Capabilities {
     pub followups: bool,
 }
 
-/// A health response from `packages/contract/src/health.ts::HealthResponse`.
+/// A health response.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HealthResponse {

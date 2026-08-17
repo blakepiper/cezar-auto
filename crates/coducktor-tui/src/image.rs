@@ -1,4 +1,4 @@
-//! Inline image rendering (spec §7.6 "Images").
+//! Inline image rendering.
 //!
 //! Detect the terminal's graphics capability once at startup — kitty, iTerm2 or sixel via
 //! `ratatui-image`, halfblock Unicode everywhere a color terminal exists but no protocol
@@ -16,7 +16,7 @@ use ratatui_image::StatefulImage;
 use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::StatefulProtocol;
 
-/// Detected once per process (spec §7.6: "Detect once at startup, report in `?`").
+/// Detected once per process and reported through the help/status view.
 #[derive(Debug)]
 pub struct ImageSupport {
     picker: Picker,
@@ -88,7 +88,7 @@ impl std::fmt::Debug for DecodedImage {
     }
 }
 
-/// Renders a decoded image, or — honestly, per spec §7.6 — a bordered placeholder
+/// Renders a decoded image, or a bordered placeholder
 /// carrying whatever we do know (dimensions, or just the failure reason) plus the
 /// "open externally" action every image item offers regardless of protocol support.
 pub fn render_image(area: Rect, buf: &mut Buffer, style: Style, image: &mut Option<DecodedImage>) {

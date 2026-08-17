@@ -1,7 +1,5 @@
-//! Per-item coalescing of streamed assistant text into whole v1 `text` events. Ported from
-//! `packages/coducktor/src/core/v1-text-coalescer.ts`, shared by the codex and opencode backends
-//! (both stream deltas; claude does not need it — its stream-json protocol already delivers
-//! whole text blocks).
+//! Per-item coalescing of streamed assistant text into whole v1 `text` events, shared by the
+//! Codex and OpenCode backends.
 //!
 //! The v1 `AgentEvent`/[`coducktor_core::workflows::run::EventInput`] contract treats `text` as
 //! a complete assistant block — that is what the RunManager persists one NDJSON line per event,

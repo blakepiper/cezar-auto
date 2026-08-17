@@ -1,5 +1,5 @@
 //! "Which ref anchors *this task's* diff" — the single rule every task-diff surface
-//! resolves through (#751). Mirrors `packages/coducktor/src/git-diff-base.ts`.
+//! resolves through (#751).
 //!
 //! The normal answer is `merge-base(baseBranch, HEAD)`: it keeps a task's diff to the
 //! task's own commits even after the base branch moves on, and even after the task merges
@@ -26,20 +26,18 @@
 //! the two candidates compete and the one that attributes FEWER CHANGED LINES to the task
 //! wins.
 //!
-//! It lives here (rather than folded into `worktree.rs`) so a third surface cannot get it
-//! wrong again — callers hand in their own runner, matching the TS module's own reasoning
-//! for staying a pure decision with no process-spawning of its own.
+//! It lives here rather than folded into `worktree.rs` so every diff surface shares the same
+//! pure decision logic; callers provide their own Git runner.
 
 use super::refs::is_safe_git_ref;
 
-/// What a caller's git runner must answer with — mirrors `GitRunResult` in the TS source.
+/// What a caller's Git runner must answer with.
 pub struct GitRunResult {
     pub ok: bool,
     pub stdout: String,
 }
 
-/// A caller-supplied `git` invocation, already bound to a working directory (and, for a
-/// caller like the future `server/git-changes.ts` port, an env override).
+/// A caller-supplied `git` invocation, already bound to a working directory.
 pub type GitRunner<'a> = &'a dyn Fn(&[&str]) -> GitRunResult;
 
 /// The task branch coducktor created vs. the branch HEAD actually sits on.
@@ -68,8 +66,8 @@ pub struct TaskDiffBaseOpts<'a> {
 /// would be interpreted rather than compared — `@{-1}` is "the previously checked-out
 /// branch", not a date. Anything that is not plainly a timestamp simply disables the
 /// baseline anchor. Deliberately more permissive than `time::is_zod_datetime` (that one
-/// mirrors zod's `Z`-only datetime; this hand-rolled check, ported from the TS regex, also
-/// accepts a `+HH:MM`/`-HH:MM` offset).
+/// mirrors the persisted `Z`-only datetime format; this hand-rolled check also accepts a
+/// `+HH:MM`/`-HH:MM` offset).
 fn is_iso_instant(s: &str) -> bool {
     fn digits(bytes: &[u8], i: &mut usize, n: usize) -> bool {
         if *i + n > bytes.len() || !bytes[*i..*i + n].iter().all(u8::is_ascii_digit) {
@@ -189,9 +187,8 @@ fn checkout_baseline(
 
 /// How many changed lines an anchor attributes to the task — the comparison that picks
 /// between two candidates. `None` on a failing `git diff`. Deliberately its own small scan
-/// rather than a call into `worktree::parse_shortstat`: TS keeps this module free of any
-/// dependency on `git-worktree.ts` (worktree.ts depends on THIS module, not the other way
-/// around), so the two stay independently portable.
+/// rather than a call into `worktree::parse_shortstat`, keeping this helper independent of the
+/// worktree module.
 fn changed_lines(run_git: GitRunner, ref_: &str) -> Option<u64> {
     let res = run_git(&["diff", "--shortstat", ref_]);
     if !res.ok {

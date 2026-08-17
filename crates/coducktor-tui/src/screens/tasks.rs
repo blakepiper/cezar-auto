@@ -1,7 +1,6 @@
 //! Tasks overview screen — `screens/tasks.rs`.
 //!
-//! Behavioural spec: `packages/web/src/routes/tasks-overview.tsx` plus the pure
-//! helpers ported into `runs_util`. Layout: title row (Active/Archived segments,
+//! Layout: title row (Active/Archived segments,
 //! count-gated actions, search), the run table, and compare-variant strips below.
 
 use coducktor_contract::{ApiRun, ProcessUsage, RunStatus};
@@ -48,7 +47,7 @@ pub struct TasksUi {
 impl Default for TasksUi {
     fn default() -> Self {
         let mut table = Table::with_columns(COLUMNS.to_vec());
-        // The web's default column set folds only Branch (§8.1, `lib/task-columns.ts`).
+        // The default column set folds only Branch.
         table.folded.insert(ColumnId::Branch);
         Self {
             query: String::new(),
@@ -504,7 +503,7 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
             true
         }
         KeyCode::Char('o') => {
-            app.notice = Some("diff view lands in A9".to_owned());
+            app.notice = Some("open the task's Git tabs to inspect its diff".to_owned());
             true
         }
         KeyCode::Enter => {

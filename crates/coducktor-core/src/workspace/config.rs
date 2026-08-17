@@ -1,5 +1,4 @@
-//! `~/.coducktor/config.json` — the per-user workspace config + project registry. Mirrors
-//! `packages/coducktor/src/workspace/config.ts`. House rules, applied verbatim:
+//! `~/.coducktor/config.json` — the per-user workspace config and project registry. House rules:
 //!
 //! - every field optional/defaulted with a per-key catch, so a bad value degrades in
 //!   place instead of discarding the file (contrast `crate::config`, whose per-repo
@@ -38,10 +37,10 @@ pub fn is_valid_slug(value: &str) -> bool {
 }
 
 /// The four known agent backends, in the canonical order `disabled_providers` re-sorts
-/// to. Mirrors `core/provider-auth.ts::PROVIDER_IDS`.
+/// to.
 pub const PROVIDER_IDS: [Runner; 4] = [Runner::Claude, Runner::Codex, Runner::OpenCode, Runner::Pi];
 
-/// One registry entry. Mirrors `workspace/config.ts::workspaceProjectSchema`. `id` and
+/// One registry entry. `id` and
 /// `root` are load-bearing — an entry missing either is dropped by the caller's
 /// per-entry salvage; every other field degrades to its own default in place.
 #[derive(Debug, Clone, PartialEq)]
@@ -158,10 +157,10 @@ impl WorkspaceProject {
 }
 
 /// Zero-config cadence, in minutes, for re-checking a run parked with `DUCK:MONITORING`.
-/// Mirrors `workspace/config.ts::DEFAULT_MONITORING_WAKE_MINUTES`.
+/// Default monitoring wake interval.
 pub const DEFAULT_MONITORING_WAKE_MINUTES: u64 = 5;
 
-/// Mirrors `workspace/config.ts::resourcesSchema`.
+/// Workspace resource limits and defaults.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Resources {
     pub max_parallel: u64,
@@ -273,7 +272,7 @@ impl Resources {
     }
 }
 
-/// Mirrors `workspace/config.ts::composerDefaultsSchema`.
+/// Workspace composer defaults.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ComposerDefaults {
     pub autonomous: Option<bool>,
@@ -366,7 +365,7 @@ impl AgentDefaultModels {
     }
 }
 
-/// Mirrors `workspace/config.ts::agentDefaultsSchema` — what a repo that has said
+/// Agent defaults — what a repo that has said
 /// nothing runs. Every key optional with NO default: an absent `runner` must stay
 /// distinguishable from one someone chose, or "fall back to the machine default"
 /// collapses into "always claude".
@@ -416,7 +415,7 @@ impl AgentDefaults {
     }
 }
 
-/// Mirrors `workspace/config.ts::quotaProviderPolicySchema`.
+/// Per-provider quota policy.
 #[derive(Debug, Clone, PartialEq)]
 pub struct QuotaProviderPolicy {
     pub enabled: bool,
@@ -436,8 +435,8 @@ const QUOTA_PROVIDER_POLICY_KEYS: &[&str] = &[
 ];
 
 impl QuotaProviderPolicy {
-    /// `long_window_default` is 95 for claude, 90 for codex (`workspace/config.ts:116-118`
-    /// — the one field whose default differs by provider).
+    /// `long_window_default` is 95 for Claude and 90 for Codex — the one field whose default
+    /// differs by provider.
     fn parse(value: Option<&Value>, long_window_default: f64) -> Self {
         let object = zod::as_map(value);
         Self {
@@ -487,9 +486,8 @@ impl QuotaProviderPolicy {
     }
 }
 
-/// Mirrors `workspace/config.ts::quotaRoutingSchema`. Opt-in policy for the future
-/// quota-aware `auto` selection; with `enabled: false` (the shipped default) it has no
-/// execution effect.
+/// Opt-in policy for quota-aware `auto` selection; with `enabled: false` (the shipped default) it
+/// has no execution effect.
 #[derive(Debug, Clone, PartialEq)]
 pub struct QuotaRouting {
     pub enabled: bool,
@@ -624,7 +622,7 @@ const WORKSPACE_CONFIG_KEYS: &[&str] = &[
     "projects",
 ];
 
-/// Mirrors `workspace/config.ts::workspaceConfigSchema` — `~/.coducktor/config.json`.
+/// The durable workspace configuration in `~/.coducktor/config.json`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkspaceConfig {
     /// Migration cursor (`workspace::migrations`). Absent/bad → 0, meaning "run every
@@ -647,8 +645,7 @@ pub struct WorkspaceConfig {
 }
 
 impl WorkspaceConfig {
-    /// The in-memory default — what a missing/corrupt file behaves like. Mirrors
-    /// `workspace/config.ts::defaultWorkspaceConfig`.
+    /// The in-memory default — what a missing or corrupt file behaves like.
     pub fn default_for(env: &dyn EnvSource) -> Self {
         Self::parse(&Value::Object(Default::default()), env)
     }
@@ -734,7 +731,7 @@ impl WorkspaceConfig {
 }
 
 /// The last-known-good copy of a NON-EMPTY registry, written beside the config by every
-/// successful merge-write. Mirrors `workspace/config.ts::workspaceConfigBackupPath`.
+/// successful merge-write.
 pub fn workspace_config_backup_path(path: &Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(".bak");
@@ -756,7 +753,7 @@ fn load_workspace_config_backup(path: &Path, env: &dyn EnvSource) -> Option<Work
 
 /// Read `~/.coducktor/config.json` on demand — never cached, never throws. Before
 /// degrading, a missing/empty/corrupt file is restored from the `.bak` snapshot when
-/// that still holds projects. Mirrors `workspace/config.ts::loadWorkspaceConfig`.
+/// that still holds projects.
 ///
 /// `path` defaults to the current `paths::workspace_config_path(env)`, but a caller that
 /// will also WRITE should pass the path it resolved itself — see
@@ -776,7 +773,7 @@ pub fn load_workspace_config(path: &Path, env: &dyn EnvSource) -> WorkspaceConfi
 }
 
 /// The tmp path an atomic write stages through — UNIQUE PER WRITE, never a fixed
-/// `${path}.tmp`. Mirrors `workspace/config.ts::atomicTmpPath`: `~/.coducktor/` is shared
+/// `${path}.tmp`. The `~/.coducktor/` directory is shared
 /// by every coducktor process on the machine, so two writers staging through the same tmp
 /// name would interleave (writer B's truncate can empty the file between writer A's write
 /// and rename). The pid + a random suffix gives every writer its own staging file.
@@ -798,7 +795,7 @@ pub fn atomic_tmp_path(path: &Path) -> PathBuf {
 }
 
 /// Atomic JSON write (`0600`, dir `0700`) via a per-writer tmp + rename — shared by every
-/// writer in `workspace::*`. Mirrors `workspace/config.ts::atomicWriteJsonSync`.
+/// writer in `workspace::*`.
 pub fn atomic_write_json_sync(path: &Path, value: &Value) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
@@ -829,14 +826,14 @@ fn set_mode(_path: &Path, _mode: u32) -> io::Result<()> {
     Ok(())
 }
 
-/// Read-modify-write merge: re-read the file, apply `mutator`, atomic-rename write.
-/// Mirrors `workspace/config.ts::mergeWriteWorkspaceConfig`, including its refreshed
+/// Read-modify-write merge: re-read the file, apply `mutator`, and atomically rename the write,
+/// including its refreshed
 /// `.bak` snapshot after every successful write (best-effort — a failed snapshot must
 /// never turn a successful write into an error).
 ///
 /// The path is resolved ONCE by the caller and passed in here, for the exact reason the
-/// TS source documents at length: `paths::workspace_config_path` re-reads `DUCK_HOME`/
-/// `DUCK_HOME` on every call, so resolving it twice (once for the read, again for the
+/// `paths::workspace_config_path` re-reads `DUCK_HOME` on every call, so resolving it twice (once
+/// for the read, again for the
 /// write) can send the two halves to different files if the environment changes between
 /// them.
 pub fn merge_write_workspace_config(

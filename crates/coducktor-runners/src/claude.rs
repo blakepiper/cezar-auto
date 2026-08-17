@@ -1,6 +1,5 @@
 //! Claude stream-json to protocol-v2 mapping.
 //!
-//! This is the Rust counterpart of `packages/coducktor/src/core/claude-ui-mapper.ts`.
 //! The mapper is pure: callers provide the previous state and thread the
 //! returned state into the next frame. It emits no v1 events; the eventual
 //! runner owns the parallel v1 stream.

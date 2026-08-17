@@ -3,11 +3,8 @@
 //! deadline without blocking forever, stderr collection, and the SIGTERM->SIGKILL escalation
 //! both the post-`finish()` EOF watchdog and a mid-turn timeout need.
 //!
-//! `claude-cli-runner.ts` and `codex-app-server-transport.ts` each re-derive this plumbing
-//! independently in TS; the claude backend (B9a.2b) first wrote it inline, and this module is
-//! that code pulled out once codex needed the identical shape a second time — proven duplication,
-//! not a speculative abstraction. Protocol semantics (what to write, how to interpret a line)
-//! stay in each backend; this module only owns the process itself.
+//! Protocol semantics (what to write and how to interpret a line) stay in each backend; this
+//! module only owns the process itself.
 
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -243,10 +240,8 @@ impl ChildProcess {
     }
 
     /// A stop sequence with no earlier EOF opportunity to wait out first: signal SIGTERM right
-    /// away, wait `grace`, then escalate to SIGKILL if still alive. For a backend whose process
-    /// reads nothing that would make it exit gracefully on its own — an HTTP server with no
-    /// stdin protocol (opencode's `finish()`), unlike claude/codex where closing stdin itself is
-    /// a signal worth waiting on first.
+    /// away, wait `grace`, then escalate to SIGKILL if still alive. This is used by a backend
+    /// whose process has no stdin protocol to close gracefully, such as OpenCode.
     pub fn escalate_immediately(&mut self, grace: Duration) {
         self.signal_term();
         if !self.wait_exited_within(grace) {

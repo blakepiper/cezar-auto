@@ -1,10 +1,9 @@
-//! The compare-variants screen (spec §8.7) — side-by-side (or stacked, when narrow) columns
+//! The compare-variants screen — side-by-side (or stacked, when narrow) columns
 //! per variant: progress excerpt, diff stat, and a `Pick` action. The selected column's full
 //! structured diff loads lazily through the same `Engine::run_changes` route the task-git
 //! Changes tab uses (compare's own contract, `GroupVariant`, only carries `diffStat` as raw
 //! `git diff --stat` text — see `runs.rs`'s doc comment on that field — so the per-file patch
-//! for the FULL diff needs the run's own `/changes` route). Replaces
-//! `packages/web/src/routes/compare-variants.tsx`.
+//! for the full diff uses the run's own changes operation.
 
 use std::collections::HashMap;
 
@@ -81,7 +80,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         return;
     }
 
-    // Stacked when narrow, side-by-side otherwise (spec §8.7).
+    // Stacked when narrow, side-by-side otherwise.
     let column_width = 34u16;
     let side_by_side = area.width >= column_width * group.runs.len() as u16;
     let column_count = group.runs.len();
@@ -130,8 +129,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         }
     }
 
-    // The selected variant's full diff, below the columns (spec: "full diff" per column —
-    // rendered once, for the selected column, given the terminal's limited width budget).
+    // Render the selected variant's full diff below the columns, once, given the terminal's
+    // limited width budget.
     let diff_area = Rect::new(
         area.x,
         area.y.saturating_add(

@@ -1,12 +1,10 @@
-//! The IDE screen (spec §8.8) — replaces `routes/ide/ide.tsx` + `components/code-editor.tsx`.
-//! Left: the explorer over `GET /ide/tree`. Right: the editor over `GET|PUT /ide/file` with
+//! The IDE screen. Left: the explorer; right: the editor with
 //! syntect highlighting, line numbers, a dirty indicator, `Ctrl+S` save and `Ctrl+E`'s
 //! "open in $EDITOR" escape hatch (spawned by `main.rs`, which owns the terminal).
 //!
-//! The server owns the safety rules — 1 MB edit cap, `.git` exclusion, symlink exclusion —
-//! and this screen both honors them (the server's 409/400 reasons render verbatim in the
-//! editor pane) and explains them (footer hints): "explained in the UI" is part of A10's
-//! accept criterion. The unsaved-changes guard is `App::request_navigate`/`request_back`,
+//! The engine owns the safety rules — 1 MB edit cap, `.git` exclusion, symlink exclusion —
+//! and this screen honors them and explains them in footer hints. The unsaved-changes guard is
+//! `App::request_navigate`/`request_back`,
 //! which turns any navigation away from a dirty file into a confirm dialog.
 
 use coducktor_contract::{IdeDirectoryResponse, IdeEntry, IdeEntryType};
@@ -23,7 +21,7 @@ use crate::input::hitmap::{HitAction, IdeAction};
 use crate::theme::Theme;
 use crate::widgets::editor::Editor;
 
-/// The IDE's server-side safety rules, explained to the user (A10 accept criterion).
+/// The IDE's safety rules, explained to the user.
 const EXPLORER_FOOTER: &str = ".git and symlinks are hidden";
 const EDITOR_FOOTER: &str = "UTF-8 · Ctrl+S save · Ctrl+E open in $EDITOR · 1 MB edit cap";
 
@@ -39,7 +37,7 @@ pub struct IdeUi {
     /// The open file. `None` means the editor pane is idle.
     pub file_path: Option<String>,
     pub file_size: u64,
-    /// The server's reason a file could not be opened (too large / binary / symlink /
+    /// The reason a file could not be opened (too large / binary / symlink /
     /// missing) — rendered verbatim, then the pane explains the cap.
     pub file_error: Option<String>,
     pub editor: Editor,
@@ -315,7 +313,7 @@ fn render_editor_pane(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     );
     frame.render_widget(Paragraph::new(lines), inner);
 
-    // The safety-rules explainer footer — "explained in the UI" (A10 accept criterion).
+    // The safety-rules explainer footer.
     let footer_y = inner.bottom().saturating_sub(1);
     let hint = format!("{EDITOR_FOOTER} · {}", format_bytes(app.ide_ui.file_size));
     frame.render_widget(
@@ -622,7 +620,7 @@ mod tests {
     }
 
     #[test]
-    fn a_too_large_file_renders_the_server_reason_and_the_cap_explainer() {
+    fn a_too_large_file_renders_the_reason_and_the_cap_explainer() {
         let mut app = app_with_entries();
         apply_hit(&mut app, IdeAction::SelectEntry(1));
         app.ide_ui.file_error = Some("file is too large to edit".to_owned());

@@ -1,7 +1,6 @@
-//! The task git screen (spec §8.5) — three tabs over one run's worktree: Changes (structured
+//! The task Git screen — three tabs over one run's worktree: Changes (structured
 //! diff + file tree + commit/push), Files (worktree browser with preview) and Commits (this
-//! run's own commit log, each expandable into a structured diff). Replaces
-//! `packages/web/src/routes/task-git/*`.
+//! run's own commit log, each expandable into a structured diff).
 
 use std::collections::HashSet;
 
@@ -670,7 +669,7 @@ fn handle_commits_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 /// Cycles Changes → Files → Commits, then off the git tabs back to the Session (thread)
-/// screen at either end — the tab row is Session | Changes | Files | Commits (spec §8.4), with
+/// screen at either end — the tab row is Session | Changes | Files | Commits, with
 /// Session living on a separate `Route::Thread` rather than a `TaskGitTab` variant.
 fn switch_tab(app: &mut App, delta: i32) {
     let order = [TaskGitTab::Changes, TaskGitTab::Files, TaskGitTab::Commits];
@@ -914,7 +913,7 @@ mod tests {
         }
         let narrow = render(&mut app, 100, 40);
         let wide = render(&mut app, 220, 40);
-        // A9's accept criterion ("split mode degrades below 140 columns") exercised through
+        // The narrow-terminal split-mode degradation is exercised through
         // the real screen, not just `effective_mode` in isolation.
         assert!(
             narrow

@@ -1,16 +1,9 @@
-//! Presentational render functions for the task thread's sub-modules (spec §8.4): header +
+//! Presentational render functions for the task thread's sub-modules: header +
 //! actions, step rail, plan dock, agents dock/subagent sheet, ask card, review panel,
 //! auto-resume hint. Each function draws into a given `Rect` and registers its own
 //! `HitAction::ThreadScreen(_)` regions; none of them own state beyond what `ThreadUi` passes
-//! in. Behavioral spec: `packages/web/src/routes/task-thread/{run-header,step-rail,plan-dock,
-//! agents-dock,subagent-sheet,ask-card,review-panel,auto-resume-hint}.tsx`.
-//!
-//! **Scope note:** the review panel here has no embedded diff — the diff engine now exists
-//! (`crate::diff`, built at A9), but wiring a `RunDiff` summary into this panel is left for a
-//! later pass; the banner, notes box and Send back / Draft PR / Accept actions are all
-//! present. The Session | Changes | Files | Commits tab row IS wired (A9): `render_header`
-//! registers a `HitAction::ThreadScreen(ThreadAction::OpenGitTab(_))` hit per tab, and
-//! `mod.rs`'s `handle_key` binds `[`/`]` to the same navigation.
+//! in. The review panel exposes its banner, notes box, and Send back / Draft PR / Accept actions;
+//! task Git tab navigation is registered by `render_header`.
 
 use coducktor_contract::{ApiRun, RunStatus};
 use coducktor_protocol::{PlanStatus, UiItem};
@@ -476,7 +469,7 @@ pub fn render_agents_dock(
 }
 
 /// A parentless `toolKind:task` item is a sub-agent — anchored on the latest turn carrying
-/// root task items (spec §8.4 `subagent-dock.ts::collectSubagents`, simplified: this port
+/// root task items, simplified: this view
 /// scans every turn rather than bounding to the most recent unsettled fan-out, which only
 /// matters for very long-running multi-turn subagent chains).
 fn collect_subagents(state: &ThreadState) -> Vec<coducktor_protocol::UiToolItem> {

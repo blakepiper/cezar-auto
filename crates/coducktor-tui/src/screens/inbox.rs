@@ -1,8 +1,5 @@
-//! The Inbox screen (spec §8.12) — replaces `routes/inbox.tsx`. The follow-up list an agent
-//! leaves for a human: `GET /todos`, `DELETE /todos/:id` (dismiss), `POST /todos/:id/start`
-//! (▶ run). Gated on `capabilities.followups`: when the capability is off the route returns
-//! an empty list, so this screen asks `health` itself and renders the opt-in explainer —
-//! "Inbox empty" would be a lie for a feature that is switched off.
+//! The Inbox screen shows follow-ups an agent leaves for a human. It is gated by the follow-up
+//! capability and renders an opt-in explainer when that capability is disabled.
 
 use coducktor_contract::TodoItem;
 use crossterm::event::{KeyCode, KeyEvent};
@@ -131,13 +128,13 @@ fn render_disabled_explainer(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         )),
         Line::from(""),
         Line::from(Span::styled(
-            "Agents only leave follow-ups here when the DUCK_FOLLOWUPS flag is set when the \
-             service starts.",
+            "Agents only leave follow-ups here when DUCK_FOLLOWUPS=1 is set when Coducktor \
+             starts.",
             Style::default().fg(app.theme.palette.soft_fg),
         )),
         Line::from(""),
         Line::from(Span::styled(
-            "Restart the service with DUCK_FOLLOWUPS=1 to enable the inbox.",
+            "Restart Coducktor with DUCK_FOLLOWUPS=1 to enable the inbox.",
             Style::default().fg(app.theme.palette.accent),
         )),
     ];
@@ -172,7 +169,7 @@ fn todo_line(todo: &TodoItem, theme: &crate::theme::Theme, selected: bool) -> Li
     Line::from(spans)
 }
 
-/// The wire `ts` is RFC 3339; the TUI has no time dependency (spec §6.2 picked none yet),
+/// The wire `ts` is RFC 3339; the TUI has no time dependency,
 /// so the entry shows its UTC date — enough to tell "yesterday" from "three weeks ago"
 /// without a datetime crate, and the summary carries the substance.
 fn short_age(ts: &str) -> String {
