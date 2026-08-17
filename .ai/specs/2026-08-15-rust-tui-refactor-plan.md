@@ -568,11 +568,100 @@ retrofit (or a formal scope-cut) as unclaimed follow-up work. A future agent
 should not assume `rust-server.testkit.ts`'s harness is exercised by anything
 beyond `rust-server.smoke.test.ts` and its own `rust-server.testkit.test.ts`.
 
+### [ ] B9a — Real agent session execution ⚠ new step, not in the original spec/plan
+**Why this step exists:** neither the spec nor this plan ever assigns a home to
+`packages/cezar/src/core/agent-runner.ts` + its four backend implementations
+(`claude-cli-runner.ts`, `codex-app-server-runner.ts`, `opencode-server-runner.ts`,
+`pi-runner.ts` — ~3.1k lines) — the concrete glue that actually spawns `claude`/
+`codex`/`opencode`/`pi` as child processes and feeds their output through B5's
+already-ported mappers. B5 ported the mappers (parsing); B6 ported the policy engine
+(`RunManager`) with `SessionFactory`/`AgentSession` left as an injected seam; nobody
+ever wrote what plugs into that seam. Discovered while scoping B10 (`run`/`serve`
+are meaningless without it — B9's own route tests create a run with the task text
+"starts and fails without a session factory" to prove the *failure* path, which is
+literally the only path that existed). Confirmed with the owner before proceeding
+(2026-08-16): add this as its own step rather than ship a non-functional `run`/`serve`.
+**Sub-step 1 of 2 — reshape `AgentSession` for live streaming, done first because it
+touches already-shipped B6 code.** Investigating the seam surfaced a second, deeper
+problem: `AgentSession::turn()` was synchronous and whole-turn-blocking — it returned
+only once an entire turn finished, and `RunManager` published the whole aggregated
+`SessionReport::turn_text` as one `"text"` event *after* the turn ended
+(`append_session_text`, since renamed). Node's real architecture streams individual
+`AgentEvent`s live via an `onEvent` callback and persists each one immediately
+(`run.ts`'s `onEvent`, `this.store.appendEvent(runId, { ...event, stepId })` per
+chunk) — that per-chunk persistence is what makes the transcript actually live; a
+whole-turn-blocking trait cannot produce it no matter what a concrete `SessionFactory`
+does. Confirmed with the owner before proceeding (2026-08-16): reshape B6 rather than
+ship the coarse version.
+**Ships (this sub-step):** `AgentSession::turn`/`send_message`/`finish` all gained an
+`on_event: &mut dyn FnMut(EventInput) -> io::Result<()>` parameter — a live sink a
+real backend calls once per mid-turn event, in order, as its process actually
+produces it. `RunManager::event_sink` (new) is the concrete sink every call site
+passes: it fills in `step_id` when absent and, for `"text"`-typed events specifically,
+strips `CEZ:`/`DUCK:` turn markers and task markers per chunk (mirroring `run.ts`'s
+`onEvent` exactly) so a marker never flashes in the live transcript, dropping the
+event if stripping empties it. `append_session_text` is renamed
+`apply_session_markers` and now does only post-turn marker *detection* on the
+aggregated `turn_text` (`CEZ:PR=`/`CEZ:TITLE=`/etc. still need the whole turn to
+evaluate) — it no longer re-persists the text, which would now duplicate the live
+chunks. All five call sites in `run/mod.rs` (`execute_job`'s initial `turn()` and its
+autonomous-nudge `send_message()`, `handle_active_outcome`'s autonomous-nudge,
+`finish()`, `deliver_message()`) thread a freshly-bound `self.event_sink(run_id,
+&step_id)` through; each is bound to a local `let` first, not inlined into a `match`
+scrutinee, because rustc's temporary-lifetime-extension rule otherwise keeps the
+`&mut self` borrow alive across the whole `match` (including its `Err` arms' own
+`self.foo(...)` calls) — a real, not theoretical, borrow-checker error hit while
+making this change.
+**Test double note:** exactly one `FakeSession`/`FakeFactory` pair is shared by the
+whole B6 test suite (not dozens — checked before assuming a large blast radius).
+`FakeSession` now calls `on_event` once with its outcome's raw `turn_text` before
+returning, which is enough for `event_sink`'s per-chunk stripping to keep every
+existing test (including `runtime_applies_and_hides_turn_markers_before_publishing_text`)
+passing unchanged. A new test, `a_session_that_streams_several_events_mid_turn_persists_each_one_live`,
+adds a dedicated `StreamingSession`/`StreamingFactory` pair that calls `on_event`
+several times mid-turn (text, tool-call, tool-result, text-with-a-trailing-marker) and
+asserts each lands as its own seq-ordered, already-stripped event — proof the sink is
+a real live channel, not unused plumbing only `FakeSession`'s single call exercises.
+**Accept, verified:** `cargo test -p coducktor-core --lib` — 215 tests (214 pre-existing
++ 1 new), all green, no test bodies changed besides the two `FakeSession`/`FakeFactory`
+call-site updates. `cargo build --workspace`, `cargo test --workspace`,
+`cargo clippy --workspace --all-targets -D warnings` all green. `cargo fmt --all --check`
+clean except the one pre-existing `coducktor-client/tests/transport.rs` drift noted
+since B2/B5, untouched by this step.
+**Commit:** `refactor(core): B9a.1 stream AgentSession events instead of one aggregate per turn`
+
+**Sub-step 2 of 2 — concrete `SessionFactory`/`AgentSession` implementations, one per
+backend, ⚠ not started yet.** Port `agent-runner.ts` (the shared spawn/signal/
+termination-tracking helpers — `isSignalTerminationExit`, `trackChildExit`,
+`ContentBlock`, `prependSystemPrompt`) plus one commit per backend
+(`claude-cli-runner.ts` → `codex-app-server-runner.ts` → `opencode-server-runner.ts`
+→ `pi-runner.ts`, same claude-first order B5 used, same reason: best test oracle
+first). Each backend spawns its real CLI (stdin/stdout stream-json for claude,
+JSON-RPC/stdio for codex, HTTP+SSE for opencode, RPC/JSONL for pi), feeds raw process
+output through the matching B5 mapper (`coducktor_runners::{claude,codex,opencode,pi}`)
+to get `UiEvent`s, and calls the new `on_event` sink with them. **No `claude`/`codex`/
+`opencode`/`pi` CLI is installed in this sandbox** — verification must use
+`packages/cezar/scripts/mock-{claude,codex,opencode,pi}.mjs` (the `CEZ_DRY_RUN=1`
+fakes the Node CLI already uses for its own tests) spawned via a real `node` child
+process as the fake backend binary, giving genuine subprocess-boundary test coverage
+without a live agent subscription. Land `crates/coducktor-server`'s wiring of a real
+`SessionFactory` (replacing the "session factory unavailable" no-op) as part of
+whichever backend commit makes it meaningful to flip on, or its own follow-up commit —
+call it when doing the work.
+**Accept:** a run started against the mock binary (`CEZ_DRY_RUN=1`-equivalent) reaches
+`done`/`review` end to end through `coducktor-server`, live events appear over SSE as
+the mock streams them (not all at once at the end), and `cargo test --workspace` /
+clippy / fmt stay green throughout.
+**Commit(s):** `feat(runners): B9a.2a agent-runner seam (spawn/signal/termination
+helpers)`, then `B9a.2b claude backend`, `B9a.2c codex backend`, `B9a.2d opencode
+backend`, `B9a.2e pi backend` — none of these are done yet.
+
 ### [ ] B10 — `cezar-cli`
 **Ships:** `serve`, `run`, `init`, `usage`, `projects` subcommands. `-p/--port` and
 `--no-open` are **not** ported (waived, §1.4). No `--server`, no `--token`.
 **Accept:** exit codes match the protected CLI contract; `--help` names every
-protected flag.
+protected flag. **Blocked on B9a** — `run`/`serve` need a real `SessionFactory` to be
+anything but a shell that always fails.
 **Commit:** `feat(cli): B10 cezar-cli subcommands`
 
 *(B10a is a no-op — `server-install`/`server-deploy`/`server-uninstall` were

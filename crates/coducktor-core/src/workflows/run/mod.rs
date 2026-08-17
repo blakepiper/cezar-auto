@@ -510,13 +510,29 @@ pub enum SessionOutcome {
 /// Backend-neutral session seam. A real runner adapter belongs outside this crate and only needs
 /// to translate its own protocol into these outcomes.
 pub trait AgentSession: Send {
-    fn turn(&mut self) -> Result<SessionOutcome, String>;
+    /// Run one turn. `on_event` is called once per mid-turn live event, in order, before this
+    /// returns — a real backend calls it as its process actually produces output; a fake/test
+    /// double may call it zero or more times, or not at all, and still return a valid outcome.
+    /// The returned [`SessionOutcome`]'s [`SessionReport::turn_text`] is the whole turn's
+    /// aggregated text, used for post-turn bookkeeping (marker detection, titles) — it is not
+    /// re-persisted as its own event; `on_event` already carried the content live.
+    fn turn(
+        &mut self,
+        on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
+    ) -> Result<SessionOutcome, String>;
 
-    fn send_message(&mut self, _prompt: &str) -> Result<SessionOutcome, String> {
+    fn send_message(
+        &mut self,
+        _prompt: &str,
+        _on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
+    ) -> Result<SessionOutcome, String> {
         Err("session does not accept follow-up messages".to_owned())
     }
 
-    fn finish(&mut self) -> Result<SessionOutcome, String> {
+    fn finish(
+        &mut self,
+        _on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
+    ) -> Result<SessionOutcome, String> {
         Ok(SessionOutcome::Completed(SessionReport::default()))
     }
 
@@ -1191,6 +1207,43 @@ impl RunManager {
                 extra,
             },
         )
+    }
+
+    /// A per-turn live event sink: a real [`AgentSession`] calls this once per mid-turn event
+    /// (each raw process message a backend's UI mapper turns into one, e.g. a `message.updated`
+    /// or `tool.call` chunk) so the transcript persists — and broadcasts to live subscribers —
+    /// as the agent actually produces it, rather than waiting for the whole turn to finish. This
+    /// is what makes `session.turn()`'s event-sink parameter meaningful: without it, only the
+    /// aggregated [`SessionReport::turn_text`] would exist, once, after the turn already ended.
+    ///
+    /// Mirrors `run.ts`'s `onEvent` handler: a `text`-typed event is marker-stripped per chunk
+    /// (so `CEZ:DONE`/`CEZ:MONITORING`/task markers never flash in the live transcript, matching
+    /// [`Self::apply_session_markers`]'s aggregate-side detection) and dropped if that empties it;
+    /// every other event type passes through unchanged.
+    fn event_sink(
+        &mut self,
+        run_id: &str,
+        step_id: &str,
+    ) -> impl FnMut(EventInput) -> io::Result<()> + '_ {
+        let run_id = run_id.to_owned();
+        let step_id = step_id.to_owned();
+        move |mut event: EventInput| {
+            if event.step_id.is_none() {
+                event.step_id = Some(step_id.clone());
+            }
+            if event.event_type == "text"
+                && let Some(text) = event.extra.get("text").and_then(Value::as_str)
+            {
+                let stripped = strip_turn_marker(&task_markers::strip_task_markers(text));
+                if stripped.is_empty() {
+                    return Ok(());
+                }
+                event
+                    .extra
+                    .insert("text".to_owned(), Value::String(stripped));
+            }
+            self.append_event(&run_id, event).map(|_| ())
+        }
     }
 
     /// Read the raw event history through the shared B2 reader.
@@ -1953,7 +2006,8 @@ impl RunManager {
                 }
             };
             let fallback_session_id = session.session_id();
-            let mut outcome = match session.turn() {
+            let turn_result = session.turn(&mut self.event_sink(run_id, &step.id));
+            let mut outcome = match turn_result {
                 Ok(outcome) => outcome,
                 Err(error) => {
                     self.fail_run(run_id, Some(&step.id), error)?;
@@ -1964,7 +2018,7 @@ impl RunManager {
             loop {
                 let report = session_outcome_report(&outcome).clone();
                 self.apply_session_report(run_id, &step.id, &report, fallback_session_id.clone())?;
-                self.append_session_text(run_id, &step.id, &report.turn_text)?;
+                self.apply_session_markers(run_id, &report.turn_text)?;
                 let refresh_prompt = if self.intelligent_context_refresh {
                     report.plan_entries.as_deref().and_then(|entries| {
                         context_refresh::observe_plan(&mut plan_checkpoint, entries, true)
@@ -2041,7 +2095,9 @@ impl RunManager {
                         ),
                     ),
                 )?;
-                outcome = match session.send_message(AUTONOMOUS_NUDGE) {
+                outcome = match session
+                    .send_message(AUTONOMOUS_NUDGE, &mut self.event_sink(run_id, &step.id))
+                {
                     Ok(outcome) => outcome,
                     Err(error) => SessionOutcome::Failed {
                         message: error,
@@ -2146,22 +2202,15 @@ impl RunManager {
         Ok(())
     }
 
-    fn append_session_text(&mut self, run_id: &str, step_id: &str, text: &str) -> io::Result<()> {
+    /// Post-turn marker bookkeeping (`CEZ:DONE`/`CEZ:PR=`/…) over the whole aggregated turn text.
+    /// This no longer persists the text itself as an event — the live [`Self::event_sink`]
+    /// already streamed it turn-by-turn as the session produced it; re-appending the aggregate
+    /// here would duplicate the transcript.
+    fn apply_session_markers(&mut self, run_id: &str, text: &str) -> io::Result<()> {
         if text.is_empty() {
             return Ok(());
         }
-        self.apply_turn_markers(run_id, text)?;
-        let text = strip_turn_marker(&task_markers::strip_task_markers(text));
-        if text.is_empty() {
-            return Ok(());
-        }
-        self.append_event(
-            run_id,
-            EventInput::new("text")
-                .step(step_id.to_owned())
-                .field("text", text),
-        )?;
-        Ok(())
+        self.apply_turn_markers(run_id, text).map(|_| ())
     }
 
     fn append_step_event(
@@ -2274,7 +2323,7 @@ impl RunManager {
         let step_id = active.workflow.steps[active.step_index].id.clone();
         let report = session_outcome_report(&outcome).clone();
         self.apply_session_report(run_id, &step_id, &report, active.session.session_id())?;
-        self.append_session_text(run_id, &step_id, &report.turn_text)?;
+        self.apply_session_markers(run_id, &report.turn_text)?;
         let refresh_prompt = if self.intelligent_context_refresh {
             report.plan_entries.as_deref().and_then(|entries| {
                 context_refresh::observe_plan(&mut active.plan_checkpoint, entries, true)
@@ -2348,7 +2397,10 @@ impl RunManager {
                     ),
                 ),
             )?;
-            let next = match active.session.send_message(AUTONOMOUS_NUDGE) {
+            let next = match active
+                .session
+                .send_message(AUTONOMOUS_NUDGE, &mut self.event_sink(run_id, &step_id))
+            {
                 Ok(outcome) => outcome,
                 Err(error) => SessionOutcome::Failed {
                     message: error,
@@ -2552,7 +2604,11 @@ impl RunManager {
             }
             return Ok(false);
         };
-        let outcome = match active.session.finish() {
+        let step_id = active.workflow.steps[active.step_index].id.clone();
+        let finish_result = active
+            .session
+            .finish(&mut self.event_sink(run_id, &step_id));
+        let outcome = match finish_result {
             Ok(outcome) => outcome,
             Err(error) => {
                 self.active.insert(run_id.to_owned(), active);
@@ -2595,13 +2651,16 @@ impl RunManager {
         self.append_event(
             run_id,
             EventInput::new("user-message")
-                .step(step_id)
+                .step(step_id.clone())
                 .field("text", prompt.clone()),
         )?;
         let Some(mut active) = self.active.remove(run_id) else {
             return Ok(false);
         };
-        let outcome = match active.session.send_message(&prompt) {
+        let send_result = active
+            .session
+            .send_message(&prompt, &mut self.event_sink(run_id, &step_id));
+        let outcome = match send_result {
             Ok(outcome) => outcome,
             Err(_) => {
                 self.active.insert(run_id.to_owned(), active);
@@ -3557,17 +3616,46 @@ mod tests {
         follow_up: Option<SessionOutcome>,
     }
 
+    /// Emits the outcome's raw `turn_text` as one `text` event — a real backend would call
+    /// `on_event` per chunk as its process streams; the fake collapses that to a single call,
+    /// which is enough to exercise `event_sink`'s per-chunk marker stripping (the sink, not the
+    /// fake, is what strips it) without every B6 test needing to script a whole fake stream.
+    fn emit_fake_text(
+        outcome: &SessionOutcome,
+        on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
+    ) -> Result<(), String> {
+        let text = &session_outcome_report(outcome).turn_text;
+        if !text.is_empty() {
+            on_event(EventInput::new("text").field("text", text.clone()))
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
     impl AgentSession for FakeSession {
-        fn turn(&mut self) -> Result<SessionOutcome, String> {
-            self.outcome
+        fn turn(
+            &mut self,
+            on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
+        ) -> Result<SessionOutcome, String> {
+            let outcome = self
+                .outcome
                 .take()
-                .ok_or_else(|| "fake session has no outcome".to_owned())
+                .ok_or_else(|| "fake session has no outcome".to_owned())?;
+            emit_fake_text(&outcome, on_event)?;
+            Ok(outcome)
         }
 
-        fn send_message(&mut self, _prompt: &str) -> Result<SessionOutcome, String> {
-            self.follow_up
+        fn send_message(
+            &mut self,
+            _prompt: &str,
+            on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
+        ) -> Result<SessionOutcome, String> {
+            let outcome = self
+                .follow_up
                 .take()
-                .ok_or_else(|| "fake session declined follow-up".to_owned())
+                .ok_or_else(|| "fake session declined follow-up".to_owned())?;
+            emit_fake_text(&outcome, on_event)?;
+            Ok(outcome)
         }
     }
 
@@ -3834,6 +3922,104 @@ mod tests {
                     .map(str::to_owned)
             });
         assert_eq!(text.as_deref(), Some("Implemented it."));
+    }
+
+    /// A session that calls `on_event` several times mid-turn, the way a real backend's
+    /// process-output loop would — proof that `turn()`'s sink parameter is a live channel and
+    /// not just plumbing that happens to be unused by [`FakeSession`].
+    struct StreamingSession {
+        chunks: Vec<EventInput>,
+        outcome: Option<SessionOutcome>,
+    }
+
+    impl AgentSession for StreamingSession {
+        fn turn(
+            &mut self,
+            on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
+        ) -> Result<SessionOutcome, String> {
+            for chunk in self.chunks.drain(..) {
+                on_event(chunk).map_err(|error| error.to_string())?;
+            }
+            self.outcome
+                .take()
+                .ok_or_else(|| "streaming session has no outcome".to_owned())
+        }
+    }
+
+    struct StreamingFactory(Option<StreamingSession>);
+
+    impl SessionFactory for StreamingFactory {
+        fn open(
+            &mut self,
+            _request: SessionRequest,
+        ) -> Result<Box<dyn AgentSession + Send>, String> {
+            self.0
+                .take()
+                .map(|session| Box::new(session) as Box<dyn AgentSession + Send>)
+                .ok_or_else(|| "streaming factory already opened its one session".to_owned())
+        }
+    }
+
+    #[test]
+    fn a_session_that_streams_several_events_mid_turn_persists_each_one_live() {
+        let dir = tempdir().unwrap();
+        let factory = StreamingFactory(Some(StreamingSession {
+            chunks: vec![
+                EventInput::new("text").field("text", "Looking at the code…"),
+                EventInput::new("tool-call")
+                    .field("id", "call-1")
+                    .field("tool", "Read")
+                    .field("input", json!({"path": "src/lib.rs"})),
+                EventInput::new("tool-result")
+                    .field("toolCallId", "call-1")
+                    .field("result", "ok")
+                    .field("isError", false),
+                EventInput::new("text").field("text", "Done. CEZ:DONE"),
+            ],
+            outcome: Some(SessionOutcome::Completed(SessionReport {
+                turn_text: "Looking at the code…\nDone. CEZ:DONE".to_owned(),
+                ..SessionReport::default()
+            })),
+        }));
+        let mut manager = RunManager::with_session_factory(dir.path(), factory);
+        let workflow = workflow_with_steps(vec![agent_workflow_step("work")]);
+
+        let run = manager
+            .start_run(&workflow, start_input("stream me"))
+            .unwrap();
+
+        let events = manager.read_events(&run.id);
+        let text_events: Vec<&str> = events
+            .iter()
+            .filter(|event| event.event_type == "text")
+            .filter_map(|event| event.extra.get("text").and_then(Value::as_str))
+            .collect();
+        // Two live text chunks, each already marker-stripped by the sink — not one aggregated
+        // blob appended after the turn finished, and the trailing `CEZ:DONE` never appears.
+        assert_eq!(text_events, ["Looking at the code…", "Done."]);
+        let tool_call = events
+            .iter()
+            .find(|event| event.event_type == "tool-call")
+            .expect("tool-call event persisted live");
+        assert_eq!(
+            tool_call.extra.get("tool").and_then(Value::as_str),
+            Some("Read")
+        );
+        let tool_result = events
+            .iter()
+            .find(|event| event.event_type == "tool-result")
+            .expect("tool-result event persisted live");
+        assert_eq!(
+            tool_result.extra.get("toolCallId").and_then(Value::as_str),
+            Some("call-1")
+        );
+        // Every streamed event carries the seq order it arrived in, proving these are discrete
+        // live appends rather than one write reconstructed after the fact.
+        let seqs: Vec<f64> = events.iter().map(|event| event.seq).collect();
+        let mut sorted = seqs.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(seqs, sorted);
+        assert!(seqs.len() >= 4);
     }
 
     #[test]
