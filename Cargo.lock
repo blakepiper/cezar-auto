@@ -770,7 +770,10 @@ dependencies = [
 name = "coducktor-runners"
 version = "0.1.0"
 dependencies = [
+ "coducktor-contract",
+ "coducktor-core",
  "coducktor-protocol",
+ "regex",
  "serde",
  "serde_json",
 ]

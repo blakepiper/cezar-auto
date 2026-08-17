@@ -7,6 +7,9 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+coducktor-contract = { path = "../coducktor-contract" }
+coducktor-core = { path = "../coducktor-core" }
 coducktor-protocol = { path = "../coducktor-protocol" }
+regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
