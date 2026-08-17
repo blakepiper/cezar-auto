@@ -6,16 +6,12 @@
 //! directly (git shelling, IDE file I/O, agent-config file listing, provider probing) rather
 //! than being thin `cezar-core` delegates the way that crate's own module doc promises, so
 //! porting the *whole* `Engine` trait honestly is a bigger lift than this one step's text
-//! implies. See this crate's module doc / the plan's C1 entry for exactly which families are
-//! implemented here and which are deliberately left for a follow-up.
+//! implies. The complete port now lives here: each family is implemented against the
+//! matching `coducktor-server` handler, with the final trait adapter in `engine.rs`.
 //!
-//! **Status: partial.** `InProcessEngine` is a real, tested struct with working async methods
-//! for the families listed below — but it does NOT yet `impl Engine`, on purpose: the trait
-//! has ~85 methods, several families (IDE, repo git browsing, agent-config, provider/account
-//! probing, GitHub forge detail reads, worktree management, open-targets, diff/compare,
-//! settings write paths) are not ported yet, and claiming the full trait with `Err`-stub
-//! methods for those would be a worse outcome than an honest partial. A follow-up step
-//! finishes the remaining families and closes the trait impl.
+//! **Status: complete.** `InProcessEngine` implements every method in `Engine`; scoped calls
+//! intentionally resolve against this instance's one configured repository, and the adapter
+//! converts the legacy raw JSON repository UI-state helpers to the typed trait contract.
 //!
 //! Every method here cites the `coducktor-server` handler it was ported from (that crate is
 //! this port's oracle, the same role `packages/cezar` played for the rest of Phase B) —
@@ -42,25 +38,26 @@ use coducktor_contract::{
     GithubChecksAvailable, GithubChecksData, GithubChecksUnavailable, GithubCommentsData,
     GithubData, GithubItemKind, GithubMergeInput, GithubMergeResponse, GithubPrChangesAvailable,
     GithubPrChangesData, GithubPrChangesUnavailable, GithubPrMergeStateResponse,
-    GithubRefStatusData, GroupResponse, GroupVariant, HealthProject, HealthResponse,
-    IdeDirectoryResponse, IdeEntry, IdeEntryType, IdeFileResponse, ImageInput, LogEntry,
-    MarkAllReadResponse, MessageInput, MessageResponse, ModelCatalogSource, ModelDiscoveryRunner,
-    OpenAgentAccountFileInput, OpenAgentAccountFileResponse, OpenInCliResponse, OpenInInput,
-    OpenProjectInResponse, OpenTargetsResponse, ParsedWorkflow, PatchRunInput, PickVariantRequest,
-    PickVariantResponse, PlanResponse, PresentRepoResponse, ProjectListEntry, ProjectSource,
-    ProjectStatus, ProjectsResponse, ProviderConnectionState, ProviderStatus,
-    ProviderStatusResponse, QueuedMessagePatchInput, RUN_HISTORY_PAGE_ITEMS,
-    ReclaimWorktreesResponse, RemoveAgentProfileResponse, RemoveProjectResponse,
-    RemoveQueuedMessageResponse, RemoveTodoResponse, RemoveWorktreeResponse, RepoBranchRequest,
-    RepoBranchResponse, RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse, RunCommit,
-    RunCommitsResponse, RunEvent, RunHistoryContext, RunHistoryEvent, RunHistoryPage,
-    RunIndexEntry, Runner, RunnerModelCatalogResponse, RunnerModelOption, RunnerSelection,
-    RunsIndexResponse, SaveWorkflowInput, SaveWorkflowResponse, SelectAgentProfileInput,
-    SetAgentConfigInput, SetConfigInput, SetWorkspaceConfigInput, SetWorkspaceUiStateInput, Skill,
-    StartTodoResponse, StatusEntry, TodoItem, UpdateAgentProfileInput, UpdateProjectInput,
-    UpdateProjectResponse, UserMcpListing, WorkflowStepDef, WorkflowsResponse,
-    WorkspaceConfigResponse, WorkspaceUiState, WorkspaceUsageResponse, WorktreeDirEntry,
-    WorktreeEntry, WorktreeEntryType, WorktreeInfo, WorktreeRunStatus, WorktreesResponse,
+    GithubRefStatusAvailable, GithubRefStatusData, GithubRefStatusUnavailable, GroupResponse,
+    GroupVariant, HealthProject, HealthResponse, IdeDirectoryResponse, IdeEntry, IdeEntryType,
+    IdeFileResponse, ImageInput, LogEntry, MarkAllReadResponse, MessageInput, MessageResponse,
+    ModelCatalogSource, ModelDiscoveryRunner, OpenAgentAccountFileInput,
+    OpenAgentAccountFileResponse, OpenInCliResponse, OpenInInput, OpenProjectInResponse,
+    OpenTargetsResponse, ParsedWorkflow, PatchRunInput, PickVariantRequest, PickVariantResponse,
+    PlanResponse, PresentRepoResponse, ProjectListEntry, ProjectSource, ProjectStatus,
+    ProjectsResponse, ProviderConnectionState, ProviderStatus, ProviderStatusResponse,
+    QueuedMessagePatchInput, RUN_HISTORY_PAGE_ITEMS, ReclaimWorktreesResponse,
+    RemoveAgentProfileResponse, RemoveProjectResponse, RemoveQueuedMessageResponse,
+    RemoveTodoResponse, RemoveWorktreeResponse, RepoBranchRequest, RepoBranchResponse,
+    RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse, RunCommit, RunCommitsResponse,
+    RunEvent, RunHistoryContext, RunHistoryEvent, RunHistoryPage, RunIndexEntry, Runner,
+    RunnerModelCatalogResponse, RunnerModelOption, RunnerSelection, RunsIndexResponse,
+    SaveWorkflowInput, SaveWorkflowResponse, SelectAgentProfileInput, SetAgentConfigInput,
+    SetConfigInput, SetWorkspaceConfigInput, SetWorkspaceUiStateInput, Skill, StartTodoResponse,
+    StatusEntry, TodoItem, UpdateAgentProfileInput, UpdateProjectInput, UpdateProjectResponse,
+    UserMcpListing, WorkflowStepDef, WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUiState,
+    WorkspaceUsageResponse, WorktreeDirEntry, WorktreeEntry, WorktreeEntryType, WorktreeInfo,
+    WorktreeRunStatus, WorktreesResponse,
 };
 use coducktor_core::config::load_config;
 use coducktor_core::handoff::followups_enabled;
@@ -597,10 +594,9 @@ impl InProcessEngine {
         Ok(RemoveTodoResponse { removed: true })
     }
 
-    /// A reduced port of `start_todo`: runs the todo's own suggested skill (or a bare
-    /// quick-task) with its saved prompt. Explicit `runner`/`model` overrides from the HTTP
-    /// body are not threaded through yet — `StartTodoInput`'s fields are not exposed on this
-    /// method's signature (a follow-up if a screen needs them before the trait is closed).
+    /// Runs the todo's own suggested skill (or a bare quick-task) with its saved prompt.
+    /// The `Engine` trait intentionally exposes no runner/model override for this action, so
+    /// the saved todo workflow supplies those choices just as it does for the HTTP no-body path.
     pub async fn start_todo(&self, id: &str) -> Result<StartTodoResponse, EngineError> {
         if !followups_enabled(&ProcessEnv) {
             return Err(EngineError::Conflict {
@@ -950,26 +946,37 @@ impl InProcessEngine {
         .map_err(|error| EngineError::Transport(error.to_string()))?
     }
 
-    /// Ported from `open_agent_profile_file`, minus explicit-app-target selection: that depends
-    /// on the not-yet-ported open-targets registry (`open_targets`/`open_target`, its own
-    /// family — a C1 follow-up). `target: None` (open with the OS default opener) behaves
-    /// exactly like the oracle; an explicit `target` is a clear `Conflict`, not a silent no-op.
+    /// Ported from `open_agent_profile_file`; explicit app targets reuse this module's
+    /// `open_targets` registry and launcher, while `target: None` uses the OS default opener.
     pub async fn open_agent_account_file(
         &self,
         id: &str,
         input: &OpenAgentAccountFileInput,
     ) -> Result<OpenAgentAccountFileResponse, EngineError> {
         if let Some(target) = input.target.as_deref() {
-            return Err(EngineError::Conflict {
-                reason: format!(
-                    "opening with a specific target (\"{target}\") is not yet supported by \
-                     InProcessEngine — the open-targets family is a C1 follow-up"
-                ),
-            });
+            if target.starts_with("cli:") {
+                return Err(EngineError::Conflict {
+                    reason: "agent CLIs open a task worktree, not a config folder".to_owned(),
+                });
+            }
+            if target == "terminal" && input.file != "folder" {
+                return Err(EngineError::Conflict {
+                    reason: "a terminal opens a folder, not a file".to_owned(),
+                });
+            }
+            if !open_targets_list()
+                .iter()
+                .any(|candidate| candidate.id == target)
+            {
+                return Err(EngineError::Conflict {
+                    reason: format!("no such app on this machine: {target}"),
+                });
+            }
         }
         let accounts_path = agent_accounts_path(&ProcessEnv);
         let id = id.to_owned();
         let file = input.file.clone();
+        let target = input.target.clone();
         tokio::task::spawn_blocking(move || {
             let profile = account_by_route_id(&accounts_path, &id).ok_or(EngineError::NotFound)?;
             let is_folder = file == "folder";
@@ -989,7 +996,11 @@ impl InProcessEngine {
                     reason: format!("this account has no {name} yet"),
                 });
             }
-            if !account_open_default(&path) {
+            let opened = target
+                .as_deref()
+                .map(|target| open_target(&path, target))
+                .unwrap_or_else(|| account_open_default(&path));
+            if !opened {
                 let name = path
                     .file_name()
                     .and_then(|name| name.to_str())
@@ -1092,9 +1103,8 @@ impl InProcessEngine {
     // `get_repo`/`get_repo_changes`/`get_repo_commit`/`create_repo_branch` handlers, plus their
     // shared `repo_info_at`/`repo_status`/`repo_log`/`repo_branches`/`collect_git_changes`/
     // `repo_commit_payload`/`read_worktree_path` helpers (all duplicated below — none were
-    // `pub`). `group`/`pick_variant` are a separate, more involved cluster (they mutate run
-    // state — cancel/archive losing variants, remove their worktrees, touch the review gate) and
-    // are deliberately left for a follow-up round rather than folded in alongside this batch.
+    // `pub`). `group`/`pick_variant` below are the separate, more involved cluster (they mutate
+    // run state — cancel/archive losing variants, remove their worktrees, touch the review gate).
 
     fn run_record(&self, run_id: &str) -> Result<coducktor_contract::RunRecord, EngineError> {
         let manager = self.manager.lock().map_err(|_| lock_err())?;
@@ -1810,17 +1820,75 @@ impl InProcessEngine {
         .map_err(|error| EngineError::Transport(error.to_string()))
     }
 
-    /// The `Engine` trait's `github_ref_status` takes no PR/issue numbers — matching
-    /// `HttpEngine`'s own already-shipped implementation, which sends `GET /github/ref-status`
-    /// with no query string at all. The `coducktor-server` handler this ports from 400s unless
-    /// at least one of `prs`/`issues` is non-empty, so as shipped this capability is a guaranteed
-    /// "missing prs or issues query" outcome on EITHER backend — an inherited gap in the trait's
-    /// own signature (it has nowhere to receive numbers from a caller), not something introduced
-    /// or "fixed" here. Faithfully reproduced rather than silently patched over.
-    pub async fn github_ref_status(&self) -> Result<GithubRefStatusData, EngineError> {
-        Err(EngineError::Conflict {
-            reason: "missing prs or issues query".to_owned(),
+    pub async fn github_ref_status(
+        &self,
+        prs: &[String],
+        issues: &[String],
+    ) -> Result<GithubRefStatusData, EngineError> {
+        if prs.len() > 100 || issues.len() > 100 || (prs.is_empty() && issues.is_empty()) {
+            return Err(EngineError::Conflict {
+                reason: if prs.is_empty() && issues.is_empty() {
+                    "missing prs or issues query".to_owned()
+                } else {
+                    "invalid ref-status query".to_owned()
+                },
+            });
+        }
+        let parse_numbers = |values: &[String]| {
+            values
+                .iter()
+                .map(|value| {
+                    let number = value.parse::<u64>().ok().filter(|number| *number > 0)?;
+                    (number.to_string() == *value).then_some(number)
+                })
+                .collect::<Option<Vec<_>>>()
+        };
+        let Some(prs) = parse_numbers(prs) else {
+            return Err(EngineError::Conflict {
+                reason: "invalid ref-status query".to_owned(),
+            });
+        };
+        let Some(issues) = parse_numbers(issues) else {
+            return Err(EngineError::Conflict {
+                reason: "invalid ref-status query".to_owned(),
+            });
+        };
+        let repo_root = self.repo_root.clone();
+        tokio::task::spawn_blocking(move || {
+            let Some(driver) = Self::github_driver_blocking(&repo_root) else {
+                return GithubRefStatusData::Unavailable(GithubRefStatusUnavailable {
+                    available: false,
+                    reason: Self::GITHUB_UNAVAILABLE_REASON.to_owned(),
+                    recheck_after_ms: None,
+                });
+            };
+            let status = driver.ref_status(&prs, &issues);
+            if !status.available {
+                return GithubRefStatusData::Unavailable(GithubRefStatusUnavailable {
+                    available: false,
+                    reason: status
+                        .reason
+                        .unwrap_or_else(|| Self::GITHUB_UNAVAILABLE_REASON.to_owned()),
+                    recheck_after_ms: status.recheck_after_ms.map(|value| value as f64),
+                });
+            }
+            GithubRefStatusData::Available(GithubRefStatusAvailable {
+                available: true,
+                prs: status
+                    .prs
+                    .into_iter()
+                    .map(|(number, value)| (number.to_string(), value))
+                    .collect(),
+                issues: status
+                    .issues
+                    .into_iter()
+                    .map(|(number, value)| (number.to_string(), value))
+                    .collect(),
+                recheck_after_ms: status.recheck_after_ms.map(|value| value as f64),
+            })
         })
+        .await
+        .map_err(|error| EngineError::Transport(error.to_string()))
     }
 
     pub async fn github_comments(
@@ -6281,6 +6349,7 @@ fn health_payload(repo_root: &Path, version: &str) -> HealthResponse {
     let repo_root_str = repo_root.to_string_lossy().into_owned();
     let branch = git_output(repo_root, &["branch", "--show-current"]);
     let remote = git_output(repo_root, &["config", "--get", "remote.origin.url"]);
+    let forge_available = resolve_forge(repo_root.to_path_buf(), remote.as_deref()).is_some();
     let repo = if branch.is_some() || remote.is_some() {
         Some(RepoInfo {
             root: repo_root_str.clone(),
@@ -6309,10 +6378,9 @@ fn health_payload(repo_root: &Path, version: &str) -> HealthResponse {
         default_runner: RunnerSelection::Auto,
         forge: Some(ForgeInfo {
             kind: ForgeKind::GitHub,
-            available: None,
-            reason: Some(
-                "InProcessEngine's forge routes are not wired yet (C1 follow-up)".to_owned(),
-            ),
+            available: Some(forge_available),
+            reason: (!forge_available)
+                .then(|| "GitHub is unavailable for this repository".to_owned()),
         }),
         capabilities: Capabilities {
             followups: followups_enabled(&ProcessEnv),
@@ -6694,6 +6762,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn implements_the_full_engine_trait_without_http() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let engine: &dyn crate::Engine = &engine;
+        let scope = crate::Scope::Workspace;
+
+        assert!(engine.list_runs(&scope).await.unwrap().is_empty());
+        assert_eq!(
+            engine.ui_state(&scope).await.unwrap(),
+            coducktor_contract::UiState::default()
+        );
+    }
+
+    #[tokio::test]
     async fn workspace_usage_reports_no_providers_matching_the_b10_scope_cut() {
         let dir = TempDir::new().unwrap();
         let engine = engine(&dir);
@@ -6996,7 +7078,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn open_agent_account_file_rejects_an_explicit_target_before_touching_disk() {
+    async fn open_agent_account_file_rejects_a_cli_target_before_touching_disk() {
         let dir = TempDir::new().unwrap();
         let engine = engine(&dir);
         // No account with this id exists either, but an explicit `target` must be rejected
@@ -7006,7 +7088,7 @@ mod tests {
                 "coducktor-test-account-that-does-not-exist",
                 &OpenAgentAccountFileInput {
                     file: "folder".to_owned(),
-                    target: Some("vscode".to_owned()),
+                    target: Some("cli:codex".to_owned()),
                 },
             )
             .await
@@ -8244,14 +8326,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn github_ref_status_always_reports_missing_query_matching_the_trait_signature_gap() {
+    async fn github_ref_status_rejects_a_missing_query() {
         let dir = fixture_repo();
         let engine = engine(&dir);
         assert_eq!(
-            engine.github_ref_status().await.unwrap_err(),
+            engine.github_ref_status(&[], &[]).await.unwrap_err(),
             EngineError::Conflict {
                 reason: "missing prs or issues query".to_owned()
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn github_ref_status_reports_unavailable_without_an_origin_remote() {
+        let dir = fixture_repo();
+        let engine = engine(&dir);
+        let prs = vec!["1".to_owned()];
+        let issues = Vec::new();
+        assert_eq!(
+            engine.github_ref_status(&prs, &issues).await.unwrap(),
+            GithubRefStatusData::Unavailable(GithubRefStatusUnavailable {
+                available: false,
+                reason: "GitHub is unavailable for this repository".to_owned(),
+                recheck_after_ms: None,
+            })
         );
     }
 

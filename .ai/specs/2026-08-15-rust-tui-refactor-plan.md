@@ -1210,7 +1210,7 @@ and a listening port. Phase C is what removes those.
 Source: spec §12. This is the phase that produces "the completed Rust TUI" as the
 user means it: one binary, nothing listening, no Node, no browser, ever.
 
-### [ ] C1 — `InProcessEngine` ⚠ in progress, not complete
+### [x] C1 — `InProcessEngine`
 **Ships:** `InProcessEngine` in `cezar-core` against the `Engine` trait defined
 back at A2. Because the trait predates the server, this is an implementation, not
 an extraction — the A2 review gates (no HTTP leakage into screens) guarantee no
@@ -1576,12 +1576,19 @@ variants via `RunManager::create_run` directly (module-private access from
 routing through a real agent turn. 107 total in `in_process::tests`. Full
 workspace green (797 tests), `cargo clippy --workspace --all-targets -- -D
 warnings` clean, `cargo fmt --check` clean.
-**Still remaining:** `models` (host model catalog), GitHub forge detail
-reads, remaining settings write paths, task-thread write paths,
-`run_history`/`run_history_context`, `plan`, and closing the `impl Engine
-for InProcessEngine` block.
+The continuation after C1.9 closed the remaining model-catalog, GitHub forge,
+settings, task-thread, history, and plan families before adding the full
+`Engine for InProcessEngine` adapter.
 **Commit:** `feat(engine): C1.9 InProcessEngine — variant groups` — pushed as
 `d99b6aee`.
+
+**Status (C1.10–C1.15):** complete. C1.10 through C1.14 ported the remaining
+families from `coducktor-server`; C1.15 adds the complete trait implementation,
+typed repository UI-state adaptation, and the missing GitHub ref-status query
+inputs so no trait method is a placeholder. Focused client coverage is 162
+tests; the full workspace tests, clippy, and format checks are green.
+The `Engine` trait is now genuinely implemented and C2 is unblocked; do not
+start C2 as part of this continuation.
 
 ### [ ] C2 — Switch default backend, delete `cezar-server`
 **Ships:** `cezar-tui`'s default backend becomes `InProcess`; then **delete

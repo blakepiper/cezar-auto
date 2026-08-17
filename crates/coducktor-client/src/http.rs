@@ -235,8 +235,16 @@ impl HttpEngine {
     pub async fn github_ref_status(
         &self,
         scope: &Scope,
+        prs: &[String],
+        issues: &[String],
     ) -> Result<GithubRefStatusData, EngineError> {
-        self.get_json(scope, "/github/ref-status").await
+        let prs = prs.join(",");
+        let issues = issues.join(",");
+        let route = format!(
+            "/github/ref-status{}",
+            query(&[("prs", Some(&prs)), ("issues", Some(&issues))])
+        );
+        self.get_json(scope, &route).await
     }
 
     pub async fn github_comments(
