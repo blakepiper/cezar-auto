@@ -657,7 +657,8 @@ helpers)` — pushed as `01a15b45`; `B9a.2b.1 ask-marker validation` — `f912a5
 `B9a.2b.2 least-privilege child env` — `95b4968c`; `B9a.2b claude backend` —
 `0653a0bf`; `B9a.2c.0 extract shared child-process plumbing` — `2ed6b976`;
 `B9a.2c.1 v1 text coalescer` — `5ef2944b`; `B9a.2c codex backend` — `0213ad30`;
-then `B9a.2d opencode backend`, `B9a.2e pi backend` — none of these are done yet.
+`B9a.2d.1 model identity parser` — `ea18dd78`; `B9a.2d opencode backend` —
+`c0a34f1b` (Cargo.lock sync `410fde1b`); then `B9a.2e pi backend` — not done yet.
 **B9a.2a note:** shipped as `crates/coducktor-runners/src/agent_runner.rs` — the four
 primitives `agent-runner.ts` actually exports: `is_signal_termination_exit`,
 `prepend_system_prompt`, `ContentBlock`/`ImageSource` (the outbound Anthropic-shaped
@@ -786,6 +787,66 @@ fixture proving the parent's turn survives a child thread's full turn lifecycle,
 `finish()`'s SIGTERM escalation against an app-server that ignores EOF. 8 new tests, 73
 total in `coducktor-runners`, full workspace test/clippy/fmt green (the one pre-existing
 `coducktor-client/tests/transport.rs` drift noted since B2 is untouched).
+
+**B9a.2d notes:** one prerequisite shipped first as its own commit — `B9a.2d.1` ports
+`parseModelIdentity` from `packages/cezar/src/core/model-identity.ts` to
+`crates/coducktor-runners/src/model_identity.rs` (only the pure splitter; the fail-loud
+`resolveModelIdentity`/`normalizeModelForBackend` machinery is run-wiring's job, out of
+scope — `spec.model` "arrives already normalised" per the TS runner's own comment). 4
+tests port `model-identity.test.ts`'s `parseModelIdentity` cases.
+
+The backend itself (`crates/coducktor-runners/src/opencode_runner.rs`) ships
+`OpencodeSpawnConfig`/`open_opencode_session`/`OpencodeSession` over opencode's HTTP+SSE
+transport — a headless `opencode serve` process, REST-ish requests, one persistent SSE
+subscription — using `reqwest`'s blocking client (its own internal tokio runtime; no
+async runtime added to this otherwise fully synchronous crate).
+**Architecture notes (documented in the module doc), not scope cuts:** unlike codex,
+bootstrap (spawn, read the bound URL off stdout, `POST /session`, connect SSE) runs
+*eagerly* in `open_opencode_session` — none of those steps need a live read/dispatch
+loop the way JSON-RPC's shared stdio channel does; only emitting the `"session"` event
+and sending the opening prompt wait for `turn()`. The prompt POST and the SSE stream run
+concurrently on purpose, matching the real server's behavior the bundled test mock
+deliberately reproduces (the POST response resolves before a turn's final SSE parts
+arrive) — `post_and_drain()` spawns the POST on its own thread and merges it with the
+SSE channel on the calling thread, so `on_event` still sees each part live. `v1`'s
+turn-end is synthesized from the POST settling, never from `session.idle`, matching TS.
+`text_seen`/`tools_seen`/the coalescer/`text_chunks` are session-scoped fields (matching
+TS's own instance fields, not reset per turn); each turn's `SessionReport.turn_text` is a
+slice of `text_chunks` from an index captured at that turn's start, and token/cost
+totals use the same before/after snapshot per turn since the wire's fields are
+cumulative-over-the-session, not per-turn deltas. Two narrow, deliberate improvements
+over a literal port (same rationale as codex's): a follow-up prompt failure is a hard
+`Err` rather than a swallowed `note`, and a wall-clock timeout escalates to SIGKILL if
+the process ignores SIGTERM — TS's own timeout path only ever sends one SIGTERM and can
+hang the whole session forever if the process ignores it; closed here, not reproduced.
+**Discovered mid-step, folded into the same commit:** `ChildProcess::discard_stdout()`
+(opencode only needs stdout briefly at startup, unlike claude/codex's whole-session use
+of it) and `ChildProcess::escalate_immediately()` (opencode's `finish()` has no
+EOF-style grace period to wait out first) extend the shared `child_process.rs` plumbing
+(B9a.2c.0). A `Drop` impl for `ChildProcess` (best-effort hard-kill if still running) was
+also added — surfaced by a genuinely orphaned mock-server process a flaky test run left
+behind, not a hypothetical; see the next paragraph.
+**A real flake, caught and fixed, not just described:** the first run of the "first
+turn streams the expected events" test failed intermittently (missing `tool-call`) —
+the POST response resolving does not guarantee SSE frames sent moments earlier over a
+*separate* TCP connection have already been delivered to this process, a race TS's own
+concurrent read loop has too but usually wins on typical local timing. Reproduced,
+diagnosed, and fixed with a short adaptive drain window after the POST finishes (keep
+draining while frames keep actively arriving, stop at the first quiet gap — long enough
+to catch already-in-flight frames, short enough to still correctly exclude the mock's
+deliberately-30ms-later "Done." part). Stress-verified across repeated full-suite runs
+afterward with no further flakes.
+**Scope cut:** same as B9a.2b/2c — wiring a real `SessionFactory` into `coducktor-server`
+is deferred.
+**Accept, verified:** real subprocess tests run `packages/cezar/src/core/__fixtures__/
+opencode/mock-opencode-serve.mjs` via `node` — a first turn's full event stream
+(session/text/tool-call/tool-result/token-usage/cost/turn-end), proving the flushed
+(never-`time.end`'d) first text part surfaces while the deliberately-late "Done." part
+correctly does not, per-turn token/cost deltas computed correctly against the wire's
+cumulative totals, and `finish()` closing a cooperative process promptly. 8 new tests (5
+opencode + 3 `child_process`), 90 total in `coducktor-runners`, full workspace
+test/clippy/fmt green (the one pre-existing `coducktor-client/tests/transport.rs` drift
+noted since B2 is untouched).
 
 ### [ ] B10 — `cezar-cli`
 **Ships:** `serve`, `run`, `init`, `usage`, `projects` subcommands. `-p/--port` and
