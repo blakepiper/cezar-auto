@@ -29,21 +29,31 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use coducktor_contract::{
-    ApiRun, ArchiveFinishedResponse, BackendCheck, BackendCheckName, CancelResponse, Capabilities,
-    CreateRunInput, CreateRunResponse, DeleteRunResponse, DeleteWorkflowResponse, FinishResponse,
-    ForgeInfo, ForgeKind, HealthProject, HealthResponse, MarkAllReadResponse, ParsedWorkflow,
+    AgentAccountDetailsResponse, AgentAccountFile, AgentAccountStatusResponse, AgentProfile,
+    AgentProfileResponse, AgentProfileSelectionsResponse, AgentProfilesResponse, ApiRun,
+    ArchiveFinishedResponse, BackendCheck, BackendCheckName, CancelResponse, Capabilities,
+    CreateAgentProfileInput, CreateRunInput, CreateRunResponse, DeleteRunResponse,
+    DeleteWorkflowResponse, FinishResponse, ForgeInfo, ForgeKind, HealthProject, HealthResponse,
+    MarkAllReadResponse, OpenAgentAccountFileInput, OpenAgentAccountFileResponse, ParsedWorkflow,
     PatchRunInput, ProjectListEntry, ProjectSource, ProjectStatus, ProjectsResponse,
-    RemoveTodoResponse, RepoInfo, RunIndexEntry, RunnerSelection, RunsIndexResponse,
-    SaveWorkflowInput, SaveWorkflowResponse, Skill, StartTodoResponse, TodoItem, WorkflowStepDef,
-    WorkflowsResponse, WorkspaceUsageResponse,
+    ProviderConnectionState, ProviderStatus, ProviderStatusResponse, RemoveAgentProfileResponse,
+    RemoveTodoResponse, RepoInfo, RunIndexEntry, Runner, RunnerSelection, RunsIndexResponse,
+    SaveWorkflowInput, SaveWorkflowResponse, SelectAgentProfileInput, Skill, StartTodoResponse,
+    TodoItem, UpdateAgentProfileInput, WorkflowStepDef, WorkflowsResponse, WorkspaceUsageResponse,
 };
 use coducktor_core::handoff::followups_enabled;
-use coducktor_core::paths::ProcessEnv;
+use coducktor_core::paths::{
+    ProcessEnv, agent_accounts_path, agent_home_paths, expand_tilde, is_absolute_config_dir,
+};
 use coducktor_core::skills::discover_skills;
 use coducktor_core::workflows::load::{WORKFLOWS_DIR, load_workflows};
 use coducktor_core::workflows::run::{RunManager, StartRunInput as CoreStartRunInput};
 use coducktor_core::workflows::types::{parse_workflow_file_doc, quick_task_workflow, steps_issue};
-use coducktor_core::workspace::config::load_workspace_config;
+use coducktor_core::workspace::agent_accounts::{
+    AgentAccount, has_control_chars, is_valid_account_id, merge_write_agent_accounts,
+    supports_profiles,
+};
+use coducktor_core::workspace::config::{PROVIDER_IDS, load_workspace_config};
 use coducktor_runners::session_factory::DefaultSessionFactory;
 use serde_json::{Map, Value, json};
 use tokio::sync::broadcast;
@@ -591,6 +601,347 @@ impl InProcessEngine {
         Ok(WorkspaceUsageResponse { providers: vec![] })
     }
 
+    // ---- provider status + agent-profile accounts (ported from the matching handlers in
+    // `coducktor-server::lib`: `get_provider_status`, `list_agent_profiles`,
+    // `create_agent_profile`, `update_agent_profile`, `remove_agent_profile`,
+    // `select_agent_profile`, `get_agent_profile_status`, `get_agent_profile_details`,
+    // `open_agent_profile_file`) -------------------------------------------------------------
+
+    pub async fn provider_status(&self) -> Result<ProviderStatusResponse, EngineError> {
+        tokio::task::spawn_blocking(provider_status_response)
+            .await
+            .map_err(|error| EngineError::Transport(error.to_string()))
+    }
+
+    pub async fn agent_profiles(&self) -> Result<AgentProfilesResponse, EngineError> {
+        Ok(agent_profiles_response())
+    }
+
+    /// Ported from `create_agent_profile`.
+    pub async fn create_agent_profile(
+        &self,
+        input: &CreateAgentProfileInput,
+    ) -> Result<AgentProfileResponse, EngineError> {
+        if !supports_profiles(input.provider) {
+            return Err(EngineError::Conflict {
+                reason: format!(
+                    "{} cannot carry more than one account",
+                    serde_json::to_string(&input.provider)
+                        .unwrap_or_default()
+                        .trim_matches('"')
+                ),
+            });
+        }
+        let config_dir = input.config_dir.trim().to_owned();
+        if let Some(error) = profile_path_error(&config_dir) {
+            return Err(EngineError::Conflict { reason: error });
+        }
+        let path = expand_tilde(&config_dir, &ProcessEnv);
+        let store_path = agent_accounts_path(&ProcessEnv);
+        let current = coducktor_core::workspace::agent_accounts::load_agent_accounts(&store_path);
+        if let Some(error) = profile_conflict(&current, input.provider, &path, None) {
+            return Err(EngineError::Conflict { reason: error });
+        }
+        let source = input
+            .label
+            .as_deref()
+            .filter(|label| !label.trim().is_empty())
+            .map(str::trim)
+            .or_else(|| path.file_name().and_then(|name| name.to_str()))
+            .unwrap_or("account");
+        let taken = current
+            .accounts
+            .iter()
+            .map(|account| account.id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        let id = allocate_account_id(source, &taken);
+        if !is_valid_account_id(&id) {
+            return Err(EngineError::Conflict {
+                reason: "invalid account id".to_owned(),
+            });
+        }
+        let label = input
+            .label
+            .clone()
+            .map(|label| label.trim().to_owned())
+            .filter(|label| !label.is_empty())
+            .unwrap_or_else(|| id.clone());
+        let added = AgentAccount {
+            id,
+            provider: input.provider,
+            config_dir,
+            label,
+            added_at: coducktor_core::time::now_iso8601(),
+            extra: Default::default(),
+        };
+        let added_id = added.id.clone();
+        let saved = merge_write_agent_accounts(&store_path, |store| store.accounts.push(added))
+            .map_err(io_err)?;
+        let account = saved
+            .accounts
+            .iter()
+            .find(|account| account.id == added_id)
+            .ok_or_else(|| EngineError::Transport("account could not be saved".to_owned()))?;
+        Ok(AgentProfileResponse {
+            profile: agent_profile_wire(&resolved_agent_profile(account)),
+        })
+    }
+
+    /// Ported from `update_agent_profile`.
+    pub async fn update_agent_profile(
+        &self,
+        id: &str,
+        input: &UpdateAgentProfileInput,
+    ) -> Result<AgentProfileResponse, EngineError> {
+        if input.label.is_none() && input.config_dir.is_none() {
+            return Err(EngineError::Conflict {
+                reason: "send label or configDir".to_owned(),
+            });
+        }
+        let store_path = agent_accounts_path(&ProcessEnv);
+        let current = coducktor_core::workspace::agent_accounts::load_agent_accounts(&store_path);
+        let Some(existing) = current.accounts.iter().find(|account| account.id == id) else {
+            return Err(EngineError::NotFound);
+        };
+        let new_path = if let Some(config_dir) = &input.config_dir {
+            let config_dir = config_dir.trim();
+            if let Some(error) = profile_path_error(config_dir) {
+                return Err(EngineError::Conflict { reason: error });
+            }
+            Some(expand_tilde(config_dir, &ProcessEnv))
+        } else {
+            None
+        };
+        if let Some(path) = &new_path
+            && let Some(error) = profile_conflict(&current, existing.provider, path, Some(id))
+        {
+            return Err(EngineError::Conflict { reason: error });
+        }
+        let id_owned = id.to_owned();
+        let input = input.clone();
+        let mut updated = None;
+        let saved = merge_write_agent_accounts(&store_path, |store| {
+            let Some(account) = store
+                .accounts
+                .iter_mut()
+                .find(|account| account.id == id_owned)
+            else {
+                return;
+            };
+            if let Some(label) = &input.label {
+                let label = label.trim();
+                account.label = if label.is_empty() {
+                    account.id.clone()
+                } else {
+                    label.to_owned()
+                };
+            }
+            if let Some(config_dir) = &input.config_dir {
+                account.config_dir = config_dir.trim().to_owned();
+            }
+            updated = Some(account.clone());
+        })
+        .map_err(io_err)?;
+        let account =
+            updated.or_else(|| saved.accounts.into_iter().find(|account| account.id == id));
+        let Some(account) = account else {
+            return Err(EngineError::NotFound);
+        };
+        Ok(AgentProfileResponse {
+            profile: agent_profile_wire(&resolved_agent_profile(&account)),
+        })
+    }
+
+    /// Ported from `remove_agent_profile`.
+    pub async fn remove_agent_profile(
+        &self,
+        id: &str,
+    ) -> Result<RemoveAgentProfileResponse, EngineError> {
+        let store_path = agent_accounts_path(&ProcessEnv);
+        let current = coducktor_core::workspace::agent_accounts::load_agent_accounts(&store_path);
+        if !current.accounts.iter().any(|account| account.id == id) {
+            return Err(EngineError::NotFound);
+        }
+        let id_owned = id.to_owned();
+        merge_write_agent_accounts(&store_path, |store| {
+            store.accounts.retain(|account| account.id != id_owned);
+            for (_, selection) in &mut store.selections {
+                if selection.claude.as_deref() == Some(&id_owned) {
+                    selection.claude = None;
+                }
+                if selection.codex.as_deref() == Some(&id_owned) {
+                    selection.codex = None;
+                }
+                if selection.opencode.as_deref() == Some(&id_owned) {
+                    selection.opencode = None;
+                }
+                if selection.pi.as_deref() == Some(&id_owned) {
+                    selection.pi = None;
+                }
+            }
+            store
+                .selections
+                .retain(|(_, selection)| !selection_empty(selection));
+        })
+        .map_err(io_err)?;
+        Ok(RemoveAgentProfileResponse {
+            removed: true,
+            id: id.to_owned(),
+        })
+    }
+
+    /// Ported from `select_agent_profile`.
+    pub async fn select_agent_profile(
+        &self,
+        input: &SelectAgentProfileInput,
+    ) -> Result<AgentProfileSelectionsResponse, EngineError> {
+        let root = project_root_for_agent_selection(&self.repo_root, input.project_id.as_deref());
+        if input.project_id.is_some() && root.is_none() {
+            return Err(EngineError::NotFound);
+        }
+        let store_path = agent_accounts_path(&ProcessEnv);
+        let current = coducktor_core::workspace::agent_accounts::load_agent_accounts(&store_path);
+        if let Some(profile_id) = input.profile_id.as_deref()
+            && profile_id != coducktor_contract::DEFAULT_AGENT_ACCOUNT_ID
+            && !current
+                .accounts
+                .iter()
+                .any(|account| account.id == profile_id && account.provider == input.provider)
+        {
+            return Err(EngineError::Conflict {
+                reason: format!("unknown {:?} account: {profile_id}", input.provider)
+                    .to_lowercase(),
+            });
+        }
+        let profile_id = input
+            .profile_id
+            .clone()
+            .filter(|profile_id| profile_id != coducktor_contract::DEFAULT_AGENT_ACCOUNT_ID);
+        let root_key = root.map(|path| path.to_string_lossy().into_owned());
+        let provider = input.provider;
+        let saved = merge_write_agent_accounts(&store_path, |store| {
+            if let Some(root) = &root_key {
+                if let Some((_, selection)) =
+                    store.selections.iter_mut().find(|(key, _)| key == root)
+                {
+                    set_profile_selection(selection, provider, profile_id.clone());
+                    if selection_empty(selection) {
+                        store.selections.retain(|(key, _)| key != root);
+                    }
+                } else if let Some(profile_id) = profile_id.clone() {
+                    let mut selection =
+                        coducktor_core::workspace::agent_accounts::AgentAccountSelection::default();
+                    set_profile_selection(&mut selection, provider, Some(profile_id));
+                    store.selections.push((root.clone(), selection));
+                }
+            } else {
+                set_profile_selection(&mut store.defaults, provider, profile_id.clone());
+            }
+        })
+        .map_err(io_err)?;
+        let selections = saved
+            .selections
+            .iter()
+            .map(|(root, selection)| (root.clone(), selection_wire(selection)))
+            .collect();
+        Ok(AgentProfileSelectionsResponse {
+            selections,
+            defaults: selection_wire(&saved.defaults),
+        })
+    }
+
+    /// Ported from `get_agent_profile_status`. `refresh` is accepted for signature parity with
+    /// `HttpEngine` but has no effect — the oracle's own handler ignores it too (there is no
+    /// caching layer for provider status on either side; every call already probes fresh).
+    pub async fn agent_account_status(
+        &self,
+        id: &str,
+        _refresh: bool,
+    ) -> Result<AgentAccountStatusResponse, EngineError> {
+        let accounts_path = agent_accounts_path(&ProcessEnv);
+        let id = id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let profile = account_by_route_id(&accounts_path, &id).ok_or(EngineError::NotFound)?;
+            Ok(AgentAccountStatusResponse {
+                status: provider_status_for_profile(&profile),
+            })
+        })
+        .await
+        .map_err(|error| EngineError::Transport(error.to_string()))?
+    }
+
+    /// Ported from `get_agent_profile_details`.
+    pub async fn agent_account_details(
+        &self,
+        id: &str,
+    ) -> Result<AgentAccountDetailsResponse, EngineError> {
+        let accounts_path = agent_accounts_path(&ProcessEnv);
+        let id = id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let profile = account_by_route_id(&accounts_path, &id).ok_or(EngineError::NotFound)?;
+            Ok(agent_profile_details(&profile))
+        })
+        .await
+        .map_err(|error| EngineError::Transport(error.to_string()))?
+    }
+
+    /// Ported from `open_agent_profile_file`, minus explicit-app-target selection: that depends
+    /// on the not-yet-ported open-targets registry (`open_targets`/`open_target`, its own
+    /// family — a C1 follow-up). `target: None` (open with the OS default opener) behaves
+    /// exactly like the oracle; an explicit `target` is a clear `Conflict`, not a silent no-op.
+    pub async fn open_agent_account_file(
+        &self,
+        id: &str,
+        input: &OpenAgentAccountFileInput,
+    ) -> Result<OpenAgentAccountFileResponse, EngineError> {
+        if let Some(target) = input.target.as_deref() {
+            return Err(EngineError::Conflict {
+                reason: format!(
+                    "opening with a specific target (\"{target}\") is not yet supported by \
+                     InProcessEngine — the open-targets family is a C1 follow-up"
+                ),
+            });
+        }
+        let accounts_path = agent_accounts_path(&ProcessEnv);
+        let id = id.to_owned();
+        let file = input.file.clone();
+        tokio::task::spawn_blocking(move || {
+            let profile = account_by_route_id(&accounts_path, &id).ok_or(EngineError::NotFound)?;
+            let is_folder = file == "folder";
+            let path = if is_folder {
+                profile.path.clone()
+            } else if let Some(found) = profile_files(&profile).into_iter().find(|f| f.id == file) {
+                PathBuf::from(found.path)
+            } else {
+                return Err(EngineError::NotFound);
+            };
+            if !is_folder && std::fs::metadata(&path).is_err() {
+                let name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("file");
+                return Err(EngineError::Conflict {
+                    reason: format!("this account has no {name} yet"),
+                });
+            }
+            if !account_open_default(&path) {
+                let name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("file");
+                return Err(EngineError::Conflict {
+                    reason: format!("could not open {name}"),
+                });
+            }
+            Ok(OpenAgentAccountFileResponse {
+                opened: true,
+                path: path.to_string_lossy().into_owned(),
+            })
+        })
+        .await
+        .map_err(|error| EngineError::Transport(error.to_string()))?
+    }
+
     // ---- live events (Topic::Health/Todos/Run/Named -> the in-process broadcast channel) ---
 
     /// Mirrors `HttpEngine::subscribe`'s topic-string convention exactly, but the transport is
@@ -747,6 +1098,639 @@ fn workflow_yaml(
         document.insert("steps".to_owned(), steps);
     }
     serde_yaml_ng::to_string(&Value::Object(document)).map_err(|error| error.to_string())
+}
+
+// ---- agent-profile + provider-status helpers, duplicated from `coducktor-server`'s private
+// functions of the same name (same non-sharing rationale as the workflow builder helpers
+// above) --------------------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+struct ResolvedAgentProfile {
+    id: String,
+    provider: Runner,
+    label: String,
+    config_dir: String,
+    path: PathBuf,
+    is_default: bool,
+}
+
+fn default_agent_profile(provider: Runner) -> ResolvedAgentProfile {
+    let home = agent_home_paths(&ProcessEnv);
+    let path = match provider {
+        Runner::Claude => home.claude,
+        Runner::Codex => home.codex,
+        Runner::OpenCode => home.opencode_config,
+        Runner::Pi => PathBuf::new(),
+    };
+    ResolvedAgentProfile {
+        id: coducktor_contract::DEFAULT_AGENT_ACCOUNT_ID.to_owned(),
+        provider,
+        label: "Default".to_owned(),
+        config_dir: path.to_string_lossy().into_owned(),
+        path,
+        is_default: true,
+    }
+}
+
+fn resolved_agent_profile(account: &AgentAccount) -> ResolvedAgentProfile {
+    ResolvedAgentProfile {
+        id: account.id.clone(),
+        provider: account.provider,
+        label: if account.label.is_empty() {
+            account.id.clone()
+        } else {
+            account.label.clone()
+        },
+        config_dir: account.config_dir.clone(),
+        path: expand_tilde(&account.config_dir, &ProcessEnv),
+        is_default: false,
+    }
+}
+
+fn profile_file_defs(provider: Runner) -> &'static [(&'static str, &'static str)] {
+    match provider {
+        Runner::Claude => &[
+            ("claude.user.settings", "settings.json"),
+            ("claude.user.memory", "CLAUDE.md"),
+        ],
+        Runner::Codex => &[
+            ("codex.user.config", "config.toml"),
+            ("codex.user.memory", "AGENTS.md"),
+        ],
+        Runner::OpenCode => &[
+            ("opencode.user.config", "opencode.json"),
+            ("opencode.user.memory", "AGENTS.md"),
+        ],
+        Runner::Pi => &[],
+    }
+}
+
+fn profile_files(profile: &ResolvedAgentProfile) -> Vec<AgentAccountFile> {
+    profile_file_defs(profile.provider)
+        .iter()
+        .map(|(id, name)| {
+            let path = profile.path.join(name);
+            AgentAccountFile {
+                id: (*id).to_owned(),
+                label: (*name).to_owned(),
+                exists: std::fs::metadata(&path).is_ok(),
+                path: path.to_string_lossy().into_owned(),
+            }
+        })
+        .collect()
+}
+
+fn profile_dir_state(profile: &ResolvedAgentProfile) -> (bool, bool) {
+    let Ok(entries) = std::fs::read_dir(&profile.path) else {
+        return (false, false);
+    };
+    let names = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect::<std::collections::BTreeSet<_>>();
+    let markers: &[&str] = match profile.provider {
+        Runner::Claude => &[".claude.json", "settings.json", "projects", "sessions"],
+        Runner::Codex => &["auth.json", "config.toml"],
+        Runner::OpenCode | Runner::Pi => &[],
+    };
+    (true, markers.iter().any(|marker| names.contains(*marker)))
+}
+
+fn agent_profile_wire(profile: &ResolvedAgentProfile) -> AgentProfile {
+    let (exists, looks_valid) = profile_dir_state(profile);
+    AgentProfile {
+        id: profile.id.clone(),
+        provider: profile.provider,
+        label: profile.label.clone(),
+        config_dir: profile.config_dir.clone(),
+        path: profile.path.to_string_lossy().into_owned(),
+        exists,
+        looks_valid,
+        is_default: profile.is_default,
+        status: None,
+        files: profile_files(profile),
+    }
+}
+
+fn selection_wire(
+    selection: &coducktor_core::workspace::agent_accounts::AgentAccountSelection,
+) -> coducktor_contract::AgentAccountSelection {
+    coducktor_contract::AgentAccountSelection {
+        claude: selection.claude.clone(),
+        codex: selection.codex.clone(),
+        opencode: selection.opencode.clone(),
+        pi: selection.pi.clone(),
+    }
+}
+
+fn selection_empty(
+    selection: &coducktor_core::workspace::agent_accounts::AgentAccountSelection,
+) -> bool {
+    selection.claude.is_none()
+        && selection.codex.is_none()
+        && selection.opencode.is_none()
+        && selection.pi.is_none()
+        && selection.extra.is_empty()
+}
+
+fn set_profile_selection(
+    selection: &mut coducktor_core::workspace::agent_accounts::AgentAccountSelection,
+    provider: Runner,
+    profile_id: Option<String>,
+) {
+    match provider {
+        Runner::Claude => selection.claude = profile_id,
+        Runner::Codex => selection.codex = profile_id,
+        Runner::OpenCode => selection.opencode = profile_id,
+        Runner::Pi => selection.pi = profile_id,
+    }
+}
+
+fn agent_profiles_response() -> AgentProfilesResponse {
+    let store = coducktor_core::workspace::agent_accounts::load_agent_accounts(
+        &agent_accounts_path(&ProcessEnv),
+    );
+    let mut profiles = Vec::new();
+    for provider in PROVIDER_IDS {
+        profiles.push(agent_profile_wire(&default_agent_profile(provider)));
+        profiles.extend(
+            store
+                .accounts
+                .iter()
+                .filter(|account| account.provider == provider)
+                .map(|account| agent_profile_wire(&resolved_agent_profile(account))),
+        );
+    }
+    let selections = store
+        .selections
+        .iter()
+        .map(|(root, selection)| (root.clone(), selection_wire(selection)))
+        .collect::<BTreeMap<_, _>>();
+    AgentProfilesResponse {
+        editable: true,
+        profiles,
+        profile_capable_providers: vec![Runner::Claude, Runner::Codex],
+        selections,
+        defaults: selection_wire(&store.defaults),
+    }
+}
+
+fn profile_path_error(config_dir: &str) -> Option<String> {
+    if has_control_chars(config_dir) {
+        return Some("folder must not contain control characters".to_owned());
+    }
+    let expanded = expand_tilde(config_dir, &ProcessEnv);
+    if !is_absolute_config_dir(&expanded.to_string_lossy(), cfg!(windows)) {
+        return Some(format!("folder must be an absolute path: {config_dir}"));
+    }
+    None
+}
+
+fn same_profile_dir(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    left.canonicalize().ok() == right.canonicalize().ok() && left.exists() && right.exists()
+}
+
+fn profile_conflict(
+    store: &coducktor_core::workspace::agent_accounts::AgentAccountStore,
+    provider: Runner,
+    path: &Path,
+    except_id: Option<&str>,
+) -> Option<String> {
+    let default = default_agent_profile(provider);
+    if same_profile_dir(path, &default.path) {
+        return Some("that is already this agent's default folder".to_owned());
+    }
+    store
+        .accounts
+        .iter()
+        .filter(|account| account.provider == provider && Some(account.id.as_str()) != except_id)
+        .find_map(|account| {
+            let candidate = expand_tilde(&account.config_dir, &ProcessEnv);
+            same_profile_dir(path, &candidate)
+                .then(|| format!("that folder is already used by \"{}\"", account.label))
+        })
+}
+
+/// `project_id: Some("default")` names the boot project even when it isn't (yet) registered in
+/// `~/.coducktor/config.json` — same sentinel `boot_project_id` already returns as its own
+/// fallback.
+fn project_root_for_agent_selection(repo_root: &Path, project_id: Option<&str>) -> Option<PathBuf> {
+    match project_id {
+        None => None,
+        Some("default") => Some(
+            repo_root
+                .canonicalize()
+                .unwrap_or_else(|_| repo_root.to_path_buf()),
+        ),
+        Some(id) => {
+            let config = load_workspace_config(
+                &coducktor_core::paths::workspace_config_path(&ProcessEnv),
+                &ProcessEnv,
+            );
+            config
+                .projects
+                .iter()
+                .find(|project| project.id == id)
+                .map(|project| {
+                    Path::new(&project.root)
+                        .canonicalize()
+                        .unwrap_or_else(|_| PathBuf::from(&project.root))
+                })
+        }
+    }
+}
+
+fn account_by_route_id(accounts_path: &Path, id: &str) -> Option<ResolvedAgentProfile> {
+    if let Some(provider) = id.strip_prefix("default:").and_then(|name| match name {
+        "claude" => Some(Runner::Claude),
+        "codex" => Some(Runner::Codex),
+        "opencode" => Some(Runner::OpenCode),
+        "pi" => Some(Runner::Pi),
+        _ => None,
+    }) {
+        return Some(default_agent_profile(provider));
+    }
+    coducktor_core::workspace::agent_accounts::load_agent_accounts(accounts_path)
+        .accounts
+        .into_iter()
+        .find(|account| account.id == id)
+        .map(|account| resolved_agent_profile(&account))
+}
+
+const RESERVED_ACCOUNT_SLUG_IDS: &[&str] = &["default", "new", "settings", "api", "p", "assets"];
+
+fn account_slug(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+}
+
+/// Ported from `coducktor-server`'s private `allocate_project_id` — account ids share the same
+/// slug-collision-avoidance scheme (and, quirk inherited from the oracle rather than introduced
+/// here, the same "project" fallback word for an unslugifiable label) project ids use.
+fn allocate_account_id(value: &str, taken: &std::collections::BTreeSet<String>) -> String {
+    let base = {
+        let slug = account_slug(value);
+        let slug = slug.trim_matches('-').chars().take(64).collect::<String>();
+        if slug.is_empty() {
+            "project".to_owned()
+        } else {
+            slug
+        }
+    };
+    if !taken.contains(&base) && !RESERVED_ACCOUNT_SLUG_IDS.contains(&base.as_str()) {
+        return base;
+    }
+    let mut suffix_number = 2;
+    loop {
+        let suffix = format!("-{suffix_number}");
+        let prefix = base.chars().take(64 - suffix.len()).collect::<String>();
+        let candidate = format!("{prefix}{suffix}");
+        if !taken.contains(&candidate) && !RESERVED_ACCOUNT_SLUG_IDS.contains(&candidate.as_str()) {
+            return candidate;
+        }
+        suffix_number += 1;
+    }
+}
+
+fn provider_status_response() -> ProviderStatusResponse {
+    let config = load_workspace_config(
+        &coducktor_core::paths::workspace_config_path(&ProcessEnv),
+        &ProcessEnv,
+    );
+    let locked = provider_models_locked();
+    let providers = PROVIDER_IDS
+        .into_iter()
+        .map(|provider| {
+            let mut status = if locked {
+                ProviderStatus {
+                    provider,
+                    status: ProviderConnectionState::Connected,
+                    enabled: Some(true),
+                    hint: None,
+                    auth_failure_id: None,
+                    profile_id: None,
+                }
+            } else {
+                provider_status_for_profile(&default_agent_profile(provider))
+            };
+            status.enabled = Some(locked || !config.disabled_providers.contains(&provider));
+            status
+        })
+        .collect();
+    ProviderStatusResponse { providers }
+}
+
+fn provider_models_locked() -> bool {
+    std::env::var("DUCK_AGENT_MODELS_LOCKED")
+        .or_else(|_| std::env::var("CEZ_AGENT_MODELS_LOCKED"))
+        .is_ok_and(|value| value == "1")
+}
+
+fn provider_executable(provider: Runner) -> String {
+    let (duck, cez, default) = match provider {
+        Runner::Claude => ("DUCK_CLAUDE_BIN", "CEZ_CLAUDE_BIN", "claude"),
+        Runner::Codex => ("DUCK_CODEX_BIN", "CEZ_CODEX_BIN", "codex"),
+        Runner::OpenCode => ("DUCK_OPENCODE_BIN", "CEZ_OPENCODE_BIN", "opencode"),
+        Runner::Pi => ("DUCK_PI_BIN", "CEZ_PI_BIN", "pi"),
+    };
+    std::env::var(duck)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            std::env::var(cez)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .unwrap_or_else(|| default.to_owned())
+}
+
+fn provider_probe_args(provider: Runner) -> &'static [&'static str] {
+    match provider {
+        Runner::Claude => &["auth", "status", "--json"],
+        Runner::Codex => &["login", "status"],
+        Runner::OpenCode => &["auth", "list"],
+        Runner::Pi => &["--list-models"],
+    }
+}
+
+fn provider_install_hint(provider: Runner) -> &'static str {
+    match provider {
+        Runner::Claude => "Install Claude Code, then run `claude auth login`.",
+        Runner::Codex => "Install the Codex CLI, then run `codex login`.",
+        Runner::OpenCode => "Install OpenCode, then run `opencode auth login`.",
+        Runner::Pi => "Install pi, then run `pi /login`.",
+    }
+}
+
+fn provider_state_from_output(
+    provider: Runner,
+    stdout: &str,
+    stderr: &str,
+    exit_code: Option<i32>,
+) -> Option<ProviderConnectionState> {
+    let combined = format!("{stdout}\n{stderr}");
+    let lower = combined.to_ascii_lowercase();
+    match provider {
+        Runner::Claude => {
+            let logged_in = serde_json::from_str::<Value>(stdout)
+                .ok()?
+                .get("loggedIn")
+                .and_then(Value::as_bool)?;
+            if logged_in && exit_code == Some(0) {
+                Some(ProviderConnectionState::Connected)
+            } else if !logged_in && exit_code == Some(1) {
+                Some(ProviderConnectionState::Disconnected)
+            } else {
+                None
+            }
+        }
+        Runner::Codex => {
+            let connected = lower.lines().any(|line| {
+                let line = line.trim();
+                line.starts_with("logged in using ")
+            });
+            let disconnected = lower
+                .lines()
+                .any(|line| line.trim() == "not logged in" || line.contains("run codex login"));
+            match (connected, disconnected, exit_code) {
+                (true, false, Some(0)) => Some(ProviderConnectionState::Connected),
+                (false, true, Some(1)) => Some(ProviderConnectionState::Disconnected),
+                _ => None,
+            }
+        }
+        Runner::OpenCode => {
+            let mut counts = lower
+                .lines()
+                .filter_map(|line| {
+                    let mut words = line.split_whitespace();
+                    let count = words.next()?.parse::<u64>().ok()?;
+                    words.next().filter(|word| word.starts_with("credential"))?;
+                    Some(count)
+                })
+                .collect::<Vec<_>>();
+            if counts.len() != 1 || exit_code != Some(0) {
+                return None;
+            }
+            Some(if counts.remove(0) > 0 {
+                ProviderConnectionState::Connected
+            } else {
+                ProviderConnectionState::Disconnected
+            })
+        }
+        Runner::Pi => {
+            if exit_code != Some(0) {
+                return None;
+            }
+            if lower.lines().any(|line| {
+                line.split_whitespace().collect::<Vec<_>>()
+                    == [
+                        "provider", "model", "context", "max-out", "thinking", "images",
+                    ]
+            }) {
+                Some(ProviderConnectionState::Connected)
+            } else if lower.contains("no models available") && lower.contains("/login") {
+                Some(ProviderConnectionState::Disconnected)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn provider_status_for_profile(profile: &ResolvedAgentProfile) -> ProviderStatus {
+    let profile_id = (!profile.is_default).then(|| profile.id.clone());
+    if std::env::var("DUCK_DRY_RUN")
+        .or_else(|_| std::env::var("CEZ_DRY_RUN"))
+        .is_ok_and(|value| value == "1")
+    {
+        return ProviderStatus {
+            provider: profile.provider,
+            status: ProviderConnectionState::Connected,
+            enabled: None,
+            hint: None,
+            auth_failure_id: None,
+            profile_id,
+        };
+    }
+    let executable = provider_executable(profile.provider);
+    let mut command = Command::new(&executable);
+    command.args(provider_probe_args(profile.provider));
+    if !profile.is_default {
+        match profile.provider {
+            Runner::Claude => {
+                command.env("CLAUDE_CONFIG_DIR", &profile.path);
+            }
+            Runner::Codex => {
+                command.env("CODEX_HOME", &profile.path);
+            }
+            Runner::OpenCode | Runner::Pi => {}
+        }
+    }
+    let result = command.output();
+    let (status, hint) = match result {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (
+            ProviderConnectionState::NotInstalled,
+            Some(provider_install_hint(profile.provider).to_owned()),
+        ),
+        Err(_) => (
+            ProviderConnectionState::Unknown,
+            Some("Authentication could not be verified. Try again.".to_owned()),
+        ),
+        Ok(output) => {
+            let state = provider_state_from_output(
+                profile.provider,
+                &String::from_utf8_lossy(&output.stdout),
+                &String::from_utf8_lossy(&output.stderr),
+                output.status.code(),
+            );
+            match state {
+                Some(state) => (state, None),
+                None => (
+                    ProviderConnectionState::Unknown,
+                    Some("Authentication could not be verified. Try again.".to_owned()),
+                ),
+            }
+        }
+    };
+    ProviderStatus {
+        provider: profile.provider,
+        status,
+        enabled: None,
+        hint,
+        auth_failure_id: None,
+        profile_id,
+    }
+}
+
+fn capped_json_file(path: &Path) -> Option<Value> {
+    let size = std::fs::metadata(path).ok()?.len();
+    if size > 2 * 1024 * 1024 {
+        return None;
+    }
+    let raw = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn identity_text(value: Option<&Value>) -> Option<String> {
+    match value {
+        Some(Value::String(value)) if !value.trim().is_empty() => Some(value.trim().to_owned()),
+        Some(Value::Number(value)) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn agent_profile_details(profile: &ResolvedAgentProfile) -> AgentAccountDetailsResponse {
+    if matches!(profile.provider, Runner::OpenCode | Runner::Pi) {
+        return AgentAccountDetailsResponse {
+            available: false,
+            reason: Some(
+                "OpenCode keeps its login outside its config folder, so cezar cannot read it."
+                    .to_owned(),
+            ),
+            fields: Vec::new(),
+        };
+    }
+    let path = match profile.provider {
+        Runner::Claude => {
+            if profile.is_default && std::env::var("CLAUDE_CONFIG_DIR").is_err() {
+                profile
+                    .path
+                    .parent()
+                    .unwrap_or(profile.path.as_path())
+                    .join(".claude.json")
+            } else {
+                profile.path.join(".claude.json")
+            }
+        }
+        Runner::Codex => profile.path.join("auth.json"),
+        Runner::OpenCode | Runner::Pi => profile.path.clone(),
+    };
+    let Some(document) = capped_json_file(&path) else {
+        return AgentAccountDetailsResponse {
+            available: false,
+            reason: Some("Not signed in on this account yet — use Connect.".to_owned()),
+            fields: Vec::new(),
+        };
+    };
+    let mut fields = Vec::new();
+    match profile.provider {
+        Runner::Claude => {
+            if let Some(account) = document.get("oauthAccount").and_then(Value::as_object) {
+                for (label, key) in [
+                    ("Email", "emailAddress"),
+                    ("Name", "displayName"),
+                    ("Organization", "organizationName"),
+                    ("Role", "organizationRole"),
+                    ("Seat", "seatTier"),
+                    ("Billing", "billingType"),
+                ] {
+                    if let Some(value) = identity_text(account.get(key)) {
+                        fields.push(coducktor_contract::AgentAccountDetailField {
+                            label: label.to_owned(),
+                            value,
+                        });
+                    }
+                }
+            }
+        }
+        Runner::Codex => {
+            if document
+                .get("OPENAI_API_KEY")
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.is_empty())
+            {
+                fields.push(coducktor_contract::AgentAccountDetailField {
+                    label: "Login".to_owned(),
+                    value: "API key".to_owned(),
+                });
+            }
+        }
+        Runner::OpenCode | Runner::Pi => {}
+    }
+    if fields.is_empty() {
+        AgentAccountDetailsResponse {
+            available: false,
+            reason: Some("Could not read this account’s details.".to_owned()),
+            fields,
+        }
+    } else {
+        AgentAccountDetailsResponse {
+            available: true,
+            reason: None,
+            fields,
+        }
+    }
+}
+
+/// Best-effort "open with the OS default app" — mirrors `coducktor-server`'s
+/// `account_open_default` exactly (fire-and-forget `spawn`, success = the process launched, not
+/// that the user actually saw a window).
+fn account_open_default(path: &Path) -> bool {
+    let (program, args) = if cfg!(target_os = "macos") {
+        ("open", vec![path.to_string_lossy().into_owned()])
+    } else if cfg!(target_os = "windows") {
+        ("explorer", vec![path.to_string_lossy().into_owned()])
+    } else {
+        ("xdg-open", vec![path.to_string_lossy().into_owned()])
+    };
+    Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .is_ok()
 }
 
 fn api_run(record: coducktor_contract::RunRecord) -> ApiRun {
@@ -1430,5 +2414,346 @@ mod tests {
         let engine = engine(&dir);
         let error = engine.parse_workflow("   ").await.unwrap_err();
         assert!(matches!(error, EngineError::Conflict { .. }));
+    }
+
+    // ---- provider status + agent-profile accounts ------------------------------------------
+    //
+    // `create_agent_profile`/`update_agent_profile`/`remove_agent_profile`/`select_agent_profile`
+    // (like the `coducktor-server` handlers they're ported from) resolve their storage path via
+    // `agent_accounts_path(&ProcessEnv)` — the REAL `~/.coducktor/agent-accounts.json` (or
+    // `$DUCK_HOME`/`$CEZ_HOME` if set), with no injectable override. No test here calls one of
+    // these methods down a path that would actually write to it: every write-path test below
+    // exercises validation that returns before any file I/O happens (matching the same
+    // established "safe against a real, possibly-populated environment" discipline the existing
+    // `projects_reports_the_registry_snapshot` test above already relies on for its own
+    // read-only call). A full create/update/remove round-trip against an isolated
+    // `agent-accounts.json` is not covered here — it would need `agent_accounts_path`/
+    // `workspace_config_path` to accept an injected `EnvSource` the way `coducktor-core`'s lower-
+    // level `load_agent_accounts`/`merge_write_agent_accounts` already do, which is a real gap in
+    // the *oracle* this ports from, not something introduced here.
+
+    #[tokio::test]
+    async fn provider_status_reports_one_entry_per_provider() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let status = engine.provider_status().await.unwrap();
+        assert_eq!(status.providers.len(), PROVIDER_IDS.len());
+        for provider in PROVIDER_IDS {
+            assert!(status.providers.iter().any(|p| p.provider == provider));
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_profiles_always_includes_the_four_default_profiles() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let response = engine.agent_profiles().await.unwrap();
+        for provider in PROVIDER_IDS {
+            assert!(
+                response
+                    .profiles
+                    .iter()
+                    .any(|profile| profile.provider == provider && profile.is_default)
+            );
+        }
+        assert_eq!(
+            response.profile_capable_providers,
+            vec![Runner::Claude, Runner::Codex]
+        );
+    }
+
+    #[tokio::test]
+    async fn create_agent_profile_rejects_a_provider_that_cannot_carry_extra_accounts() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine
+            .create_agent_profile(&CreateAgentProfileInput {
+                provider: Runner::OpenCode,
+                label: None,
+                config_dir: "/tmp/wherever".to_owned(),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(error, EngineError::Conflict { .. }));
+    }
+
+    #[tokio::test]
+    async fn create_agent_profile_rejects_a_relative_config_dir() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine
+            .create_agent_profile(&CreateAgentProfileInput {
+                provider: Runner::Claude,
+                label: None,
+                config_dir: "relative/path".to_owned(),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(error, EngineError::Conflict { .. }));
+    }
+
+    #[tokio::test]
+    async fn update_agent_profile_requires_at_least_one_field() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine
+            .update_agent_profile(
+                "whatever",
+                &UpdateAgentProfileInput {
+                    label: None,
+                    config_dir: None,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, EngineError::Conflict { .. }));
+    }
+
+    #[tokio::test]
+    async fn update_agent_profile_reports_not_found_for_an_unknown_id() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine
+            .update_agent_profile(
+                "coducktor-test-account-that-does-not-exist",
+                &UpdateAgentProfileInput {
+                    label: Some("New label".to_owned()),
+                    config_dir: None,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error, EngineError::NotFound);
+    }
+
+    #[tokio::test]
+    async fn remove_agent_profile_reports_not_found_for_an_unknown_id() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine
+            .remove_agent_profile("coducktor-test-account-that-does-not-exist")
+            .await
+            .unwrap_err();
+        assert_eq!(error, EngineError::NotFound);
+    }
+
+    #[tokio::test]
+    async fn select_agent_profile_reports_not_found_for_an_unknown_project() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine
+            .select_agent_profile(&SelectAgentProfileInput {
+                project_id: Some("coducktor-test-project-that-does-not-exist".to_owned()),
+                provider: Runner::Claude,
+                profile_id: None,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(error, EngineError::NotFound);
+    }
+
+    #[tokio::test]
+    async fn agent_account_status_reports_not_found_for_an_unknown_id() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine
+            .agent_account_status("coducktor-test-account-that-does-not-exist", false)
+            .await
+            .unwrap_err();
+        assert_eq!(error, EngineError::NotFound);
+    }
+
+    #[tokio::test]
+    async fn agent_account_status_resolves_a_default_profile_by_its_synthetic_id() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        // `default:<provider>` never 404s — it always resolves to the built-in profile, even
+        // with nothing configured.
+        let status = engine
+            .agent_account_status("default:claude", true)
+            .await
+            .unwrap();
+        assert_eq!(status.status.provider, Runner::Claude);
+    }
+
+    #[tokio::test]
+    async fn agent_account_details_reports_not_found_for_an_unknown_id() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine
+            .agent_account_details("coducktor-test-account-that-does-not-exist")
+            .await
+            .unwrap_err();
+        assert_eq!(error, EngineError::NotFound);
+    }
+
+    #[tokio::test]
+    async fn open_agent_account_file_rejects_an_explicit_target_before_touching_disk() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        // No account with this id exists either, but an explicit `target` must be rejected
+        // first — proves the check happens before any lookup, not just before any I/O.
+        let error = engine
+            .open_agent_account_file(
+                "coducktor-test-account-that-does-not-exist",
+                &OpenAgentAccountFileInput {
+                    file: "folder".to_owned(),
+                    target: Some("vscode".to_owned()),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, EngineError::Conflict { .. }));
+    }
+
+    #[tokio::test]
+    async fn open_agent_account_file_reports_not_found_for_an_unknown_id() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine
+            .open_agent_account_file(
+                "coducktor-test-account-that-does-not-exist",
+                &OpenAgentAccountFileInput {
+                    file: "folder".to_owned(),
+                    target: None,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error, EngineError::NotFound);
+    }
+
+    // ---- pure helper functions (no `ProcessEnv`/filesystem-default resolution involved) -----
+
+    #[test]
+    fn account_slug_lowercases_and_dashes_non_alphanumerics() {
+        assert_eq!(account_slug("My Claude Account!"), "my-claude-account-");
+    }
+
+    #[test]
+    fn allocate_account_id_dedupes_against_taken_ids_and_reserved_words() {
+        let mut taken = std::collections::BTreeSet::new();
+        taken.insert("work".to_owned());
+        assert_eq!(allocate_account_id("Work", &taken), "work-2");
+        taken.clear();
+        taken.insert("default".to_owned()); // not actually taken, but a reserved word
+        assert_eq!(allocate_account_id("default", &taken), "default-2");
+    }
+
+    #[test]
+    fn allocate_account_id_falls_back_to_project_for_an_unslugifiable_label() {
+        // Matches the oracle's own quirk (see `allocate_account_id`'s doc comment) verbatim.
+        assert_eq!(
+            allocate_account_id("!!!", &std::collections::BTreeSet::new()),
+            "project"
+        );
+    }
+
+    #[test]
+    fn provider_state_from_output_reads_claudes_logged_in_json() {
+        assert_eq!(
+            provider_state_from_output(Runner::Claude, r#"{"loggedIn":true}"#, "", Some(0)),
+            Some(ProviderConnectionState::Connected)
+        );
+        assert_eq!(
+            provider_state_from_output(Runner::Claude, r#"{"loggedIn":false}"#, "", Some(1)),
+            Some(ProviderConnectionState::Disconnected)
+        );
+        assert_eq!(
+            provider_state_from_output(Runner::Claude, "not json", "", Some(0)),
+            None
+        );
+    }
+
+    #[test]
+    fn provider_state_from_output_reads_codexs_status_lines() {
+        assert_eq!(
+            provider_state_from_output(Runner::Codex, "Logged in using ChatGPT\n", "", Some(0)),
+            Some(ProviderConnectionState::Connected)
+        );
+        assert_eq!(
+            provider_state_from_output(Runner::Codex, "Not logged in\n", "", Some(1)),
+            Some(ProviderConnectionState::Disconnected)
+        );
+    }
+
+    #[test]
+    fn identity_text_prefers_a_non_empty_string_then_falls_back_to_a_number() {
+        assert_eq!(
+            identity_text(Some(&json!("  Jane  "))),
+            Some("Jane".to_owned())
+        );
+        assert_eq!(identity_text(Some(&json!(""))), None);
+        assert_eq!(identity_text(Some(&json!(42))), Some("42".to_owned()));
+        assert_eq!(identity_text(Some(&json!(null))), None);
+        assert_eq!(identity_text(None), None);
+    }
+
+    #[test]
+    fn same_profile_dir_matches_identical_paths_without_touching_disk() {
+        assert!(same_profile_dir(Path::new("/a/b/c"), Path::new("/a/b/c")));
+    }
+
+    #[test]
+    fn same_profile_dir_resolves_distinct_existing_paths_via_canonicalization() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path();
+        let via_dot = target.join(".");
+        assert!(same_profile_dir(target, &via_dot));
+    }
+
+    #[test]
+    fn same_profile_dir_does_not_match_two_missing_distinct_paths() {
+        assert!(!same_profile_dir(
+            Path::new("/coducktor-test/does-not-exist-a"),
+            Path::new("/coducktor-test/does-not-exist-b")
+        ));
+    }
+
+    #[test]
+    fn profile_dir_state_reports_a_marker_file_as_looking_valid() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("settings.json"), "{}").unwrap();
+        let profile = ResolvedAgentProfile {
+            id: coducktor_contract::DEFAULT_AGENT_ACCOUNT_ID.to_owned(),
+            provider: Runner::Claude,
+            label: "Default".to_owned(),
+            config_dir: dir.path().to_string_lossy().into_owned(),
+            path: dir.path().to_path_buf(),
+            is_default: true,
+        };
+        let (exists, looks_valid) = profile_dir_state(&profile);
+        assert!(exists);
+        assert!(looks_valid);
+    }
+
+    #[test]
+    fn profile_dir_state_reports_a_missing_directory_as_not_existing() {
+        let profile = ResolvedAgentProfile {
+            id: "acct".to_owned(),
+            provider: Runner::Codex,
+            label: "Acct".to_owned(),
+            config_dir: "/coducktor-test/does-not-exist".to_owned(),
+            path: PathBuf::from("/coducktor-test/does-not-exist"),
+            is_default: false,
+        };
+        let (exists, looks_valid) = profile_dir_state(&profile);
+        assert!(!exists);
+        assert!(!looks_valid);
+    }
+
+    #[test]
+    fn agent_profile_wire_reports_zero_files_for_pi_which_has_no_config_files() {
+        let profile = ResolvedAgentProfile {
+            id: coducktor_contract::DEFAULT_AGENT_ACCOUNT_ID.to_owned(),
+            provider: Runner::Pi,
+            label: "Default".to_owned(),
+            config_dir: String::new(),
+            path: PathBuf::new(),
+            is_default: true,
+        };
+        let wire = agent_profile_wire(&profile);
+        assert!(wire.files.is_empty());
+        assert!(wire.is_default);
     }
 }
