@@ -17,7 +17,6 @@ stay on your machine.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Rust stable](https://img.shields.io/badge/Rust-stable-orange)
-![Node 20+](https://img.shields.io/badge/Node-20%2B-339933)
 ![Zero config](https://img.shields.io/badge/config-zero-success)
 ![No database](https://img.shields.io/badge/database-none-success)
 
@@ -26,9 +25,9 @@ stay on your machine.
 ---
 
 Coducktor's cockpit is a **terminal UI** — `duck` (or its long name, `coducktor`)
-is a single binary you run in a terminal, not a browser tab. It's a Rust
-rewrite in progress; see [`docs/tui/`](docs/tui/) for the keymap reference and
-terminal support matrix.
+is a single, self-contained Rust binary you run in a terminal, not a browser
+tab. No Node, no npm. See [`docs/tui/`](docs/tui/) for the keymap reference
+and terminal support matrix.
 
 ## Features
 
@@ -71,10 +70,6 @@ tarballs. `git pull && ./install.sh` again is how you update.
   [Codex](https://github.com/openai/codex),
   [OpenCode](https://opencode.ai), or
   [pi](https://github.com/badlogic/pi-mono)
-- **Node.js 20 or newer — Phase A only.** The Rust TUI still runs the existing
-  Node service underneath for now ([spec §7.7](.ai/specs/2026-08-15-rust-tui-refactor.md#77-one-terminal-the-supervised-child-process-is-silent));
-  this requirement disappears once the port to Rust completes. `install.sh`
-  checks for it in the same isolated step.
 
 ### Install and run
 
@@ -195,7 +190,8 @@ agent CLIs themselves.
 
 ## Development
 
-### The Rust TUI (`crates/`)
+The whole app — cockpit, engine, and CLI — is Rust, under `crates/`. There is
+no other language tree.
 
 ```bash
 just build       # release build
@@ -207,23 +203,6 @@ cargo run -p coducktor-tui   # run in place without installing
 
 No `just`? Every recipe is a one-line `cargo` command — see the
 [`justfile`](justfile).
-
-### The Node service (`packages/`) — Phase A only
-
-The Rust TUI still drives the existing Node/TypeScript service underneath
-(see [Prerequisites](#prerequisites)). Working on that side directly still
-uses its own npm scripts:
-
-```bash
-npm run dev          # API server and Vite cockpit (browser, for comparison/debugging)
-npm run dev:server   # API server only
-npm run build        # production server and cockpit build
-npm run typecheck    # all workspace typechecks
-npm test             # Vitest suite
-```
-
-This whole section — and the package tree it points at — goes away once the
-Rust port replaces the Node service.
 
 The app is intended as a personal fork. Publishing, release automation, and
 upstream contribution guidance are intentionally outside this README.

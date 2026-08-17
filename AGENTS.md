@@ -156,48 +156,23 @@ Rules that follow from that:
 
 ## Validation
 
-Before any commit or PR, run in order:
+**Stale section, flagged not rewritten.** B12 (`.ai/specs/2026-08-15-rust-tui-refactor-plan.md`)
+deleted the whole npm/TypeScript tree this section described (`packages/*`, `npm test`, vitest,
+the e2e/agent-browser suite) — none of the commands below exist anymore. The real gate today is
+Rust-only:
 
 ```bash
-npm run typecheck   # tsc --noEmit (api-client + server + web)
-npm test            # vitest — server + cockpit unit suites
-npm run test:unit   # node:test — fast core-module coverage (packages/cezar/test/unit/)
-npm run build       # tsc → dist/, vite → packages/cezar/web/dist/, then the check:pack tarball gate
-npm run test:package # pack/install the release tarball and exercise the built CLI (packages/cezar/test/e2e/)
+cargo fmt --all -- --check
+cargo test --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-`npm test` and `npm run test:unit` are the fast unit gate: no server, no browser. They must stay that way. `npm run test:package` needs a completed `npm run build` (it packs the tarball).
-
-**Run vitest through npm, never `npx vitest`.** It is a devDependency of this repo, so `npm test`
-uses the installed, version-pinned binary; `npx` will happily reach past it and fetch a different
-version from the registry, which is a slow, networked, silently-different test run. To narrow a run,
-pass vitest's own arguments after `--`:
-
-```bash
-npm test -- packages/web/src/routes/settings   # one directory
-npm test -- --testTimeout=30000 path/to/one.test.ts
-npm test -- -t "the name of one test"
-```
-
-The UI smoke suite is a **separate** command — it boots the real app and drives it in a real
-Chrome through the `agent-browser` provider (`.ai/browsers/agent-browser.md`):
-
-```bash
-npm run test:e2e    # .ai/scripts/e2e.sh → test-env-up.sh + vitest (packages/web/e2e/)
-```
-
-It boots the app on a free port with `CEZ_DRY_RUN=1` (agent CLIs mocked — no login, no
-network), reuses an already-healthy instance instead of double-booting, and writes
-`.ai/qa/test-env.json` so QA skills attach to the same instance. Stop it with
-`.ai/scripts/test-env-down.sh`. Exit contract:
-
-| Exit     | Marker                    | Meaning                                                                                                           |
-| -------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| 0        | `TEST_E2E_STATUS=passed`  | every spec passed                                                                                                 |
-| 0        | `TEST_E2E_STATUS=skipped` | agent-browser could not be provisioned (no network / unsupported platform); prints a loud banner — **not** a pass |
-| non-zero | `TEST_E2E_STATUS=failed`  | a spec failed, or the env could not boot                                                                          |
-
-`CEZ_DRY_RUN=1 npm run dev` still exercises the whole cockpit offline for manual verification.
+This whole file (routing table included, still full of `packages/cezar/*.ts` paths) needs a full
+pass to match the shipped Rust tree — tracked as a named gap in the Phase C "Final checklist"
+(`.ai/specs/2026-08-15-rust-tui-refactor-plan.md`, "`AGENT_PROTOCOL.md`, `AGENTS.md`,
+`BACKWARD_COMPATIBILITY.md` are updated to match the shipped code"), not done here — B12's own
+scope is the deletion, not this rewrite. Do not follow the sections below as instructions; they
+describe the deleted Node service.
 
 ## Related documents
 
