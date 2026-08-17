@@ -1526,7 +1526,7 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(current_section(&app), SettingsSection::Appearance);
         handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert_eq!(app.theme.name, ThemeName::LazyVim);
+        assert_eq!(app.theme.name, ThemeName::Light);
     }
 
     #[test]

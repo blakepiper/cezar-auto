@@ -95,7 +95,7 @@ pub struct Theme {
 
 impl Theme {
     pub fn detect() -> Self {
-        Self::new(ThemeName::Dark, ColorCapability::detect())
+        Self::new(ThemeName::LazyVim, ColorCapability::detect())
     }
 
     pub fn new(name: ThemeName, capability: ColorCapability) -> Self {
@@ -174,6 +174,11 @@ mod tests {
         assert_eq!(ThemeName::parse("dark"), Some(ThemeName::Dark));
         assert_eq!(ThemeName::parse("lazy-vim"), Some(ThemeName::LazyVim));
         assert_eq!(ThemeName::parse("system"), None);
+    }
+
+    #[test]
+    fn detects_lazyvim_as_the_default_theme() {
+        assert_eq!(Theme::detect().name, ThemeName::LazyVim);
     }
 
     #[test]
