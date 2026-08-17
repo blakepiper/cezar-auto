@@ -17,5 +17,6 @@ pub mod model_identity;
 pub mod opencode;
 pub mod opencode_runner;
 pub mod pi;
+pub mod pi_runner;
 pub mod usage;
 pub mod v1_text_coalescer;
