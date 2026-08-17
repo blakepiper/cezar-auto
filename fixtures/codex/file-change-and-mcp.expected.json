@@ -1,0 +1,129 @@
+[
+  {
+    "type": "session.started",
+    "sessionId": "th_01J8ZCFCHP6M0B",
+    "backend": "codex"
+  },
+  {
+    "type": "turn.started",
+    "turnId": "turn_01J8ZCFC1T"
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "tool",
+      "id": "item_fc_1",
+      "name": "fileChange",
+      "toolKind": "edit",
+      "title": "Edit 2 files",
+      "status": "running",
+      "diffs": [
+        {
+          "path": "src/auth.ts",
+          "oldText": null,
+          "unified": "@@ -10,7 +10,7 @@\n-  redirect('/login')\n+  redirect(returnTo)\n"
+        },
+        {
+          "path": "src/auth.test.ts",
+          "oldText": null,
+          "unified": "@@ -0,0 +1,3 @@\n+it('keeps returnTo across login', () => {})\n"
+        }
+      ],
+      "locations": [
+        {
+          "path": "src/auth.ts"
+        },
+        {
+          "path": "src/auth.test.ts"
+        }
+      ]
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "item_fc_1",
+      "name": "fileChange",
+      "toolKind": "edit",
+      "title": "Edit 2 files",
+      "status": "completed",
+      "diffs": [
+        {
+          "path": "src/auth.ts",
+          "oldText": null,
+          "unified": "@@ -10,7 +10,7 @@\n-  redirect('/login')\n+  redirect(returnTo)\n"
+        },
+        {
+          "path": "src/auth.test.ts",
+          "oldText": null,
+          "unified": "@@ -0,0 +1,3 @@\n+it('keeps returnTo across login', () => {})\n"
+        }
+      ],
+      "locations": [
+        {
+          "path": "src/auth.ts"
+        },
+        {
+          "path": "src/auth.test.ts"
+        }
+      ]
+    }
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "tool",
+      "id": "item_mcp_1",
+      "name": "playwright.screenshot",
+      "toolKind": "other",
+      "title": "playwright.screenshot",
+      "status": "running",
+      "input": {
+        "name": "login-after-fix.png"
+      }
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "item_mcp_1",
+      "name": "playwright.screenshot",
+      "toolKind": "other",
+      "title": "playwright.screenshot",
+      "status": "completed",
+      "input": {
+        "name": "login-after-fix.png"
+      },
+      "output": "saved login-after-fix.png"
+    }
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "tool",
+      "id": "item_ws_1",
+      "name": "webSearch",
+      "toolKind": "fetch",
+      "title": "Web search hono set-cookie redirect loses session",
+      "status": "running"
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "item_ws_1",
+      "name": "webSearch",
+      "toolKind": "fetch",
+      "title": "Web search hono set-cookie redirect loses session",
+      "status": "completed"
+    }
+  },
+  {
+    "type": "turn.completed",
+    "turnId": "turn_01J8ZCFC1T",
+    "stopReason": "end_turn"
+  }
+]

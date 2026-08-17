@@ -6,7 +6,7 @@ use serde_json::Value;
 const BACKENDS: &[&str] = &["claude", "codex", "opencode", "pi"];
 
 fn fixture_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/cezar/src/core/__fixtures__")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures")
 }
 
 fn fixture_events(backend: &str) -> Vec<Value> {

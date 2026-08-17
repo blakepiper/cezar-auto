@@ -1,0 +1,67 @@
+[
+  {
+    "type": "session.started",
+    "sessionId": "3f9c0a52-6de1-4c8e-9a41-1b2d3c4e5f60",
+    "backend": "claude",
+    "model": "claude-fable-5",
+    "cwd": "/repo",
+    "tools": [
+      "Task",
+      "Bash",
+      "Read",
+      "Edit",
+      "Write",
+      "TodoWrite",
+      "Glob",
+      "Grep",
+      "WebFetch",
+      "WebSearch"
+    ]
+  },
+  {
+    "type": "turn.started",
+    "turnId": "turn_1"
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "message",
+      "id": "item_1",
+      "role": "assistant",
+      "text": "I'll fix the bug."
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "message",
+      "id": "item_1",
+      "role": "assistant",
+      "text": "I'll fix the bug."
+    }
+  },
+  {
+    "type": "turn.completed",
+    "turnId": "turn_1",
+    "stopReason": "end_turn",
+    "usage": {
+      "input": 1204,
+      "output": 120,
+      "total": 28324,
+      "cacheRead": 18000,
+      "cacheWrite": 9000
+    },
+    "costUsd": 0.0021
+  },
+  {
+    "type": "usage.updated",
+    "usage": {
+      "input": 1204,
+      "output": 120,
+      "total": 28324,
+      "cacheRead": 18000,
+      "cacheWrite": 9000
+    },
+    "costUsd": 0.0021
+  }
+]

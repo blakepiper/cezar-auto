@@ -1,0 +1,151 @@
+[
+  {
+    "type": "session.started",
+    "sessionId": "8a4b2c6d-e0f1-4213-9a8b-3c5d7e9f0a1b",
+    "backend": "claude",
+    "model": "claude-fable-5",
+    "cwd": "/repo",
+    "tools": [
+      "Task",
+      "Bash",
+      "Read",
+      "Edit",
+      "Write",
+      "TodoWrite",
+      "Glob",
+      "Grep",
+      "WebFetch",
+      "WebSearch"
+    ]
+  },
+  {
+    "type": "turn.started",
+    "turnId": "turn_1"
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_task_01",
+      "name": "Task",
+      "toolKind": "task",
+      "title": "Task: Audit auth flow",
+      "status": "running",
+      "input": {
+        "description": "Audit auth flow",
+        "prompt": "Find where the session cookie is dropped on redirect.",
+        "subagent_type": "general-purpose"
+      }
+    }
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "message",
+      "id": "item_1",
+      "role": "assistant",
+      "text": "Scanning the auth middleware.",
+      "parentItemId": "toolu_task_01"
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "message",
+      "id": "item_1",
+      "role": "assistant",
+      "text": "Scanning the auth middleware.",
+      "parentItemId": "toolu_task_01"
+    }
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_sub_01",
+      "name": "Grep",
+      "toolKind": "search",
+      "title": "Search session",
+      "status": "running",
+      "input": {
+        "pattern": "session",
+        "path": "src"
+      },
+      "parentItemId": "toolu_task_01"
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_sub_01",
+      "name": "Grep",
+      "toolKind": "search",
+      "title": "Search session",
+      "status": "completed",
+      "input": {
+        "pattern": "session",
+        "path": "src"
+      },
+      "parentItemId": "toolu_task_01",
+      "output": "src/middleware.ts:12:  clearSession()"
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_task_01",
+      "name": "Task",
+      "toolKind": "task",
+      "title": "Task: Audit auth flow",
+      "status": "completed",
+      "input": {
+        "description": "Audit auth flow",
+        "prompt": "Find where the session cookie is dropped on redirect.",
+        "subagent_type": "general-purpose"
+      },
+      "output": "The session cookie is dropped in src/middleware.ts:12 (clearSession on every redirect)."
+    }
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "message",
+      "id": "item_2",
+      "role": "assistant",
+      "text": "The subagent found it: src/middleware.ts:12."
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "message",
+      "id": "item_2",
+      "role": "assistant",
+      "text": "The subagent found it: src/middleware.ts:12."
+    }
+  },
+  {
+    "type": "turn.completed",
+    "turnId": "turn_1",
+    "stopReason": "end_turn",
+    "usage": {
+      "input": 1390,
+      "output": 205,
+      "total": 37595,
+      "cacheRead": 36000
+    },
+    "costUsd": 0.0455
+  },
+  {
+    "type": "usage.updated",
+    "usage": {
+      "input": 1390,
+      "output": 205,
+      "total": 37595,
+      "cacheRead": 36000
+    },
+    "costUsd": 0.0455
+  }
+]

@@ -13,11 +13,13 @@
 //!   `resolveCodexExecutable` and `opencode-server-runner.ts`'s constructor really do skip it;
 //!   this is not an oversight to "fix" here, it is the oracle.
 //!
-//! The dry-run mock scripts live in the still-live Node tree (`packages/cezar/scripts/`), so
-//! resolving them relative to `SessionRequest.cwd` (the repo root a run operates in) rather than
-//! this binary's own install location is deliberate — `CEZ_DRY_RUN=1` is a development/testing
-//! affordance that only makes sense run from inside this monorepo checkout in the first place,
-//! same phase Phase A/B's dual-implementation testing already assumes throughout.
+//! The dry-run mock scripts live under this monorepo's root-level `fixtures/` directory (B12
+//! relocated them there from the since-deleted `packages/cezar/scripts/`, the only reason those
+//! two files survived the TypeScript deletion), so resolving them relative to `SessionRequest.cwd`
+//! (the repo root a run operates in) rather than this binary's own install location is deliberate
+//! — `CEZ_DRY_RUN=1` is a development/testing affordance that only makes sense run from inside
+//! this monorepo checkout in the first place, same premise Phase A/B's dual-implementation
+//! testing already assumed throughout.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -31,8 +33,8 @@ use crate::codex_runner::{self, CodexSpawnConfig};
 use crate::opencode_runner::{self, OpencodeSpawnConfig};
 use crate::pi_runner::{self, PiSpawnConfig};
 
-const MOCK_CLAUDE_RELATIVE: &str = "packages/cezar/scripts/mock-claude.mjs";
-const MOCK_PI_RELATIVE: &str = "packages/cezar/scripts/mock-pi-rpc.mjs";
+const MOCK_CLAUDE_RELATIVE: &str = "fixtures/scripts/mock-claude.mjs";
+const MOCK_PI_RELATIVE: &str = "fixtures/scripts/mock-pi-rpc.mjs";
 
 /// Production `SessionFactory`: spawns the real agent CLI (or, for claude/pi under
 /// `CEZ_DRY_RUN=1`, the bundled mock) for whichever backend a [`SessionRequest`] names.
@@ -213,7 +215,7 @@ mod tests {
         assert_eq!(config.program, "node");
         assert_eq!(
             config.prefix_args,
-            vec!["/repo/packages/cezar/scripts/mock-claude.mjs".to_owned()]
+            vec!["/repo/fixtures/scripts/mock-claude.mjs".to_owned()]
         );
     }
 
@@ -232,7 +234,7 @@ mod tests {
         assert_eq!(config.program, "node");
         assert_eq!(
             config.prefix_args,
-            vec!["/repo/packages/cezar/scripts/mock-pi-rpc.mjs".to_owned()]
+            vec!["/repo/fixtures/scripts/mock-pi-rpc.mjs".to_owned()]
         );
     }
 

@@ -1,0 +1,9 @@
+{"id":1,"result":{"userAgent":"codex/0.46.0"}}
+{"method":"thread/started","params":{"thread":{"id":"th_01J8ZCXF2R9K7D"}}}
+{"id":2,"result":{"thread":{"id":"th_01J8ZCXF2R9K7D"}}}
+{"method":"turn/started","params":{"turn":{"id":"turn_01J8ZCXF44","status":"inProgress","items":[]}}}
+{"method":"item/started","params":{"threadId":"th_01J8ZCXF2R9K7D","turnId":"turn_01J8ZCXF44","item":{"type":"commandExecution","id":"item_cmd_9","command":["bash","-lc","curl https://internal.example/api"],"cwd":"/repo","status":"inProgress"}}}
+{"method":"item/completed","params":{"threadId":"th_01J8ZCXF2R9K7D","turnId":"turn_01J8ZCXF44","item":{"type":"commandExecution","id":"item_cmd_9","command":["bash","-lc","curl https://internal.example/api"],"cwd":"/repo","status":"declined"}}}
+{"method":"turn/failed","params":{"turn":{"id":"turn_01J8ZCXF44","status":"failed"},"error":{"message":"stream error: unexpected status 429 Too Many Requests"}}}
+{"method":"turn/started","params":{"turn":{"id":"turn_01J8ZCXG55","status":"inProgress","items":[]}}}
+{"method":"turn/failed","params":{"turn":{"id":"turn_01J8ZCXG55","status":"failed"},"error":{"message":"Turn interrupted by user"}}}

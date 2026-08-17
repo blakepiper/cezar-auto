@@ -1,0 +1,115 @@
+[
+  {
+    "type": "session.started",
+    "sessionId": "ses_01J8ZE00MAIN",
+    "backend": "opencode"
+  },
+  {
+    "type": "turn.started",
+    "turnId": "turn_1"
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "tool",
+      "id": "prt_01J8ZE51SUBT",
+      "name": "subtask",
+      "toolKind": "task",
+      "title": "Task: Trace resolveSession callers",
+      "status": "running",
+      "input": {
+        "prompt": "Find every caller of resolveSession and report the file list",
+        "description": "Trace resolveSession callers",
+        "agent": "general"
+      }
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "prt_01J8ZE53GREP",
+      "name": "grep",
+      "toolKind": "search",
+      "title": "resolveSession",
+      "status": "completed",
+      "input": {
+        "pattern": "resolveSession",
+        "path": "src"
+      },
+      "output": "src/server/router.ts\nsrc/core/session.ts",
+      "parentItemId": "prt_01J8ZE51SUBT"
+    }
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "message",
+      "id": "prt_01J8ZE54CTXT",
+      "role": "assistant",
+      "text": "",
+      "parentItemId": "prt_01J8ZE51SUBT"
+    }
+  },
+  {
+    "type": "item.delta",
+    "itemId": "prt_01J8ZE54CTXT",
+    "field": "text",
+    "delta": "Two callers: router.ts and session.ts."
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "message",
+      "id": "prt_01J8ZE54CTXT",
+      "role": "assistant",
+      "text": "Two callers: router.ts and session.ts.",
+      "parentItemId": "prt_01J8ZE51SUBT"
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "prt_01J8ZE51SUBT",
+      "name": "subtask",
+      "toolKind": "task",
+      "title": "Task: Trace resolveSession callers",
+      "status": "completed",
+      "input": {
+        "prompt": "Find every caller of resolveSession and report the file list",
+        "description": "Trace resolveSession callers",
+        "agent": "general"
+      }
+    }
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "message",
+      "id": "prt_01J8ZE55TXT2",
+      "role": "assistant",
+      "text": ""
+    }
+  },
+  {
+    "type": "item.delta",
+    "itemId": "prt_01J8ZE55TXT2",
+    "field": "text",
+    "delta": "The subagent found two callers."
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "message",
+      "id": "prt_01J8ZE55TXT2",
+      "role": "assistant",
+      "text": "The subagent found two callers."
+    }
+  },
+  {
+    "type": "turn.completed",
+    "turnId": "turn_1",
+    "stopReason": "end_turn"
+  }
+]

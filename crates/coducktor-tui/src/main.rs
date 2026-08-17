@@ -39,11 +39,8 @@ async fn main() -> io::Result<()> {
     // straight in the caller's terminal, print to real stdout/stderr, and exit. Only
     // `None`/`Tui` fall through to the interactive cockpit below.
     match &cli.command {
-        Some(Command::Serve { legacy_server }) => {
+        Some(Command::Serve) => {
             let repo_root = headless::resolve_repo_root(cli.repo.as_deref());
-            if *legacy_server {
-                return headless::serve_legacy_command(repo_root).await;
-            }
             return headless::serve_command(repo_root).await;
         }
         Some(Command::Run { task }) => {

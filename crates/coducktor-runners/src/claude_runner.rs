@@ -589,7 +589,7 @@ mod tests {
 
     fn mock_script(name: &str) -> String {
         let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        path.push("../../packages/cezar/scripts");
+        path.push("../../fixtures/scripts");
         path.push(name);
         path.canonicalize()
             .unwrap_or(path)
@@ -599,7 +599,7 @@ mod tests {
 
     fn fixture_script(name: &str) -> String {
         let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        path.push("../../packages/cezar/src/core/__fixtures__/claude");
+        path.push("../../fixtures/claude");
         path.push(name);
         path.canonicalize()
             .unwrap_or(path)
@@ -711,7 +711,7 @@ mod tests {
         assert_eq!(allowed, vec!["Bash"]);
     }
 
-    // ---- real-subprocess tests against packages/cezar's own dry-run mock -----------------
+    // ---- real-subprocess tests against the bundled dry-run mock ----------------------------------
 
     fn run_turn(session: &mut ClaudeSession) -> (Result<SessionOutcome, String>, Vec<EventInput>) {
         let mut events = Vec::new();

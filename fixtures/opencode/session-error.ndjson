@@ -1,0 +1,5 @@
+{"type":"server.connected","properties":{}}
+{"type":"message.updated","properties":{"info":{"id":"msg_01J8ZE70FFFF","sessionID":"ses_01J8ZE00MAIN","role":"assistant","time":{"created":1760000010000},"modelID":"claude-sonnet-4-5","providerID":"anthropic","mode":"build","path":{"cwd":"/repo","root":"/repo"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}}}}
+{"type":"message.part.updated","properties":{"part":{"id":"prt_01J8ZE71TXT1","messageID":"msg_01J8ZE70FFFF","sessionID":"ses_01J8ZE00MAIN","type":"text","text":"Starting the review"}}}
+{"type":"session.error","properties":{"sessionID":"ses_01J8ZE00MAIN","error":{"name":"ProviderAuthError","data":{"message":"API key expired — run `opencode auth login`"}}}}
+{"type":"session.idle","properties":{"sessionID":"ses_01J8ZE00MAIN"}}

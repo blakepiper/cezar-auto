@@ -1,0 +1,145 @@
+[
+  {
+    "type": "session.started",
+    "sessionId": "b7e2d940-51aa-47f3-8c02-2d9e6f10a3c4",
+    "backend": "claude",
+    "model": "claude-fable-5",
+    "cwd": "/repo",
+    "tools": [
+      "Task",
+      "Bash",
+      "Read",
+      "Edit",
+      "Write",
+      "TodoWrite",
+      "Glob",
+      "Grep",
+      "WebFetch",
+      "WebSearch"
+    ]
+  },
+  {
+    "type": "turn.started",
+    "turnId": "turn_1"
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "message",
+      "id": "item_1",
+      "role": "assistant",
+      "text": "Okay — looking into: fix the login redirect"
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "message",
+      "id": "item_1",
+      "role": "assistant",
+      "text": "Okay — looking into: fix the login redirect"
+    }
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_mock_1",
+      "name": "Bash",
+      "toolKind": "execute",
+      "title": "Ran git status --short",
+      "status": "running",
+      "input": {
+        "command": "git status --short"
+      }
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_mock_1",
+      "name": "Bash",
+      "toolKind": "execute",
+      "title": "Ran git status --short",
+      "status": "completed",
+      "input": {
+        "command": "git status --short"
+      },
+      "output": " M src/example.ts"
+    }
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_mock_shot_1",
+      "name": "Screenshot",
+      "toolKind": "other",
+      "title": "Screenshot",
+      "status": "running",
+      "input": {
+        "name": "repro-login-redirect.png"
+      }
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_mock_shot_1",
+      "name": "Screenshot",
+      "toolKind": "other",
+      "title": "Screenshot",
+      "status": "completed",
+      "input": {
+        "name": "repro-login-redirect.png"
+      },
+      "output": "Repro captured: after reload the session toast appears and you are back on /login.\n[screenshot]"
+    }
+  },
+  {
+    "type": "image",
+    "itemId": "toolu_mock_shot_1",
+    "mediaType": "image/png",
+    "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "message",
+      "id": "item_2",
+      "role": "assistant",
+      "text": "Done with the first pass — opened a draft PR: https://github.com/open-mercato/demo/pull/123."
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "message",
+      "id": "item_2",
+      "role": "assistant",
+      "text": "Done with the first pass — opened a draft PR: https://github.com/open-mercato/demo/pull/123."
+    }
+  },
+  {
+    "type": "turn.completed",
+    "turnId": "turn_1",
+    "stopReason": "end_turn",
+    "usage": {
+      "input": 1270,
+      "output": 185,
+      "total": 1455
+    },
+    "costUsd": 0.0342
+  },
+  {
+    "type": "usage.updated",
+    "usage": {
+      "input": 1270,
+      "output": 185,
+      "total": 1455
+    },
+    "costUsd": 0.0342
+  }
+]

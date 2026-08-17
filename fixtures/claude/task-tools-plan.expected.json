@@ -1,0 +1,343 @@
+[
+  {
+    "type": "session.started",
+    "sessionId": "8c2f1a4e-6b70-4d92-9a13-5e7f0c3b8d41",
+    "backend": "claude",
+    "model": "claude-fable-5",
+    "cwd": "/repo",
+    "tools": [
+      "Task",
+      "Bash",
+      "Read",
+      "Edit",
+      "Write",
+      "TodoWrite",
+      "TaskCreate",
+      "TaskUpdate",
+      "TaskList",
+      "Glob",
+      "Grep"
+    ]
+  },
+  {
+    "type": "turn.started",
+    "turnId": "turn_1"
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "message",
+      "id": "item_1",
+      "role": "assistant",
+      "text": "I'll plan this out first."
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "message",
+      "id": "item_1",
+      "role": "assistant",
+      "text": "I'll plan this out first."
+    }
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_01VZKxT1aesdxq8eiJ6txP62",
+      "name": "TaskCreate",
+      "toolKind": "plan",
+      "title": "Update plan",
+      "status": "running",
+      "input": {
+        "subject": "Wire the dock",
+        "description": "Wire the plan dock to the task tools",
+        "activeForm": "Wiring the dock"
+      }
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_01VZKxT1aesdxq8eiJ6txP62",
+      "name": "TaskCreate",
+      "toolKind": "plan",
+      "title": "Update plan",
+      "status": "completed",
+      "input": {
+        "subject": "Wire the dock",
+        "description": "Wire the plan dock to the task tools",
+        "activeForm": "Wiring the dock"
+      },
+      "output": "Task #1 created successfully: Wire the dock"
+    }
+  },
+  {
+    "type": "plan.updated",
+    "entries": [
+      {
+        "content": "Wire the dock",
+        "status": "pending",
+        "activeForm": "Wiring the dock"
+      }
+    ]
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_01SLrddM1hBNFnYCHB2q8PqK",
+      "name": "TaskCreate",
+      "toolKind": "plan",
+      "title": "Update plan",
+      "status": "running",
+      "input": {
+        "subject": "Add tests",
+        "description": "Cover the mapper"
+      }
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_01SLrddM1hBNFnYCHB2q8PqK",
+      "name": "TaskCreate",
+      "toolKind": "plan",
+      "title": "Update plan",
+      "status": "completed",
+      "input": {
+        "subject": "Add tests",
+        "description": "Cover the mapper"
+      },
+      "output": "Task #2 created successfully: Add tests"
+    }
+  },
+  {
+    "type": "plan.updated",
+    "entries": [
+      {
+        "content": "Wire the dock",
+        "status": "pending",
+        "activeForm": "Wiring the dock"
+      },
+      {
+        "content": "Add tests",
+        "status": "pending"
+      }
+    ]
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_014oZz7JoXYiZpK4oAhhQeZc",
+      "name": "TaskUpdate",
+      "toolKind": "plan",
+      "title": "Update plan",
+      "status": "running",
+      "input": {
+        "taskId": "1",
+        "status": "in_progress"
+      }
+    }
+  },
+  {
+    "type": "plan.updated",
+    "entries": [
+      {
+        "content": "Wire the dock",
+        "status": "in_progress",
+        "activeForm": "Wiring the dock"
+      },
+      {
+        "content": "Add tests",
+        "status": "pending"
+      }
+    ]
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_014oZz7JoXYiZpK4oAhhQeZc",
+      "name": "TaskUpdate",
+      "toolKind": "plan",
+      "title": "Update plan",
+      "status": "completed",
+      "input": {
+        "taskId": "1",
+        "status": "in_progress"
+      },
+      "output": "Updated task #1 status"
+    }
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_01DeLeTe9Xq2mNbVcZaSdFg",
+      "name": "TaskUpdate",
+      "toolKind": "plan",
+      "title": "Update plan",
+      "status": "running",
+      "input": {
+        "taskId": "2",
+        "status": "deleted"
+      }
+    }
+  },
+  {
+    "type": "plan.updated",
+    "entries": [
+      {
+        "content": "Wire the dock",
+        "status": "in_progress",
+        "activeForm": "Wiring the dock"
+      }
+    ]
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_01DeLeTe9Xq2mNbVcZaSdFg",
+      "name": "TaskUpdate",
+      "toolKind": "plan",
+      "title": "Update plan",
+      "status": "completed",
+      "input": {
+        "taskId": "2",
+        "status": "deleted"
+      },
+      "output": "Updated task #2 deleted"
+    }
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_01NeWtAsK3ChQwErTyUiOp",
+      "name": "TaskCreate",
+      "toolKind": "plan",
+      "title": "Update plan",
+      "status": "running",
+      "input": {
+        "subject": "Ship it",
+        "description": "Open the PR"
+      }
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_01NeWtAsK3ChQwErTyUiOp",
+      "name": "TaskCreate",
+      "toolKind": "plan",
+      "title": "Update plan",
+      "status": "completed",
+      "input": {
+        "subject": "Ship it",
+        "description": "Open the PR"
+      },
+      "output": "Task #3 created successfully: Ship it"
+    }
+  },
+  {
+    "type": "plan.updated",
+    "entries": [
+      {
+        "content": "Wire the dock",
+        "status": "in_progress",
+        "activeForm": "Wiring the dock"
+      },
+      {
+        "content": "Ship it",
+        "status": "pending"
+      }
+    ]
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_01RewJNdV6Tq8wUG6JUCmq9b",
+      "name": "TaskList",
+      "toolKind": "plan",
+      "title": "Update plan",
+      "status": "running",
+      "input": {}
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_01RewJNdV6Tq8wUG6JUCmq9b",
+      "name": "TaskList",
+      "toolKind": "plan",
+      "title": "Update plan",
+      "status": "completed",
+      "input": {},
+      "output": "#1 [in_progress] Wire the dock\n#3 [pending] Ship it"
+    }
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_01NoTfOuNd7Zx8Cv6Bn5Ml",
+      "name": "TaskUpdate",
+      "toolKind": "plan",
+      "title": "Update plan",
+      "status": "running",
+      "input": {
+        "taskId": "2",
+        "status": "completed"
+      }
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_01NoTfOuNd7Zx8Cv6Bn5Ml",
+      "name": "TaskUpdate",
+      "toolKind": "plan",
+      "title": "Update plan",
+      "status": "completed",
+      "input": {
+        "taskId": "2",
+        "status": "completed"
+      },
+      "output": "Task not found"
+    }
+  },
+  {
+    "type": "turn.completed",
+    "turnId": "turn_1",
+    "stopReason": "end_turn",
+    "usage": {
+      "input": 1014,
+      "output": 26,
+      "total": 1992,
+      "cacheRead": 812,
+      "cacheWrite": 140
+    },
+    "costUsd": 0.0412
+  },
+  {
+    "type": "usage.updated",
+    "usage": {
+      "input": 1014,
+      "output": 26,
+      "total": 1992,
+      "cacheRead": 812,
+      "cacheWrite": 140
+    },
+    "costUsd": 0.0412
+  }
+]

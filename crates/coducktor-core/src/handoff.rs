@@ -122,17 +122,15 @@ pub fn delete_handoff(data_dir: &Path, run_id: &str) {
 /// skill behavior unpredictable. This is the single source of truth — `resolveCapabilities`
 /// reports it to the UI and `RunManager` enforces it on every run.
 ///
-/// Precedence mirrors [`crate::paths::coducktor_home_dir`]: `DUCK_FOLLOWUPS` (the renamed
-/// spelling the TUI's own Inbox screen already tells the user to set) wins if set; otherwise
-/// `CEZ_FOLLOWUPS`, which is all `packages/cezar`'s server reads until it is deleted at B12.
-/// Without this dual-read, a user who follows the TUI's own on-screen instruction
-/// (`DUCK_FOLLOWUPS=1`) would silently fail to enable the inbox against the still-live Node
-/// server. An exact `"1"` opts in — the house spelling.
+/// `DUCK_FOLLOWUPS` — the TUI's own Inbox screen tells the user to set this. An exact `"1"`
+/// opts in — the house spelling.
+///
+/// B12 dropped the `CEZ_FOLLOWUPS` dual-read this function carried through the whole of
+/// Phase B: it existed only so a user following the TUI's on-screen `DUCK_FOLLOWUPS=1`
+/// instruction wouldn't silently fail to enable the inbox against the still-live Node server
+/// (`packages/cezar`, which read only `CEZ_FOLLOWUPS`). That server is deleted now.
 pub fn followups_enabled(env: &dyn EnvSource) -> bool {
-    if let Some(value) = env.get("DUCK_FOLLOWUPS") {
-        return value == "1";
-    }
-    env.get("CEZ_FOLLOWUPS").as_deref() == Some("1")
+    env.get("DUCK_FOLLOWUPS").as_deref() == Some("1")
 }
 
 /// Appended to every agent step's `--append-system-prompt` (spec 007). The matching
@@ -256,21 +254,15 @@ mod tests {
     }
 
     #[test]
-    fn followups_enabled_honors_duck_first_then_cez() {
+    fn followups_enabled_requires_an_exact_duck_followups_of_one() {
         let none = FixedEnv::new(&[]);
         assert!(!followups_enabled(&none));
 
-        let duck_off = FixedEnv::new(&[("DUCK_FOLLOWUPS", "0"), ("CEZ_FOLLOWUPS", "1")]);
-        assert!(
-            !followups_enabled(&duck_off),
-            "an explicit DUCK_FOLLOWUPS wins even when it disagrees with CEZ_FOLLOWUPS"
-        );
+        let off = FixedEnv::new(&[("DUCK_FOLLOWUPS", "0")]);
+        assert!(!followups_enabled(&off));
 
-        let cez_only = FixedEnv::new(&[("CEZ_FOLLOWUPS", "1")]);
-        assert!(followups_enabled(&cez_only));
-
-        let duck_only = FixedEnv::new(&[("DUCK_FOLLOWUPS", "1")]);
-        assert!(followups_enabled(&duck_only));
+        let on = FixedEnv::new(&[("DUCK_FOLLOWUPS", "1")]);
+        assert!(followups_enabled(&on));
     }
 
     #[test]

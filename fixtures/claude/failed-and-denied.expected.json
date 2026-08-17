@@ -1,0 +1,110 @@
+[
+  {
+    "type": "session.started",
+    "sessionId": "c9d0e1f2-a3b4-4c5d-8e6f-102938475650",
+    "backend": "claude",
+    "model": "claude-fable-5",
+    "cwd": "/repo",
+    "tools": [
+      "Task",
+      "Bash",
+      "Read",
+      "Edit",
+      "Write",
+      "TodoWrite",
+      "Glob",
+      "Grep",
+      "WebFetch",
+      "WebSearch"
+    ]
+  },
+  {
+    "type": "turn.started",
+    "turnId": "turn_1"
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_fail_01",
+      "name": "Bash",
+      "toolKind": "execute",
+      "title": "Ran npm run lint",
+      "status": "running",
+      "input": {
+        "command": "npm run lint",
+        "description": "Lint the project"
+      }
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_fail_01",
+      "name": "Bash",
+      "toolKind": "execute",
+      "title": "Ran npm run lint",
+      "status": "failed",
+      "input": {
+        "command": "npm run lint",
+        "description": "Lint the project"
+      },
+      "error": "npm ERR! Missing script: \"lint\""
+    }
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "message",
+      "id": "item_1",
+      "role": "assistant",
+      "text": "No lint script — and the cleanup command was blocked by permissions."
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "message",
+      "id": "item_1",
+      "role": "assistant",
+      "text": "No lint script — and the cleanup command was blocked by permissions."
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_denied_01",
+      "name": "Bash",
+      "toolKind": "execute",
+      "title": "Ran rm -rf node_modules",
+      "status": "declined",
+      "input": {
+        "command": "rm -rf node_modules"
+      }
+    }
+  },
+  {
+    "type": "turn.completed",
+    "turnId": "turn_1",
+    "stopReason": "end_turn",
+    "usage": {
+      "input": 790,
+      "output": 100,
+      "total": 12890,
+      "cacheRead": 12000
+    },
+    "costUsd": 0.0093
+  },
+  {
+    "type": "usage.updated",
+    "usage": {
+      "input": 790,
+      "output": 100,
+      "total": 12890,
+      "cacheRead": 12000
+    },
+    "costUsd": 0.0093
+  }
+]

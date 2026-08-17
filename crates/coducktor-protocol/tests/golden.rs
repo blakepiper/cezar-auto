@@ -24,8 +24,7 @@ fn expected_files(directory: &Path, output: &mut Vec<PathBuf>) {
 
 #[test]
 fn all_committed_backend_goldens_deserialize_without_loss() {
-    let fixture_root =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/cezar/src/core/__fixtures__");
+    let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
     let mut files = Vec::new();
     expected_files(&fixture_root, &mut files);
     files.sort();

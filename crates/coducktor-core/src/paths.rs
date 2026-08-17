@@ -1,5 +1,5 @@
-//! Mirrors `packages/cezar/src/paths.ts`. Every path the workspace layer touches goes
-//! through here so `CEZ_HOME`/`DUCK_HOME` (see [`coducktor_home_dir`]) is resolved in
+//! Mirrors `packages/cezar/src/paths.ts` (deleted at B12). Every path the workspace layer
+//! touches goes through here so `DUCK_HOME` (see [`coducktor_home_dir`]) is resolved in
 //! exactly one place — do not re-derive `home_dir()` elsewhere.
 
 use std::env;
@@ -42,26 +42,18 @@ pub fn real_home_dir(env: &dyn EnvSource) -> PathBuf {
 /// Per-user coducktor home. Literal `~/.coducktor` on every platform — no XDG, no
 /// `%LOCALAPPDATA%` branch, mirroring `paths.ts::cezarHomeDir`'s one rule.
 ///
-/// Precedence: `DUCK_HOME` (the renamed spelling — spec §2.2.1 decision 6, the name new
-/// code should reach for) wins if set; otherwise `CEZ_HOME` (what `packages/cezar` still
-/// reads and will keep reading until it is deleted at B12, spec §11.1) so the two
-/// implementations resolve the SAME directory for as long as they coexist. An **empty**
-/// override falls back rather than resolving to a relative cwd path, matching the TS
-/// `env.CEZ_HOME || undefined` guard.
+/// `DUCK_HOME` (spec §2.2.1 decision 6) wins if set, else the real home directory. An
+/// **empty** override falls back rather than resolving to a relative cwd path, matching the
+/// TS `env.CEZ_HOME || undefined` guard's own empty-string handling.
 ///
-/// This dual-read is deliberate, not a shortcut: unlike the ~40 other `CEZ_*` flags
-/// (spec §2.2.1, "internal TypeScript identifiers are not renamed; that code is being
-/// deleted"), `CEZ_HOME` names the directory BOTH implementations read and write during
-/// the whole of Phase B, so a Rust-only rename here would silently point the Rust side at
-/// a different `~/.coducktor` than the Node server whenever a user (or CI, or a container)
-/// has `CEZ_HOME` set — the exact "changing a mechanism that already works" trap AGENTS.md
-/// warns about. Drop the `CEZ_HOME` arm once `packages/cezar` is deleted (B12).
+/// B12 dropped the `CEZ_HOME` dual-read this function carried through the whole of Phase B —
+/// it existed only so the still-live Node server (`packages/cezar`, which read `CEZ_HOME`
+/// and nothing else) and this crate resolved the SAME `~/.coducktor` while both implementations
+/// coexisted. `packages/cezar` is deleted now, so there is no second reader left to stay in
+/// sync with.
 pub fn coducktor_home_dir(env: &dyn EnvSource) -> PathBuf {
     if let Some(duck_home) = non_empty(env.get("DUCK_HOME")) {
         return PathBuf::from(duck_home);
-    }
-    if let Some(cez_home) = non_empty(env.get("CEZ_HOME")) {
-        return PathBuf::from(cez_home);
     }
     real_home_dir(env).join(".coducktor")
 }
@@ -183,15 +175,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn duck_home_wins_over_cez_home() {
-        let env = FixedEnv::new(&[("DUCK_HOME", "/duck"), ("CEZ_HOME", "/cez")]);
+    fn duck_home_is_honored_when_set() {
+        let env = FixedEnv::new(&[("DUCK_HOME", "/duck")]);
         assert_eq!(coducktor_home_dir(&env), PathBuf::from("/duck"));
-    }
-
-    #[test]
-    fn cez_home_is_honored_when_duck_home_is_unset() {
-        let env = FixedEnv::new(&[("CEZ_HOME", "/cez")]);
-        assert_eq!(coducktor_home_dir(&env), PathBuf::from("/cez"));
     }
 
     #[test]

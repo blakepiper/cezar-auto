@@ -718,7 +718,7 @@ mod tests {
 
     fn mock_script() -> String {
         let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        path.push("../../packages/cezar/src/core/__fixtures__/opencode/mock-opencode-serve.mjs");
+        path.push("../../fixtures/opencode/mock-opencode-serve.mjs");
         path.canonicalize()
             .unwrap_or(path)
             .to_string_lossy()

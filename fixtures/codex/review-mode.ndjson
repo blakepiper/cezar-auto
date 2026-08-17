@@ -1,0 +1,10 @@
+{"id":1,"result":{"userAgent":"codex/0.46.0"}}
+{"method":"thread/started","params":{"thread":{"id":"th_01J8ZCRV2QW4RT"}}}
+{"id":2,"result":{"thread":{"id":"th_01J8ZCRV2QW4RT"}}}
+{"method":"turn/started","params":{"turn":{"id":"turn_01J8ZCRV9A","status":"inProgress","items":[]}}}
+{"method":"item/started","params":{"threadId":"th_01J8ZCRV2QW4RT","turnId":"turn_01J8ZCRV9A","item":{"type":"enteredReviewMode","id":"item_rv_1"}}}
+{"method":"item/started","params":{"threadId":"th_01J8ZCRV2QW4RT","turnId":"turn_01J8ZCRV9A","item":{"type":"agentMessage","id":"item_rv_msg","text":""}}}
+{"method":"item/agentMessage/delta","params":{"threadId":"th_01J8ZCRV2QW4RT","turnId":"turn_01J8ZCRV9A","itemId":"item_rv_msg","delta":"Reviewing the diff for regressions."}}
+{"method":"item/completed","params":{"threadId":"th_01J8ZCRV2QW4RT","turnId":"turn_01J8ZCRV9A","item":{"type":"agentMessage","id":"item_rv_msg","text":"Reviewing the diff for regressions."}}}
+{"method":"item/completed","params":{"threadId":"th_01J8ZCRV2QW4RT","turnId":"turn_01J8ZCRV9A","item":{"type":"exitedReviewMode","id":"item_rv_2","status":"completed"}}}
+{"method":"turn/completed","params":{"turn":{"id":"turn_01J8ZCRV9A","status":"completed"}}}

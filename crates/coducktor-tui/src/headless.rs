@@ -64,51 +64,6 @@ pub async fn serve_command(repo_root: PathBuf) -> io::Result<()> {
     coducktor_server::serve_with_state(listener, state).await
 }
 
-/// `cezar serve --legacy-server` — B11's soak convenience: the same command, same `--repo`
-/// resolution, running the OLD Node service (`packages/cezar/src/index.ts serve`) instead of
-/// booting `coducktor-server` in-process. Exists only so a side-by-side comparison against the
-/// same repo is one flag away rather than a second, hand-assembled `npm` invocation; deleted at
-/// C2 along with the TypeScript tree it shells out to.
-///
-/// Resolves the monorepo checkout the same way `coducktor-server`'s own `default_web_dir()`
-/// resolves `web/dist` (B11.1): `DUCK_LEGACY_CLI_DIR`/`CEZ_LEGACY_CLI_DIR` override, else the
-/// current working directory — this only ever needs to work from within this checkout, the
-/// soak's whole premise.
-pub async fn serve_legacy_command(repo_root: PathBuf) -> io::Result<()> {
-    let monorepo_root = legacy_cli_monorepo_root();
-    let status = tokio::process::Command::new("npm")
-        .args([
-            "run",
-            "dev",
-            "-w",
-            "@open-mercato/cezar",
-            "--",
-            "serve",
-            "--repo",
-        ])
-        .arg(&repo_root)
-        .current_dir(&monorepo_root)
-        .status()
-        .await?;
-    if !status.success() {
-        return Err(io::Error::other(format!(
-            "legacy Node server exited with {status}"
-        )));
-    }
-    Ok(())
-}
-
-fn legacy_cli_monorepo_root() -> PathBuf {
-    for var in ["DUCK_LEGACY_CLI_DIR", "CEZ_LEGACY_CLI_DIR"] {
-        if let Ok(value) = std::env::var(var)
-            && !value.is_empty()
-        {
-            return PathBuf::from(value);
-        }
-    }
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-}
-
 async fn bind_first_free_port(
     start: u16,
     tries: u16,
@@ -587,14 +542,14 @@ mod tests {
     }
 
     /// A fake "repo" carrying just enough of the real tree's shape
-    /// (`packages/cezar/scripts/mock-claude.mjs`) for `DefaultSessionFactory`'s dry-run path
+    /// (`fixtures/scripts/mock-claude.mjs`) for `DefaultSessionFactory`'s dry-run path
     /// resolution to find it, without touching the real dev checkout's `.ai/coducktor/`.
     fn fake_repo_with_mock_claude() -> tempfile::TempDir {
         let repo = tempfile::tempdir().unwrap();
-        let scripts_dir = repo.path().join("packages/cezar/scripts");
+        let scripts_dir = repo.path().join("fixtures/scripts");
         std::fs::create_dir_all(&scripts_dir).unwrap();
         let real_mock = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../packages/cezar/scripts/mock-claude.mjs");
+            .join("../../fixtures/scripts/mock-claude.mjs");
         std::fs::copy(&real_mock, scripts_dir.join("mock-claude.mjs")).unwrap();
         repo
     }

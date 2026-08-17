@@ -41,14 +41,7 @@ pub enum Command {
     /// Launch the interactive TUI — the default when no subcommand is given.
     Tui,
     /// Start the cockpit server for this repo — no browser, no TUI.
-    Serve {
-        /// B11 soak convenience: run the OLD Node service instead of the Rust one, so a
-        /// side-by-side comparison against the same repo is one flag away rather than a
-        /// separate `npm run dev:server -- serve` invocation. Deleted at C2 along with the
-        /// TypeScript tree it shells out to.
-        #[arg(long)]
-        legacy_server: bool,
-    },
+    Serve,
     /// Run a task headless in the terminal; exits 0 on `done`/`review`, 1 otherwise.
     Run {
         /// The task text — extra words are joined with a space, same as the protected CLI.
@@ -169,17 +162,7 @@ mod tests {
     fn the_protected_commands_all_parse() {
         assert!(matches!(
             Cli::try_parse_from(["coducktor", "serve"]).unwrap().command,
-            Some(Command::Serve {
-                legacy_server: false
-            })
-        ));
-        assert!(matches!(
-            Cli::try_parse_from(["coducktor", "serve", "--legacy-server"])
-                .unwrap()
-                .command,
-            Some(Command::Serve {
-                legacy_server: true
-            })
+            Some(Command::Serve)
         ));
         let run = Cli::try_parse_from(["coducktor", "run", "do", "the", "thing"]).unwrap();
         match run.command {

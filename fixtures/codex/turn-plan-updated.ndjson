@@ -1,0 +1,8 @@
+{"id":1,"result":{"userAgent":"codex/0.46.0"}}
+{"method":"thread/started","params":{"thread":{"id":"th_01J8ZCTD8XN4VZ"}}}
+{"id":2,"result":{"thread":{"id":"th_01J8ZCTD8XN4VZ"}}}
+{"method":"turn/started","params":{"turn":{"id":"turn_01J8ZCTDA0","status":"inProgress","items":[]}}}
+{"method":"turn/plan/updated","params":{"threadId":"th_01J8ZCTD8XN4VZ","turnId":"turn_01J8ZCTDA0","explanation":"Fixing the redirect bug end to end.","plan":[{"step":"Reproduce the redirect bug","status":"inProgress"},{"step":"Fix returnTo handling in src/auth.ts","status":"pending"},{"step":"Add a regression test","status":"pending"}]}}
+{"method":"turn/plan/updated","params":{"threadId":"th_01J8ZCTD8XN4VZ","turnId":"turn_01J8ZCTDA0","explanation":null,"plan":[{"step":"Reproduce the redirect bug","status":"completed"},{"step":"Fix returnTo handling in src/auth.ts","status":"inProgress"},{"step":"Add a regression test","status":"pending"}]}}
+{"method":"turn/plan/updated","params":{"threadId":"th_01J8ZCTD8XN4VZ","turnId":"turn_01J8ZCTDA0","explanation":null,"plan":[{"step":"Reproduce the redirect bug","status":"completed"},{"step":"Fix returnTo handling in src/auth.ts","status":"completed"},{"step":"Add a regression test","status":"completed"}]}}
+{"method":"turn/completed","params":{"turn":{"id":"turn_01J8ZCTDA0","status":"completed"}}}

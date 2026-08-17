@@ -1,0 +1,62 @@
+[
+  {
+    "type": "session.started",
+    "sessionId": "th_01J8ZCRV2QW4RT",
+    "backend": "codex"
+  },
+  {
+    "type": "turn.started",
+    "turnId": "turn_01J8ZCRV9A"
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "tool",
+      "id": "item_rv_1",
+      "name": "enteredReviewMode",
+      "toolKind": "task",
+      "title": "Review",
+      "status": "running"
+    }
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "message",
+      "id": "item_rv_msg",
+      "role": "assistant",
+      "text": ""
+    }
+  },
+  {
+    "type": "item.delta",
+    "itemId": "item_rv_msg",
+    "field": "text",
+    "delta": "Reviewing the diff for regressions."
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "message",
+      "id": "item_rv_msg",
+      "role": "assistant",
+      "text": "Reviewing the diff for regressions."
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "item_rv_1",
+      "name": "enteredReviewMode",
+      "toolKind": "task",
+      "title": "Review",
+      "status": "completed"
+    }
+  },
+  {
+    "type": "turn.completed",
+    "turnId": "turn_01J8ZCRV9A",
+    "stopReason": "end_turn"
+  }
+]

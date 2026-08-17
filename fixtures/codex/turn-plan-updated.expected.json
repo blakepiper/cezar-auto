@@ -1,0 +1,29 @@
+[
+  { "type": "session.started", "sessionId": "th_01J8ZCTD8XN4VZ", "backend": "codex" },
+  { "type": "turn.started", "turnId": "turn_01J8ZCTDA0" },
+  {
+    "type": "plan.updated",
+    "entries": [
+      { "content": "Reproduce the redirect bug", "status": "in_progress" },
+      { "content": "Fix returnTo handling in src/auth.ts", "status": "pending" },
+      { "content": "Add a regression test", "status": "pending" }
+    ]
+  },
+  {
+    "type": "plan.updated",
+    "entries": [
+      { "content": "Reproduce the redirect bug", "status": "completed" },
+      { "content": "Fix returnTo handling in src/auth.ts", "status": "in_progress" },
+      { "content": "Add a regression test", "status": "pending" }
+    ]
+  },
+  {
+    "type": "plan.updated",
+    "entries": [
+      { "content": "Reproduce the redirect bug", "status": "completed" },
+      { "content": "Fix returnTo handling in src/auth.ts", "status": "completed" },
+      { "content": "Add a regression test", "status": "completed" }
+    ]
+  },
+  { "type": "turn.completed", "turnId": "turn_01J8ZCTDA0", "stopReason": "end_turn" }
+]

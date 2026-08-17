@@ -1,0 +1,61 @@
+[
+  {
+    "type": "session.started",
+    "sessionId": "th_01J8ZCXF2R9K7D",
+    "backend": "codex"
+  },
+  {
+    "type": "turn.started",
+    "turnId": "turn_01J8ZCXF44"
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "tool",
+      "id": "item_cmd_9",
+      "name": "commandExecution",
+      "toolKind": "execute",
+      "title": "Ran bash -lc curl https://internal.example/api",
+      "status": "running",
+      "input": {
+        "command": [
+          "bash",
+          "-lc",
+          "curl https://internal.example/api"
+        ]
+      }
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "item_cmd_9",
+      "name": "commandExecution",
+      "toolKind": "execute",
+      "title": "Ran bash -lc curl https://internal.example/api",
+      "status": "declined",
+      "input": {
+        "command": [
+          "bash",
+          "-lc",
+          "curl https://internal.example/api"
+        ]
+      }
+    }
+  },
+  {
+    "type": "turn.completed",
+    "turnId": "turn_01J8ZCXF44",
+    "stopReason": "error"
+  },
+  {
+    "type": "turn.started",
+    "turnId": "turn_01J8ZCXG55"
+  },
+  {
+    "type": "turn.completed",
+    "turnId": "turn_01J8ZCXG55",
+    "stopReason": "cancelled"
+  }
+]

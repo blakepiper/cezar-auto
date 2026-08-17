@@ -636,7 +636,7 @@ mod tests {
 
     fn mock_script() -> String {
         let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        path.push("../../packages/cezar/scripts/mock-pi-rpc.mjs");
+        path.push("../../fixtures/scripts/mock-pi-rpc.mjs");
         path.canonicalize()
             .unwrap_or(path)
             .to_string_lossy()
@@ -736,7 +736,7 @@ mod tests {
         );
     }
 
-    // ---- real-subprocess tests against packages/cezar's own dry-run mock -----------------
+    // ---- real-subprocess tests against the bundled dry-run mock ----------------------------------
 
     fn run_turn(session: &mut PiSession) -> (Result<SessionOutcome, String>, Vec<EventInput>) {
         let mut events = Vec::new();

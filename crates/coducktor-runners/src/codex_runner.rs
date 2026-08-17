@@ -856,7 +856,7 @@ mod tests {
 
     fn mock_script() -> String {
         let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        path.push("../../packages/cezar/src/core/__fixtures__/codex/mock-codex-app-server.mjs");
+        path.push("../../fixtures/codex/mock-codex-app-server.mjs");
         path.canonicalize()
             .unwrap_or(path)
             .to_string_lossy()

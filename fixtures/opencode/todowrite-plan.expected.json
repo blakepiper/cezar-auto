@@ -1,0 +1,156 @@
+[
+  {
+    "type": "session.started",
+    "sessionId": "ses_01J8ZE00MAIN",
+    "backend": "opencode"
+  },
+  {
+    "type": "turn.started",
+    "turnId": "turn_1"
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "tool",
+      "id": "prt_01J8ZE31TODO",
+      "name": "todowrite",
+      "toolKind": "plan",
+      "title": "Update plan",
+      "status": "pending",
+      "input": {
+        "todos": [
+          {
+            "id": "1",
+            "content": "Add the null check to the router guard",
+            "status": "in_progress",
+            "priority": "high"
+          },
+          {
+            "id": "2",
+            "content": "Write a regression test",
+            "status": "pending",
+            "priority": "medium"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "plan.updated",
+    "entries": [
+      {
+        "content": "Add the null check to the router guard",
+        "status": "in_progress",
+        "priority": "high"
+      },
+      {
+        "content": "Write a regression test",
+        "status": "pending",
+        "priority": "medium"
+      }
+    ]
+  },
+  {
+    "type": "item.updated",
+    "item": {
+      "kind": "tool",
+      "id": "prt_01J8ZE31TODO",
+      "name": "todowrite",
+      "toolKind": "plan",
+      "title": "Update plan",
+      "status": "running",
+      "input": {
+        "todos": [
+          {
+            "id": "1",
+            "content": "Add the null check to the router guard",
+            "status": "in_progress",
+            "priority": "high"
+          },
+          {
+            "id": "2",
+            "content": "Write a regression test",
+            "status": "pending",
+            "priority": "medium"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "prt_01J8ZE31TODO",
+      "name": "todowrite",
+      "toolKind": "plan",
+      "title": "2 todos",
+      "status": "completed",
+      "input": {
+        "todos": [
+          {
+            "id": "1",
+            "content": "Add the null check to the router guard",
+            "status": "in_progress",
+            "priority": "high"
+          },
+          {
+            "id": "2",
+            "content": "Write a regression test",
+            "status": "pending",
+            "priority": "medium"
+          }
+        ]
+      },
+      "output": "2 todos"
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "prt_01J8ZE32TODO",
+      "name": "todowrite",
+      "toolKind": "plan",
+      "title": "2 todos",
+      "status": "completed",
+      "input": {
+        "todos": [
+          {
+            "id": "1",
+            "content": "Add the null check to the router guard",
+            "status": "completed",
+            "priority": "high"
+          },
+          {
+            "id": "2",
+            "content": "Write a regression test",
+            "status": "in_progress",
+            "priority": "medium"
+          }
+        ]
+      },
+      "output": "2 todos"
+    }
+  },
+  {
+    "type": "plan.updated",
+    "entries": [
+      {
+        "content": "Add the null check to the router guard",
+        "status": "completed",
+        "priority": "high"
+      },
+      {
+        "content": "Write a regression test",
+        "status": "in_progress",
+        "priority": "medium"
+      }
+    ]
+  },
+  {
+    "type": "turn.completed",
+    "turnId": "turn_1",
+    "stopReason": "end_turn"
+  }
+]

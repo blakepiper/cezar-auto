@@ -1,0 +1,11 @@
+{"id":1,"result":{"userAgent":"codex/0.46.0"}}
+{"method":"thread/started","params":{"thread":{"id":"th_01J8ZCFCHP6M0B"}}}
+{"id":2,"result":{"thread":{"id":"th_01J8ZCFCHP6M0B"}}}
+{"method":"turn/started","params":{"turn":{"id":"turn_01J8ZCFC1T","status":"inProgress","items":[]}}}
+{"method":"item/started","params":{"threadId":"th_01J8ZCFCHP6M0B","turnId":"turn_01J8ZCFC1T","item":{"type":"fileChange","id":"item_fc_1","changes":[{"path":"src/auth.ts","kind":"update","diff":"@@ -10,7 +10,7 @@\n-  redirect('/login')\n+  redirect(returnTo)\n"},{"path":"src/auth.test.ts","kind":"add","diff":"@@ -0,0 +1,3 @@\n+it('keeps returnTo across login', () => {})\n"}],"status":"inProgress"}}}
+{"method":"item/completed","params":{"threadId":"th_01J8ZCFCHP6M0B","turnId":"turn_01J8ZCFC1T","item":{"type":"fileChange","id":"item_fc_1","changes":[{"path":"src/auth.ts","kind":"update","diff":"@@ -10,7 +10,7 @@\n-  redirect('/login')\n+  redirect(returnTo)\n"},{"path":"src/auth.test.ts","kind":"add","diff":"@@ -0,0 +1,3 @@\n+it('keeps returnTo across login', () => {})\n"}],"status":"completed"}}}
+{"method":"item/started","params":{"threadId":"th_01J8ZCFCHP6M0B","turnId":"turn_01J8ZCFC1T","item":{"type":"mcpToolCall","id":"item_mcp_1","server":"playwright","tool":"screenshot","arguments":{"name":"login-after-fix.png"},"status":"inProgress"}}}
+{"method":"item/completed","params":{"threadId":"th_01J8ZCFCHP6M0B","turnId":"turn_01J8ZCFC1T","item":{"type":"mcpToolCall","id":"item_mcp_1","server":"playwright","tool":"screenshot","arguments":{"name":"login-after-fix.png"},"status":"completed","result":"saved login-after-fix.png"}}}
+{"method":"item/started","params":{"threadId":"th_01J8ZCFCHP6M0B","turnId":"turn_01J8ZCFC1T","item":{"type":"webSearch","id":"item_ws_1","query":"hono set-cookie redirect loses session","action":{"type":"search"}}}}
+{"method":"item/completed","params":{"threadId":"th_01J8ZCFCHP6M0B","turnId":"turn_01J8ZCFC1T","item":{"type":"webSearch","id":"item_ws_1","query":"hono set-cookie redirect loses session","action":{"type":"search"}}}}
+{"method":"turn/completed","params":{"turn":{"id":"turn_01J8ZCFC1T","status":"completed"}}}

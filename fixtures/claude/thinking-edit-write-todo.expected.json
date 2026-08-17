@@ -1,0 +1,276 @@
+[
+  {
+    "type": "session.started",
+    "sessionId": "5d1e8b7a-9c34-4f60-b2e5-7a8c9d0e1f22",
+    "backend": "claude",
+    "model": "claude-fable-5",
+    "cwd": "/repo",
+    "tools": [
+      "Task",
+      "Bash",
+      "Read",
+      "Edit",
+      "Write",
+      "TodoWrite",
+      "Glob",
+      "Grep",
+      "WebFetch",
+      "WebSearch"
+    ]
+  },
+  {
+    "type": "turn.started",
+    "turnId": "turn_1"
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "reasoning",
+      "id": "item_1",
+      "text": "The redirect drops the session cookie — the middleware needs to preserve it."
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "reasoning",
+      "id": "item_1",
+      "text": "The redirect drops the session cookie — the middleware needs to preserve it."
+    }
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "message",
+      "id": "item_2",
+      "role": "assistant",
+      "text": "I'll update the middleware."
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "message",
+      "id": "item_2",
+      "role": "assistant",
+      "text": "I'll update the middleware."
+    }
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_01AB",
+      "name": "Edit",
+      "toolKind": "edit",
+      "title": "Edit /repo/src/middleware.ts",
+      "status": "running",
+      "input": {
+        "file_path": "/repo/src/middleware.ts",
+        "old_string": "return redirect('/login')",
+        "new_string": "return redirect('/login', { preserveSession: true })"
+      },
+      "diffs": [
+        {
+          "path": "/repo/src/middleware.ts",
+          "oldText": "return redirect('/login')",
+          "newText": "return redirect('/login', { preserveSession: true })"
+        }
+      ],
+      "locations": [
+        {
+          "path": "/repo/src/middleware.ts"
+        }
+      ]
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_01AB",
+      "name": "Edit",
+      "toolKind": "edit",
+      "title": "Edit /repo/src/middleware.ts",
+      "status": "completed",
+      "input": {
+        "file_path": "/repo/src/middleware.ts",
+        "old_string": "return redirect('/login')",
+        "new_string": "return redirect('/login', { preserveSession: true })"
+      },
+      "diffs": [
+        {
+          "path": "/repo/src/middleware.ts",
+          "oldText": "return redirect('/login')",
+          "newText": "return redirect('/login', { preserveSession: true })"
+        }
+      ],
+      "locations": [
+        {
+          "path": "/repo/src/middleware.ts"
+        }
+      ],
+      "output": "The file /repo/src/middleware.ts has been updated."
+    }
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_01CD",
+      "name": "Write",
+      "toolKind": "edit",
+      "title": "Write /repo/src/middleware.test.ts",
+      "status": "running",
+      "input": {
+        "file_path": "/repo/src/middleware.test.ts",
+        "content": "import { test } from 'vitest'\n"
+      },
+      "diffs": [
+        {
+          "path": "/repo/src/middleware.test.ts",
+          "oldText": null,
+          "newText": "import { test } from 'vitest'\n"
+        }
+      ],
+      "locations": [
+        {
+          "path": "/repo/src/middleware.test.ts"
+        }
+      ]
+    }
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_01CD",
+      "name": "Write",
+      "toolKind": "edit",
+      "title": "Write /repo/src/middleware.test.ts",
+      "status": "completed",
+      "input": {
+        "file_path": "/repo/src/middleware.test.ts",
+        "content": "import { test } from 'vitest'\n"
+      },
+      "diffs": [
+        {
+          "path": "/repo/src/middleware.test.ts",
+          "oldText": null,
+          "newText": "import { test } from 'vitest'\n"
+        }
+      ],
+      "locations": [
+        {
+          "path": "/repo/src/middleware.test.ts"
+        }
+      ],
+      "output": "File created successfully at: /repo/src/middleware.test.ts"
+    }
+  },
+  {
+    "type": "item.started",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_01EF",
+      "name": "TodoWrite",
+      "toolKind": "plan",
+      "title": "Update plan",
+      "status": "running",
+      "input": {
+        "todos": [
+          {
+            "content": "Patch middleware redirect",
+            "status": "completed",
+            "activeForm": "Patching middleware redirect"
+          },
+          {
+            "content": "Run tests",
+            "status": "in_progress",
+            "activeForm": "Running tests"
+          },
+          {
+            "content": "Update changelog",
+            "status": "pending",
+            "activeForm": "Updating changelog"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "plan.updated",
+    "entries": [
+      {
+        "content": "Patch middleware redirect",
+        "status": "completed",
+        "activeForm": "Patching middleware redirect"
+      },
+      {
+        "content": "Run tests",
+        "status": "in_progress",
+        "activeForm": "Running tests"
+      },
+      {
+        "content": "Update changelog",
+        "status": "pending",
+        "activeForm": "Updating changelog"
+      }
+    ]
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "kind": "tool",
+      "id": "toolu_01EF",
+      "name": "TodoWrite",
+      "toolKind": "plan",
+      "title": "Update plan",
+      "status": "completed",
+      "input": {
+        "todos": [
+          {
+            "content": "Patch middleware redirect",
+            "status": "completed",
+            "activeForm": "Patching middleware redirect"
+          },
+          {
+            "content": "Run tests",
+            "status": "in_progress",
+            "activeForm": "Running tests"
+          },
+          {
+            "content": "Update changelog",
+            "status": "pending",
+            "activeForm": "Updating changelog"
+          }
+        ]
+      },
+      "output": "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable"
+    }
+  },
+  {
+    "type": "turn.completed",
+    "turnId": "turn_1",
+    "stopReason": "end_turn",
+    "usage": {
+      "input": 109,
+      "output": 415,
+      "total": 56924,
+      "cacheRead": 54000,
+      "cacheWrite": 2400
+    },
+    "costUsd": 0.0128
+  },
+  {
+    "type": "usage.updated",
+    "usage": {
+      "input": 109,
+      "output": 415,
+      "total": 56924,
+      "cacheRead": 54000,
+      "cacheWrite": 2400
+    },
+    "costUsd": 0.0128
+  }
+]

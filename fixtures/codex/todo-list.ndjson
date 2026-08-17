@@ -1,0 +1,8 @@
+{"id":1,"result":{"userAgent":"codex/0.46.0"}}
+{"method":"thread/started","params":{"thread":{"id":"th_01J8ZCTD8XN4VZ"}}}
+{"id":2,"result":{"thread":{"id":"th_01J8ZCTD8XN4VZ"}}}
+{"method":"turn/started","params":{"turn":{"id":"turn_01J8ZCTDA0","status":"inProgress","items":[]}}}
+{"method":"item/started","params":{"threadId":"th_01J8ZCTD8XN4VZ","turnId":"turn_01J8ZCTDA0","item":{"type":"todoList","id":"item_todo_1","items":[{"text":"Reproduce the redirect bug","completed":false},{"text":"Fix returnTo handling in src/auth.ts","completed":false},{"text":"Add a regression test","completed":false}]}}}
+{"method":"item/updated","params":{"threadId":"th_01J8ZCTD8XN4VZ","turnId":"turn_01J8ZCTDA0","item":{"type":"todoList","id":"item_todo_1","items":[{"text":"Reproduce the redirect bug","completed":true},{"text":"Fix returnTo handling in src/auth.ts","completed":false},{"text":"Add a regression test","completed":false}]}}}
+{"method":"item/completed","params":{"threadId":"th_01J8ZCTD8XN4VZ","turnId":"turn_01J8ZCTDA0","item":{"type":"todoList","id":"item_todo_1","items":[{"text":"Reproduce the redirect bug","completed":true},{"text":"Fix returnTo handling in src/auth.ts","completed":true},{"text":"Add a regression test","completed":true}]}}}
+{"method":"turn/completed","params":{"turn":{"id":"turn_01J8ZCTDA0","status":"completed"}}}
