@@ -36,27 +36,32 @@ use coducktor_contract::{
     BackendCheck, BackendCheckName, CancelResponse, Capabilities, ChangedFile, ChangedFileStatus,
     ChangesPayload, ConfigResponse, CreateAgentProfileInput, CreateRunInput, CreateRunResponse,
     DeleteRunResponse, DeleteWorkflowResponse, EmptyRepoResponse, FinishResponse, ForgeInfo,
-    ForgeKind, HealthProject, HealthResponse, IdeDirectoryResponse, IdeEntry, IdeEntryType,
-    IdeFileResponse, LogEntry, MarkAllReadResponse, OpenAgentAccountFileInput,
-    OpenAgentAccountFileResponse, OpenProjectInResponse, OpenTargetsResponse, ParsedWorkflow,
-    PatchRunInput, PresentRepoResponse, ProjectListEntry, ProjectSource, ProjectStatus,
-    ProjectsResponse, ProviderConnectionState, ProviderStatus, ProviderStatusResponse,
-    ReclaimWorktreesResponse, RemoveAgentProfileResponse, RemoveTodoResponse,
-    RemoveWorktreeResponse, RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoDiffStat,
-    RepoInfo, RepoResponse, RunIndexEntry, Runner, RunnerSelection, RunsIndexResponse,
-    SaveWorkflowInput, SaveWorkflowResponse, SelectAgentProfileInput, SetAgentConfigInput,
-    SetConfigInput, Skill, StartTodoResponse, StatusEntry, TodoItem, UpdateAgentProfileInput,
-    UserMcpListing, WorkflowStepDef, WorkflowsResponse, WorkspaceUsageResponse, WorktreeDirEntry,
-    WorktreeEntry, WorktreeEntryType, WorktreeInfo, WorktreeRunStatus, WorktreesResponse,
+    ForgeKind, GroupResponse, GroupVariant, HealthProject, HealthResponse, IdeDirectoryResponse,
+    IdeEntry, IdeEntryType, IdeFileResponse, LogEntry, MarkAllReadResponse,
+    OpenAgentAccountFileInput, OpenAgentAccountFileResponse, OpenProjectInResponse,
+    OpenTargetsResponse, ParsedWorkflow, PatchRunInput, PickVariantRequest, PickVariantResponse,
+    PresentRepoResponse, ProjectListEntry, ProjectSource, ProjectStatus, ProjectsResponse,
+    ProviderConnectionState, ProviderStatus, ProviderStatusResponse, ReclaimWorktreesResponse,
+    RemoveAgentProfileResponse, RemoveTodoResponse, RemoveWorktreeResponse, RepoBranchRequest,
+    RepoBranchResponse, RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse, RunIndexEntry,
+    Runner, RunnerSelection, RunsIndexResponse, SaveWorkflowInput, SaveWorkflowResponse,
+    SelectAgentProfileInput, SetAgentConfigInput, SetConfigInput, Skill, StartTodoResponse,
+    StatusEntry, TodoItem, UpdateAgentProfileInput, UserMcpListing, WorkflowStepDef,
+    WorkflowsResponse, WorkspaceUsageResponse, WorktreeDirEntry, WorktreeEntry, WorktreeEntryType,
+    WorktreeInfo, WorktreeRunStatus, WorktreesResponse,
 };
+use coducktor_core::config::load_config;
 use coducktor_core::handoff::followups_enabled;
+use coducktor_core::handoff::{append_handoff_heartbeat, handoff_progress_excerpt, read_handoff};
 use coducktor_core::paths::{
     ProcessEnv, agent_accounts_path, agent_home_paths, expand_tilde, is_absolute_config_dir,
     real_home_dir,
 };
 use coducktor_core::skills::discover_skills;
 use coducktor_core::workflows::load::{WORKFLOWS_DIR, load_workflows};
-use coducktor_core::workflows::run::{RunManager, StartRunInput as CoreStartRunInput};
+use coducktor_core::workflows::run::{
+    EventInput, RunManager, StartRunInput as CoreStartRunInput, review_gate_enabled,
+};
 use coducktor_core::workflows::types::{parse_workflow_file_doc, quick_task_workflow, steps_issue};
 use coducktor_core::workspace::agent_accounts::{
     AgentAccount, has_control_chars, is_valid_account_id, merge_write_agent_accounts,
@@ -94,6 +99,17 @@ fn lock_err() -> EngineError {
 
 fn io_err(error: std::io::Error) -> EngineError {
     EngineError::Transport(error.to_string())
+}
+
+/// Duplicated from `coducktor-server`'s private helper of the same name — used by the
+/// variant-group family (`pick_variant`) to record a `lifecycle` event without a full
+/// `EventInput` builder call at each site.
+fn lifecycle_event(message: String) -> EventInput {
+    let mut event = EventInput::new("lifecycle");
+    event
+        .extra
+        .insert("message".to_owned(), Value::String(message));
+    event
 }
 
 impl InProcessEngine {
@@ -1345,6 +1361,166 @@ impl InProcessEngine {
             )
             .map_err(io_err)?;
         Ok(RemoveWorktreeResponse { removed: true })
+    }
+
+    // ---- variant groups (spec §8.6 compare) -------------------------------------------------
+    // Ported from `coducktor-server`'s `group_variants`/`group_response`/`get_group` and
+    // `parse_pick_variant`/`pick_group_at` handlers. `lifecycle_event` (below) duplicates the
+    // server's own tiny helper of the same name — not `pub` in the oracle.
+
+    fn group_variants(
+        &self,
+        group_id: &str,
+    ) -> Result<Vec<coducktor_contract::RunRecord>, EngineError> {
+        let manager = self.manager.lock().map_err(|_| lock_err())?;
+        let mut runs: Vec<_> = manager
+            .list_runs()
+            .into_iter()
+            .filter(|run| run.group_id.as_deref() == Some(group_id))
+            .collect();
+        runs.sort_by(|left, right| left.variant.cmp(&right.variant));
+        Ok(runs)
+    }
+
+    pub async fn group(&self, group_id: &str) -> Result<GroupResponse, EngineError> {
+        let group_id = group_id.to_owned();
+        let repo_root = self.repo_root.clone();
+        let runs = self.group_variants(&group_id)?;
+        if runs.is_empty() {
+            return Err(EngineError::NotFound);
+        }
+        let data_dir = data_dir(&repo_root);
+        let runs = runs
+            .into_iter()
+            .map(|run| {
+                let diff_stat = run
+                    .worktree_path
+                    .as_deref()
+                    .filter(|path| Path::new(path).exists())
+                    .map(|path| {
+                        coducktor_core::git::worktree::worktree_diff_stat(
+                            Path::new(path),
+                            run.base_branch.as_deref().unwrap_or("HEAD"),
+                        )
+                    })
+                    .unwrap_or_default();
+                GroupVariant {
+                    id: run.id.clone(),
+                    variant: run.variant.unwrap_or_else(|| "?".to_owned()),
+                    title: run.title,
+                    status: run.status,
+                    archived: run.archived,
+                    tokens_used: run.tokens_used,
+                    input_tokens: run.input_tokens,
+                    output_tokens: run.output_tokens,
+                    cost_usd: run.cost_usd,
+                    diff_stat,
+                    handoff_excerpt: handoff_progress_excerpt(&read_handoff(&data_dir, &run.id), 3),
+                }
+            })
+            .collect();
+        Ok(GroupResponse { group_id, runs })
+    }
+
+    pub async fn pick_variant(
+        &self,
+        group_id: &str,
+        input: &PickVariantRequest,
+    ) -> Result<PickVariantResponse, EngineError> {
+        if input.run_id.is_empty() {
+            return Err(EngineError::Conflict {
+                reason: "runId is required".to_owned(),
+            });
+        }
+        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        let runs: Vec<_> = manager
+            .list_runs()
+            .into_iter()
+            .filter(|run| run.group_id.as_deref() == Some(group_id))
+            .collect();
+        if runs.is_empty() {
+            return Err(EngineError::NotFound);
+        }
+        let Some(winner) = runs.iter().find(|run| run.id == input.run_id).cloned() else {
+            return Err(EngineError::Conflict {
+                reason: "runId is not part of this group".to_owned(),
+            });
+        };
+        if manager.is_active(&winner.id) {
+            return Err(EngineError::Conflict {
+                reason: "this variant is still active — wait for it to finish first".to_owned(),
+            });
+        }
+
+        let losers: Vec<_> = runs.into_iter().filter(|run| run.id != winner.id).collect();
+        let repo_root = self.repo_root.clone();
+        let data_dir = data_dir(&repo_root);
+        let config = load_config(&repo_root, &workspace_config_for(&repo_root).agent_defaults);
+        let review_gate = review_gate_enabled(
+            config.review_gate,
+            std::env::var("DUCK_REVIEW_GATE")
+                .or_else(|_| std::env::var("CEZ_REVIEW_GATE"))
+                .ok()
+                .as_deref(),
+        );
+        if winner.status != coducktor_contract::RunStatus::Review
+            && winner.autonomous != Some(true)
+            && review_gate
+            && let Some(worktree_path) = winner.worktree_path.as_deref()
+            && Path::new(worktree_path).exists()
+        {
+            let diff = coducktor_core::git::worktree::worktree_diff(
+                Path::new(worktree_path),
+                winner.base_branch.as_deref().unwrap_or("HEAD"),
+                1_000_000,
+            );
+            if !diff.trim().is_empty() && !diff.starts_with("(diff failed") {
+                let _ = manager.update_run_value(
+                    &winner.id,
+                    serde_json::json!({ "status": coducktor_contract::RunStatus::Review }),
+                );
+            }
+        }
+        let _ = manager.append_event(
+            &winner.id,
+            lifecycle_event(format!(
+                "picked from {} variants — {} other variant(s) archived",
+                losers.len() + 1,
+                losers.len()
+            )),
+        );
+        append_handoff_heartbeat(
+            &data_dir,
+            &winner.id,
+            &format!("picked from {} variants", losers.len() + 1),
+        );
+        for loser in losers {
+            if manager.is_active(&loser.id) {
+                let _ = manager.cancel(&loser.id);
+            }
+            if let Some(path) = loser.worktree_path.as_deref() {
+                coducktor_core::git::worktree::remove_worktree(
+                    &repo_root,
+                    Path::new(path),
+                    loser.branch.as_deref(),
+                );
+            }
+            let _ = manager.update_run_value(
+                &loser.id,
+                serde_json::json!({ "worktreePath": null, "branch": null }),
+            );
+            let _ = manager.set_archived(&loser.id, true);
+            let _ = manager.append_event(
+                &loser.id,
+                lifecycle_event(format!(
+                    "variant {} was picked — this variant is archived, its worktree removed",
+                    winner.variant.as_deref().unwrap_or("?")
+                )),
+            );
+        }
+        Ok(PickVariantResponse {
+            winner: manager.get_run(&winner.id).cloned(),
+        })
     }
 
     // ---- open-targets (spec §8.7 "open in") -------------------------------------------------
@@ -5724,5 +5900,133 @@ mod tests {
                 "{target}'s args should carry the repo root: {args:?}"
             );
         }
+    }
+
+    // ---- variant groups (mirrors coducktor-server's
+    // `group_routes_compare_variants_and_archive_losers_on_pick`) -----------------------------
+
+    fn seed_group(engine: &InProcessEngine, group_id: &str) -> Vec<String> {
+        let mut manager = engine.manager.lock().unwrap();
+        let mut ids = Vec::new();
+        for (variant, title) in [("A", "first"), ("B", "second")] {
+            let run = manager
+                .create_run(coducktor_core::workflows::run::CreateRunInput {
+                    title: title.to_owned(),
+                    workflow: "manual".to_owned(),
+                    task: title.to_owned(),
+                    group_id: Some(group_id.to_owned()),
+                    variant: Some(variant.to_owned()),
+                    ..coducktor_core::workflows::run::CreateRunInput::default()
+                })
+                .expect("seed variant");
+            ids.push(run.id);
+        }
+        ids
+    }
+
+    #[tokio::test]
+    async fn group_reports_not_found_for_an_unknown_group() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine.group("no-such-group").await.unwrap_err();
+        assert_eq!(error, EngineError::NotFound);
+    }
+
+    #[tokio::test]
+    async fn group_lists_every_variant_sorted_and_with_no_diff_stat_for_a_worktree_less_run() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let ids = seed_group(&engine, "group-1");
+        let response = engine.group("group-1").await.unwrap();
+        assert_eq!(response.group_id, "group-1");
+        assert_eq!(response.runs.len(), 2);
+        assert_eq!(response.runs[0].id, ids[0]);
+        assert_eq!(response.runs[0].variant, "A");
+        assert_eq!(response.runs[1].variant, "B");
+        assert!(response.runs[0].diff_stat.is_empty());
+    }
+
+    #[tokio::test]
+    async fn pick_variant_rejects_a_blank_run_id() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        seed_group(&engine, "group-1");
+        let error = engine
+            .pick_variant(
+                "group-1",
+                &PickVariantRequest {
+                    run_id: String::new(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            EngineError::Conflict {
+                reason: "runId is required".to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn pick_variant_reports_not_found_for_an_unknown_group() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine
+            .pick_variant(
+                "no-such-group",
+                &PickVariantRequest {
+                    run_id: "whatever".to_owned(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error, EngineError::NotFound);
+    }
+
+    #[tokio::test]
+    async fn pick_variant_rejects_a_run_id_outside_the_group() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        seed_group(&engine, "group-1");
+        let error = engine
+            .pick_variant(
+                "group-1",
+                &PickVariantRequest {
+                    run_id: "not-in-this-group".to_owned(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            EngineError::Conflict {
+                reason: "runId is not part of this group".to_owned()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn pick_variant_archives_the_losers_and_keeps_the_winner_unarchived() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let ids = seed_group(&engine, "group-1");
+        let winner_id = ids[0].clone();
+        let response = engine
+            .pick_variant(
+                "group-1",
+                &PickVariantRequest {
+                    run_id: winner_id.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.winner.map(|run| run.id), Some(winner_id.clone()));
+
+        let group = engine.group("group-1").await.unwrap();
+        let winner = group.runs.iter().find(|run| run.id == winner_id).unwrap();
+        let loser = group.runs.iter().find(|run| run.id != winner_id).unwrap();
+        assert!(!winner.archived);
+        assert!(loser.archived);
     }
 }
