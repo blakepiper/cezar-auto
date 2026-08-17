@@ -1510,7 +1510,33 @@ GitHub forge detail reads, worktree management, open-targets, remaining
 settings write paths, task-thread write paths, `run_history`/
 `run_history_context`, `plan`, and closing the `impl Engine for
 InProcessEngine` block.
-**Commit:** `feat(engine): C1.6 InProcessEngine — agent-config`
+**Commit:** `feat(engine): C1.6 InProcessEngine — agent-config` — pushed as
+`3aef747d`; doc update pushed as `251e53b6`.
+
+**Status (C1.7):** partial, continuing C1.6. Ships worktree management:
+`worktrees`, `reclaim_worktrees`, `remove_run_worktree` — ported from
+`coducktor-server`'s `list_worktrees`/`reclaim_worktrees`/
+`remove_run_worktree` handlers. Unlike most C1 families, this one is mostly
+NOT duplication: `coducktor_core::runs::retention::{is_reclaimable,
+reclaim_worktrees}` and `coducktor_core::config::resolve_worktree_retention`
+(already ported at B2/B3) are reused directly — only the private
+response-shaping glue (`worktree_run_status`, `worktree_keep`,
+`worktree_size_bytes`) is duplicated, since none of it was `pub` in the
+oracle.
+**Accept, verified (C1.7's own scope only):** 6 new tests — empty-worktrees
+reporting for a run started with `worktree: Some(false)` (matches every prior
+C1 round's fixture — no real worktree-creation machinery is wired into
+`RunManager` yet), no-op reclaim when nothing has a worktree, not-found for
+an unknown run, trivial removal succeeding for a finished run with no
+worktree to remove, and pure unit tests for `worktree_run_status` (every
+`RunStatus` variant) and `worktree_size_bytes` (nested directory sum). 92
+total in `in_process::tests`. Full workspace green, `cargo clippy
+--workspace --all-targets -- -D warnings` clean, `cargo fmt --check` clean.
+**Still remaining:** `group`/`pick_variant`, `models` (host model catalog),
+GitHub forge detail reads, open-targets, remaining settings write paths,
+task-thread write paths, `run_history`/`run_history_context`, `plan`, and
+closing the `impl Engine for InProcessEngine` block.
+**Commit:** `feat(engine): C1.7 InProcessEngine — worktree management`
 
 ### [ ] C2 — Switch default backend, delete `cezar-server`
 **Ships:** `cezar-tui`'s default backend becomes `InProcess`; then **delete
