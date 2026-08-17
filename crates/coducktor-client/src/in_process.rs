@@ -32,13 +32,14 @@ use coducktor_contract::{
     AgentAccountDetailsResponse, AgentAccountFile, AgentAccountStatusResponse, AgentProfile,
     AgentProfileResponse, AgentProfileSelectionsResponse, AgentProfilesResponse, ApiRun,
     ArchiveFinishedResponse, BackendCheck, BackendCheckName, CancelResponse, Capabilities,
-    CreateAgentProfileInput, CreateRunInput, CreateRunResponse, DeleteRunResponse,
+    ConfigResponse, CreateAgentProfileInput, CreateRunInput, CreateRunResponse, DeleteRunResponse,
     DeleteWorkflowResponse, FinishResponse, ForgeInfo, ForgeKind, HealthProject, HealthResponse,
-    MarkAllReadResponse, OpenAgentAccountFileInput, OpenAgentAccountFileResponse, ParsedWorkflow,
-    PatchRunInput, ProjectListEntry, ProjectSource, ProjectStatus, ProjectsResponse,
-    ProviderConnectionState, ProviderStatus, ProviderStatusResponse, RemoveAgentProfileResponse,
-    RemoveTodoResponse, RepoInfo, RunIndexEntry, Runner, RunnerSelection, RunsIndexResponse,
-    SaveWorkflowInput, SaveWorkflowResponse, SelectAgentProfileInput, Skill, StartTodoResponse,
+    IdeDirectoryResponse, IdeEntry, IdeEntryType, IdeFileResponse, MarkAllReadResponse,
+    OpenAgentAccountFileInput, OpenAgentAccountFileResponse, ParsedWorkflow, PatchRunInput,
+    ProjectListEntry, ProjectSource, ProjectStatus, ProjectsResponse, ProviderConnectionState,
+    ProviderStatus, ProviderStatusResponse, RemoveAgentProfileResponse, RemoveTodoResponse,
+    RepoInfo, RunIndexEntry, Runner, RunnerSelection, RunsIndexResponse, SaveWorkflowInput,
+    SaveWorkflowResponse, SelectAgentProfileInput, SetConfigInput, Skill, StartTodoResponse,
     TodoItem, UpdateAgentProfileInput, WorkflowStepDef, WorkflowsResponse, WorkspaceUsageResponse,
 };
 use coducktor_core::handoff::followups_enabled;
@@ -961,6 +962,476 @@ impl InProcessEngine {
                 .filter(move |event: &EngineEvent| event.topic == topic_str),
         )
     }
+
+    // ---- IDE: project file browser + editor (spec §8.8, A10) --------------------------------
+    // Ported from `coducktor-server`'s `ide_list_directory`/`ide_read_file`/`ide_write_file` +
+    // their shared `resolve_ide_path`/`normalize_ide_path`/`ide_display_path` helpers. `Scope`
+    // is dropped the same way every other method here drops it — `coducktor-server`'s own
+    // "scoped" IDE routes already ignore their `:project` path segment and always resolve
+    // against `state.config.repo_root`, since this crate (like that one) serves exactly one
+    // repo root per instance.
+
+    pub async fn ide_tree(&self, path: Option<&str>) -> Result<IdeDirectoryResponse, EngineError> {
+        let repo_root = self.repo_root.clone();
+        let path = path.unwrap_or_default().to_owned();
+        tokio::task::spawn_blocking(move || ide_list_directory(&repo_root, &path))
+            .await
+            .map_err(|error| EngineError::Transport(error.to_string()))?
+    }
+
+    pub async fn ide_file(&self, path: &str) -> Result<IdeFileResponse, EngineError> {
+        let repo_root = self.repo_root.clone();
+        let path = path.to_owned();
+        tokio::task::spawn_blocking(move || ide_read_file(&repo_root, &path))
+            .await
+            .map_err(|error| EngineError::Transport(error.to_string()))?
+    }
+
+    pub async fn ide_save(
+        &self,
+        path: &str,
+        content: &str,
+    ) -> Result<IdeFileResponse, EngineError> {
+        let repo_root = self.repo_root.clone();
+        let path = path.to_owned();
+        let content = content.to_owned();
+        tokio::task::spawn_blocking(move || ide_write_file(&repo_root, &path, &content))
+            .await
+            .map_err(|error| EngineError::Transport(error.to_string()))?
+    }
+
+    // ---- per-repo config (spec §8.14, settings) ----------------------------------------------
+    // Ported from `coducktor-server`'s `config_response`/`parse_set_config_input`/
+    // `config_models_locked`/`read_repo_config` handlers. Unlike the HTTP handler, `put_config`
+    // here receives an already-typed `&SetConfigInput` directly (no JSON-parse boundary), so
+    // the outer/inner `Option<Option<T>>` "field absent vs. field present-but-null" distinction
+    // the handler has to reconstruct from a raw `Map<String, Value>` alongside the typed struct
+    // is already exactly right on the struct itself — no parallel raw-object bookkeeping needed.
+
+    pub async fn config(&self) -> Result<ConfigResponse, EngineError> {
+        let repo_root = self.repo_root.clone();
+        tokio::task::spawn_blocking(move || config_response(&repo_root))
+            .await
+            .map_err(|error| EngineError::Transport(error.to_string()))
+    }
+
+    pub async fn put_config(&self, input: &SetConfigInput) -> Result<ConfigResponse, EngineError> {
+        let repo_root = self.repo_root.clone();
+        let input = input.clone();
+        tokio::task::spawn_blocking(move || update_repo_config(&repo_root, &input))
+            .await
+            .map_err(|error| EngineError::Transport(error.to_string()))?
+    }
+}
+
+// ---- IDE helpers, duplicated from `coducktor-server`'s private ide_* functions -----------
+
+const IDE_FILE_MAX_BYTES: usize = 1_000_000;
+const IDE_DIRECTORY_MAX_ENTRIES: usize = 2_000;
+
+fn ide_display_path(root: &Path, target: &Path) -> String {
+    target
+        .strip_prefix(root)
+        .ok()
+        .map(|relative| {
+            relative
+                .components()
+                .filter_map(|component| match component {
+                    std::path::Component::Normal(value) => Some(value.to_string_lossy()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .unwrap_or_default()
+}
+
+fn normalize_ide_path(root: &Path, path: &str) -> Result<PathBuf, EngineError> {
+    if path.chars().count() > 4_096
+        || path.contains('\0')
+        || path.contains('\\')
+        || Path::new(path).is_absolute()
+    {
+        return Err(EngineError::Conflict {
+            reason: "invalid project path".to_owned(),
+        });
+    }
+    let mut target = root.to_path_buf();
+    for component in Path::new(path).components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(value) => target.push(value),
+            std::path::Component::ParentDir => {
+                if target == root || !target.pop() {
+                    return Err(EngineError::Conflict {
+                        reason: "path is outside the project".to_owned(),
+                    });
+                }
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                return Err(EngineError::Conflict {
+                    reason: "invalid project path".to_owned(),
+                });
+            }
+        }
+    }
+    Ok(target)
+}
+
+fn resolve_ide_path(
+    root: &Path,
+    path: &str,
+    directory: bool,
+) -> Result<(PathBuf, PathBuf), EngineError> {
+    let project_root = std::fs::canonicalize(root).map_err(|_| EngineError::NotFound)?;
+    let lexical = normalize_ide_path(&project_root, path)?;
+    let target = std::fs::canonicalize(&lexical).map_err(|_| EngineError::NotFound)?;
+    if !target.starts_with(&project_root) {
+        return Err(EngineError::Conflict {
+            reason: "path is outside the project".to_owned(),
+        });
+    }
+    if target != lexical {
+        return Err(EngineError::Conflict {
+            reason: "symbolic links are not editable".to_owned(),
+        });
+    }
+    let metadata = std::fs::symlink_metadata(&target).map_err(|_| EngineError::NotFound)?;
+    if (directory && !metadata.is_dir()) || (!directory && !metadata.is_file()) {
+        return Err(EngineError::NotFound);
+    }
+    Ok((project_root, target))
+}
+
+fn ide_list_directory(root: &Path, path: &str) -> Result<IdeDirectoryResponse, EngineError> {
+    let (project_root, target) = resolve_ide_path(root, path, true)?;
+    let entries = std::fs::read_dir(&target).map_err(|_| EngineError::NotFound)?;
+    let mut candidates = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|_| EngineError::NotFound)?;
+        let name = entry.file_name();
+        if name == ".git" {
+            continue;
+        }
+        let file_type = entry.file_type().map_err(|_| EngineError::NotFound)?;
+        if file_type.is_dir() || file_type.is_file() {
+            candidates.push((
+                name.to_string_lossy().into_owned(),
+                entry.path(),
+                file_type.is_dir(),
+            ));
+        }
+    }
+    candidates.sort_by(|left, right| right.2.cmp(&left.2).then_with(|| left.0.cmp(&right.0)));
+    let truncated = candidates.len() > IDE_DIRECTORY_MAX_ENTRIES;
+    let mut output = Vec::new();
+    for (name, entry_path, is_directory) in candidates.into_iter().take(IDE_DIRECTORY_MAX_ENTRIES) {
+        let path = ide_display_path(&project_root, &entry_path);
+        if is_directory {
+            output.push(IdeEntry {
+                name,
+                path,
+                entry_type: IdeEntryType::Dir,
+                size: None,
+            });
+        } else if let Ok(metadata) = std::fs::metadata(&entry_path)
+            && metadata.is_file()
+        {
+            output.push(IdeEntry {
+                name,
+                path,
+                entry_type: IdeEntryType::File,
+                size: Some(metadata.len()),
+            });
+        }
+    }
+    Ok(IdeDirectoryResponse {
+        path: if path.is_empty() {
+            String::new()
+        } else {
+            ide_display_path(&project_root, &target)
+        },
+        entries: output,
+        truncated,
+    })
+}
+
+fn ide_read_file(root: &Path, path: &str) -> Result<IdeFileResponse, EngineError> {
+    if path.is_empty() {
+        return Err(EngineError::Conflict {
+            reason: "path is required".to_owned(),
+        });
+    }
+    let (project_root, target) = resolve_ide_path(root, path, false)?;
+    let metadata = std::fs::metadata(&target).map_err(|_| EngineError::NotFound)?;
+    if metadata.len() > IDE_FILE_MAX_BYTES as u64 {
+        return Err(EngineError::Conflict {
+            reason: "file is too large to edit".to_owned(),
+        });
+    }
+    let bytes = std::fs::read(&target).map_err(|_| EngineError::NotFound)?;
+    if bytes.contains(&0) {
+        return Err(EngineError::Conflict {
+            reason: "binary files cannot be edited".to_owned(),
+        });
+    }
+    let content = String::from_utf8(bytes.clone()).map_err(|_| EngineError::Conflict {
+        reason: "binary files cannot be edited".to_owned(),
+    })?;
+    Ok(IdeFileResponse {
+        path: ide_display_path(&project_root, &target),
+        content,
+        size: bytes.len() as u64,
+    })
+}
+
+fn ide_write_file(root: &Path, path: &str, content: &str) -> Result<IdeFileResponse, EngineError> {
+    if path.is_empty() {
+        return Err(EngineError::Conflict {
+            reason: "path is required".to_owned(),
+        });
+    }
+    if content.len() > IDE_FILE_MAX_BYTES {
+        return Err(EngineError::Conflict {
+            reason: "file is too large to edit".to_owned(),
+        });
+    }
+    let (_, target) = resolve_ide_path(root, path, false)?;
+    std::fs::write(&target, content.as_bytes()).map_err(|error| EngineError::Conflict {
+        reason: error.to_string(),
+    })?;
+    ide_read_file(root, path)
+}
+
+// ---- per-repo config helpers, duplicated from `coducktor-server`'s private config_response/
+// parse_set_config_input/config_models_locked/read_repo_config functions -------------------
+
+fn repo_config_path(repo_root: &Path) -> PathBuf {
+    data_dir(repo_root).join("config.json")
+}
+
+fn read_repo_config(repo_root: &Path) -> Map<String, Value> {
+    let Ok(raw) = std::fs::read_to_string(repo_config_path(repo_root)) else {
+        return Map::new();
+    };
+    serde_json::from_str::<Value>(&raw)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default()
+}
+
+fn workspace_config_for(repo_root: &Path) -> coducktor_core::workspace::config::WorkspaceConfig {
+    let _ = repo_root; // the workspace config is host-wide, not per-repo — kept for call-site symmetry
+    load_workspace_config(
+        &coducktor_core::paths::workspace_config_path(&ProcessEnv),
+        &ProcessEnv,
+    )
+}
+
+fn config_models_locked(repo_root: &Path, config: &coducktor_core::config::RepoConfig) -> bool {
+    std::env::var("CEZ_AGENT_MODELS_LOCKED").is_ok_and(|value| value == "1")
+        || workspace_config_for(repo_root).models_locked == Some(true)
+        || config.models_locked == Some(true)
+}
+
+fn config_response(repo_root: &Path) -> ConfigResponse {
+    let workspace = workspace_config_for(repo_root);
+    let config = coducktor_core::config::load_config(repo_root, &workspace.agent_defaults);
+    let models_locked = config_models_locked(repo_root, &config);
+    ConfigResponse {
+        base_branch: config.base_branch,
+        default_runner: config.default_runner,
+        system_prompt: config.system_prompt,
+        default_models: if models_locked {
+            coducktor_contract::RunnerModels::default()
+        } else {
+            config.default_models
+        },
+        models_locked,
+        max_parallel: config.max_parallel,
+        memory_limit_mb: config.memory_limit_mb,
+        worktree_retention: config.worktree_retention,
+        live_title_updates: config.live_title_updates,
+        review_gate: config.review_gate,
+    }
+}
+
+fn validate_set_config_input(input: &SetConfigInput) -> Result<(), EngineError> {
+    if input
+        .base_branch
+        .as_ref()
+        .and_then(|value| value.as_ref())
+        .is_some_and(|value| {
+            let trimmed = value.trim();
+            trimmed.is_empty() || trimmed.chars().count() > 200
+        })
+    {
+        return Err(EngineError::Conflict {
+            reason: "baseBranch must be between 1 and 200 characters".to_owned(),
+        });
+    }
+    if input
+        .system_prompt
+        .as_ref()
+        .and_then(|value| value.as_ref())
+        .is_some_and(|value| value.trim().chars().count() > 20_000)
+    {
+        return Err(EngineError::Conflict {
+            reason: "systemPrompt must be at most 20000 characters".to_owned(),
+        });
+    }
+    if input
+        .max_parallel
+        .is_some_and(|value| !(1..=16).contains(&value))
+    {
+        return Err(EngineError::Conflict {
+            reason: "maxParallel must be an integer from 1 to 16".to_owned(),
+        });
+    }
+    if input
+        .memory_limit_mb
+        .flatten()
+        .is_some_and(|value| value > 1_048_576)
+    {
+        return Err(EngineError::Conflict {
+            reason: "memoryLimitMb must be an integer from 0 to 1048576".to_owned(),
+        });
+    }
+    if input
+        .worktree_retention
+        .flatten()
+        .is_some_and(|value| value > 1000)
+    {
+        return Err(EngineError::Conflict {
+            reason: "worktreeRetention must be an integer from 0 to 1000".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn update_repo_config(
+    repo_root: &Path,
+    input: &SetConfigInput,
+) -> Result<ConfigResponse, EngineError> {
+    validate_set_config_input(input)?;
+    let workspace = workspace_config_for(repo_root);
+    let current = coducktor_core::config::load_config(repo_root, &workspace.agent_defaults);
+    if config_models_locked(repo_root, &current) && input.default_models.is_some() {
+        return Err(EngineError::Conflict {
+            reason:
+                "agent models are locked — configure the model in the native coding-agent settings"
+                    .to_owned(),
+        });
+    }
+
+    let mut raw = read_repo_config(repo_root);
+    if let Some(base_branch) = &input.base_branch {
+        match base_branch {
+            None => {
+                raw.remove("baseBranch");
+            }
+            Some(value) => {
+                raw.insert(
+                    "baseBranch".to_owned(),
+                    Value::String(value.trim().to_owned()),
+                );
+            }
+        }
+    }
+    if let Some(default_runner) = input.default_runner {
+        raw.insert(
+            "defaultRunner".to_owned(),
+            serde_json::to_value(default_runner).unwrap_or(Value::Null),
+        );
+    }
+    if let Some(system_prompt) = &input.system_prompt {
+        match system_prompt.as_deref().map(str::trim) {
+            None | Some("") => {
+                raw.remove("systemPrompt");
+            }
+            Some(prompt) => {
+                raw.insert("systemPrompt".to_owned(), Value::String(prompt.to_owned()));
+            }
+        }
+    }
+    if let Some(max_parallel) = input.max_parallel {
+        raw.insert("maxParallel".to_owned(), Value::from(max_parallel));
+    }
+    if let Some(retention) = input.worktree_retention {
+        match retention {
+            None | Some(0) => {
+                raw.remove("worktreeRetention");
+            }
+            Some(value) => {
+                raw.insert("worktreeRetention".to_owned(), Value::from(value));
+            }
+        }
+    }
+    if let Some(value) = input.live_title_updates {
+        match value {
+            None => {
+                raw.remove("liveTitleUpdates");
+            }
+            Some(flag) => {
+                raw.insert("liveTitleUpdates".to_owned(), Value::Bool(flag));
+            }
+        }
+    }
+    if let Some(value) = input.review_gate {
+        match value {
+            None => {
+                raw.remove("reviewGate");
+            }
+            Some(flag) => {
+                raw.insert("reviewGate".to_owned(), Value::Bool(flag));
+            }
+        }
+    }
+    if let Some(limit) = input.memory_limit_mb {
+        match limit {
+            None | Some(0) => {
+                raw.remove("memoryLimitMb");
+            }
+            Some(value) => {
+                raw.insert("memoryLimitMb".to_owned(), Value::from(value));
+            }
+        }
+    }
+    if let Some(models_patch) = &input.default_models {
+        let mut models = raw
+            .get("defaultModels")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        for (key, patch) in [
+            ("claude", &models_patch.claude),
+            ("codex", &models_patch.codex),
+            ("opencode", &models_patch.opencode),
+            ("pi", &models_patch.pi),
+        ] {
+            if let Some(value) = patch {
+                match value.as_deref().map(str::trim) {
+                    None | Some("") => {
+                        models.remove(key);
+                    }
+                    Some(model) => {
+                        models.insert(key.to_owned(), Value::String(model.to_owned()));
+                    }
+                }
+            }
+        }
+        if models.is_empty() {
+            raw.remove("defaultModels");
+        } else {
+            raw.insert("defaultModels".to_owned(), Value::Object(models));
+        }
+    }
+    coducktor_core::workspace::config::atomic_write_json_sync(
+        &repo_config_path(repo_root),
+        &Value::Object(raw),
+    )
+    .map_err(io_err)?;
+    Ok(config_response(repo_root))
 }
 
 // ---- workflow builder helpers, duplicated from `coducktor-server`'s private functions of the
@@ -2755,5 +3226,165 @@ mod tests {
         let wire = agent_profile_wire(&profile);
         assert!(wire.files.is_empty());
         assert!(wire.is_default);
+    }
+
+    // ---- IDE (C1 continuation) -----------------------------------------------------------
+
+    #[tokio::test]
+    async fn ide_tree_lists_directories_before_files_alphabetically() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir); // creates `.ai/coducktor/**` as a side effect — expected in the listing, `.git` is the only exclusion the oracle makes
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("README.md"), b"hi").unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"a").unwrap();
+        let tree = engine.ide_tree(None).await.unwrap();
+        let names: Vec<&str> = tree
+            .entries
+            .iter()
+            .filter(|e| e.name != ".ai")
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["src", "README.md", "a.txt"]);
+        assert_eq!(tree.entries[0].entry_type, IdeEntryType::Dir);
+    }
+
+    #[tokio::test]
+    async fn ide_file_reads_a_files_content() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("notes.md"), b"hello world").unwrap();
+        let engine = engine(&dir);
+        let file = engine.ide_file("notes.md").await.unwrap();
+        assert_eq!(file.content, "hello world");
+        assert_eq!(file.size, 11);
+    }
+
+    #[tokio::test]
+    async fn ide_file_rejects_a_path_that_escapes_the_project() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine.ide_file("../secret.txt").await.unwrap_err();
+        assert!(matches!(error, EngineError::Conflict { .. }));
+    }
+
+    #[tokio::test]
+    async fn ide_file_reports_not_found_for_a_missing_file() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine.ide_file("does-not-exist.txt").await.unwrap_err();
+        assert_eq!(error, EngineError::NotFound);
+    }
+
+    #[tokio::test]
+    async fn ide_save_overwrites_an_existing_files_content() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("notes.md"), b"old").unwrap();
+        let engine = engine(&dir);
+        let saved = engine.ide_save("notes.md", "new content").await.unwrap();
+        assert_eq!(saved.content, "new content");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("notes.md")).unwrap(),
+            "new content"
+        );
+    }
+
+    #[tokio::test]
+    async fn ide_save_cannot_create_a_file_that_does_not_already_exist() {
+        // Matches the oracle exactly: `ide_write_file` resolves the target path (which requires
+        // it to already exist) before writing — `PUT /ide/file` edits, it does not create.
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine
+            .ide_save("brand-new.md", "content")
+            .await
+            .unwrap_err();
+        assert_eq!(error, EngineError::NotFound);
+    }
+
+    // ---- per-repo config (C1 continuation) -------------------------------------------------
+
+    #[tokio::test]
+    async fn config_reports_defaults_when_no_config_file_exists() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let config = engine.config().await.unwrap();
+        assert_eq!(config.max_parallel, 2);
+        assert!(!config.models_locked);
+        assert!(config.base_branch.is_none());
+    }
+
+    #[tokio::test]
+    async fn put_config_persists_a_patch_and_a_later_read_reflects_it() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let input = SetConfigInput {
+            base_branch: Some(Some("develop".to_owned())),
+            max_parallel: Some(5),
+            ..Default::default()
+        };
+        let updated = engine.put_config(&input).await.unwrap();
+        assert_eq!(updated.base_branch.as_deref(), Some("develop"));
+        assert_eq!(updated.max_parallel, 5);
+
+        let reread = engine.config().await.unwrap();
+        assert_eq!(reread.base_branch.as_deref(), Some("develop"));
+        assert_eq!(reread.max_parallel, 5);
+    }
+
+    #[tokio::test]
+    async fn put_config_clears_a_field_when_the_patch_sets_it_to_null() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        engine
+            .put_config(&SetConfigInput {
+                base_branch: Some(Some("develop".to_owned())),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let cleared = engine
+            .put_config(&SetConfigInput {
+                base_branch: Some(None),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(cleared.base_branch.is_none());
+    }
+
+    #[tokio::test]
+    async fn put_config_rejects_max_parallel_outside_one_to_sixteen() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine
+            .put_config(&SetConfigInput {
+                max_parallel: Some(17),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(error, EngineError::Conflict { .. }));
+    }
+
+    #[tokio::test]
+    async fn put_config_rejects_a_default_models_change_when_locked_by_the_repo_config() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".ai/coducktor")).unwrap();
+        std::fs::write(
+            dir.path().join(".ai/coducktor/config.json"),
+            r#"{"modelsLocked": true}"#,
+        )
+        .unwrap();
+        let engine = engine(&dir);
+        let error = engine
+            .put_config(&SetConfigInput {
+                default_models: Some(coducktor_contract::RunnerModelsPatch {
+                    claude: Some(Some("opus".to_owned())),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(error, EngineError::Conflict { .. }));
     }
 }
