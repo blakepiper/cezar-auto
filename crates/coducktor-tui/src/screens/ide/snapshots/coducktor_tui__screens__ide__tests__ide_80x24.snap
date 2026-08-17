@@ -1,6 +1,5 @@
 ---
 source: crates/coducktor-tui/src/screens/ide/mod.rs
-assertion_line: 708
 expression: terminal.backend().buffer()
 ---
 Buffer {
@@ -29,7 +28,7 @@ Buffer {
         "│                        ││                                                    │",
         "│.git and symlinks are hi││UTF-8 · Ctrl+S save · Ctrl+E open in $EDITOR · 1 MB │",
         "└────────────────────────┘└────────────────────────────────────────────────────┘",
-        " NORMAL  main  dark  v0.1.0  [server:off]  [providers --]  ? help               ",
+        " NORMAL  main  dark  v0.1.0  [providers --]  ? help                             ",
     ],
     styles: [
         x: 0, y: 0, fg: Rgb(168, 216, 80), bg: Rgb(29, 32, 36), underline: Reset, modifier: BOLD,

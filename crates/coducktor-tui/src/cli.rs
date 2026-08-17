@@ -7,7 +7,7 @@
 //! here: spec §1.4 waives both, since neither means anything without a server this
 //! binary itself opens a browser for.
 //!
-//! `serve`/`run`/`init`/`usage`/`projects` (B10) dispatch to `headless::*` before the
+//! `run`/`init`/`usage`/`doctor`/`projects` (B10/C3) dispatch to `headless::*` before the
 //! TUI ever opens the alternate screen — see `main.rs`'s early match on `cli.command`.
 
 use std::path::{Path, PathBuf};
@@ -40,8 +40,6 @@ pub struct Cli {
 pub enum Command {
     /// Launch the interactive TUI — the default when no subcommand is given.
     Tui,
-    /// Start the cockpit server for this repo — no browser, no TUI.
-    Serve,
     /// Run a task headless in the terminal; exits 0 on `done`/`review`, 1 otherwise.
     Run {
         /// The task text — extra words are joined with a space, same as the protected CLI.
@@ -58,6 +56,12 @@ pub enum Command {
         /// Bypass the local quota cache.
         #[arg(long)]
         refresh: bool,
+    },
+    /// Check the local installation and available agent CLIs without starting the TUI.
+    Doctor {
+        /// Emit stable JSON for scripts.
+        #[arg(long)]
+        json: bool,
     },
     /// List, register, or drop entries in the project registry.
     Projects {
@@ -160,10 +164,6 @@ mod tests {
 
     #[test]
     fn the_protected_commands_all_parse() {
-        assert!(matches!(
-            Cli::try_parse_from(["coducktor", "serve"]).unwrap().command,
-            Some(Command::Serve)
-        ));
         let run = Cli::try_parse_from(["coducktor", "run", "do", "the", "thing"]).unwrap();
         match run.command {
             Some(Command::Run { task }) => assert_eq!(task, vec!["do", "the", "thing"]),
@@ -176,6 +176,12 @@ mod tests {
         assert!(matches!(
             Cli::try_parse_from(["coducktor", "usage"]).unwrap().command,
             Some(Command::Usage { .. })
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["coducktor", "doctor", "--json"])
+                .unwrap()
+                .command,
+            Some(Command::Doctor { json: true })
         ));
         assert!(matches!(
             Cli::try_parse_from(["coducktor", "projects"])
@@ -219,10 +225,10 @@ mod tests {
             "--workflow",
             "--model",
             "tui",
-            "serve",
             "run",
             "init",
             "usage",
+            "doctor",
             "projects",
         ] {
             assert!(
@@ -237,6 +243,11 @@ mod tests {
                 "help text unexpectedly has {needle:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_retired_serve_command_is_rejected() {
+        assert!(Cli::try_parse_from(["coducktor", "serve"]).is_err());
     }
 
     #[test]

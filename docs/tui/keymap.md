@@ -7,9 +7,8 @@ whenever those change — there is no automated doc-gen for it yet.
 ## Global keymap (`default-keymap.toml`)
 
 Works from anywhere in the app. Override any binding with a user keymap at
-`$DUCK_HOME/keymap.toml` (or `$CEZ_HOME/keymap.toml` if `DUCK_HOME` is unset — the name
-the Node server still reads until it's deleted; falls back to `~/.coducktor/keymap.toml`
-if neither is set) — user bindings are merged over these defaults, key by key.
+`$DUCK_HOME/keymap.toml` (or `~/.coducktor/keymap.toml` when `DUCK_HOME` is unset) —
+user bindings are merged over these defaults, key by key.
 
 | Key | Action |
 |---|---|
@@ -24,7 +23,6 @@ if neither is set) — user bindings are merged over these defaults, key by key.
 | `Ctrl+O` | Navigate back |
 | `Ctrl+I` | Navigate forward |
 | `Ctrl+K` | Command palette |
-| `Ctrl+L` | Logs overlay (tails the supervised service's captured output) |
 
 Sidebar nav items without a global single-key binding today — reach them via mouse
 click, the command palette (`Ctrl+K`), or `:open <route>`: IDE, Git (repo), GitHub,
@@ -42,7 +40,6 @@ Skills, Workflows, Settings.
 | `:help` | Same as `?` |
 | `:sidebar` | Toggle sidebar |
 | `:quit` | Same as `q` |
-| `:logs` | Open the logs overlay (same as `Ctrl+L`) |
 
 ## Screen-local bindings
 

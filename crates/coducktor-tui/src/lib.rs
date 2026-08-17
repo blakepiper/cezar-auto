@@ -15,7 +15,6 @@ pub mod new_task_form;
 pub mod notify;
 pub mod overlay;
 pub mod screens;
-pub mod service;
 pub mod skills;
 pub mod terminal;
 pub mod theme;

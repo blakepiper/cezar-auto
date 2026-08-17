@@ -15,7 +15,6 @@ use tokio::task::JoinHandle;
 use coducktor_tui::app::{self, App, PendingAction, QuickTask, WorkspaceEvent};
 use coducktor_tui::cli::{Cli, Command};
 use coducktor_tui::input::keymap::Keymap;
-use coducktor_tui::service::ServiceState;
 use coducktor_tui::terminal::AppTerminal;
 use coducktor_tui::theme::Theme;
 use coducktor_tui::{cli, headless, new_task_form, screens, terminal};
@@ -38,10 +37,6 @@ async fn main() -> io::Result<()> {
     // straight in the caller's terminal, print to real stdout/stderr, and exit. Only
     // `None`/`Tui` fall through to the interactive cockpit below.
     match &cli.command {
-        Some(Command::Serve) => {
-            let repo_root = headless::resolve_repo_root(cli.repo.as_deref());
-            return headless::serve_command(repo_root).await;
-        }
         Some(Command::Run { task }) => {
             let repo_root = headless::resolve_repo_root(cli.repo.as_deref());
             let code = headless::run_command(
@@ -61,6 +56,10 @@ async fn main() -> io::Result<()> {
         Some(Command::Usage { .. }) => {
             std::process::exit(headless::usage_command());
         }
+        Some(Command::Doctor { json }) => {
+            let repo_root = headless::resolve_repo_root(cli.repo.as_deref());
+            std::process::exit(headless::doctor_command(repo_root, *json).await);
+        }
         Some(Command::Projects { action }) => {
             let repo_root = headless::resolve_repo_root(cli.repo.as_deref());
             std::process::exit(headless::projects_command(&repo_root, action.clone()));
@@ -75,7 +74,6 @@ async fn main() -> io::Result<()> {
     let repo_root = headless::resolve_repo_root(cli.repo.as_deref());
     let engine: Arc<dyn Engine> =
         Arc::new(InProcessEngine::new(repo_root, env!("CARGO_PKG_VERSION")));
-    app.set_service_state(ServiceState::Ready);
     prime_app(&mut app, engine.as_ref()).await;
     apply_launch_args(engine.as_ref(), &mut app, &cli).await;
     let mut workspace_listener =

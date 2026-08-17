@@ -1613,7 +1613,7 @@ part of the interactive startup path.
 `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo fmt --check`
 all pass. `cargo tree` contains no `coducktor-server` package or HTTP server crate.
 
-### [ ] C3 — Retire remaining server-shaped concepts
+### [x] C3 — Retire remaining server-shaped concepts
 **Ships:** `cez serve` as a command, port-selection logic (`pickPort`, the 4321
 default, the auto-increment probe), the health-poll startup wait, the A3
 child-process supervisor (and with it, the §7.7 log-capture/`logs.rs` overlay
@@ -1628,6 +1628,17 @@ route).
 - One binary, no Node, no port, no browser.
 **Commit:** `feat(cli): C3 retire cez serve, port selection, service supervisor —
 one binary, no network`
+
+**Status (C3):** complete. The retired `serve` command, port-selection and health-wait
+scaffolding, child supervisor, captured service logs, and TUI logs overlay are deleted. The
+interactive binary constructs its in-process engine directly, and `doctor` reports the local
+version, source-first update path, repository, and agent-CLI probes without opening a socket.
+The footer and snapshots no longer carry server state, and installation no longer checks for
+Node.js.
+
+**Accept, verified:** the Rust workspace tests, clippy warning gate, and format check are green;
+the CLI rejects `serve`, accepts `doctor --json`, and the built binary's dependency tree contains
+no HTTP server crate.
 
 ---
 

@@ -11,7 +11,6 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use crate::input::hitmap::{HitAction, HitMap};
 use crate::input::keymap::{ActionId, KeyMode, Keymap};
 use crate::screens::runs_util::TaskView;
-use crate::service::ServiceState;
 use crate::theme::{Theme, ThemeName};
 use crate::widgets::table::ColumnId;
 
@@ -874,7 +873,6 @@ pub struct App {
     sidebar_overlay_open: bool,
     sidebar_dragging: bool,
     pub last_width: u16,
-    service_state: ServiceState,
     providers: Vec<ProviderBadge>,
     pub tasks: Vec<ApiRun>,
     pub global_index: Option<RunsIndexResponse>,
@@ -898,15 +896,11 @@ pub struct App {
     pub workflows_ui: crate::screens::workflows::WorkflowsUi,
     pub settings_ui: crate::screens::settings::SettingsUi,
     pub palette: crate::overlay::Palette,
-    pub logs_open: bool,
     /// Settings → Notifications' toggle, loaded once at startup and kept live by every write
     /// (spec §8.14). Gates `pending_notifications`, never the terminal-title update.
     pub notifications_enabled: bool,
     /// (summary, body) pairs main.rs drains once per tick and fires via `notify-rust`.
     pub pending_notifications: Vec<(String, String)>,
-    /// The supervised `cezar serve` child's captured output (§7.7's `logs.rs` overlay),
-    /// refreshed from `ServiceSupervisor::logs()` by main.rs while `logs_open` is true.
-    pub service_logs: Vec<String>,
     pub pending: Vec<PendingAction>,
     /// The absolute path main.rs should hand to `$EDITOR` (set by the `OpenIdeInEditor`
     /// handler; consumed by the run loop, which owns the terminal).
@@ -948,7 +942,6 @@ impl App {
             sidebar_overlay_open: false,
             sidebar_dragging: false,
             last_width: 0,
-            service_state: ServiceState::Disabled,
             providers: Vec::new(),
             tasks: Vec::new(),
             global_index: None,
@@ -970,10 +963,8 @@ impl App {
             workflows_ui: crate::screens::workflows::WorkflowsUi::default(),
             settings_ui: crate::screens::settings::SettingsUi::default(),
             palette: crate::overlay::Palette::default(),
-            logs_open: false,
             notifications_enabled: false,
             pending_notifications: Vec::new(),
-            service_logs: Vec::new(),
             pending: Vec::new(),
             editor_handoff: None,
             filter_mode: false,
@@ -1017,10 +1008,6 @@ impl App {
         self.quick_tasks = tasks.into_iter().collect();
     }
 
-    pub fn set_service_state(&mut self, state: ServiceState) {
-        self.service_state = state;
-    }
-
     pub fn set_provider_states(&mut self, states: impl IntoIterator<Item = (String, bool)>) {
         self.providers = states
             .into_iter()
@@ -1048,10 +1035,6 @@ impl App {
 
     pub fn take_pending_notifications(&mut self) -> Vec<(String, String)> {
         std::mem::take(&mut self.pending_notifications)
-    }
-
-    pub fn set_service_logs(&mut self, lines: Vec<String>) {
-        self.service_logs = lines;
     }
 
     /// Navigate, guarding the IDE's unsaved draft (spec §8.8): leaving a dirty file asks
@@ -1579,10 +1562,9 @@ impl App {
             format!(" {mode}  {notice}")
         } else {
             format!(
-                " {mode}  {}  {}  v0.1.0  [server:{}]  {}  ? help",
+                " {mode}  {}  {}  v0.1.0  {}  ? help",
                 self.current_project(),
                 self.theme.name.label(),
-                service_state_label(self.service_state),
                 self.provider_summary(),
             )
         };
@@ -1643,40 +1625,10 @@ impl App {
             self.render_row_menu(frame, area, menu);
         } else if self.tasks_ui.sort_picker {
             self.render_sort_picker(frame, area);
-        } else if self.logs_open {
-            self.render_logs(frame, area);
         }
         if self.palette.open {
             crate::overlay::render(frame, area, self);
         }
-    }
-
-    /// §7.7's `logs.rs` — tails the supervised service child's captured stdout/stderr
-    /// (`:logs`, `Ctrl+L`). Phases A/B only; deleted with the child process at Phase C.
-    fn render_logs(&self, frame: &mut Frame<'_>, area: Rect) {
-        let width = area.width.saturating_sub(6).max(20);
-        let height = area.height.saturating_sub(4).max(6);
-        let rect = Rect::new(
-            area.x + (area.width.saturating_sub(width)) / 2,
-            area.y + (area.height.saturating_sub(height)) / 2,
-            width,
-            height,
-        );
-        frame.render_widget(Clear, rect);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title("Service logs (Esc to close)");
-        let inner = block.inner(rect);
-        frame.render_widget(block, rect);
-        let tail_from = self
-            .service_logs
-            .len()
-            .saturating_sub(inner.height as usize);
-        let lines: Vec<Line<'static>> = self.service_logs[tail_from..]
-            .iter()
-            .map(|line| Line::from(line.clone()))
-            .collect();
-        frame.render_widget(Paragraph::new(lines), inner);
     }
 
     fn render_help(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -1851,12 +1803,6 @@ impl App {
             crate::overlay::handle_key(self, key);
             return;
         }
-        if self.logs_open {
-            if key.code == KeyCode::Esc {
-                self.logs_open = false;
-            }
-            return;
-        }
         if self.help_open {
             if matches!(key.code, KeyCode::Esc | KeyCode::Char('?')) {
                 self.help_open = false;
@@ -2016,7 +1962,6 @@ impl App {
             Some("new") => self.navigate(NavItem::NewTask),
             Some("help") => self.help_open = true,
             Some("sidebar") => self.toggle_sidebar(),
-            Some("logs") => self.logs_open = true,
             Some("quit") => self.request_quit(),
             Some(unknown) => self.notice = Some(format!("unknown command: {unknown}")),
             None => {}
@@ -2042,7 +1987,6 @@ impl App {
             ActionId::ToggleSidebar => self.toggle_sidebar(),
             ActionId::Help => self.help_open = true,
             ActionId::Palette => crate::overlay::open(self),
-            ActionId::Logs => self.logs_open = true,
             ActionId::Back => {
                 self.request_back();
             }
@@ -2539,17 +2483,6 @@ fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
         width,
         height,
     )
-}
-
-fn service_state_label(state: ServiceState) -> &'static str {
-    match state {
-        ServiceState::Disabled => "off",
-        ServiceState::Starting => "starting",
-        ServiceState::Adopted => "attached",
-        ServiceState::Ready => "ready",
-        ServiceState::Failed => "failed",
-        ServiceState::Stopped => "stopped",
-    }
 }
 
 trait ThemeStatusPalette {

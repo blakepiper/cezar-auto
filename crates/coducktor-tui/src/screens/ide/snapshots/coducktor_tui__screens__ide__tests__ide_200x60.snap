@@ -64,7 +64,7 @@ Buffer {
         "                            │                                  ││                                                                                                                                      │",
         "                            │.git and symlinks are hidden      ││UTF-8 · Ctrl+S save · Ctrl+E open in $EDITOR · 1 MB edit cap · 1 KB                                                                   │",
         "                            └──────────────────────────────────┘└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘",
-        " NORMAL  main  dark  v0.1.0  [server:off]  [providers --]  ? help                                                                                                                                       ",
+        " NORMAL  main  dark  v0.1.0  [providers --]  ? help                                                                                                                                                     ",
     ],
     styles: [
         x: 0, y: 0, fg: Rgb(168, 216, 80), bg: Rgb(29, 32, 36), underline: Reset, modifier: BOLD,

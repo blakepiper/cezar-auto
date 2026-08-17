@@ -86,6 +86,9 @@ terminal cockpit. See [`docs/tui/keymap.md`](docs/tui/keymap.md) for
 navigation and [`docs/tui/terminals.md`](docs/tui/terminals.md) for terminal
 support.
 
+Run `coducktor doctor` for a local version, update hint, repository, and agent-CLI
+availability check. It never starts a service or opens a network port.
+
 Prefer to run it in place without installing? `cargo run -p coducktor-tui`
 from the checkout does the same thing.
 

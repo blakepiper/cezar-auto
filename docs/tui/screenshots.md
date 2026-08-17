@@ -53,7 +53,7 @@ Regenerate these excerpts after any UI change with `cargo insta test`.
                             │                                                                                          │
                             │                                                                                          │
                             └──────────────────────────────────────────────────────────────────────────────────────────┘
- NORMAL  main  dark  v0.1.0  [server:off]  [providers --]  ? help                                                       
+ NORMAL  main  dark  v0.1.0  [providers --]  ? help
 ```
 
 ## Tasks screen, 80×24 (sidebar auto-collapsed below the 100-column breakpoint)
@@ -82,5 +82,5 @@ Regenerate these excerpts after any UI change with `cargo insta test`.
 │                                                                              │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
- NORMAL  main  dark  v0.1.0  [server:off]  [providers --]  ? help               
+ NORMAL  main  dark  v0.1.0  [providers --]  ? help
 ```

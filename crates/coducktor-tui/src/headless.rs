@@ -1,13 +1,12 @@
-//! The non-interactive `coducktor`/`duck` subcommands: `serve`, `run`, `init`, `usage`,
-//! `projects` (B10). Each mirrors `packages/cezar/src/index.ts`'s command of the same name —
-//! that file is the behavioral oracle for exit codes and flag names, not for console wording
-//! (spec §1.4's protected surface is the CLI *contract*, not byte-identical output).
+//! The non-interactive `coducktor`/`duck` subcommands: `run`, `init`, `usage`, `doctor`,
+//! `projects` (B10). The protected exit-code and task semantics are kept where they still apply;
+//! console wording is intentionally terminal-native.
 
-use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command as ShellCommand;
 
-use coducktor_contract::{RunStatus, RunnerSelection};
+use coducktor_client::InProcessEngine;
+use coducktor_contract::{BackendCheckName, RunStatus, RunnerSelection};
 use coducktor_core::paths::{ProcessEnv, workspace_config_path};
 use coducktor_core::workflows::run::{RunManager, StartRunInput};
 use coducktor_core::workflows::{load::load_workflows, types::quick_task_workflow};
@@ -40,16 +39,6 @@ pub fn resolve_repo_root(explicit: Option<&Path>) -> PathBuf {
         }
         _ => start,
     }
-}
-
-// ---- serve -------------------------------------------------------------------------------
-
-/// Compatibility response for the pre-C2 command. The cockpit no longer needs a server
-/// process; C3 removes this command from the public CLI surface.
-pub async fn serve_command(_repo_root: PathBuf) -> io::Result<()> {
-    Err(io::Error::other(
-        "serve is retired: run coducktor without a subcommand for the in-process cockpit",
-    ))
 }
 
 // ---- run (headless) -----------------------------------------------------------------------
@@ -230,7 +219,7 @@ pub fn init_command(repo_root: &Path) {
         }
     }
     ensure_data_gitignore(repo_root);
-    println!("\nDone. Start the cockpit with: coducktor serve");
+    println!("\nDone. Start the cockpit with: coducktor");
 }
 
 /// Keep run data out of the user's repo history; workflows/skills stay committable. Ported
@@ -298,6 +287,92 @@ pub fn usage_command() -> i32 {
     1
 }
 
+// ---- doctor -------------------------------------------------------------------------------
+
+/// Inspect the local installation without opening a TUI or a listening socket.
+///
+/// This is the terminal equivalent of the old health route. The update row is intentionally
+/// source-first: this build has no package registry or background updater, so the honest update
+/// action is to pull the checkout and rerun `install.sh`.
+pub async fn doctor_command(repo_root: PathBuf, json: bool) -> i32 {
+    let engine = InProcessEngine::new(repo_root, env!("CARGO_PKG_VERSION"));
+    let health = match engine.health().await {
+        Ok(health) => health,
+        Err(error) => {
+            eprintln!("coducktor doctor: {error}");
+            return 1;
+        }
+    };
+
+    let agent_checks = health.checks.iter().filter(|check| {
+        matches!(
+            check.name,
+            BackendCheckName::Claude
+                | BackendCheckName::Codex
+                | BackendCheckName::OpenCode
+                | BackendCheckName::Pi
+        )
+    });
+    let agent_count = agent_checks.clone().count();
+    let available_agents = agent_checks.filter(|check| check.available).count();
+
+    if json {
+        let report = serde_json::json!({
+            "version": health.version,
+            "update": {
+                "available": false,
+                "latestVersion": health.latest_version,
+                "hint": "source-first install: run git pull and ./install.sh",
+            },
+            "repoRoot": health.repo_root,
+            "checks": health.checks,
+        });
+        match serde_json::to_string_pretty(&report) {
+            Ok(rendered) => println!("{rendered}"),
+            Err(error) => {
+                eprintln!("coducktor doctor: could not render JSON: {error}");
+                return 1;
+            }
+        }
+    } else {
+        println!("coducktor doctor");
+        println!("  version: {}", health.version);
+        println!("  update: source-first install — run `git pull && ./install.sh`");
+        println!("  repo: {}", health.repo_root);
+        println!("  agent CLIs: {available_agents}/{agent_count} available");
+        for check in &health.checks {
+            let mark = if check.available { "✓" } else { "✗" };
+            let version = check
+                .version
+                .as_deref()
+                .map(|version| format!(" ({version})"))
+                .unwrap_or_default();
+            let hint = check
+                .hint
+                .as_deref()
+                .map(|hint| format!(" — {hint}"))
+                .unwrap_or_default();
+            println!(
+                "  {mark} {}{version}{hint}",
+                backend_check_label(check.name)
+            );
+        }
+    }
+
+    if available_agents > 0 { 0 } else { 1 }
+}
+
+fn backend_check_label(name: BackendCheckName) -> &'static str {
+    match name {
+        BackendCheckName::Claude => "claude",
+        BackendCheckName::Codex => "codex",
+        BackendCheckName::OpenCode => "opencode",
+        BackendCheckName::Pi => "pi",
+        BackendCheckName::Gh => "gh",
+        BackendCheckName::Git => "git",
+    }
+}
+
 // ---- projects --------------------------------------------------------------------------------
 
 /// `cezar projects [list|add [<dir>]|remove <id>|rm <id>]` — the terminal twin of Settings →
@@ -325,9 +400,7 @@ fn projects_list(path: &Path) -> i32 {
     let entries = projects::list_projects(path, &ProcessEnv);
     if entries.is_empty() {
         println!("\n  no projects registered yet");
-        println!(
-            "  start the cockpit in a repo (coducktor serve) or add one: coducktor projects add <dir>\n"
-        );
+        println!("  start coducktor in a repo or add one: coducktor projects add <dir>\n");
         return 0;
     }
     println!();

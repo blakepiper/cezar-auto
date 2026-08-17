@@ -10,7 +10,6 @@ i = "inbox"
 "ctrl-o" = "back"
 "ctrl-i" = "forward"
 "ctrl-k" = "palette"
-"ctrl-l" = "logs"
 
 [command]
 escape = "normal"

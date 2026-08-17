@@ -44,7 +44,7 @@ Buffer {
         "                            │                                          ││                                              │",
         "                            │                                          ││                                              │",
         "                            └──────────────────────────────────────────┘└──────────────────────────────────────────────┘",
-        " NORMAL  main  dark  v0.1.0  [server:off]  [providers --]  ? help                                                       ",
+        " NORMAL  main  dark  v0.1.0  [providers --]  ? help                                                                     ",
     ],
     styles: [
         x: 0, y: 0, fg: Rgb(168, 216, 80), bg: Rgb(29, 32, 36), underline: Reset, modifier: BOLD,

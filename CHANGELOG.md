@@ -24,6 +24,10 @@
   page holding the old one. Every surface now names the project the same way.
 
 ## ✨ Features
+- ✨ **The Rust cockpit is now one binary with no service lifecycle.** The retired `serve`
+  command, port probing, startup health wait, child-service supervisor, and service-log overlay
+  are gone. Use `coducktor doctor` for a local version and agent-CLI check; update source-first
+  installs with `git pull && ./install.sh`.
 - ✨ **A task's PR or issue chip now says where that PR or issue stands.** Until now `#402` looked
   the same whether it had merged, had been red for two days, was still a draft, or had been closed
   without merging — and the only way to find out was to click through to GitHub, one task at a
