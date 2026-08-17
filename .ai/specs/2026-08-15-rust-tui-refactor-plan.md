@@ -1428,7 +1428,56 @@ disk, a patch-then-reread round trip, null clears a previously-set field,
 59 total in `in_process::tests`. Full workspace green (all crates' `test
 result: ok`, zero failures), `cargo clippy --workspace --all-targets -- -D
 warnings` clean, `cargo fmt --check` clean.
-**Commit:** `feat(engine): C1.4 InProcessEngine — IDE, per-repo config`
+**Commit:** `feat(engine): C1.4 InProcessEngine — IDE, per-repo config` — pushed
+as `d35e6832`; doc update pushed as `74d4a928`.
+
+**Status (C1.5):** partial, continuing C1.4. Ships the repo/run git
+browsing-diff-compare family: `repo`, `repo_changes`, `repo_commit`,
+`repo_branch`, `run_diff_text`, `run_changes`, `run_commit`, `run_files`,
+`run_file_raw` — ported from `coducktor-server`'s `get_repo`/`get_repo_changes`/
+`get_repo_commit`/`create_repo_branch`/`run_diff`/`run_changes`/`run_commit`/
+`run_files` handlers, duplicating their private git-shelling helpers
+(`repo_info_at`/`repo_status`/`repo_log`/`repo_branches`/`git_capture`/
+`git_capture_owned`/`cap_git_text`/`diff_revision_args`/`changed_file_status`/
+`collect_git_changes`/`valid_commit_hash`/`repo_commit_payload`/
+`run_changes_payload`/`contains_git_component`/`read_worktree_path`/
+`image_content_type`) byte-for-byte — same rationale as every prior C1
+sub-step. `coducktor_core::git::worktree::worktree_diff` (already ported at B3)
+is reused directly for `run_diff_text` rather than re-derived.
+**A genuine simplification, not a shortcut:** the `Engine` trait's
+`run_files`/`run_file_raw` are already split into two methods (structured
+`WorktreeEntry` vs. raw bytes for image preview), so `run_file_raw` here is a
+small, focused `read_worktree_raw` helper reusing `read_worktree_path` — no
+need to port the HTTP handler's combined content-negotiation branch (mime
+sniffing off an `Accept` header, `Vary` response header, JSON-vs-bytes
+dispatch) at all, since the trait's caller already decided which one it wants.
+**Scope note, named explicitly:** `group`/`pick_variant` are deliberately NOT
+in this round — they mutate run state (cancel/archive losing variants, remove
+their worktrees, touch the review gate via `append_event`/`update_run_value`)
+rather than just reading git, a meaningfully different and larger cluster; left
+for a follow-up round.
+**Accept, verified (C1.5's own scope only):** 20 new tests — a real git-repo
+fixture (mirrors `coducktor-core::git::worktree`'s own `fixture_repo()` test
+helper) proving `repo`/`repo_changes`/`repo_commit`/`repo_branch` against
+actual `git` subprocess calls (present vs. empty repo, a modified tracked
+file, a known-vs-malformed sha, branch creation via `git branch
+--show-current`, an unsafe branch name rejected), `run_files`/`run_changes`
+against a run with `worktree: Some(false)` (works directly in the repo root,
+matching `working_directory_of`'s own fallback — no real worktree-creation
+machinery is wired into `RunManager` yet to fixture a true worktree path
+against), not-found propagation for an unknown run id across three methods,
+`run_file_raw` rejecting a non-image file, and pure unit tests for
+`changed_file_status`/`valid_commit_hash`/`image_content_type`/
+`contains_git_component`. 76 total in `in_process::tests`. Full workspace
+green (every crate's `test result: ok`, zero failures), `cargo clippy
+--workspace --all-targets -- -D warnings` clean, `cargo fmt --check` clean.
+**Still remaining:** `group`/`pick_variant`, agent-config, `models` (host
+model catalog), GitHub forge detail reads, worktree management, open-targets,
+remaining settings write paths, task-thread write paths, `run_history`/
+`run_history_context`, `plan`, and closing the `impl Engine for
+InProcessEngine` block.
+**Commit:** `feat(engine): C1.5 InProcessEngine — repo/run git browsing, diff,
+compare`
 
 ### [ ] C2 — Switch default backend, delete `cezar-server`
 **Ships:** `cezar-tui`'s default backend becomes `InProcess`; then **delete
