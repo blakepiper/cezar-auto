@@ -23,10 +23,10 @@ use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::header::HeaderName;
 use axum::http::header::{ACCESS_CONTROL_ALLOW_ORIGIN, CACHE_CONTROL, HOST, ORIGIN};
-use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, Sse};
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use base64::Engine as _;
@@ -111,6 +111,12 @@ use tokio::process::Command as TokioCommand;
 use tokio::sync::broadcast;
 use tokio::time::timeout;
 
+mod static_ui;
+use static_ui::{
+    ASSET_CACHE_CONTROL, BUILD_HINT_HTML, GetTarget, asset_content_type, is_safe_asset_filename,
+    resolve_get_request,
+};
+
 #[derive(Debug, Clone)]
 struct CachedModelCatalog {
     runner: coducktor_contract::ModelDiscoveryRunner,
@@ -168,6 +174,11 @@ const WS_HEALTH_TTL: Duration = Duration::from_secs(5);
 pub struct ServerConfig {
     pub repo_root: PathBuf,
     pub version: String,
+    /// The `web` directory containing the built React cockpit (`web/dist/index.html`,
+    /// `web/dist/assets/*`) — B11's cutover/soak convenience, not a permanent feature (this
+    /// whole crate, and the routes this backs, are deleted at C2/C3). Defaults to
+    /// [`default_web_dir`]; override with `with_web_dir` for a non-default checkout layout.
+    pub web_dir: PathBuf,
 }
 
 impl ServerConfig {
@@ -175,8 +186,32 @@ impl ServerConfig {
         Self {
             repo_root: repo_root.into(),
             version: version.into(),
+            web_dir: default_web_dir(),
         }
     }
+
+    pub fn with_web_dir(mut self, web_dir: impl Into<PathBuf>) -> Self {
+        self.web_dir = web_dir.into();
+        self
+    }
+}
+
+/// `CEZ_WEB_DIR`/`DUCK_WEB_DIR` override, else `packages/cezar/web` under the current working
+/// directory — where `npm run build:web` actually writes today (mirrors Node's own
+/// `resolveWebDir()`, which resolves relative to the installed package rather than cwd; this
+/// crate has no installed-package location of its own yet, so cwd is the soak-only stand-in:
+/// the soak's whole premise is running from within this monorepo checkout).
+fn default_web_dir() -> PathBuf {
+    for var in ["DUCK_WEB_DIR", "CEZ_WEB_DIR"] {
+        if let Ok(value) = std::env::var(var)
+            && !value.is_empty()
+        {
+            return PathBuf::from(value);
+        }
+    }
+    std::env::current_dir()
+        .unwrap_or_default()
+        .join("packages/cezar/web")
 }
 
 /// The `health` topic's demand-driven publisher (ws.ts `registerTopic('health', …)`): the
@@ -757,7 +792,9 @@ pub fn router_with_state(state: ServerState) -> Router {
             "/api/v1/p/{project}/open-in",
             axum::routing::post(open_scoped_project_in),
         )
-        .fallback(not_found)
+        .route("/assets/{file}", get(serve_asset))
+        .route("/open-mercato.svg", get(serve_favicon))
+        .fallback(serve_shell_or_not_found)
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state, request_origin_guard))
 }
@@ -795,6 +832,82 @@ async fn health(State(state): State<ServerState>) -> Response {
 
 async fn not_found() -> Response {
     error_response(StatusCode::NOT_FOUND, "not found")
+}
+
+const HTML_CONTENT_TYPE: &str = "text/html; charset=utf-8";
+
+fn web_dist_dir(state: &ServerState) -> PathBuf {
+    state.config.web_dir.join("dist")
+}
+
+/// The catch-all fallback: every route family above is registered explicitly, so anything
+/// reaching this handler is either the SPA shell's territory (a deep link, `/`, an unknown
+/// path react-router should 404 for itself) or a genuinely unknown `/api/*` route, which keeps
+/// its own JSON 404 rather than getting the HTML shell (B11 port of `static-ui.ts`'s
+/// `resolveGetRequest` + `server.ts`'s `serveShell`). Only GET gets the shell; every other
+/// method on an unmatched path is a plain 404, matching every explicitly-registered route's own
+/// method restrictions.
+async fn serve_shell_or_not_found(
+    State(state): State<ServerState>,
+    method: Method,
+    uri: Uri,
+) -> Response {
+    if method != Method::GET {
+        return not_found().await;
+    }
+    let dist_dir = web_dist_dir(&state);
+    let dist_index = dist_dir.join("index.html");
+    match resolve_get_request(uri.path(), dist_index.is_file()) {
+        GetTarget::Passthrough => not_found().await,
+        GetTarget::BuildHint => Html(BUILD_HINT_HTML).into_response(),
+        GetTarget::Dist => match fs::read(&dist_index) {
+            Ok(bytes) => (
+                [(axum::http::header::CONTENT_TYPE, HTML_CONTENT_TYPE)],
+                bytes,
+            )
+                .into_response(),
+            Err(_) => Html(BUILD_HINT_HTML).into_response(),
+        },
+    }
+}
+
+/// Hashed bundles/fonts of the built app. Vite fingerprints every name, so the bytes behind a
+/// URL never change — cache them hard. Only plain filenames are served (B11 port of
+/// `server.ts`'s `/assets/:file` route).
+async fn serve_asset(
+    State(state): State<ServerState>,
+    AxumPath(file): AxumPath<String>,
+) -> Response {
+    if !is_safe_asset_filename(&file) {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    }
+    let path = web_dist_dir(&state).join("assets").join(&file);
+    let Ok(metadata) = fs::metadata(&path) else {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    };
+    if !metadata.is_file() {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    }
+    match fs::read(&path) {
+        Ok(bytes) => (
+            [
+                (axum::http::header::CONTENT_TYPE, asset_content_type(&file)),
+                (CACHE_CONTROL, ASSET_CACHE_CONTROL),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => error_response(StatusCode::NOT_FOUND, "not found"),
+    }
+}
+
+/// The favicon `packages/web/index.html` points at (`/open-mercato.svg`).
+async fn serve_favicon(State(state): State<ServerState>) -> Response {
+    let path = web_dist_dir(&state).join("open-mercato.svg");
+    match fs::read(&path) {
+        Ok(bytes) => ([(axum::http::header::CONTENT_TYPE, "image/svg+xml")], bytes).into_response(),
+        Err(_) => error_response(StatusCode::NOT_FOUND, "not found"),
+    }
 }
 
 fn workflow_repo_root(state: &ServerState) -> PathBuf {
@@ -11063,5 +11176,109 @@ mod tests {
         );
 
         fs::remove_dir_all(repo).expect("remove test repo");
+    }
+
+    fn fake_web_dist() -> std::path::PathBuf {
+        let id = TEST_REPO_ID.fetch_add(1, Ordering::Relaxed);
+        let web_dir = std::env::temp_dir().join(format!(
+            "coducktor-server-web-test-{}-{id}",
+            std::process::id()
+        ));
+        let dist_dir = web_dir.join("dist");
+        fs::create_dir_all(dist_dir.join("assets")).expect("dist/assets dir");
+        fs::write(
+            dist_dir.join("index.html"),
+            "<!doctype html><title>cockpit</title>",
+        )
+        .expect("index.html");
+        fs::write(
+            dist_dir.join("assets").join("app-abc123.js"),
+            "console.log(1)",
+        )
+        .expect("app.js");
+        fs::write(dist_dir.join("open-mercato.svg"), "<svg></svg>").expect("favicon");
+        web_dir
+    }
+
+    #[tokio::test]
+    async fn the_shell_serves_the_built_index_for_a_deep_link() {
+        let web_dir = fake_web_dist();
+        let router = router(ServerConfig::new("/tmp/not-a-repo", "test").with_web_dir(&web_dir));
+        for path in ["/", "/tasks/x/changes", "/settings/skills"] {
+            let response = send(&router, Method::GET, path, None).await;
+            assert_eq!(response.status(), StatusCode::OK, "path {path}");
+            assert_eq!(
+                response
+                    .headers()
+                    .get(axum::http::header::CONTENT_TYPE)
+                    .unwrap(),
+                HTML_CONTENT_TYPE
+            );
+            let body = String::from_utf8(response_body(response).await).unwrap();
+            assert!(body.contains("cockpit"), "path {path} body: {body}");
+        }
+        fs::remove_dir_all(&web_dir).expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn assets_and_favicon_are_served_with_the_right_content_type_and_caching() {
+        let web_dir = fake_web_dist();
+        let router = router(ServerConfig::new("/tmp/not-a-repo", "test").with_web_dir(&web_dir));
+
+        let asset = send(&router, Method::GET, "/assets/app-abc123.js", None).await;
+        assert_eq!(asset.status(), StatusCode::OK);
+        assert_eq!(
+            asset
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap(),
+            "text/javascript; charset=utf-8"
+        );
+        assert_eq!(
+            asset.headers().get(CACHE_CONTROL).unwrap(),
+            ASSET_CACHE_CONTROL
+        );
+
+        let missing = send(&router, Method::GET, "/assets/does-not-exist.js", None).await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+        let traversal = send(&router, Method::GET, "/assets/..%2Findex.html", None).await;
+        assert_eq!(traversal.status(), StatusCode::NOT_FOUND);
+
+        let favicon = send(&router, Method::GET, "/open-mercato.svg", None).await;
+        assert_eq!(favicon.status(), StatusCode::OK);
+        assert_eq!(
+            favicon
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap(),
+            "image/svg+xml"
+        );
+
+        fs::remove_dir_all(&web_dir).expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn an_unknown_api_path_still_gets_a_json_404_not_the_shell() {
+        let web_dir = fake_web_dist();
+        let router = router(ServerConfig::new("/tmp/not-a-repo", "test").with_web_dir(&web_dir));
+        let response = send(&router, Method::GET, "/api/v1/totally-unknown", None).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = json_body(response).await;
+        assert!(body.get("error").is_some());
+        fs::remove_dir_all(&web_dir).expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn no_build_falls_back_to_the_hint_page_never_a_404() {
+        let web_dir = std::env::temp_dir().join(format!(
+            "coducktor-server-no-web-test-{}",
+            std::process::id()
+        ));
+        let router = router(ServerConfig::new("/tmp/not-a-repo", "test").with_web_dir(&web_dir));
+        let response = send(&router, Method::GET, "/", None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = String::from_utf8(response_body(response).await).unwrap();
+        assert!(body.contains("npm run build:web"));
     }
 }
