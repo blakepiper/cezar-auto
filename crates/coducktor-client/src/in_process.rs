@@ -30,17 +30,19 @@ use std::sync::{Arc, Mutex};
 
 use coducktor_contract::{
     ApiRun, ArchiveFinishedResponse, BackendCheck, BackendCheckName, CancelResponse, Capabilities,
-    CreateRunInput, CreateRunResponse, DeleteRunResponse, FinishResponse, ForgeInfo, ForgeKind,
-    HealthProject, HealthResponse, MarkAllReadResponse, PatchRunInput, ProjectListEntry,
-    ProjectSource, ProjectStatus, ProjectsResponse, RemoveTodoResponse, RepoInfo, RunIndexEntry,
-    RunnerSelection, RunsIndexResponse, Skill, StartTodoResponse, TodoItem, WorkflowsResponse,
+    CreateRunInput, CreateRunResponse, DeleteRunResponse, DeleteWorkflowResponse, FinishResponse,
+    ForgeInfo, ForgeKind, HealthProject, HealthResponse, MarkAllReadResponse, ParsedWorkflow,
+    PatchRunInput, ProjectListEntry, ProjectSource, ProjectStatus, ProjectsResponse,
+    RemoveTodoResponse, RepoInfo, RunIndexEntry, RunnerSelection, RunsIndexResponse,
+    SaveWorkflowInput, SaveWorkflowResponse, Skill, StartTodoResponse, TodoItem, WorkflowStepDef,
+    WorkflowsResponse, WorkspaceUsageResponse,
 };
 use coducktor_core::handoff::followups_enabled;
 use coducktor_core::paths::ProcessEnv;
 use coducktor_core::skills::discover_skills;
-use coducktor_core::workflows::load::load_workflows;
+use coducktor_core::workflows::load::{WORKFLOWS_DIR, load_workflows};
 use coducktor_core::workflows::run::{RunManager, StartRunInput as CoreStartRunInput};
-use coducktor_core::workflows::types::quick_task_workflow;
+use coducktor_core::workflows::types::{parse_workflow_file_doc, quick_task_workflow, steps_issue};
 use coducktor_core::workspace::config::load_workspace_config;
 use coducktor_runners::session_factory::DefaultSessionFactory;
 use serde_json::{Map, Value, json};
@@ -379,6 +381,95 @@ impl InProcessEngine {
         Ok(discover_skills(&self.repo_root, &ProcessEnv))
     }
 
+    // ---- workflow builder writes (ported from `save_workflow_at`/`delete_workflow_at`/
+    // `parse_workflow_input`) ----------------------------------------------------------------
+
+    /// Ported from `save_workflow_at`. `workflow_slug`/`workflow_step_issue`/`workflow_input`/
+    /// `workflow_yaml` below are copied from `coducktor-server`'s own (private, non-`pub`)
+    /// helpers of the same name rather than shared — that crate is deleted whole at C2, so
+    /// duplicating this validation/YAML-generation logic now is the same deliberate call this
+    /// module's doc already makes for the rest of C1, not an oversight.
+    pub async fn save_workflow(
+        &self,
+        input: &SaveWorkflowInput,
+    ) -> Result<SaveWorkflowResponse, EngineError> {
+        let (name, description, steps, compact) =
+            workflow_input(input).map_err(|reason| EngineError::Conflict { reason })?;
+        let directory = self.repo_root.join(WORKFLOWS_DIR);
+        let path = directory.join(format!("{}.yaml", workflow_slug(&name)));
+        let yaml = workflow_yaml(&name, description.as_deref(), &steps, compact)
+            .map_err(|reason| EngineError::Conflict { reason })?;
+        std::fs::create_dir_all(&directory).map_err(io_err)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true);
+        if input.overwrite.unwrap_or(false) {
+            options.truncate(true);
+        } else {
+            options.create_new(true);
+        }
+        let mut file = match options.open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(EngineError::Conflict {
+                    reason: format!("workflow file already exists: {}", path.display()),
+                });
+            }
+            Err(error) => return Err(io_err(error)),
+        };
+        use std::io::Write as _;
+        file.write_all(yaml.as_bytes()).map_err(io_err)?;
+        Ok(SaveWorkflowResponse {
+            path: path.to_string_lossy().into_owned(),
+            name,
+        })
+    }
+
+    /// Ported from `delete_workflow_at`.
+    pub async fn delete_workflow(&self, name: &str) -> Result<DeleteWorkflowResponse, EngineError> {
+        let (workflows, _) = load_workflows(&self.repo_root);
+        let workflow = workflows
+            .into_iter()
+            .find(|workflow| workflow.name == name)
+            .ok_or(EngineError::NotFound)?;
+        let Some(path) = workflow.path else {
+            return Err(EngineError::Conflict {
+                reason: "built-in workflows cannot be deleted".to_owned(),
+            });
+        };
+        let directory = self.repo_root.join(WORKFLOWS_DIR);
+        let target = PathBuf::from(&path);
+        if !target.starts_with(&directory) {
+            return Err(EngineError::Conflict {
+                reason: "refusing to delete a file outside the workflows dir".to_owned(),
+            });
+        }
+        std::fs::remove_file(&target).map_err(io_err)?;
+        Ok(DeleteWorkflowResponse {
+            ok: true,
+            path: target.to_string_lossy().into_owned(),
+        })
+    }
+
+    /// Ported from `parse_workflow_input`.
+    pub async fn parse_workflow(&self, yaml: &str) -> Result<ParsedWorkflow, EngineError> {
+        if yaml.trim().is_empty() || yaml.chars().count() > 100_000 {
+            return Err(EngineError::Conflict {
+                reason: "yaml must be between 1 and 100000 characters".to_owned(),
+            });
+        }
+        let value: Value =
+            serde_yaml_ng::from_str(yaml).map_err(|error| EngineError::Conflict {
+                reason: format!("not valid YAML: {error}"),
+            })?;
+        let (name, description, steps) =
+            parse_workflow_file_doc(&value).map_err(|reason| EngineError::Conflict { reason })?;
+        Ok(ParsedWorkflow {
+            name,
+            description,
+            steps,
+        })
+    }
+
     // ---- ui-state (ported from `get_ui_state`/`update_ui_state`) ---------------------------
 
     pub async fn ui_state(&self) -> Result<Value, EngineError> {
@@ -492,6 +583,14 @@ impl InProcessEngine {
         })
     }
 
+    /// Ported from `get_workspace_usage` — the quota-telemetry stack (`core/quota/*`) was
+    /// scope-cut entirely at B10 (unrelated to session execution, a meaningfully separate
+    /// porting effort), so the server's own route already answers with an empty provider list
+    /// rather than real telemetry. This mirrors that exactly, not a new gap introduced here.
+    pub async fn workspace_usage(&self) -> Result<WorkspaceUsageResponse, EngineError> {
+        Ok(WorkspaceUsageResponse { providers: vec![] })
+    }
+
     // ---- live events (Topic::Health/Todos/Run/Named -> the in-process broadcast channel) ---
 
     /// Mirrors `HttpEngine::subscribe`'s topic-string convention exactly, but the transport is
@@ -511,6 +610,143 @@ impl InProcessEngine {
                 .filter(move |event: &EngineEvent| event.topic == topic_str),
         )
     }
+}
+
+// ---- workflow builder helpers, duplicated from `coducktor-server`'s private functions of the
+// same name (see `save_workflow`'s own doc comment for why duplication, not sharing, is right
+// here) ------------------------------------------------------------------------------------
+
+fn workflow_slug(value: &str) -> String {
+    let mut slug = String::new();
+    let mut pending_dash = false;
+    for character in value.trim().chars() {
+        if character.is_ascii_alphanumeric() {
+            if pending_dash && !slug.is_empty() {
+                slug.push('-');
+            }
+            pending_dash = false;
+            slug.push(character.to_ascii_lowercase());
+        } else {
+            pending_dash = true;
+        }
+    }
+    if slug.is_empty() {
+        "chain".to_owned()
+    } else {
+        slug
+    }
+}
+
+fn workflow_step_issue(steps: &[WorkflowStepDef]) -> Option<String> {
+    for step in steps {
+        if step.id.is_empty() {
+            return Some("step id must not be empty".to_owned());
+        }
+        let has_command = step.command.as_ref().is_some_and(|value| !value.is_empty());
+        let has_agent = step.prompt.as_ref().is_some_and(|value| !value.is_empty())
+            || step.skill.as_ref().is_some_and(|value| !value.is_empty());
+        if has_command == has_agent {
+            return Some(format!(
+                "step \"{}\" is either an agent step or a check step",
+                step.id
+            ));
+        }
+        if let Some(on_fail) = &step.on_fail
+            && on_fail.max == 0
+        {
+            return Some(format!("step \"{}\": onFail.max must be positive", step.id));
+        }
+    }
+    steps_issue(steps)
+}
+
+fn workflow_input(
+    input: &SaveWorkflowInput,
+) -> Result<(String, Option<String>, Vec<WorkflowStepDef>, bool), String> {
+    let name = input.name.trim();
+    if name.is_empty() || name.chars().count() > 80 {
+        return Err("name must be between 1 and 80 characters".to_owned());
+    }
+    if input
+        .description
+        .as_ref()
+        .is_some_and(|value| value.chars().count() > 2_000)
+    {
+        return Err("description must be at most 2000 characters".to_owned());
+    }
+    if input.steps.is_some() == input.skills.is_some() {
+        return Err("provide either \"steps\" or \"skills\", not both".to_owned());
+    }
+    if input.steps.as_ref().is_some_and(|steps| steps.is_empty())
+        || input.steps.as_ref().is_some_and(|steps| steps.len() > 8)
+    {
+        return Err("steps must contain between 1 and 8 entries".to_owned());
+    }
+    if input
+        .skills
+        .as_ref()
+        .is_some_and(|skills| skills.is_empty())
+        || input.skills.as_ref().is_some_and(|skills| skills.len() > 8)
+    {
+        return Err("skills must contain between 1 and 8 entries".to_owned());
+    }
+    let (steps, compact) = if let Some(skills) = &input.skills {
+        let mut names = Vec::with_capacity(skills.len());
+        for skill in skills {
+            let skill = skill.trim();
+            if skill.is_empty() {
+                return Err("skills entries must not be empty".to_owned());
+            }
+            names.push(skill.to_owned());
+        }
+        (
+            coducktor_core::workflows::types::skills_to_steps(&names),
+            true,
+        )
+    } else {
+        (input.steps.clone().unwrap_or_default(), false)
+    };
+    if let Some(issue) = workflow_step_issue(&steps) {
+        return Err(issue);
+    }
+    Ok((
+        name.to_owned(),
+        input
+            .description
+            .as_ref()
+            .filter(|value| !value.is_empty())
+            .cloned(),
+        steps,
+        compact,
+    ))
+}
+
+fn workflow_yaml(
+    name: &str,
+    description: Option<&str>,
+    steps: &[WorkflowStepDef],
+    compact: bool,
+) -> Result<String, String> {
+    let mut document = Map::new();
+    document.insert("name".to_owned(), Value::String(name.to_owned()));
+    if let Some(description) = description {
+        document.insert(
+            "description".to_owned(),
+            Value::String(description.to_owned()),
+        );
+    }
+    if compact {
+        let skills = steps
+            .iter()
+            .filter_map(|step| step.skill.clone())
+            .map(Value::String)
+            .collect::<Vec<_>>();
+        document.insert("skills".to_owned(), Value::Array(skills));
+    } else {
+        let steps = serde_json::to_value(steps).map_err(|error| error.to_string())?;
+        document.insert("steps".to_owned(), steps);
+    }
+    serde_yaml_ng::to_string(&Value::Object(document)).map_err(|error| error.to_string())
 }
 
 fn api_run(record: coducktor_contract::RunRecord) -> ApiRun {
@@ -1063,5 +1299,136 @@ mod tests {
             .expect("event should arrive")
             .expect("stream should not end");
         assert_eq!(event.data, json!({ "ok": true }));
+    }
+
+    #[tokio::test]
+    async fn workspace_usage_reports_no_providers_matching_the_b10_scope_cut() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        assert_eq!(engine.workspace_usage().await.unwrap().providers, vec![]);
+    }
+
+    fn save_input(name: &str, steps: Vec<WorkflowStepDef>) -> SaveWorkflowInput {
+        SaveWorkflowInput {
+            name: name.to_owned(),
+            description: None,
+            steps: Some(steps),
+            skills: None,
+            overwrite: None,
+        }
+    }
+
+    fn one_step() -> Vec<WorkflowStepDef> {
+        vec![WorkflowStepDef {
+            id: "task".to_owned(),
+            name: Some("Task".to_owned()),
+            prompt: Some("{{task}}".to_owned()),
+            skill: None,
+            model: None,
+            runner: None,
+            allowed_tools: None,
+            bash_allowlist: None,
+            command: None,
+            on_fail: None,
+        }]
+    }
+
+    #[tokio::test]
+    async fn save_workflow_writes_a_yaml_file_the_loader_can_read_back() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let response = engine
+            .save_workflow(&save_input("My Workflow", one_step()))
+            .await
+            .unwrap();
+        assert!(response.path.ends_with("my-workflow.yaml"));
+        assert_eq!(response.name, "My Workflow");
+
+        let (workflows, issues) = load_workflows(dir.path());
+        assert!(issues.is_empty());
+        assert!(workflows.iter().any(|w| w.name == "My Workflow"));
+    }
+
+    #[tokio::test]
+    async fn save_workflow_conflicts_on_an_existing_file_without_overwrite() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        engine
+            .save_workflow(&save_input("Dup", one_step()))
+            .await
+            .unwrap();
+        let error = engine
+            .save_workflow(&save_input("Dup", one_step()))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, EngineError::Conflict { .. }));
+    }
+
+    #[tokio::test]
+    async fn save_workflow_rejects_steps_and_skills_together() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let mut input = save_input("Both", one_step());
+        input.skills = Some(vec!["a-skill".to_owned()]);
+        let error = engine.save_workflow(&input).await.unwrap_err();
+        assert!(matches!(error, EngineError::Conflict { .. }));
+    }
+
+    #[tokio::test]
+    async fn delete_workflow_removes_a_file_the_builder_saved() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        engine
+            .save_workflow(&save_input("To Delete", one_step()))
+            .await
+            .unwrap();
+        let response = engine.delete_workflow("To Delete").await.unwrap();
+        assert!(response.ok);
+        let (workflows, _) = load_workflows(dir.path());
+        assert!(!workflows.iter().any(|w| w.name == "To Delete"));
+    }
+
+    #[tokio::test]
+    async fn delete_workflow_refuses_a_built_in_workflow() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        // `quick-task` is the built-in with no on-disk `path` — see `workflows::types`.
+        let error = engine.delete_workflow("quick-task").await.unwrap_err();
+        assert!(matches!(error, EngineError::Conflict { .. }));
+    }
+
+    #[tokio::test]
+    async fn delete_workflow_reports_not_found_for_an_unknown_name() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine.delete_workflow("nope").await.unwrap_err();
+        assert_eq!(error, EngineError::NotFound);
+    }
+
+    #[tokio::test]
+    async fn parse_workflow_normalizes_valid_yaml() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let yaml = "name: Parsed\nsteps:\n  - id: task\n    prompt: \"{{task}}\"\n";
+        let parsed = engine.parse_workflow(yaml).await.unwrap();
+        assert_eq!(parsed.name, "Parsed");
+        assert_eq!(parsed.steps.len(), 1);
+        assert_eq!(parsed.steps[0].id, "task");
+    }
+
+    #[tokio::test]
+    async fn parse_workflow_rejects_malformed_yaml() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine.parse_workflow("not: [valid").await.unwrap_err();
+        assert!(matches!(error, EngineError::Conflict { .. }));
+    }
+
+    #[tokio::test]
+    async fn parse_workflow_rejects_an_empty_document() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine.parse_workflow("   ").await.unwrap_err();
+        assert!(matches!(error, EngineError::Conflict { .. }));
     }
 }
