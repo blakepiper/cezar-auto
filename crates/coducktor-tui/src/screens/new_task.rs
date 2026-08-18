@@ -31,6 +31,7 @@ use crate::widgets::picker::{Picker, PickerEvent, PickerItem};
 pub enum PillId {
     Source,
     Runner,
+    QuotaAwareAuto,
     Model,
     Reasoning,
     Variants,
@@ -39,36 +40,12 @@ pub enum PillId {
     Autonomous,
 }
 
-impl PillId {
-    const ALL: [Self; 8] = [
-        Self::Source,
-        Self::Runner,
-        Self::Model,
-        Self::Reasoning,
-        Self::Variants,
-        Self::Base,
-        Self::Worktree,
-        Self::Autonomous,
-    ];
-
-    fn next(self) -> Self {
-        Self::ALL[(self.index() + 1) % Self::ALL.len()]
-    }
-
-    fn previous(self) -> Self {
-        Self::ALL[(self.index() + Self::ALL.len() - 1) % Self::ALL.len()]
-    }
-
-    fn index(self) -> usize {
-        Self::ALL.iter().position(|pill| *pill == self).unwrap_or(0)
-    }
-}
-
 /// The open pill picker, with its candidate list.
 #[derive(Debug, Clone)]
 pub enum PickerKind {
     Source(Picker),
     Runner(Picker),
+    QuotaAwareAuto(Picker),
     Model(Picker),
     Reasoning(Picker),
     Variants(Picker),
@@ -82,6 +59,7 @@ impl PickerKind {
         match self {
             Self::Source(picker)
             | Self::Runner(picker)
+            | Self::QuotaAwareAuto(picker)
             | Self::Model(picker)
             | Self::Reasoning(picker)
             | Self::Variants(picker)
@@ -95,6 +73,7 @@ impl PickerKind {
         match self {
             Self::Source(picker)
             | Self::Runner(picker)
+            | Self::QuotaAwareAuto(picker)
             | Self::Model(picker)
             | Self::Reasoning(picker)
             | Self::Variants(picker)
@@ -140,6 +119,7 @@ pub struct Effective {
     pub source: TaskSource,
     pub runners: Vec<Runner>,
     pub runner: RunnerSelection,
+    pub quota_aware_auto: bool,
     pub display_runner: Runner,
     pub models: Vec<ModelPreset>,
     pub model: String,
@@ -307,6 +287,7 @@ pub fn effective_values(draft: &NewTaskDraft, data: &NewTaskData) -> Effective {
         source,
         runners,
         runner,
+        quota_aware_auto: draft.quota_aware_auto,
         display_runner,
         models,
         model,
@@ -373,6 +354,7 @@ pub fn apply_hit(app: &mut App, action: NewTaskAction) {
     match action {
         NewTaskAction::SourcePill => open_pill(app, PillId::Source),
         NewTaskAction::RunnerPill => open_pill(app, PillId::Runner),
+        NewTaskAction::QuotaAwareAutoPill => open_pill(app, PillId::QuotaAwareAuto),
         NewTaskAction::ModelPill => open_pill(app, PillId::Model),
         NewTaskAction::ReasoningPill => open_pill(app, PillId::Reasoning),
         NewTaskAction::VariantsPill => open_pill(app, PillId::Variants),
@@ -405,6 +387,7 @@ fn picker_pill(kind: &PickerKind) -> PillId {
     match kind {
         PickerKind::Source(_) => PillId::Source,
         PickerKind::Runner(_) => PillId::Runner,
+        PickerKind::QuotaAwareAuto(_) => PillId::QuotaAwareAuto,
         PickerKind::Model(_) => PillId::Model,
         PickerKind::Reasoning(_) => PillId::Reasoning,
         PickerKind::Variants(_) => PillId::Variants,
@@ -466,33 +449,19 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     }
     match key.code {
         KeyCode::Tab => {
-            app.new_task_ui.pill_focus = Some(
-                app.new_task_ui
-                    .pill_focus
-                    .map(PillId::next)
-                    .unwrap_or(PillId::Source),
-            );
+            app.new_task_ui.pill_focus = next_visible_pill(app, true);
             true
         }
         KeyCode::BackTab => {
-            app.new_task_ui.pill_focus = Some(
-                app.new_task_ui
-                    .pill_focus
-                    .map(PillId::previous)
-                    .unwrap_or(PillId::Autonomous),
-            );
+            app.new_task_ui.pill_focus = next_visible_pill(app, false);
             true
         }
         KeyCode::Char('j') | KeyCode::Down => {
-            if let Some(pill) = app.new_task_ui.pill_focus {
-                app.new_task_ui.pill_focus = Some(pill.next());
-            }
+            app.new_task_ui.pill_focus = next_visible_pill(app, true);
             true
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            if let Some(pill) = app.new_task_ui.pill_focus {
-                app.new_task_ui.pill_focus = Some(pill.previous());
-            }
+            app.new_task_ui.pill_focus = next_visible_pill(app, false);
             true
         }
         KeyCode::Char(' ') if app.new_task_ui.pill_focus == Some(PillId::Autonomous) => {
@@ -521,6 +490,32 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         }
         _ => false,
     }
+}
+
+fn next_visible_pill(app: &App, forward: bool) -> Option<PillId> {
+    let pills = pill_entries(&effective_values(
+        &app.new_task_ui.draft,
+        &app.new_task_ui.data,
+    ));
+    let ids = pills.iter().map(|(pill, _)| *pill).collect::<Vec<_>>();
+    let current = app.new_task_ui.pill_focus;
+    let index = current
+        .and_then(|pill| ids.iter().position(|candidate| *candidate == pill))
+        .map(|index| {
+            if forward {
+                (index + 1) % ids.len()
+            } else {
+                (index + ids.len() - 1) % ids.len()
+            }
+        })
+        .unwrap_or_else(|| {
+            if forward {
+                0
+            } else {
+                ids.len().saturating_sub(1)
+            }
+        });
+    ids.get(index).copied()
 }
 
 /// Deliver a bracketed-paste chunk to the focused composer.
@@ -676,6 +671,7 @@ fn open_pill(app: &mut App, pill: PillId) {
     app.new_task_ui.picker = Some(match pill {
         PillId::Source => PickerKind::Source(picker),
         PillId::Runner => PickerKind::Runner(picker),
+        PillId::QuotaAwareAuto => PickerKind::QuotaAwareAuto(picker),
         PillId::Model => PickerKind::Model(picker),
         PillId::Reasoning => PickerKind::Reasoning(picker),
         PillId::Variants => PickerKind::Variants(picker),
@@ -690,6 +686,7 @@ fn picker_title(pill: PillId) -> &'static str {
     match pill {
         PillId::Source => "skill / workflow",
         PillId::Runner => "RUNNER",
+        PillId::QuotaAwareAuto => "AUTO ROUTING",
         PillId::Model => "MODEL",
         PillId::Reasoning => "REASONING",
         PillId::Variants => "VARIANTS",
@@ -727,6 +724,7 @@ fn refresh_picker_items(app: &mut App) {
             return;
         }
         PickerKind::Runner(_) => runner_picker_items(&app.new_task_ui.data),
+        PickerKind::QuotaAwareAuto(_) => quota_aware_auto_picker_items(),
         PickerKind::Model(_) => model_picker_items(&app.new_task_ui.draft, &app.new_task_ui.data),
         PickerKind::Reasoning(_) => {
             reasoning_picker_items(&app.new_task_ui.draft, &app.new_task_ui.data)
@@ -994,6 +992,21 @@ fn autonomous_picker_items() -> Vec<PickerItem> {
     ]
 }
 
+fn quota_aware_auto_picker_items() -> Vec<PickerItem> {
+    vec![
+        PickerItem::simple(
+            "quotaAwareAuto:false",
+            "standard",
+            Some("Use Auto's connected-provider order".to_owned()),
+        ),
+        PickerItem::simple(
+            "quotaAwareAuto:true",
+            "quota-aware",
+            Some("Prefer providers with recently observed available quota".to_owned()),
+        ),
+    ]
+}
+
 fn apply_pick(app: &mut App, pill: PillId, value: &str) {
     match pill {
         PillId::Source => {
@@ -1004,6 +1017,11 @@ fn apply_pick(app: &mut App, pill: PillId, value: &str) {
                 app.new_task_ui.draft.runner = Some(selection);
                 app.new_task_ui.draft.model = None;
                 app.new_task_ui.draft.reasoning_effort = None;
+            }
+        }
+        PillId::QuotaAwareAuto => {
+            if let Some(enabled) = value.strip_prefix("quotaAwareAuto:") {
+                app.new_task_ui.draft.quota_aware_auto = enabled == "true";
             }
         }
         PillId::Model => {
@@ -1115,6 +1133,7 @@ fn request_start(app: &mut App) {
             .map(|config| config.models_locked)
             .unwrap_or(false),
         runner: effective.runner,
+        quota_aware_auto: effective.quota_aware_auto,
         runner_explicit: app.new_task_ui.draft.runner.is_some(),
         default_runner: app
             .new_task_ui
@@ -1309,6 +1328,7 @@ fn render_pills(frame: &mut Frame<'_>, area: Rect, app: &mut App, effective: &Ef
                 HitAction::NewTaskScreen(match pill {
                     PillId::Source => NewTaskAction::SourcePill,
                     PillId::Runner => NewTaskAction::RunnerPill,
+                    PillId::QuotaAwareAuto => NewTaskAction::QuotaAwareAutoPill,
                     PillId::Model => NewTaskAction::ModelPill,
                     PillId::Reasoning => NewTaskAction::ReasoningPill,
                     PillId::Variants => NewTaskAction::VariantsPill,
@@ -1365,6 +1385,22 @@ fn pill_entries(effective: &Effective) -> Vec<(PillId, String)> {
             ),
         ),
     ];
+    if effective.runner == RunnerSelection::Auto {
+        pills.insert(
+            2,
+            (
+                PillId::QuotaAwareAuto,
+                format!(
+                    "auto routing: {}",
+                    if effective.quota_aware_auto {
+                        "quota-aware"
+                    } else {
+                        "standard"
+                    }
+                ),
+            ),
+        );
+    }
     let mode = if effective.autonomous_on {
         "autonomous"
     } else {

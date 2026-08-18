@@ -66,6 +66,7 @@ pub enum GithubAction {
 pub enum NewTaskAction {
     SourcePill,
     RunnerPill,
+    QuotaAwareAutoPill,
     ModelPill,
     ReasoningPill,
     VariantsPill,

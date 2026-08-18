@@ -14,10 +14,9 @@
 use coducktor_contract::{
     AgentConfigFileContent, AgentConfigListing, AgentProfilesResponse, Appearance,
     ComposerDefaultsPatch, ConfigResponse, NotificationsUiState, ProjectComposerDefaults,
-    PromptTemplate, QuotaRoutingPatch, ReasoningEffort, Runner, SelectAgentProfileInput,
-    SetConfigInput, SetWorkspaceConfigInput, TaskSource, UiState, UpdateAgentProfileInput,
-    UpdateProjectInput, WorkspaceConfigResponse, WorkspaceUiState, WorkspaceUsageResponse,
-    WorktreesResponse,
+    PromptTemplate, ReasoningEffort, Runner, SelectAgentProfileInput, SetConfigInput,
+    SetWorkspaceConfigInput, TaskSource, UiState, UpdateAgentProfileInput, UpdateProjectInput,
+    WorkspaceConfigResponse, WorkspaceUiState, WorkspaceUsageResponse, WorktreesResponse,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
@@ -633,10 +632,6 @@ fn rows_resources(app: &App) -> Vec<Row> {
             resources.worktree_retention_default.to_string(),
         ),
     ];
-    rows.push(row(
-        "Quota routing",
-        bool_label(config.quota_routing.as_ref().is_some_and(|q| q.enabled)),
-    ));
     if let Some(usage) = &app.settings_ui.workspace_usage {
         if let Some(health) = usage.policy_health {
             rows.push(row(
@@ -1339,19 +1334,6 @@ fn toggle_or_ignore_resource(app: &mut App, row: usize) {
         3 => patch.auto_resume_on_usage_limit = Some(!config.resources.auto_resume_on_usage_limit),
         4 => {
             patch.intelligent_context_refresh = Some(!config.resources.intelligent_context_refresh)
-        }
-        7 => {
-            let enabled = !config.quota_routing.as_ref().is_some_and(|q| q.enabled);
-            let input = SetWorkspaceConfigInput {
-                quota_routing: Some(QuotaRoutingPatch {
-                    enabled: Some(enabled),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            };
-            app.pending
-                .push(PendingAction::SettingsPutWorkspaceConfig { input });
-            return;
         }
         _ => return,
     }

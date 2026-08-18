@@ -589,11 +589,9 @@ fn quota_route_policies_to_value(policies: &BTreeMap<String, QuotaRoutePolicy>) 
     )
 }
 
-/// Opt-in policy for quota-aware `auto` selection; with `enabled: false` (the shipped default) it
-/// has no execution effect.
+/// Policy used by per-run quota-aware `auto` selection.
 #[derive(Debug, Clone, PartialEq)]
 pub struct QuotaRouting {
-    pub enabled: bool,
     pub provider_order: Vec<QuotaProvider>,
     pub refresh_interval_seconds: u64,
     pub cache_ttl_seconds: u64,
@@ -617,7 +615,6 @@ const DEFAULT_QUOTA_PROVIDER_ORDER: &[QuotaProvider] = &[
 ];
 
 const QUOTA_ROUTING_KEYS: &[&str] = &[
-    "enabled",
     "providerOrder",
     "refreshIntervalSeconds",
     "cacheTtlSeconds",
@@ -654,7 +651,6 @@ impl QuotaRouting {
             .unwrap_or_else(|| DEFAULT_QUOTA_PROVIDER_ORDER.to_vec());
         let providers = zod::as_map(zod::field(object, "providers"));
         Self {
-            enabled: zod::bool_or(zod::field(object, "enabled"), false),
             provider_order,
             refresh_interval_seconds: zod::bounded_i64(
                 zod::field(object, "refreshIntervalSeconds"),
@@ -712,7 +708,6 @@ impl QuotaRouting {
         zod::merge_extra(
             &self.extra,
             vec![
-                ("enabled", Value::from(self.enabled)),
                 (
                     "providerOrder",
                     Value::from(
@@ -1134,7 +1129,9 @@ mod tests {
             }
         });
         let config = WorkspaceConfig::parse(&raw, &env());
-        assert!(config.quota_routing.enabled);
+        // The retired global enable flag remains an unknown key so existing config files round
+        // trip without making routing global again.
+        assert_eq!(config.quota_routing.to_value()["enabled"], true);
         assert_eq!(
             config.quota_routing.provider_order,
             vec![QuotaProvider::OpenCode, QuotaProvider::Codex]

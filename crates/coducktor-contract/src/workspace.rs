@@ -116,7 +116,6 @@ pub enum QuotaProvider {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaRouting {
-    pub enabled: bool,
     pub provider_order: Vec<QuotaProvider>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quality_preference: Option<QualityPreference>,
@@ -221,8 +220,6 @@ pub struct QuotaRoutePolicyPatch {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaRoutingPatch {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quality_preference: Option<QualityPreference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

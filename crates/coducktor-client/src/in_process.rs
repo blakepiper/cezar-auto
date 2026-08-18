@@ -475,7 +475,7 @@ impl InProcessEngine {
         let requested_runner = Some(effective_requested_runner(input.runner, configured_runner));
         let auto_runner_candidates = if requested_runner == Some(RunnerSelection::Auto) {
             let status = provider_status_response();
-            if workspace.quota_routing.enabled {
+            if input.quota_aware_auto == Some(true) {
                 self.fresh_cached_workspace_usage()
                     .map(|usage| {
                         quota_aware_auto_runners(&status, &usage, &workspace.quota_routing)
@@ -3525,18 +3525,14 @@ fn workspace_config_response(
             memory_limit_mb: config.resources.memory_limit_mb,
             worktree_retention_default: config.resources.worktree_retention_default,
         },
-        quota_routing: config
-            .quota_routing
-            .enabled
-            .then_some(coducktor_contract::QuotaRouting {
-                enabled: true,
-                provider_order: config.quota_routing.provider_order.clone(),
-                quality_preference: Some(config.quota_routing.quality_preference),
-                unknown_usage_policy: config.quota_routing.unknown_usage_policy,
-                max_auto_attempts_per_generation: Some(
-                    config.quota_routing.max_auto_attempts_per_generation,
-                ),
-            }),
+        quota_routing: Some(coducktor_contract::QuotaRouting {
+            provider_order: config.quota_routing.provider_order.clone(),
+            quality_preference: Some(config.quota_routing.quality_preference),
+            unknown_usage_policy: config.quota_routing.unknown_usage_policy,
+            max_auto_attempts_per_generation: Some(
+                config.quota_routing.max_auto_attempts_per_generation,
+            ),
+        }),
         agent_defaults: coducktor_contract::AgentDefaults {
             runner: config.agent_defaults.runner,
             models,
@@ -3714,9 +3710,6 @@ fn apply_workspace_config_input(
         }
     }
     if let Some(quota) = &input.quota_routing {
-        if let Some(enabled) = quota.enabled {
-            config.quota_routing.enabled = enabled;
-        }
         if let Some(quality_preference) = quota.quality_preference {
             config.quota_routing.quality_preference = quality_preference;
         }
@@ -7907,6 +7900,7 @@ mod tests {
             model: None,
             reasoning_effort: None,
             runner: None,
+            quota_aware_auto: None,
             agent_profile: None,
             variants: None,
             worktree: Some(false),
@@ -10319,7 +10313,7 @@ mod tests {
     }
 
     #[test]
-    fn quota_routing_patches_update_policy_without_enabling_execution() {
+    fn quota_routing_patches_update_per_run_policy() {
         let mut config = coducktor_core::workspace::config::WorkspaceConfig::default_for(
             &coducktor_core::paths::ProcessEnv,
         );
@@ -10333,7 +10327,6 @@ mod tests {
         );
         let input = SetWorkspaceConfigInput {
             quota_routing: Some(coducktor_contract::QuotaRoutingPatch {
-                enabled: Some(false),
                 quality_preference: Some(coducktor_contract::QualityPreference::Economy),
                 unknown_usage_policy: Some(coducktor_contract::UnknownUsagePolicy::Exclude),
                 max_auto_attempts_per_generation: Some(4),
@@ -10344,7 +10337,6 @@ mod tests {
         };
         validate_workspace_config_input(&input).unwrap();
         apply_workspace_config_input(&mut config, &input);
-        assert!(!config.quota_routing.enabled);
         assert_eq!(
             config.quota_routing.quality_preference,
             coducktor_contract::QualityPreference::Economy
