@@ -34,7 +34,7 @@ records what is implemented and which terminal observations remain unverified.
   the alternate screen.
 - **Focus feedback.** The status line names the keyboard-owned space (for example `SIDEBAR`,
   `TASKS`, `COMMIT LIST`, or `GIT DETAIL`) and lists its movement keys. Manual PTY smoke test on
-  2026-08-18: `Ctrl+Right` changed the focus label from `SIDEBAR` to `TASKS`, `n` opened the New
+  2026-08-18: `Ctrl+Right` changed the focus label from `SIDEBAR` to `TASKS`, `c` opened the New
   task composer, `Ctrl+Left` returned focus to `SIDEBAR`, and `q` exited cleanly. Project expansion
   and switching retain sidebar focus.
 - **Embedded project terminals.** The per-project Terminal tab (`screens/terminal.rs` + `pty.rs`)

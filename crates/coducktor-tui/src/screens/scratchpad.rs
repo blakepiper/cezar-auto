@@ -67,11 +67,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     app.scratchpad_ui
         .editor
         .ensure_caret_visible(app.scratchpad_ui.viewport);
-    let lines = app.scratchpad_ui.editor.render_lines(
+    let lines = app.scratchpad_ui.editor.render_wrapped_lines(
         "scratchpad.md",
         &app.scratchpad_ui.highlighter,
         &app.theme,
         app.scratchpad_ui.viewport,
+        inner.width,
         true,
     );
     frame.render_widget(Paragraph::new(lines), inner);

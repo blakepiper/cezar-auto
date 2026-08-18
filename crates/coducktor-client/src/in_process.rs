@@ -3436,6 +3436,8 @@ fn workspace_config_response(
     WorkspaceConfigResponse {
         projects_dir: config.projects_dir.clone(),
         composer_defaults: coducktor_contract::ComposerDefaults {
+            reasoning: config.composer_defaults.reasoning,
+            variants: config.composer_defaults.variants,
             autonomous: config.composer_defaults.autonomous,
             worktree: config.composer_defaults.worktree,
             inherited_autonomous: coducktor_contract::InheritedAutonomous::Value(true),
@@ -3482,6 +3484,12 @@ fn validate_workspace_config_input(input: &SetWorkspaceConfigInput) -> Result<()
                 "not writable: {projects_dir} is not an absolute path"
             ));
         }
+    }
+    if let Some(composer) = &input.composer_defaults
+        && let Some(Some(variants)) = composer.variants
+        && !(1..=3).contains(&variants)
+    {
+        return Err("composer variants must be an integer from 1 to 3".to_owned());
     }
     if let Some(resources) = &input.resources {
         if let Some(value) = resources.max_parallel
@@ -3560,6 +3568,12 @@ fn apply_workspace_config_input(
         config.projects_dir = projects_dir.trim().to_owned();
     }
     if let Some(composer) = &input.composer_defaults {
+        if let Some(reasoning) = composer.reasoning {
+            config.composer_defaults.reasoning = reasoning;
+        }
+        if let Some(variants) = composer.variants {
+            config.composer_defaults.variants = variants;
+        }
         if let Some(autonomous) = composer.autonomous {
             config.composer_defaults.autonomous = autonomous;
         }

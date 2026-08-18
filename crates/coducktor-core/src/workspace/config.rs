@@ -20,7 +20,7 @@ use std::process;
 use serde_json::{Map, Value};
 
 use coducktor_contract::workspace::{QualityPreference, QuotaProvider, UnknownUsagePolicy};
-use coducktor_contract::{Runner, RunnerSelection};
+use coducktor_contract::{ReasoningEffort, Runner, RunnerSelection};
 
 use crate::paths::EnvSource;
 use crate::zod;
@@ -276,17 +276,25 @@ impl Resources {
 /// Workspace composer defaults.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ComposerDefaults {
+    pub reasoning: Option<ReasoningEffort>,
+    pub variants: Option<u64>,
     pub autonomous: Option<bool>,
     pub worktree: Option<bool>,
     pub extra: Map<String, Value>,
 }
 
-const COMPOSER_DEFAULTS_KEYS: &[&str] = &["autonomous", "worktree"];
+const COMPOSER_DEFAULTS_KEYS: &[&str] = &["reasoning", "variants", "autonomous", "worktree"];
 
 impl ComposerDefaults {
     fn parse(value: Option<&Value>) -> Self {
         let object = zod::as_map(value);
         Self {
+            reasoning: zod::field(object, "reasoning")
+                .and_then(|value| serde_json::from_value(value.clone()).ok()),
+            variants: zod::field(object, "variants").and_then(|value| {
+                let variants = zod::bounded_i64(Some(value), 1, 3, 0);
+                (1..=3).contains(&variants).then_some(variants as u64)
+            }),
             autonomous: zod::bool_opt(zod::field(object, "autonomous")),
             worktree: zod::bool_opt(zod::field(object, "worktree")),
             extra: object
@@ -299,6 +307,16 @@ impl ComposerDefaults {
         zod::merge_extra(
             &self.extra,
             vec![
+                (
+                    "reasoning",
+                    self.reasoning
+                        .map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
+                        .unwrap_or(Value::Null),
+                ),
+                (
+                    "variants",
+                    self.variants.map(Value::from).unwrap_or(Value::Null),
+                ),
                 (
                     "autonomous",
                     self.autonomous.map(Value::from).unwrap_or(Value::Null),

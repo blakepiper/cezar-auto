@@ -6,6 +6,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::compat::ExtraFields;
 use crate::health::{Runner, RunnerSelection};
+use crate::reasoning::ReasoningEffort;
 
 /// `WorkspaceConfigResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -23,6 +24,10 @@ pub struct WorkspaceConfigResponse {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComposerDefaults {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ReasoningEffort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variants: Option<u64>,
     pub autonomous: Option<bool>,
     pub worktree: Option<bool>,
     pub inherited_autonomous: InheritedAutonomous,
@@ -169,6 +174,10 @@ pub struct SetWorkspaceConfigInput {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ComposerDefaultsPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<Option<ReasoningEffort>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variants: Option<Option<u64>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autonomous: Option<Option<bool>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

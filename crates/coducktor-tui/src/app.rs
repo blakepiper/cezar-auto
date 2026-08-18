@@ -3058,7 +3058,7 @@ impl App {
                 if pane == 0 {
                     if matches!(self.route(), Route::NewTask { .. }) {
                         self.new_task_ui.composer_focused = false;
-                        self.new_task_ui.composer.focused = false;
+                        self.new_task_ui.composer.blur();
                     }
                     self.focus_sidebar();
                 } else {
@@ -3161,7 +3161,7 @@ impl App {
         }
         match self.route() {
             Route::Tasks { .. } | Route::GlobalTasks => {
-                ("TASKS", "↑↓ choose task · Enter open · n new")
+                ("TASKS", "↑↓ choose task · Enter open · c new")
             }
             Route::NewTask { .. } if self.new_task_ui.composer_focused => {
                 ("COMPOSER", "type prompt · Ctrl+← returns to sidebar")

@@ -80,5 +80,5 @@ Regenerate these excerpts after any UI change with `cargo insta test`.
 │                                                                              │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
- NORMAL  FOCUS: TASKS — ↑↓ choose task · Enter open · n new  ·  main  lazyvim  v0.1.0  [providers --]  ? help
+NORMAL  FOCUS: TASKS — ↑↓ choose task · Enter open · c new  ·  main  lazyvim  v0.1.0  [providers --]  ? help
 ```

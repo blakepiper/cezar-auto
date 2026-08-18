@@ -226,8 +226,15 @@ pub fn effective_values(draft: &NewTaskDraft, data: &NewTaskData) -> Effective {
             display_catalog,
         )
     };
+    let workspace_defaults = data
+        .workspace_config
+        .as_ref()
+        .map(|config| &config.composer_defaults);
     let reasoning_options = new_task_form::reasoning_options_for_model(&model, &models);
-    let draft_effort = draft.reasoning_effort.unwrap_or(ReasoningEffort::Auto);
+    let configured_reasoning = workspace_defaults
+        .and_then(|defaults| defaults.reasoning)
+        .unwrap_or(ReasoningEffort::Auto);
+    let draft_effort = draft.reasoning_effort.unwrap_or(configured_reasoning);
     let reasoning_effort = if reasoning_options
         .iter()
         .any(|option| option.value == draft_effort)
@@ -238,11 +245,19 @@ pub fn effective_values(draft: &NewTaskDraft, data: &NewTaskData) -> Effective {
     };
 
     let has_git = data.repo.is_some();
-    let variants = if has_git { draft.variants } else { 1 };
-    let workspace_defaults = data
-        .workspace_config
-        .as_ref()
-        .map(|config| &config.composer_defaults);
+    let configured_variants = workspace_defaults
+        .and_then(|defaults| defaults.variants)
+        .unwrap_or(1)
+        .clamp(1, 3);
+    let variants = if has_git {
+        if draft.variants_explicit || draft.variants != 1 {
+            draft.variants.clamp(1, 3)
+        } else {
+            configured_variants
+        }
+    } else {
+        1
+    };
     let configured_autonomous = draft.autonomous.or(workspace_defaults.and_then(|defaults| {
         defaults.autonomous.or(match defaults.inherited_autonomous {
             coducktor_contract::InheritedAutonomous::Value(value) => Some(value),
@@ -349,6 +364,7 @@ pub fn apply_hit(app: &mut App, action: NewTaskAction) {
         NewTaskAction::WorktreePill => open_pill(app, PillId::Worktree),
         NewTaskAction::AutonomousPill => open_pill(app, PillId::Autonomous),
         NewTaskAction::Compose => {
+            app.new_task_ui.pill_focus = None;
             app.new_task_ui.composer_focused = true;
             app.new_task_ui.composer.focus();
         }
@@ -426,6 +442,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         return handle_picker_key(app, key);
     }
     if app.new_task_ui.composer_focused {
+        // Keep the widget's visual focus in lockstep with the screen focus flag. A composer can
+        // be restored from a per-project draft between frames, so relying on the cloned widget's
+        // old `focused` bit made `i` look like it sometimes did nothing.
+        app.new_task_ui.composer.focus();
         return handle_composer_key(app, key);
     }
     match key.code {
@@ -474,6 +494,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         KeyCode::Char('i') | KeyCode::Enter => {
+            app.new_task_ui.pill_focus = None;
             app.new_task_ui.composer_focused = true;
             app.new_task_ui.composer.focus();
             true
@@ -540,6 +561,7 @@ fn handle_composer_event(app: &mut App, event: ComposerEvent) -> bool {
         }
         ComposerEvent::Blur => {
             app.new_task_ui.composer_focused = false;
+            app.new_task_ui.composer.blur();
             app.new_task_ui.draft.text = app.new_task_ui.composer.text.clone();
             write_draft(app);
             true
@@ -984,6 +1006,7 @@ fn apply_pick(app: &mut App, pill: PillId, value: &str) {
                 .and_then(|count| count.parse().ok())
             {
                 app.new_task_ui.draft.variants = count;
+                app.new_task_ui.draft.variants_explicit = true;
             }
         }
         PillId::Base => {
@@ -1138,6 +1161,11 @@ fn finish_submit(
 /// then the open picker/plan overlays.
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     sync_draft(app);
+    if app.new_task_ui.composer_focused {
+        app.new_task_ui.composer.focus();
+    } else {
+        app.new_task_ui.composer.blur();
+    }
     let theme = app.theme;
     let effective = effective_values(&app.new_task_ui.draft, &app.new_task_ui.data);
 
@@ -1287,26 +1315,31 @@ fn pill_entries(effective: &Effective) -> Vec<(PillId, String)> {
         (
             PillId::Source,
             match &effective.source {
-                TaskSource::Baseline => "execution".to_owned(),
-                TaskSource::Skill { reference } | TaskSource::Workflow { reference } => {
-                    reference.clone()
-                }
+                TaskSource::Baseline => "source: execution".to_owned(),
+                TaskSource::Skill { reference } => format!("source: skill:{reference}"),
+                TaskSource::Workflow { reference } => format!("source: workflow:{reference}"),
             },
         ),
-        (PillId::Runner, runner_selection_label(effective.runner)),
+        (
+            PillId::Runner,
+            format!("runner: {}", runner_selection_label(effective.runner)),
+        ),
         (
             PillId::Model,
             if effective.model.is_empty() {
-                "auto".to_owned()
+                "model: auto".to_owned()
             } else {
-                effective.model.clone()
+                format!("model: {}", effective.model)
             },
         ),
         (
             PillId::Reasoning,
-            reasoning_label(effective.reasoning_effort),
+            format!("reasoning: {}", reasoning_label(effective.reasoning_effort)),
         ),
-        (PillId::Variants, format!("×{}", effective.variants)),
+        (
+            PillId::Variants,
+            format!("variants: ×{}", effective.variants),
+        ),
         (PillId::Base, format!("branch: {}", effective.base_branch)),
         (
             PillId::Worktree,
@@ -1410,7 +1443,9 @@ fn render_picker_overlay(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 #[cfg(test)]
 mod tests {
     use coducktor_contract::{
-        ProviderConnectionState, ProviderStatus, RepoInfo, RunStatus, RunnerModelCatalogResponse,
+        AgentDefaults, ComposerDefaults, InheritedAutonomous, ProviderConnectionState,
+        ProviderStatus, RepoInfo, RunStatus, RunnerModelCatalogResponse, WorkspaceConfigResponse,
+        WorkspaceResources,
     };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -1552,6 +1587,51 @@ mod tests {
                 .iter()
                 .any(|action| matches!(action, PendingAction::PutUiState { .. }))
         );
+    }
+
+    #[test]
+    fn pressing_i_focuses_the_composer_without_inserting_i() {
+        let mut app = app_with_new_task("t-focus");
+        app.new_task_ui.composer.focused = false;
+        app.new_task_ui.composer_focused = false;
+        assert!(handle_key(&mut app, key('i')));
+        assert!(app.new_task_ui.composer.focused);
+        assert!(app.new_task_ui.composer.text.is_empty());
+        app.new_task_ui.composer.blur();
+        let _ = render(&mut app, 120, 40);
+        assert!(app.new_task_ui.composer.focused);
+    }
+
+    #[test]
+    fn workspace_composer_defaults_seed_a_fresh_task() {
+        let mut app = app_with_new_task("t-defaults");
+        app.new_task_ui.data.workspace_config = Some(WorkspaceConfigResponse {
+            projects_dir: "/tmp/projects".to_owned(),
+            composer_defaults: ComposerDefaults {
+                reasoning: Some(ReasoningEffort::XHigh),
+                variants: Some(3),
+                autonomous: Some(false),
+                worktree: Some(true),
+                inherited_autonomous: InheritedAutonomous::Value(true),
+                inherited_worktree: false,
+            },
+            resources: WorkspaceResources {
+                max_parallel: 1,
+                max_monitoring_sessions: 1,
+                monitoring_wake_interval_minutes: None,
+                auto_resume_on_usage_limit: false,
+                intelligent_context_refresh: false,
+                memory_limit_mb: None,
+                worktree_retention_default: 0,
+            },
+            quota_routing: None,
+            agent_defaults: AgentDefaults::default(),
+        });
+        let effective = effective_values(&app.new_task_ui.draft, &app.new_task_ui.data);
+        assert_eq!(effective.reasoning_effort, ReasoningEffort::XHigh);
+        assert_eq!(effective.variants, 3);
+        assert!(!effective.autonomous_on);
+        assert!(effective.worktree_on);
     }
 
     #[test]

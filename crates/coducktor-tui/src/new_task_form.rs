@@ -544,6 +544,9 @@ pub struct NewTaskDraft {
     pub model: Option<String>,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub variants: u64,
+    /// Distinguishes an explicit ×1 choice from the untouched draft so a workspace default
+    /// greater than one can seed a fresh composer without preventing the user from choosing ×1.
+    pub variants_explicit: bool,
     pub worktree: Option<bool>,
     /// TUI-only override: pin autonomous on/off; `None` follows the workspace default.
     pub autonomous: Option<bool>,
@@ -558,6 +561,7 @@ impl Default for NewTaskDraft {
             model: None,
             reasoning_effort: None,
             variants: 1,
+            variants_explicit: false,
             worktree: None,
             autonomous: None,
         }

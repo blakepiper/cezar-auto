@@ -75,7 +75,6 @@ re-documented per row.
 | Key | Action |
 |---|---|
 | `j` / `k` | Move selection |
-| `n` | Open the New task composer |
 | `t` | Toggle Current/Archived view |
 | `/` | Filter |
 | `a` | Archive selected |
@@ -89,7 +88,6 @@ re-documented per row.
 | Key | Action |
 |---|---|
 | `j` / `k` | Move selection |
-| `n` | Open the New task composer for the active project |
 | `t` | Toggle Current/Archived view |
 | `/` | Filter |
 | `f` | Open the project-filter picker |

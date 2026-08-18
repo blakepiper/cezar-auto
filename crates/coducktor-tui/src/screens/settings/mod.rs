@@ -12,10 +12,11 @@
 //! discards a pending edit outright. Prompt templates carry no `skills` auto-apply list.
 
 use coducktor_contract::{
-    AgentConfigFileContent, AgentConfigListing, AgentProfilesResponse, Appearance, ConfigResponse,
-    NotificationsUiState, PromptTemplate, QuotaRoutingPatch, Runner, SelectAgentProfileInput,
-    SetConfigInput, SetWorkspaceConfigInput, UiState, UpdateAgentProfileInput, UpdateProjectInput,
-    WorkspaceConfigResponse, WorkspaceUiState, WorktreesResponse,
+    AgentConfigFileContent, AgentConfigListing, AgentProfilesResponse, Appearance,
+    ComposerDefaultsPatch, ConfigResponse, NotificationsUiState, PromptTemplate, QuotaRoutingPatch,
+    ReasoningEffort, Runner, SelectAgentProfileInput, SetConfigInput, SetWorkspaceConfigInput,
+    TaskSource, UiState, UpdateAgentProfileInput, UpdateProjectInput, WorkspaceConfigResponse,
+    WorkspaceUiState, WorktreesResponse,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
@@ -108,6 +109,8 @@ pub struct SettingsEdit {
 pub enum EditTarget {
     BaseBranch,
     Model(Runner),
+    TaskSource,
+    ComposerVariants,
     SystemPrompt,
     WorktreeRetention,
     MaxParallel,
@@ -274,6 +277,32 @@ fn rows_agents(app: &App) -> Vec<Row> {
     let Some(config) = &app.settings_ui.config else {
         return vec![row("Loading…", "")];
     };
+    let workspace = app.settings_ui.workspace_config.as_ref();
+    let composer = workspace.map(|config| &config.composer_defaults);
+    let source = app
+        .settings_ui
+        .ui_state
+        .as_ref()
+        .and_then(|state| state.last_task.as_ref())
+        .map(task_source_label)
+        .unwrap_or_else(|| "execution".to_owned());
+    let reasoning = composer
+        .and_then(|defaults| defaults.reasoning)
+        .map(reasoning_label)
+        .map(str::to_owned)
+        .unwrap_or_else(|| "auto".to_owned());
+    let variants = composer.and_then(|defaults| defaults.variants).unwrap_or(1);
+    let worktree = composer
+        .map(|defaults| defaults.worktree.unwrap_or(defaults.inherited_worktree))
+        .unwrap_or(false);
+    let autonomous = composer
+        .and_then(|defaults| {
+            defaults.autonomous.or(match defaults.inherited_autonomous {
+                coducktor_contract::InheritedAutonomous::Value(value) => Some(value),
+                coducktor_contract::InheritedAutonomous::SourceDependent => None,
+            })
+        })
+        .unwrap_or(true);
     vec![
         row("Base branch", opt_str(&config.base_branch)),
         row(
@@ -302,6 +331,18 @@ fn rows_agents(app: &App) -> Vec<Row> {
             "Review gate",
             bool_label(config.review_gate.unwrap_or(true)),
         ),
+        row("Default task source", source),
+        row("Default reasoning", reasoning),
+        row("Default variants", variants.to_string()),
+        row("Default worktree", bool_label(worktree)),
+        row(
+            "Default task mode",
+            if autonomous {
+                "autonomous"
+            } else {
+                "manual approval"
+            },
+        ),
     ]
 }
 
@@ -312,6 +353,24 @@ fn runner_selection_label(selection: coducktor_contract::RunnerSelection) -> &'s
         coducktor_contract::RunnerSelection::Codex => "codex",
         coducktor_contract::RunnerSelection::OpenCode => "opencode",
         coducktor_contract::RunnerSelection::Pi => "pi",
+    }
+}
+
+fn reasoning_label(effort: ReasoningEffort) -> &'static str {
+    match effort {
+        ReasoningEffort::Auto => "auto",
+        ReasoningEffort::Low => "low",
+        ReasoningEffort::Medium => "medium",
+        ReasoningEffort::High => "high",
+        ReasoningEffort::XHigh => "max",
+    }
+}
+
+fn task_source_label(source: &TaskSource) -> String {
+    match source {
+        TaskSource::Baseline => "execution".to_owned(),
+        TaskSource::Skill { reference } => format!("skill:{reference}"),
+        TaskSource::Workflow { reference } => format!("workflow:{reference}"),
     }
 }
 
@@ -864,11 +923,99 @@ fn cycle(app: &mut App, backward: bool) {
                 (app.settings_ui.add_account_provider + 1) % len
             };
         }
+        (SettingsSection::Agents, 10) => cycle_default_reasoning(app, backward),
+        (SettingsSection::Agents, 12) => cycle_default_worktree(app),
+        (SettingsSection::Agents, 13) => cycle_default_autonomous(app),
         (SettingsSection::Appearance, index) => cycle_appearance(app, index, backward),
         (SettingsSection::Notifications, 0) => toggle_notifications(app),
         (SettingsSection::Resources, index) => toggle_or_ignore_resource(app, index),
         _ => {}
     }
+}
+
+fn cycle_default_reasoning(app: &mut App, backward: bool) {
+    let current = app
+        .settings_ui
+        .workspace_config
+        .as_ref()
+        .and_then(|config| config.composer_defaults.reasoning)
+        .unwrap_or(ReasoningEffort::Auto);
+    let order = [
+        ReasoningEffort::Auto,
+        ReasoningEffort::Low,
+        ReasoningEffort::Medium,
+        ReasoningEffort::High,
+        ReasoningEffort::XHigh,
+    ];
+    let position = order
+        .iter()
+        .position(|value| *value == current)
+        .unwrap_or(0);
+    let next = if backward {
+        order[(position + order.len() - 1) % order.len()]
+    } else {
+        order[(position + 1) % order.len()]
+    };
+    put_composer_defaults(
+        app,
+        ComposerDefaultsPatch {
+            reasoning: Some(Some(next)),
+            ..Default::default()
+        },
+    );
+}
+
+fn cycle_default_worktree(app: &mut App) {
+    let current = app
+        .settings_ui
+        .workspace_config
+        .as_ref()
+        .map(|config| {
+            config
+                .composer_defaults
+                .worktree
+                .unwrap_or(config.composer_defaults.inherited_worktree)
+        })
+        .unwrap_or(false);
+    put_composer_defaults(
+        app,
+        ComposerDefaultsPatch {
+            worktree: Some(Some(!current)),
+            ..Default::default()
+        },
+    );
+}
+
+fn cycle_default_autonomous(app: &mut App) {
+    let current = app
+        .settings_ui
+        .workspace_config
+        .as_ref()
+        .and_then(|config| {
+            config.composer_defaults.autonomous.or(
+                match config.composer_defaults.inherited_autonomous {
+                    coducktor_contract::InheritedAutonomous::Value(value) => Some(value),
+                    coducktor_contract::InheritedAutonomous::SourceDependent => None,
+                },
+            )
+        })
+        .unwrap_or(true);
+    put_composer_defaults(
+        app,
+        ComposerDefaultsPatch {
+            autonomous: Some(Some(!current)),
+            ..Default::default()
+        },
+    );
+}
+
+fn put_composer_defaults(app: &mut App, composer_defaults: ComposerDefaultsPatch) {
+    app.pending.push(PendingAction::SettingsPutWorkspaceConfig {
+        input: SetWorkspaceConfigInput {
+            composer_defaults: Some(composer_defaults),
+            ..Default::default()
+        },
+    });
 }
 
 fn accounts_add_row(app: &App) -> usize {
@@ -1079,6 +1226,28 @@ fn activate_agents(app: &mut App, row: usize) {
                 input,
             });
         }
+        9 => start_edit(
+            app,
+            EditTarget::TaskSource,
+            app.settings_ui
+                .ui_state
+                .as_ref()
+                .and_then(|state| state.last_task.as_ref())
+                .map(task_source_label)
+                .unwrap_or_else(|| "execution".to_owned()),
+        ),
+        10 => cycle_default_reasoning(app, false),
+        11 => start_edit(
+            app,
+            EditTarget::ComposerVariants,
+            app.settings_ui
+                .workspace_config
+                .as_ref()
+                .and_then(|config| config.composer_defaults.variants)
+                .unwrap_or(1)
+                .to_string(),
+        ),
+        12 | 13 => cycle(app, false),
         _ => {}
     }
 }
@@ -1324,6 +1493,35 @@ fn submit_edit(app: &mut App, edit: SettingsEdit) {
             app.pending
                 .push(PendingAction::SettingsPutConfig { project, input });
         }
+        EditTarget::TaskSource => {
+            let Some(source) = parse_task_source(&text) else {
+                app.settings_ui.notice =
+                    Some("source must be execution, skill:<name>, or workflow:<name>".to_owned());
+                return;
+            };
+            let mut state = app.settings_ui.ui_state.clone().unwrap_or_default();
+            state.last_task = Some(source);
+            app.settings_ui.ui_state = Some(state.clone());
+            app.pending
+                .push(PendingAction::PutUiState { project, state });
+        }
+        EditTarget::ComposerVariants => {
+            let Ok(variants) = text.parse::<u64>() else {
+                app.settings_ui.notice = Some("default variants must be 1, 2, or 3".to_owned());
+                return;
+            };
+            if !(1..=3).contains(&variants) {
+                app.settings_ui.notice = Some("default variants must be 1, 2, or 3".to_owned());
+                return;
+            }
+            put_composer_defaults(
+                app,
+                ComposerDefaultsPatch {
+                    variants: Some(Some(variants)),
+                    ..Default::default()
+                },
+            );
+        }
         EditTarget::WorktreeRetention => {
             if let Ok(value) = text.parse::<u64>() {
                 let input = SetConfigInput {
@@ -1423,6 +1621,26 @@ fn submit_edit(app: &mut App, edit: SettingsEdit) {
     }
 }
 
+fn parse_task_source(value: &str) -> Option<TaskSource> {
+    if value.eq_ignore_ascii_case("execution") || value.eq_ignore_ascii_case("baseline") {
+        return Some(TaskSource::Baseline);
+    }
+    let (prefix, reference) = value.split_once(':')?;
+    let reference = reference.trim();
+    if reference.is_empty() {
+        return None;
+    }
+    match prefix.to_ascii_lowercase().as_str() {
+        "skill" => Some(TaskSource::Skill {
+            reference: reference.to_owned(),
+        }),
+        "workflow" => Some(TaskSource::Workflow {
+            reference: reference.to_owned(),
+        }),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1453,6 +1671,8 @@ mod tests {
         WorkspaceConfigResponse {
             projects_dir: "/home/user/projects".to_owned(),
             composer_defaults: ComposerDefaults {
+                reasoning: None,
+                variants: None,
                 autonomous: None,
                 worktree: None,
                 inherited_autonomous: InheritedAutonomous::SourceDependent,
@@ -1613,6 +1833,39 @@ mod tests {
         assert!(pending.iter().any(|action| matches!(
             action,
             PendingAction::SettingsPutConfig { input, .. } if input.review_gate == Some(Some(false))
+        )));
+    }
+
+    #[test]
+    fn composer_defaults_are_editable_from_agents_settings() {
+        let mut app = app_with_settings();
+        app.pending.clear();
+        app.settings_ui.row = 10;
+        handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(app.pending.iter().any(|action| matches!(
+            action,
+            PendingAction::SettingsPutWorkspaceConfig { input }
+                if input.composer_defaults.as_ref().and_then(|defaults| defaults.reasoning)
+                    == Some(Some(ReasoningEffort::Low))
+        )));
+
+        app.pending.clear();
+        app.settings_ui.row = 11;
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        );
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE),
+        );
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.pending.iter().any(|action| matches!(
+            action,
+            PendingAction::SettingsPutWorkspaceConfig { input }
+                if input.composer_defaults.as_ref().and_then(|defaults| defaults.variants)
+                    == Some(Some(3))
         )));
     }
 

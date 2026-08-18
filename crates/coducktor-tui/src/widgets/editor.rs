@@ -8,7 +8,7 @@
 //! `(row, col)` with `col` in chars within the line, so movement never needs byte-index
 //! bookkeeping across edits.
 
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::diff::highlight::{HighlightSpan, Highlighter};
@@ -220,6 +220,101 @@ impl Editor {
             .unwrap_or(line.len())
     }
 
+    fn caret_span(color: Option<Color>, text: impl Into<String>) -> Span<'static> {
+        let style = color
+            .map(|color| Style::default().fg(color))
+            .unwrap_or_default()
+            .add_modifier(Modifier::REVERSED);
+        Span::styled(text.into(), style)
+    }
+
+    fn content_spans(
+        content: &str,
+        runs: Option<&[HighlightSpan]>,
+        start: usize,
+        end: usize,
+        caret: Option<usize>,
+    ) -> Vec<Span<'static>> {
+        let mut spans = Vec::new();
+        let mut push_segment = |text: String, absolute_start: usize, color: Option<Color>| {
+            if text.is_empty() {
+                return;
+            }
+            let text_len = text.chars().count();
+            if let Some(caret) = caret
+                && caret >= absolute_start
+                && caret < absolute_start + text_len
+            {
+                let before: String = text.chars().take(caret - absolute_start).collect();
+                let caret_char = text
+                    .chars()
+                    .nth(caret - absolute_start)
+                    .unwrap_or(' ')
+                    .to_string();
+                let after: String = text.chars().skip(caret - absolute_start + 1).collect();
+                if !before.is_empty() {
+                    spans.push(match color {
+                        Some(color) => Span::styled(before, Style::default().fg(color)),
+                        None => Span::raw(before),
+                    });
+                }
+                spans.push(Self::caret_span(color, caret_char));
+                if !after.is_empty() {
+                    spans.push(match color {
+                        Some(color) => Span::styled(after, Style::default().fg(color)),
+                        None => Span::raw(after),
+                    });
+                }
+            } else {
+                spans.push(match color {
+                    Some(color) => Span::styled(text, Style::default().fg(color)),
+                    None => Span::raw(text),
+                });
+            }
+        };
+
+        match runs {
+            Some(runs) if !runs.is_empty() => {
+                let mut run_start = 0;
+                for run in runs {
+                    let run_len = run.text.chars().count();
+                    let run_end = run_start + run_len;
+                    let clip_start = start.max(run_start);
+                    let clip_end = end.min(run_end);
+                    if clip_start < clip_end {
+                        let text: String = run
+                            .text
+                            .chars()
+                            .skip(clip_start - run_start)
+                            .take(clip_end - clip_start)
+                            .collect();
+                        push_segment(text, clip_start, Some(run.color));
+                    }
+                    run_start = run_end;
+                }
+            }
+            _ => {
+                push_segment(
+                    content
+                        .chars()
+                        .skip(start)
+                        .take(end.saturating_sub(start))
+                        .collect(),
+                    start,
+                    None,
+                );
+            }
+        }
+
+        if let Some(caret) = caret
+            && caret == end
+            && end == content.chars().count()
+        {
+            spans.push(Self::caret_span(None, " "));
+        }
+        spans
+    }
+
     /// One rendered viewport row: gutter + highlighted content spans, with the caret cell
     /// reversed when this row is the focused caret row.
     fn render_row(
@@ -229,6 +324,7 @@ impl Editor {
         gutter_width: usize,
         theme: &Theme,
         focused: bool,
+        horizontal_scroll: usize,
     ) -> Line<'static> {
         let gutter = format!("{:>width$}", index + 1, width = gutter_width);
         let mut spans = vec![Span::styled(
@@ -237,70 +333,16 @@ impl Editor {
         )];
         spans.push(Span::raw(" "));
         let content = self.line(index);
-        let mut col = 0usize;
-        let caret_here = focused && index == self.row;
-        match span {
-            Some(runs) => {
-                for run in runs {
-                    let text = run.text.as_str();
-                    let span_end = col + text.chars().count();
-                    if caret_here && span_end > self.col && self.col >= col {
-                        let split = self.col - col;
-                        let split_text: String = text.chars().take(split).collect();
-                        let split_byte = split_text.len();
-                        let caret_char_len = text[split_byte..]
-                            .chars()
-                            .next()
-                            .map(char::len_utf8)
-                            .unwrap_or(0);
-                        let (before, rest) = text.split_at(split_byte);
-                        if !before.is_empty() {
-                            spans.push(Span::styled(
-                                before.to_owned(),
-                                Style::default().fg(run.color),
-                            ));
-                        }
-                        if let Some(caret_char) = rest.get(..caret_char_len) {
-                            spans.push(Span::styled(
-                                caret_char.to_owned(),
-                                Style::default()
-                                    .fg(run.color)
-                                    .add_modifier(Modifier::REVERSED),
-                            ));
-                        }
-                        let tail = &rest[caret_char_len..];
-                        if !tail.is_empty() {
-                            spans.push(Span::styled(
-                                tail.to_owned(),
-                                Style::default().fg(run.color),
-                            ));
-                        }
-                        col = span_end;
-                        continue;
-                    }
-                    spans.push(Span::styled(
-                        text.to_owned(),
-                        Style::default().fg(run.color),
-                    ));
-                    col = span_end;
-                }
-            }
-            None => {
-                if caret_here {
-                    let caret = content
-                        .chars()
-                        .nth(self.col)
-                        .map(|c| c.to_string())
-                        .unwrap_or_else(|| " ".to_owned());
-                    spans.push(Span::styled(
-                        caret,
-                        Style::default().add_modifier(Modifier::REVERSED),
-                    ));
-                } else {
-                    spans.push(Span::raw(content.to_owned()));
-                }
-            }
-        }
+        let content_len = content.chars().count();
+        let start = horizontal_scroll.min(content_len);
+        let caret = (focused && index == self.row).then_some(self.col.min(content_len));
+        spans.extend(Self::content_spans(
+            content,
+            span,
+            start,
+            content_len,
+            caret,
+        ));
         Line::from(spans)
     }
 
@@ -334,7 +376,95 @@ impl Editor {
                     .as_ref()
                     .and_then(|all| all.get(index))
                     .map(|runs| runs.as_slice());
-                self.render_row(index, spans, gutter_width, theme, focused)
+                self.render_row(index, spans, gutter_width, theme, focused, 0)
+            })
+            .collect()
+    }
+
+    /// Render a soft-wrapped viewport for notes. The stored text keeps its logical newlines, but
+    /// long lines occupy additional terminal rows so the caret and newly typed text remain
+    /// visible instead of running past the right edge.
+    pub fn render_wrapped_lines(
+        &self,
+        path: &str,
+        highlighter: &Highlighter,
+        theme: &Theme,
+        viewport: usize,
+        width: u16,
+        focused: bool,
+    ) -> Vec<Line<'static>> {
+        let lines: Vec<&str> = self.text.split('\n').collect();
+        let gutter_width = lines
+            .len()
+            .min(10usize.pow(MAX_GUTTER_DIGITS as u32))
+            .to_string()
+            .len()
+            .max(1);
+        let content_width = usize::from(width).saturating_sub(gutter_width + 1).max(1);
+        let owned: Vec<String> = lines.iter().map(|line| (*line).to_owned()).collect();
+        let highlighted = highlighter.highlight_lines(path, &owned);
+        let mut rows = Vec::new();
+        for (index, line) in lines.iter().enumerate() {
+            let length = line.chars().count();
+            let mut start = 0;
+            loop {
+                let end = (start + content_width).min(length);
+                rows.push((index, start, end));
+                if end == length {
+                    if length > 0 && length % content_width == 0 {
+                        rows.push((index, length, length));
+                    }
+                    break;
+                }
+                start = end;
+            }
+        }
+
+        let caret_line = self.row.min(lines.len().saturating_sub(1));
+        let caret_col = self.col.min(lines[caret_line].chars().count());
+        let caret_row = rows
+            .iter()
+            .position(|(index, start, end)| {
+                *index == caret_line
+                    && caret_col >= *start
+                    && (caret_col < *end
+                        || (caret_col == *end && *end == lines[*index].chars().count()))
+            })
+            .unwrap_or(0);
+        let first = if focused {
+            caret_row.saturating_sub(viewport.saturating_sub(1))
+        } else {
+            0
+        };
+
+        rows.into_iter()
+            .skip(first)
+            .take(viewport)
+            .map(|(index, start, end)| {
+                let gutter = if start == 0 {
+                    format!("{:>width$}", index + 1, width = gutter_width)
+                } else {
+                    " ".repeat(gutter_width)
+                };
+                let mut spans = vec![Span::styled(
+                    gutter,
+                    Style::default().fg(theme.palette.soft_fg),
+                )];
+                spans.push(Span::raw(" "));
+                let line = lines[index];
+                let highlighted_line = highlighted
+                    .as_ref()
+                    .and_then(|all| all.get(index))
+                    .map(|runs| runs.as_slice());
+                let caret = (focused && index == caret_line).then_some(caret_col);
+                spans.extend(Self::content_spans(
+                    line,
+                    highlighted_line,
+                    start,
+                    end,
+                    caret,
+                ));
+                Line::from(spans)
             })
             .collect()
     }
@@ -473,6 +603,33 @@ mod tests {
             .iter()
             .find(|span| span.style.add_modifier.contains(Modifier::REVERSED));
         assert_eq!(reversed.map(|span| span.content.as_ref()), Some("m"));
+    }
+
+    #[test]
+    fn wrapped_rendering_keeps_a_long_line_and_end_caret_visible() {
+        let mut editor = editor("abcdefghijklmno");
+        editor.col = editor.text.chars().count();
+        let theme = Theme::new(
+            crate::theme::ThemeName::Dark,
+            crate::theme::ColorCapability::TrueColor,
+        );
+        let highlighter = Highlighter::new(true);
+        let lines = editor.render_wrapped_lines("notes.md", &highlighter, &theme, 3, 8, true);
+        let rendered: String = lines
+            .last()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(rendered.contains("no"));
+        assert!(lines.last().is_some_and(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.style.add_modifier.contains(Modifier::REVERSED))
+        }));
     }
 
     #[test]

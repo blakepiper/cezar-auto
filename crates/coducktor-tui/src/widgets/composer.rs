@@ -164,6 +164,11 @@ impl Composer {
         self.focused = true;
     }
 
+    pub fn blur(&mut self) {
+        self.focused = false;
+        self.menu = None;
+    }
+
     /// Recompute the `/`-or-`@` autocomplete from the current text+caret. Called by
     /// the host after every text change and on focus.
     pub fn refresh_menu(&mut self, ctx: &ComposerContext<'_>) {
