@@ -578,12 +578,6 @@ pub enum PendingAction {
         project: String,
         id: String,
     },
-    ArchiveFinished {
-        project: String,
-    },
-    MarkAllRead {
-        project: String,
-    },
     RefreshTasks {
         project: String,
     },
@@ -2615,16 +2609,6 @@ impl App {
                 }
             }
             HitAction::ConfirmNo => self.confirm = None,
-            HitAction::MarkAllRead => {
-                self.pending.push(PendingAction::MarkAllRead {
-                    project: self.current_project().to_owned(),
-                });
-            }
-            HitAction::ArchiveFinished => {
-                self.pending.push(PendingAction::ArchiveFinished {
-                    project: self.current_project().to_owned(),
-                });
-            }
             HitAction::TableHeader(column) => {
                 if let Route::Tasks { .. } = self.route() {
                     crate::screens::tasks::handle_table_hit(self, HitAction::TableHeader(column));

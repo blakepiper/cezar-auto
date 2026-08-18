@@ -465,13 +465,6 @@ fn rows_appearance(app: &App) -> Vec<Row> {
     vec![
         row("Theme", app.theme.name.label().to_owned()),
         row(
-            "Accent",
-            appearance
-                .accent
-                .map(|accent| format!("{accent:?}").to_lowercase())
-                .unwrap_or_else(|| "lime".to_owned()),
-        ),
-        row(
             "Density",
             appearance
                 .density
@@ -908,15 +901,6 @@ fn cycle_appearance(app: &mut App, row: usize, backward: bool) {
             put_appearance(app, appearance);
         }
         1 => {
-            let mut appearance = current_appearance(app);
-            let next = match appearance.accent {
-                Some(coducktor_contract::Accent::Lime) | None => coducktor_contract::Accent::Violet,
-                Some(coducktor_contract::Accent::Violet) => coducktor_contract::Accent::Lime,
-            };
-            appearance.accent = Some(next);
-            put_appearance(app, appearance);
-        }
-        2 => {
             use coducktor_contract::Density::*;
             let mut appearance = current_appearance(app);
             let next = match appearance.density {
@@ -930,7 +914,7 @@ fn cycle_appearance(app: &mut App, row: usize, backward: bool) {
             appearance.density = Some(next);
             put_appearance(app, appearance);
         }
-        3 => {
+        2 => {
             let mut appearance = current_appearance(app);
             let next = match appearance.width {
                 Some(coducktor_contract::ReadingWidth::Narrow) | None => {
@@ -1568,6 +1552,17 @@ mod tests {
                 if input.appearance.as_ref().and_then(|appearance| appearance.theme)
                     == Some(coducktor_contract::ThemePreference::Light)
         )));
+    }
+
+    #[test]
+    fn appearance_menu_uses_theme_without_an_accent_control() {
+        let mut app = app_with_global_settings();
+        handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        let content = render_text(&mut app, 120, 40);
+        assert!(content.contains("Theme"));
+        assert!(content.contains("Density"));
+        assert!(content.contains("Reading width"));
+        assert!(!content.contains("Accent"));
     }
 
     #[test]

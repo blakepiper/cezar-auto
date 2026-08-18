@@ -8,8 +8,7 @@ use coducktor_contract::{ApiRun, DiffStat, ProcessUsage, RunStatus};
 /// running AND while parked at `waiting` (the CLI process stays alive).
 const USAGE_LIVE_STATUSES: [RunStatus; 2] = [RunStatus::Running, RunStatus::Waiting];
 
-/// What "Archive finished" sweeps: outcomes, not gates — a `review` run still
-/// wants a human.
+/// Finished outcomes, not gates — a `review` run still wants a human.
 const FINISHED_STATUSES: [RunStatus; 3] =
     [RunStatus::Done, RunStatus::Failed, RunStatus::Cancelled];
 
@@ -402,17 +401,10 @@ pub enum TaskView {
     Archived,
 }
 
-/// How many active runs "Archive finished" would sweep.
+/// How many active runs have finished.
 pub fn finished_run_count(runs: &[ApiRun]) -> usize {
     runs.iter()
         .filter(|run| !run.record.archived && FINISHED_STATUSES.contains(&run.record.status))
-        .count()
-}
-
-/// How many active unread finished runs exist.
-pub fn unread_done_count(runs: &[ApiRun]) -> usize {
-    runs.iter()
-        .filter(|run| !run.record.archived && is_unread(run))
         .count()
 }
 
@@ -733,7 +725,7 @@ mod tests {
     }
 
     #[test]
-    fn unread_and_finished_sweeps_follow_status_rules() {
+    fn finished_sweep_follows_status_rules() {
         let mut done = run("d", RunStatus::Done, "2026-08-15T00:00:00Z");
         done.record.seen_at = None;
         let mut read = run("r", RunStatus::Done, "2026-08-15T00:00:00Z");
@@ -741,7 +733,6 @@ mod tests {
         let mut waiting = run("w", RunStatus::Waiting, "2026-08-15T00:00:00Z");
         waiting.record.archived = true;
         let runs = vec![done.clone(), read.clone(), waiting];
-        assert_eq!(unread_done_count(&runs), 1);
         // Both active done runs are "finished" — read receipts don't un-finish a run.
         assert_eq!(finished_run_count(&runs), 2);
     }

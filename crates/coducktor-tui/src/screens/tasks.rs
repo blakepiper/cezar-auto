@@ -1,7 +1,7 @@
 //! Tasks overview screen — `screens/tasks.rs`.
 //!
-//! Layout: title row (Active/Archived segments,
-//! count-gated actions, search), the run table, and compare-variant strips below.
+//! Layout: title row (Active/Archived segments and counts), the run table, and
+//! compare-variant strips below.
 
 use coducktor_contract::{ApiRun, ProcessUsage, RunStatus};
 use ratatui::Frame;
@@ -15,8 +15,7 @@ use crate::input::hitmap::HitAction;
 use crate::screens::runs_util::{
     Attention, TaskView, UsageKind, attention, clock_time, compare_groups, filter_runs,
     finished_run_count, format_cost, format_diff, format_tokens, is_read_done_item, is_unread,
-    queue_positions, run_title, short_age, sort_runs, task_reference, unread_done_count,
-    usage_cells, workflow_label,
+    queue_positions, run_title, short_age, sort_runs, task_reference, usage_cells, workflow_label,
 };
 use crate::theme::Theme;
 use crate::widgets::table::{ColumnId, SortState, Table, TableCell, TableRow};
@@ -409,7 +408,6 @@ fn render_title_row(frame: &mut Frame<'_>, area: Rect, app: &mut App, view: Task
         })
         .count();
     let finished = finished_run_count(runs);
-    let unread = unread_done_count(runs);
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     spans.push(span(
@@ -440,34 +438,8 @@ fn render_title_row(frame: &mut Frame<'_>, area: Rect, app: &mut App, view: Task
         ));
         spans.push(Span::raw("  "));
     }
-    if view == TaskView::Active && area.width >= 100 {
-        if unread > 0 {
-            spans.push(span("Mark all read", action_style(theme, unread > 0)));
-        }
-        if finished > 0 {
-            spans.push(span("Archive finished", action_style(theme, finished > 0)));
-        }
-        spans.push(Span::raw("  "));
-    }
-    spans.push(span(
-        &format!(
-            "filter: {}{}",
-            if view == TaskView::Active {
-                "current"
-            } else {
-                "archived"
-            },
-            if app.tasks_ui.query.is_empty() {
-                String::new()
-            } else {
-                format!("  / {}", app.tasks_ui.query)
-            }
-        ),
-        Style::default().fg(theme.palette.soft_fg),
-    ));
-
     frame.render_widget(
-        Paragraph::new(Line::from(spans.clone())).style(Style::default().bg(theme.palette.surface)),
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.palette.surface)),
         area,
     );
     let hitmap = &mut app.hitmap;
@@ -482,22 +454,6 @@ fn render_title_row(frame: &mut Frame<'_>, area: Rect, app: &mut App, view: Task
         3,
         HitAction::ArchivedTasks,
     );
-    let mut cursor = area.x + 9 + 14 + 2;
-    if view == TaskView::Active && unread > 0 {
-        hitmap.register(
-            Rect::new(cursor, area.y, 13, area.height),
-            3,
-            HitAction::MarkAllRead,
-        );
-        cursor += 13 + 2;
-    }
-    if view == TaskView::Active && finished > 0 {
-        hitmap.register(
-            Rect::new(cursor, area.y, 16, area.height),
-            3,
-            HitAction::ArchiveFinished,
-        );
-    }
 }
 
 fn render_compare_strips(frame: &mut Frame<'_>, area: Rect, app: &mut App, view: TaskView) {
@@ -802,10 +758,6 @@ fn view_style(theme: Theme, active: bool, _attention: bool) -> Style {
     } else {
         Style::default().fg(theme.palette.soft_fg)
     }
-}
-
-fn action_style(theme: Theme, _enabled: bool) -> Style {
-    Style::default().fg(theme.palette.soft_fg)
 }
 
 fn span(text: &str, style: Style) -> Span<'static> {

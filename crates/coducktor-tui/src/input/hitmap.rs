@@ -107,10 +107,6 @@ pub enum HitAction {
     TableRow(usize),
     /// A tasks-overview "Compare" strip — click to open the compare screen for that group.
     OpenCompare(String),
-    /// The Tasks title row's "Mark all read" action.
-    MarkAllRead,
-    /// The Tasks title row's "Archive finished" action.
-    ArchiveFinished,
     /// A row of the open new-task picker overlay.
     PickerRow(usize),
     /// The new-task composer's paperclip (attach row).

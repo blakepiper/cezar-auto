@@ -534,28 +534,6 @@ async fn execute_pending(
                     Err(error) => app.notice = Some(format!("mark unread failed: {error}")),
                 }
             }
-            PendingAction::ArchiveFinished { project } => {
-                let scope = Scope::Project(project.clone());
-                match engine.archive_finished(&scope).await {
-                    Ok(response) => {
-                        app.notice = Some(format!("archived {} finished", response.archived));
-                        refresh_tasks(engine.as_ref(), app, &project).await;
-                        refresh_index_if_global(engine.as_ref(), app).await;
-                    }
-                    Err(error) => app.notice = Some(format!("archive finished failed: {error}")),
-                }
-            }
-            PendingAction::MarkAllRead { project } => {
-                let scope = Scope::Project(project.clone());
-                match engine.mark_all_read(&scope).await {
-                    Ok(response) => {
-                        app.notice = Some(format!("marked {} read", response.read));
-                        refresh_tasks(engine.as_ref(), app, &project).await;
-                        refresh_index_if_global(engine.as_ref(), app).await;
-                    }
-                    Err(error) => app.notice = Some(format!("mark all read failed: {error}")),
-                }
-            }
             PendingAction::RefreshTasks { project } => {
                 let scope = Scope::Project(project.clone());
                 let generation = app.begin_task_request(&project);
