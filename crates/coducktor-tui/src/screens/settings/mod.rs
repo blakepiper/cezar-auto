@@ -12,11 +12,12 @@
 //! discards a pending edit outright. Prompt templates carry no `skills` auto-apply list.
 
 use coducktor_contract::{
-    AgentConfigFileContent, AgentConfigListing, AgentProfilesResponse, Appearance,
-    ComposerDefaultsPatch, ConfigResponse, NotificationsUiState, ProjectComposerDefaults,
-    PromptTemplate, ReasoningEffort, Runner, SelectAgentProfileInput, SetConfigInput,
-    SetWorkspaceConfigInput, TaskSource, UiState, UpdateAgentProfileInput, UpdateProjectInput,
-    WorkspaceConfigResponse, WorkspaceUiState, WorkspaceUsageResponse, WorktreesResponse,
+    AgentConfigFileContent, AgentConfigListing, AgentDefaultsPatch, AgentProfilesResponse,
+    Appearance, ComposerDefaultsPatch, ConfigResponse, NotificationsUiState,
+    ProjectComposerDefaults, PromptTemplate, ReasoningEffort, Runner, RunnerModelsPatch,
+    SelectAgentProfileInput, SetConfigInput, SetWorkspaceConfigInput, TaskSource, UiState,
+    UpdateAgentProfileInput, UpdateProjectInput, WorkspaceConfigResponse, WorkspaceUiState,
+    WorkspaceUsageResponse, WorktreesResponse,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
@@ -109,6 +110,7 @@ pub struct SettingsEdit {
 pub enum EditTarget {
     BaseBranch,
     Model(Runner),
+    GlobalModel(Runner),
     TaskSource,
     ComposerVariants,
     ProjectComposerVariants,
@@ -310,22 +312,22 @@ fn rows_agents(app: &App) -> Vec<Row> {
     let mut rows = vec![
         row("Base branch", opt_str(&config.base_branch)),
         row(
-            "Default runner",
+            "Project runner",
             runner_selection_label(config.default_runner),
         ),
         row(
-            "Default model — claude",
+            "Project model — claude",
             opt_str(&config.default_models.claude),
         ),
         row(
-            "Default model — codex",
+            "Project model — codex",
             opt_str(&config.default_models.codex),
         ),
         row(
-            "Default model — opencode",
+            "Project model — opencode",
             opt_str(&config.default_models.opencode),
         ),
-        row("Default model — pi", opt_str(&config.default_models.pi)),
+        row("Project model — pi", opt_str(&config.default_models.pi)),
         row("System prompt", opt_str(&config.system_prompt)),
         row(
             "Live title updates",
@@ -393,6 +395,48 @@ fn rows_agents(app: &App) -> Vec<Row> {
                         }
                     )
                 }),
+        ),
+    ]);
+    let agent = workspace.map(|config| &config.agent_defaults);
+    rows.extend([
+        row(
+            "Global runner",
+            agent
+                .and_then(|a| a.runner)
+                .map(runner_selection_label)
+                .unwrap_or("inherit"),
+        ),
+        row(
+            "Global model — claude",
+            opt_str(
+                &agent
+                    .and_then(|a| a.models.as_ref())
+                    .and_then(|m| m.claude.clone()),
+            ),
+        ),
+        row(
+            "Global model — codex",
+            opt_str(
+                &agent
+                    .and_then(|a| a.models.as_ref())
+                    .and_then(|m| m.codex.clone()),
+            ),
+        ),
+        row(
+            "Global model — opencode",
+            opt_str(
+                &agent
+                    .and_then(|a| a.models.as_ref())
+                    .and_then(|m| m.opencode.clone()),
+            ),
+        ),
+        row(
+            "Global model — pi",
+            opt_str(
+                &agent
+                    .and_then(|a| a.models.as_ref())
+                    .and_then(|m| m.pi.clone()),
+            ),
         ),
     ]);
     rows
@@ -1047,6 +1091,7 @@ fn cycle(app: &mut App, backward: bool) {
         (SettingsSection::Agents, 14) => cycle_project_reasoning(app, backward),
         (SettingsSection::Agents, 16) => cycle_project_worktree(app, backward),
         (SettingsSection::Agents, 17) => cycle_project_autonomous(app, backward),
+        (SettingsSection::Agents, 18) => cycle_global_runner(app, backward),
         (SettingsSection::Appearance, index) => cycle_appearance(app, index, backward),
         (SettingsSection::Notifications, 0) => toggle_notifications(app),
         (SettingsSection::Resources, index) => toggle_or_ignore_resource(app, index),
@@ -1224,6 +1269,24 @@ fn put_composer_defaults(app: &mut App, composer_defaults: ComposerDefaultsPatch
     app.pending.push(PendingAction::SettingsPutWorkspaceConfig {
         input: SetWorkspaceConfigInput {
             composer_defaults: Some(composer_defaults),
+            ..Default::default()
+        },
+    });
+}
+
+fn cycle_global_runner(app: &mut App, backward: bool) {
+    let current = app
+        .settings_ui
+        .workspace_config
+        .as_ref()
+        .and_then(|c| c.agent_defaults.runner)
+        .unwrap_or(coducktor_contract::RunnerSelection::Auto);
+    app.pending.push(PendingAction::SettingsPutWorkspaceConfig {
+        input: SetWorkspaceConfigInput {
+            agent_defaults: Some(AgentDefaultsPatch {
+                runner: Some(Some(cycle_runner_selection(current, backward))),
+                ..Default::default()
+            }),
             ..Default::default()
         },
     });
@@ -1460,6 +1523,47 @@ fn activate_agents(app: &mut App, row: usize) {
         ),
         16 => cycle_project_worktree(app, false),
         17 => cycle_project_autonomous(app, false),
+        18 => cycle_global_runner(app, false),
+        19 => start_edit(
+            app,
+            EditTarget::GlobalModel(Runner::Claude),
+            app.settings_ui
+                .workspace_config
+                .as_ref()
+                .and_then(|c| c.agent_defaults.models.as_ref())
+                .and_then(|m| m.claude.clone())
+                .unwrap_or_default(),
+        ),
+        20 => start_edit(
+            app,
+            EditTarget::GlobalModel(Runner::Codex),
+            app.settings_ui
+                .workspace_config
+                .as_ref()
+                .and_then(|c| c.agent_defaults.models.as_ref())
+                .and_then(|m| m.codex.clone())
+                .unwrap_or_default(),
+        ),
+        21 => start_edit(
+            app,
+            EditTarget::GlobalModel(Runner::OpenCode),
+            app.settings_ui
+                .workspace_config
+                .as_ref()
+                .and_then(|c| c.agent_defaults.models.as_ref())
+                .and_then(|m| m.opencode.clone())
+                .unwrap_or_default(),
+        ),
+        22 => start_edit(
+            app,
+            EditTarget::GlobalModel(Runner::Pi),
+            app.settings_ui
+                .workspace_config
+                .as_ref()
+                .and_then(|c| c.agent_defaults.models.as_ref())
+                .and_then(|m| m.pi.clone())
+                .unwrap_or_default(),
+        ),
         _ => {}
     }
 }
@@ -1696,6 +1800,25 @@ fn submit_edit(app: &mut App, edit: SettingsEdit) {
             };
             app.pending
                 .push(PendingAction::SettingsPutConfig { project, input });
+        }
+        EditTarget::GlobalModel(runner) => {
+            let mut models = RunnerModelsPatch::default();
+            let value = if text.is_empty() { None } else { Some(text) };
+            match runner {
+                Runner::Claude => models.claude = Some(value),
+                Runner::Codex => models.codex = Some(value),
+                Runner::OpenCode => models.opencode = Some(value),
+                Runner::Pi => models.pi = Some(value),
+            }
+            app.pending.push(PendingAction::SettingsPutWorkspaceConfig {
+                input: SetWorkspaceConfigInput {
+                    agent_defaults: Some(AgentDefaultsPatch {
+                        models: Some(models),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            });
         }
         EditTarget::SystemPrompt => {
             let input = SetConfigInput {
