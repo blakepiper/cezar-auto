@@ -199,16 +199,6 @@ impl ThreadUi {
         self.rebuild();
     }
 
-    pub fn resolve_pending_prompt(&mut self, project: &str, run_id: &str) {
-        if self.data.project == project && self.data.run_id == run_id {
-            self.pending_prompt = None;
-            self.pending_prompt_after_seq = -1.0;
-            self.pending_composer = None;
-            self.delivery_error = false;
-            self.rebuild();
-        }
-    }
-
     pub fn restore_pending_prompt(&mut self, project: &str, run_id: &str) {
         if self.data.project != project || self.data.run_id != run_id {
             return;
@@ -293,6 +283,22 @@ impl ThreadUi {
     }
 
     fn rebuild(&mut self) {
+        // The send request being accepted does not mean its user-message has reached the
+        // transcript yet. Keep the optimistic prompt visible until the durable event arrives,
+        // then let that event replace it without briefly hiding what the agent is working on.
+        let pending_is_durable = self.pending_prompt.as_deref().is_some_and(|prompt| {
+            self.data.events.iter().any(|event| {
+                event.seq > self.pending_prompt_after_seq
+                    && event.event_type == "user-message"
+                    && durable_prompt_label(event) == prompt
+            })
+        });
+        if pending_is_durable {
+            self.pending_prompt = None;
+            self.pending_prompt_after_seq = -1.0;
+            self.pending_composer = None;
+            self.delivery_error = false;
+        }
         let active_turn = self
             .data
             .run
@@ -314,20 +320,33 @@ impl ThreadUi {
             self.data.older_cursor.is_some(),
             self.data.older_loading,
             self.data.older_error.as_deref(),
-            self.pending_prompt.as_deref().filter(|prompt| {
-                !self.data.events.iter().any(|event| {
-                    event.seq > self.pending_prompt_after_seq
-                        && event.event_type == "user-message"
-                        && event.extra.get("text").and_then(serde_json::Value::as_str)
-                            == Some(*prompt)
-                })
-            }),
+            self.pending_prompt.as_deref(),
         ));
         // A resolved ask, or a fresh one under a different id, clears any stale in-progress
         // selections — a leftover partial answer must never attach to the NEXT question.
         if pending_ask(&self.data.state).is_none() {
             self.ask_selections.clear();
         }
+    }
+}
+
+fn durable_prompt_label(event: &RunEvent) -> &str {
+    let text = event
+        .extra
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if text.is_empty()
+        && event
+            .extra
+            .get("imageCount")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default()
+            > 0
+    {
+        "[Image]"
+    } else {
+        text
     }
 }
 
@@ -1723,6 +1742,26 @@ mod tests {
         let content = render_to_string(&mut app);
         assert_eq!(content.matches("follow up").count(), 2);
         assert!(!content.contains("Sending…"));
+        assert!(app.thread_ui.pending_prompt.is_none());
+    }
+
+    #[test]
+    fn durable_image_follow_up_replaces_the_optimistic_copy() {
+        let mut app = app_with_run(RunStatus::Running);
+        app.thread_ui.set_pending_prompt("[Image]".to_owned());
+
+        app.thread_ui.push_event(
+            1.0,
+            event(
+                1.0,
+                "user-message",
+                json!({"text": "", "imageCount": 1, "images": ["data:image/png;base64,AA=="]}),
+            ),
+        );
+
+        let content = render_to_string(&mut app);
+        assert!(!content.contains("Sending…"));
+        assert!(app.thread_ui.pending_prompt.is_none());
     }
 
     #[test]

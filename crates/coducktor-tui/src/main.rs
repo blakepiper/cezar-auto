@@ -1720,24 +1720,17 @@ fn drain_background_results(
                     SessionMutation::Continue => "continue",
                     SessionMutation::Finish => "finish",
                 };
-                match result {
-                    Ok(()) => {
-                        if matches!(action, SessionMutation::Send | SessionMutation::Continue) {
-                            app.thread_ui.resolve_pending_prompt(&project, &id);
-                        }
+                if let Err(error) = result {
+                    if matches!(action, SessionMutation::Cancel)
+                        && app.thread_ui.data.project == project
+                        && app.thread_ui.data.run_id == id
+                    {
+                        app.thread_ui.cancel_pending = false;
                     }
-                    Err(error) => {
-                        if matches!(action, SessionMutation::Cancel)
-                            && app.thread_ui.data.project == project
-                            && app.thread_ui.data.run_id == id
-                        {
-                            app.thread_ui.cancel_pending = false;
-                        }
-                        if matches!(action, SessionMutation::Send | SessionMutation::Continue) {
-                            app.thread_ui.restore_pending_prompt(&project, &id);
-                        }
-                        app.notice = Some(format!("{label} failed: {error}"));
+                    if matches!(action, SessionMutation::Send | SessionMutation::Continue) {
+                        app.thread_ui.restore_pending_prompt(&project, &id);
                     }
+                    app.notice = Some(format!("{label} failed: {error}"));
                 }
                 app.pending.push(PendingAction::LoadThread { project, id });
             }

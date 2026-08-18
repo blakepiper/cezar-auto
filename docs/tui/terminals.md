@@ -85,6 +85,14 @@ records what is implemented and which terminal observations remain unverified.
 
 ## Task experience smoke test
 
+- **120×40 pseudo-terminal, 2026-08-18 (follow-up prompt visibility).** Built and launched the
+  real `duck` binary against an isolated temporary Git repository and mock Claude session. After
+  the initial turn parked for input, submitted `confirm prompt visibility mock:slow mock:done` and
+  observed the exact follow-up appear immediately at the bottom of the transcript. It remained
+  visible after `Sending…` cleared and throughout the mock's 25-second turn, then reconciled with
+  the durable user-message without a duplicate before the task completed. `q` restored the
+  alternate screen.
+
 - **80×24 pseudo-terminal, 2026-08-18 (parked transcript pass).** Built and launched the real
   `coducktor` binary, opened the stored waiting task from the Tasks screen, and verified the
   Session header and dock both said it was waiting for an answer while no stale `Working…` row
