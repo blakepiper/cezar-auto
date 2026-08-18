@@ -626,6 +626,14 @@ fn picker_title(pill: PillId) -> &'static str {
     }
 }
 
+/// Apply an asynchronously discovered catalog and update an already-open model picker.
+pub fn apply_model_catalog(app: &mut App, catalog: RunnerModelCatalogResponse) {
+    app.new_task_ui.data.model_catalog = Some(catalog);
+    if matches!(app.new_task_ui.picker, Some(PickerKind::Model(_))) {
+        refresh_picker_items(app);
+    }
+}
+
 /// Recompute the open picker's candidates from its query (the source picker is
 /// searchable; the simple pills just re-offer their fixed lists).
 fn refresh_picker_items(app: &mut App) {
@@ -1832,6 +1840,50 @@ mod tests {
             app.new_task_ui.draft.model.as_deref(),
             Some("gpt-5.5-codex")
         );
+    }
+
+    #[test]
+    fn open_codex_model_picker_refreshes_when_catalog_arrives() {
+        let mut app = app_with_new_task("t-codex-model-refresh");
+        app.new_task_ui.data.provider_status = Some(ProviderStatusResponse {
+            providers: vec![
+                connected_provider(Runner::Claude),
+                connected_provider(Runner::Codex),
+            ],
+        });
+        app.new_task_ui.draft.runner = Some(RunnerSelection::Codex);
+        open_pill(&mut app, PillId::Model);
+        assert_eq!(
+            app.new_task_ui
+                .picker
+                .as_ref()
+                .map(|kind| kind.picker().items.len()),
+            Some(1)
+        );
+
+        apply_model_catalog(
+            &mut app,
+            RunnerModelCatalogResponse {
+                runner: Runner::Codex,
+                models: vec![coducktor_contract::RunnerModelOption {
+                    id: "gpt-5.6-sol".to_owned(),
+                    label: "GPT-5.6-Sol".to_owned(),
+                    description: "discovered from Codex".to_owned(),
+                    reasoning_efforts: None,
+                }],
+                source: coducktor_contract::ModelCatalogSource::Live,
+                stale: false,
+                reason: None,
+            },
+        );
+
+        let items = app
+            .new_task_ui
+            .picker
+            .as_ref()
+            .map(|kind| kind.picker().items.clone())
+            .unwrap_or_default();
+        assert!(items.iter().any(|item| item.value == "model:gpt-5.6-sol"));
     }
 
     #[test]

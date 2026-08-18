@@ -1603,7 +1603,7 @@ fn drain_background_results(
                 }
             }
             BackgroundResult::RefreshModels { runner, result } => match result {
-                Ok(catalog) => app.new_task_ui.data.model_catalog = Some(catalog),
+                Ok(catalog) => screens::new_task::apply_model_catalog(app, catalog),
                 Err(error) => {
                     app.notice = Some(format!("{runner:?} model catalog failed: {error}"))
                 }
