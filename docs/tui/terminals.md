@@ -59,6 +59,11 @@ records what is implemented and which terminal observations remain unverified.
 
 ## Task experience smoke test
 
+- **80×24 pseudo-terminal, 2026-08-18.** Launched the real `duck` binary against the coducktor
+  repository. The Tasks screen showed the `Current`/`Needs you`/`Finished` stats row and the
+  bordered `TASKS — coducktor` panel title without rendering the project title twice. `q` exited
+  and restored the alternate screen.
+
 - **80×24 pseudo-terminal, 2026-08-17.** Launched the real `duck` binary against the coducktor
   repository. The project Tasks screen rendered `Current`, a bordered `Needs You` card with a
   visible `▶` selection marker, exact prompt text, relative time, runner, and workflow metadata.

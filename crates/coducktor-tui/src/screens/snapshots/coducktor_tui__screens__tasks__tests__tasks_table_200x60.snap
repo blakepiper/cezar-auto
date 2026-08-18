@@ -1,12 +1,13 @@
 ---
 source: crates/coducktor-tui/src/screens/tasks.rs
+assertion_line: 896
 expression: terminal.backend().buffer()
 ---
 Buffer {
     area: Rect { x: 0, y: 0, width: 200, height: 60 },
     content: [
         " [=] coducktor / main /p/main  [running 0] [needs 0]                                                                                                                                                    ",
-        "  PROJECTS                   TASKS — main  Current 3  Needs you 1  Finished 1  Archived 0                                                                                                               ",
+        "  PROJECTS                   Current 3  Needs you 1  Finished 1  Archived 0                                                                                                                             ",
         "  - main                    ┌TASKS — main──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐",
         "  > Tasks                   │ NEEDS YOU                                                                                                                                                                │",
         "    Scratchpad              │┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐│",
@@ -76,15 +77,14 @@ Buffer {
         x: 52, y: 0, fg: Reset, bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
         x: 0, y: 1, fg: Rgb(130, 139, 184), bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
         x: 10, y: 1, fg: Reset, bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
-        x: 28, y: 1, fg: Rgb(192, 202, 245), bg: Rgb(36, 40, 59), underline: Reset, modifier: BOLD,
-        x: 43, y: 1, fg: Rgb(122, 162, 247), bg: Rgb(36, 40, 59), underline: Reset, modifier: BOLD,
-        x: 52, y: 1, fg: Reset, bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
-        x: 54, y: 1, fg: Rgb(245, 190, 80), bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
-        x: 65, y: 1, fg: Reset, bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
-        x: 67, y: 1, fg: Rgb(130, 139, 184), bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
-        x: 77, y: 1, fg: Reset, bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
-        x: 79, y: 1, fg: Rgb(130, 139, 184), bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
-        x: 89, y: 1, fg: Reset, bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
+        x: 28, y: 1, fg: Rgb(122, 162, 247), bg: Rgb(36, 40, 59), underline: Reset, modifier: BOLD,
+        x: 38, y: 1, fg: Reset, bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
+        x: 40, y: 1, fg: Rgb(245, 190, 80), bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
+        x: 51, y: 1, fg: Reset, bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
+        x: 53, y: 1, fg: Rgb(130, 139, 184), bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
+        x: 63, y: 1, fg: Reset, bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
+        x: 65, y: 1, fg: Rgb(130, 139, 184), bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
+        x: 75, y: 1, fg: Reset, bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
         x: 0, y: 2, fg: Rgb(122, 162, 247), bg: Rgb(36, 40, 59), underline: Reset, modifier: BOLD | REVERSED,
         x: 8, y: 2, fg: Reset, bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
         x: 28, y: 2, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,

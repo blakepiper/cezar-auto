@@ -397,7 +397,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 fn render_title_row(frame: &mut Frame<'_>, area: Rect, app: &mut App, view: TaskView) {
     let theme = app.theme;
     let runs = &app.tasks;
-    let project = app.current_project();
     let active = runs.iter().filter(|run| !run.record.archived).count();
     let archived = runs.iter().filter(|run| run.record.archived).count();
     let needs_you = runs
@@ -411,13 +410,7 @@ fn render_title_row(frame: &mut Frame<'_>, area: Rect, app: &mut App, view: Task
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     spans.push(span(
-        &format!(" TASKS — {project}  "),
-        Style::default()
-            .fg(theme.palette.fg)
-            .add_modifier(Modifier::BOLD),
-    ));
-    spans.push(span(
-        &format!("Current {active}"),
+        &format!(" Current {active}"),
         view_style(theme, view == TaskView::Active, active > 0),
     ));
     spans.push(Span::raw("  "));
