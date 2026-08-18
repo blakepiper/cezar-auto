@@ -53,9 +53,7 @@ fn sync_from_route(app: &mut App) {
 
 /// Called from the run loop once per frame while the cockpit runs: starts the shell
 /// for the open terminal tab on first visit, keeps the PTY size and scroll offset in
-/// sync, and reports whether the terminal tab is the active route (the caller uses
-/// that to scope bracketed paste). Never touches the outer terminal in tests — the
-/// bracketed-paste toggle is the caller's job.
+/// sync. The outer terminal's bracketed-paste mode is managed by `crate::terminal`.
 pub fn maintain(app: &mut App) -> bool {
     sync_from_route(app);
     let project = match app.route() {

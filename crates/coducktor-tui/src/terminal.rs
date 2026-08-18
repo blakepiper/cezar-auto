@@ -2,7 +2,9 @@ use std::io::{self, Write};
 use std::panic;
 
 use crossterm::cursor;
-use crossterm::event::{DisableBracketedPaste, DisableMouseCapture, EnableMouseCapture};
+use crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -29,6 +31,7 @@ pub fn setup() -> io::Result<AppTerminal> {
         stdout,
         EnterAlternateScreen,
         EnableMouseCapture,
+        EnableBracketedPaste,
         cursor::Hide
     ) {
         let _ = disable_raw_mode();

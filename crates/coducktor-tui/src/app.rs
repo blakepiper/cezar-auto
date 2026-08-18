@@ -1755,11 +1755,18 @@ impl App {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(key),
             Event::Mouse(mouse) => self.handle_mouse(mouse),
-            Event::Paste(text)
-                if matches!(self.route(), Route::Terminal { .. }) && !self.sidebar_focus =>
-            {
-                crate::screens::terminal::paste(self, &text);
-            }
+            Event::Paste(text) if !self.sidebar_focus => match self.route().clone() {
+                Route::Terminal { .. } => {
+                    crate::screens::terminal::paste(self, &text);
+                }
+                Route::NewTask { .. } => {
+                    crate::screens::new_task::handle_paste(self, &text);
+                }
+                Route::Thread { .. } => {
+                    crate::screens::thread::handle_paste(self, &text);
+                }
+                _ => {}
+            },
             _ => {}
         }
     }

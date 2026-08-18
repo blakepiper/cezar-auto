@@ -802,6 +802,20 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     }
 }
 
+/// Deliver a bracketed-paste chunk to the focused composer.
+pub fn handle_paste(app: &mut App, text: &str) -> bool {
+    if app.thread_ui.subagent_sheet.is_some() || app.thread_ui.focus != ThreadFocus::Composer {
+        return false;
+    }
+    let ctx = crate::widgets::composer::ComposerContext {
+        skills: &[],
+        skill_usage: None,
+        mention_candidates: &[],
+    };
+    app.thread_ui.composer.handle_paste(text, &ctx);
+    true
+}
+
 fn handle_composer_key(app: &mut App, key: KeyEvent) -> bool {
     if key.code == KeyCode::Esc {
         app.thread_ui.focus = ThreadFocus::Transcript;
@@ -1466,5 +1480,15 @@ mod tests {
         assert_eq!(app.thread_ui.composer.text, "keep going");
         assert!(app.thread_ui.delivery_error);
         assert!(app.thread_ui.pending_prompt.is_none());
+    }
+
+    #[test]
+    fn bracketed_paste_inserts_into_the_focused_composer() {
+        let mut app = app_with_run(RunStatus::Running);
+        app.thread_ui.focus = ThreadFocus::Composer;
+        app.thread_ui.composer.focus();
+        app.handle_event(crossterm::event::Event::Paste("first\nsecond".to_owned()));
+
+        assert_eq!(app.thread_ui.composer.text, "first\nsecond");
     }
 }

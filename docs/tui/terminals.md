@@ -43,7 +43,8 @@ records what is implemented and which terminal observations remain unverified.
   feeding a `vt100` parser), keyed in `TerminalUi::sessions` and kept alive across navigation.
   The shell's grid renders inside the tab with per-cell colors and a reversed cursor block;
   every key on the tab goes to the shell (Esc included), scrollback is browsable with the mouse
-  wheel, and bracketed paste is enabled for the tab's lifetime (and disabled on leaving/quit).
+  wheel, and bracketed paste is enabled for the cockpit lifetime. Pasting multiline clipboard
+  content into the shell arrives as one chunk.
   Leaving the tab: `Ctrl+Left` to the sidebar, mouse, or a sidebar nav row; a dead shell falls
   back to degraded keys (Enter/r restarts, Esc leaves). Resize follows the tab's rect and
   forwards SIGWINCH to the shell. Sessions are killed on quit via the session `Drop`.
@@ -53,6 +54,8 @@ records what is implemented and which terminal observations remain unverified.
   ran `printf 'manual-terminal-check\n'` and saw its output in the pane, sent `Ctrl+C`, used
   `Ctrl+Left` to reach the sidebar, navigated to Git, and quit with the alternate screen restored.
   Mouse-wheel scrollback and bracketed paste remain unverified in a live terminal.
+- **Composer paste.** With bracketed paste enabled for the cockpit lifetime, `Event::Paste` inserts
+  the complete clipboard chunk at the caret in New Task and thread composers, including newlines.
 
 ## Task experience smoke test
 
@@ -69,18 +72,12 @@ records what is implemented and which terminal observations remain unverified.
 
 ## Known gaps — not yet wired, not a detection failure
 
-- **Bracketed paste outside the Terminal tab.** `EnableBracketedPaste` is sent while the
-  embedded Terminal tab is active, and `Event::Paste` there forwards into the shell (the tab
-  needs it: multi-line pastes arrive as a single paste event). Everywhere else the app still
-  does not call `{Enable,Disable}BracketedPaste` and has no `Event::Paste` handler, so pasting
-  in the composer or command box still arrives as a burst of individual key events — a smaller
-  gap than before, but still an implementation gap, not something to "test" per terminal.
 - **Kitty keyboard protocol.** `PushKeyboardEnhancementFlags` is not enabled.
   Terminals that support it (kitty, Ghostty, WezTerm) get ordinary `crossterm` key
   events, not the enhanced disambiguation (distinguishing e.g. `Ctrl+I` from `Tab`).
 
-Both are real, worth picking up in a later pass; they're listed here so the matrix
-below isn't misread as "these terminals fail bracketed paste."
+The remaining gap is real and worth picking up in a later pass; it is listed here so the matrix
+below isn't misread as "these terminals fail the Kitty keyboard protocol."
 
 ## A caveat on how this checklist was produced
 
@@ -93,15 +90,15 @@ result the first time someone runs `duck` in that terminal.
 
 | Terminal | Truecolor | Images | Mouse | Bracketed paste | Kitty keyboard protocol | Notes |
 |---|---|---|---|---|---|---|
-| Ghostty | expected (`COLORTERM=truecolor` typical) | expected (kitty graphics protocol) | expected | not wired (see above) | not wired (see above) | Untested — needs manual verification. |
-| kitty | expected | expected (kitty graphics protocol, kitty invented it) | expected | not wired | not wired | Untested — needs manual verification. |
-| WezTerm | expected | expected (kitty graphics protocol) | expected | not wired | not wired | Untested — needs manual verification. |
-| iTerm2 | expected | expected (iTerm2 inline image protocol) | expected | not wired | not wired | Untested — needs manual verification. |
-| Terminal.app (macOS) | no (256-color only) | no protocol — halfblock fallback | expected | not wired | not wired | Untested — needs manual verification. |
-| Alacritty | expected | no protocol — halfblock fallback (no image protocol support) | expected | not wired | not wired | Untested — needs manual verification. |
-| tmux | depends on `COLORTERM` passthrough config | usually breaks image protocols unless passthrough is configured | expected, may need `set -g mouse on` | not wired | not wired | Untested — needs manual verification; image support inside tmux is notoriously configuration-sensitive regardless of the inner terminal. |
-| GNU screen | no (very limited color passthrough historically) | no protocol — halfblock fallback | uncertain | not wired | not wired | Untested — needs manual verification. |
-| This sandbox (headless, `TERM=xterm-256color`, `COLORTERM=truecolor`, no TTY) | `ColorCapability::detect()` would report `TrueColor` from the env vars alone | `Picker::from_query_stdio()` cannot be meaningfully exercised without a real TTY to probe | N/A, no TTY | not wired | not wired | The one row in this table backed by an actual run of the detection code, not a terminal. |
+| Ghostty | expected (`COLORTERM=truecolor` typical) | expected (kitty graphics protocol) | expected | wired | not wired (see above) | Untested — needs manual verification. |
+| kitty | expected | expected (kitty graphics protocol, kitty invented it) | expected | wired | not wired | Untested — needs manual verification. |
+| WezTerm | expected | expected (kitty graphics protocol) | expected | wired | not wired | Untested — needs manual verification. |
+| iTerm2 | expected | expected (iTerm2 inline image protocol) | expected | wired | not wired | Untested — needs manual verification. |
+| Terminal.app (macOS) | no (256-color only) | no protocol — halfblock fallback | expected | wired | not wired | Untested — needs manual verification. |
+| Alacritty | expected | no protocol — halfblock fallback (no image protocol support) | expected | wired | not wired | Untested — needs manual verification. |
+| tmux | depends on `COLORTERM` passthrough config | usually breaks image protocols unless passthrough is configured | expected, may need `set -g mouse on` | wired | not wired | Untested — needs manual verification; image support inside tmux is notoriously configuration-sensitive regardless of the inner terminal. |
+| GNU screen | no (very limited color passthrough historically) | no protocol — halfblock fallback | uncertain | wired | not wired | Untested — needs manual verification. |
+| This sandbox (headless, `TERM=xterm-256color`, `COLORTERM=truecolor`, no TTY) | `ColorCapability::detect()` would report `TrueColor` from the env vars alone | `Picker::from_query_stdio()` cannot be meaningfully exercised without a real TTY to probe | N/A, no TTY | wired; no TTY to exercise | not wired | The one row in this table backed by an actual run of the detection code, not a terminal. |
 
 ## Updating this file
 

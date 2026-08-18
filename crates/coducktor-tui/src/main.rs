@@ -1947,7 +1947,6 @@ async fn run(
     let mut welcome = WelcomeAnimation::new();
     let mut last_needs_you = usize::MAX;
     let mut bootstrap_applied = false;
-    let mut terminal_tab_active = false;
     let mut launch_args_applied =
         cli.repo.is_none() && cli.workflow.is_none() && cli.model.is_none();
     while !app.should_quit() {
@@ -2048,18 +2047,10 @@ async fn run(
             }
         }
         drain_background_results(&background_receiver, app, &mut starts_in_flight);
-        // The embedded Terminal tab owns its shell in-app; bracketed paste is enabled
-        // only while the tab is active so every other screen's paste keeps arriving as
-        // ordinary key events.
-        let tab_active = screens::terminal::maintain(app);
-        if tab_active != terminal_tab_active {
-            terminal_tab_active = tab_active;
-            if tab_active {
-                crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste)?;
-            } else {
-                crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste)?;
-            }
-        }
+        // Bracketed paste is enabled for the whole TUI so composers receive multiline clipboard
+        // contents as one event, while the embedded Terminal tab forwards that same event to its
+        // shell.
+        screens::terminal::maintain(app);
         if let Some(listener) = thread_listener.as_mut()
             && app.thread_ui.data.project == listener.project
             && app.thread_ui.data.run_id == listener.id

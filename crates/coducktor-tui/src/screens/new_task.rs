@@ -508,6 +508,24 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     }
 }
 
+/// Deliver a bracketed-paste chunk to the focused composer.
+pub fn handle_paste(app: &mut App, text: &str) -> bool {
+    if !app.new_task_ui.composer_focused
+        || app.new_task_ui.picker.is_some()
+        || app.new_task_ui.plan_visible
+    {
+        return false;
+    }
+    let ctx = composer_context(app);
+    let event = {
+        let mut composer = app.new_task_ui.composer.clone();
+        let event = composer.handle_paste(text, &ctx);
+        app.new_task_ui.composer = composer;
+        event
+    };
+    handle_composer_event(app, event)
+}
+
 fn handle_composer_key(app: &mut App, key: KeyEvent) -> bool {
     let ctx = composer_context(app);
     let event = {
@@ -516,6 +534,10 @@ fn handle_composer_key(app: &mut App, key: KeyEvent) -> bool {
         app.new_task_ui.composer = composer;
         event
     };
+    handle_composer_event(app, event)
+}
+
+fn handle_composer_event(app: &mut App, event: ComposerEvent) -> bool {
     match event {
         ComposerEvent::Changed => {
             app.new_task_ui.draft.text = app.new_task_ui.composer.text.clone();
@@ -1626,6 +1648,15 @@ mod tests {
                 .iter()
                 .any(|action| matches!(action, PendingAction::PutUiState { .. }))
         );
+    }
+
+    #[test]
+    fn bracketed_paste_updates_the_new_task_draft() {
+        let mut app = app_with_new_task("t-paste");
+        app.handle_event(crossterm::event::Event::Paste("first\nsecond".to_owned()));
+
+        assert_eq!(app.new_task_ui.composer.text, "first\nsecond");
+        assert_eq!(app.new_task_ui.draft.text, "first\nsecond");
     }
 
     #[test]

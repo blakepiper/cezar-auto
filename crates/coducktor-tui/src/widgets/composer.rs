@@ -215,6 +215,24 @@ impl Composer {
         self.menu = None;
     }
 
+    /// Insert a bracketed-paste chunk at the caret without treating newlines as submit keys.
+    pub fn handle_paste(&mut self, text: &str, ctx: &ComposerContext<'_>) -> ComposerEvent {
+        if let Some(path) = self.attaching.as_mut() {
+            path.push_str(text);
+            return ComposerEvent::Changed;
+        }
+        if text.is_empty() {
+            return ComposerEvent::Changed;
+        }
+        if self.caret > self.text.len() {
+            self.caret = self.text.len();
+        }
+        self.text.insert_str(self.caret, text);
+        self.caret += text.len();
+        self.refresh_menu(ctx);
+        ComposerEvent::Changed
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent, ctx: &ComposerContext<'_>) -> ComposerEvent {
         if let Some(menu) = self.menu.clone()
             && !menu.items.is_empty()
@@ -731,6 +749,20 @@ mod tests {
         composer.handle_key(key(KeyCode::Char('i'), KeyModifiers::NONE), &ctx());
         assert_eq!(composer.text, "hi");
         assert_eq!(composer.caret, 2);
+    }
+
+    #[test]
+    fn paste_inserts_multiline_text_at_the_caret() {
+        let mut composer = Composer::default();
+        composer.set_text("beforeafter");
+        composer.caret = "before".len();
+
+        assert_eq!(
+            composer.handle_paste("one\ntwo", &ctx()),
+            ComposerEvent::Changed
+        );
+        assert_eq!(composer.text, "beforeone\ntwoafter");
+        assert_eq!(composer.caret, "beforeone\ntwo".len());
     }
 
     #[test]
