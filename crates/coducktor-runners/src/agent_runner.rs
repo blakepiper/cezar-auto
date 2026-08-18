@@ -13,9 +13,9 @@ use serde::{Deserialize, Serialize};
 pub struct AgentRunSpec {
     /// Set by the engine's out-of-band cancellation path while a manager-owned turn is blocked.
     pub cancellation: CancellationToken,
-    /// Appended to the CLI's default system prompt (`--append-system-prompt` for claude;
-    /// prepended to the opening message via [`prepend_system_prompt`] for backends with no
-    /// dedicated channel).
+    /// Appended to the CLI's default system prompt (`--append-system-prompt` for Claude), sent
+    /// through OpenCode's native `system` field, or prepended to the opening message for
+    /// backends with no dedicated channel.
     pub system_prompt: Option<String>,
     pub user_prompt: String,
     /// Image blocks delivered with the first user message — screenshots pasted into the new-task
@@ -96,10 +96,9 @@ pub fn prompt_content(prompt: &str, images: &[PromptImage]) -> Vec<ContentBlock>
     content
 }
 
-/// Backends without a dedicated system-prompt channel (codex app-server, opencode serve)
-/// deliver `system_prompt` as a leading block of the opening user message — the documented
-/// per-backend mapping: Claude uses `--append-system-prompt`, while Codex and OpenCode receive
-/// it as a leading message block.
+/// Backends without a dedicated system-prompt channel (currently Codex app-server) deliver
+/// `system_prompt` as a leading block of the opening user message. Claude uses
+/// `--append-system-prompt` and OpenCode sends a native `system` request field.
 pub fn prepend_system_prompt(system_prompt: Option<&str>, user_prompt: &str) -> String {
     match system_prompt {
         Some(system_prompt) => format!("{system_prompt}\n\n---\n\n{user_prompt}"),

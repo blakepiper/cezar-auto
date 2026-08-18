@@ -48,7 +48,7 @@ use crate::runs::store;
 use crate::runs::task_markers::{self, TaskMarkers};
 use crate::time::{is_zod_datetime, now_iso8601};
 
-const AUTONOMOUS_NUDGE: &str = "Continue working autonomously until the task is fully complete. Do not ask me for confirmation or clarification — make reasonable assumptions and proceed. When everything is done and verified, end your final response with a line containing exactly DUCK:DONE.";
+const AUTONOMOUS_NUDGE: &str = "Your immediately preceding response may already have completed the user's original request, but it did not include the required completion marker. Do not begin new work, search for unrelated work, or expand the task. If the original request is fully complete, reply with exactly DUCK:DONE. Otherwise, continue only the original request. If you genuinely need user input, end normally without a marker.";
 
 /// A patch represented with the same camelCase keys as the persisted contract.
 ///
@@ -4795,6 +4795,14 @@ mod tests {
                     .and_then(Value::as_str)
                     .is_some_and(|message| message.starts_with("autonomous pass"))
         }));
+    }
+
+    #[test]
+    fn autonomous_nudge_repairs_the_marker_without_expanding_the_task() {
+        assert!(AUTONOMOUS_NUDGE.contains("may already have completed"));
+        assert!(AUTONOMOUS_NUDGE.contains("Do not begin new work"));
+        assert!(AUTONOMOUS_NUDGE.contains("search for unrelated work"));
+        assert!(AUTONOMOUS_NUDGE.contains("reply with exactly DUCK:DONE"));
     }
 
     #[test]

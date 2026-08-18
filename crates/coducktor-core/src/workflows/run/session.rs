@@ -26,6 +26,8 @@ pub const MAX_AUTONOMOUS_CONTINUES: u32 = 4;
 /// complete.
 pub const TASK_CONTROL_INSTRUCTIONS: &str = "## Coducktor task controls
 
+The user's request defines the whole task. Do not invent, start, or search for unrelated follow-up work. A request that only asks a question is fully complete once you have answered it; no repository change is required.
+
 When the task is fully complete and verified, end your final response with a line containing exactly DUCK:DONE. Do not emit DUCK:DONE while anything remains unfinished or unverified. If you need a user reply, end normally without that marker.
 
 If you end a turn only because your own downstream work is still running, end with a line containing exactly DUCK:MONITORING. Use it only while monitoring work that does not need user input, and never combine it with DUCK:DONE.";
@@ -177,6 +179,15 @@ mod tests {
         assert_eq!(
             system_prompt_with_task_controls(Some("  \n")),
             TASK_CONTROL_INSTRUCTIONS
+        );
+    }
+
+    #[test]
+    fn task_controls_define_completion_for_answer_only_requests() {
+        assert!(TASK_CONTROL_INSTRUCTIONS.contains("The user's request defines the whole task."));
+        assert!(TASK_CONTROL_INSTRUCTIONS.contains("A request that only asks a question"));
+        assert!(
+            TASK_CONTROL_INSTRUCTIONS.contains("Do not invent, start, or search for unrelated")
         );
     }
 

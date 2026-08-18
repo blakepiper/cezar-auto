@@ -55,9 +55,7 @@ use coducktor_core::workflows::run::{
 use regex::Regex;
 use serde_json::{Map, Value, json};
 
-use crate::agent_runner::{
-    AgentRunSpec, ContentBlock, prepend_system_prompt, reasoning_effort_str,
-};
+use crate::agent_runner::{AgentRunSpec, ContentBlock, reasoning_effort_str};
 use crate::child_process::{ChildProcess, NextLine, SpawnConfig};
 use crate::claude_runner::{DEFAULT_RUN_TIMEOUT_MS, EOF_KILL_GRACE_MS};
 use crate::model_identity::parse_model_identity;
@@ -330,6 +328,7 @@ impl OpencodeSession {
         text: &str,
         images: &[PromptImage],
         include_variant: bool,
+        system_prompt: Option<&str>,
     ) -> Value {
         let mut body = Map::new();
         body.insert(
@@ -338,6 +337,9 @@ impl OpencodeSession {
         );
         if include_variant && let Some(effort) = self.spec.reasoning_effort {
             body.insert("variant".to_owned(), json!(reasoning_effort_str(effort)));
+        }
+        if let Some(system_prompt) = system_prompt.filter(|prompt| !prompt.is_empty()) {
+            body.insert("system".to_owned(), json!(system_prompt));
         }
         // `spec.model` arrives already normalised to canonical `provider/model`; split it into
         // opencode's `{ providerID, modelID }`.
@@ -418,11 +420,12 @@ impl OpencodeSession {
         &mut self,
         text: &str,
         images: &[PromptImage],
+        system_prompt: Option<&str>,
         deadline: Option<Instant>,
         on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
     ) -> Result<(), String> {
         let path = format!("/session/{}/message", self.session_id);
-        let body = self.build_prompt_body(text, images, true);
+        let body = self.build_prompt_body(text, images, true, system_prompt);
         let result = self.post_and_drain(&path, body, deadline, on_event);
         // OpenCode variants are model-specific; a generic Auto decision can name a level the
         // selected model doesn't advertise. Retry once with the provider default instead of
@@ -440,7 +443,7 @@ impl OpencodeSession {
                     ),
                 ))
                 .map_err(|error| error.to_string())?;
-                let fallback_body = self.build_prompt_body(text, images, false);
+                let fallback_body = self.build_prompt_body(text, images, false, system_prompt);
                 self.post_and_drain(&path, fallback_body, deadline, on_event)
             }
             other => other,
@@ -465,6 +468,7 @@ impl OpencodeSession {
         &mut self,
         text: &str,
         images: &[PromptImage],
+        system_prompt: Option<&str>,
         on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
     ) -> Result<SessionOutcome, String> {
         let deadline =
@@ -477,7 +481,7 @@ impl OpencodeSession {
         );
         let text_start = self.text_chunks.len();
 
-        let result = self.run_prompt(text, images, deadline, on_event);
+        let result = self.run_prompt(text, images, system_prompt, deadline, on_event);
         // A part that never saw `time.end` (abort, server quirk) still surfaces its prose before
         // the turn boundary.
         for flushed in self.coalescer.flush() {
@@ -701,8 +705,7 @@ impl AgentSession for OpencodeSession {
         }
         on_event(EventInput::new("session").field("sessionId", self.session_id.clone()))
             .map_err(|error| error.to_string())?;
-        let first_text =
-            prepend_system_prompt(self.spec.system_prompt.as_deref(), &self.spec.user_prompt);
+        let first_text = self.spec.user_prompt.clone();
         let images = self
             .spec
             .images
@@ -715,7 +718,8 @@ impl AgentSession for OpencodeSession {
                 ContentBlock::Text { .. } => None,
             })
             .collect::<Vec<_>>();
-        self.run_one_turn(&first_text, &images, on_event)
+        let system_prompt = self.spec.system_prompt.clone();
+        self.run_one_turn(&first_text, &images, system_prompt.as_deref(), on_event)
     }
 
     fn send_message(
@@ -727,7 +731,7 @@ impl AgentSession for OpencodeSession {
         if !self.open {
             return Err("session does not accept follow-up messages".to_owned());
         }
-        self.run_one_turn(prompt, images, on_event)
+        self.run_one_turn(prompt, images, None, on_event)
     }
 
     fn finish(
@@ -781,6 +785,32 @@ mod tests {
                 json!({"type": "text", "text": "inspect"}),
             ]
         );
+    }
+
+    #[test]
+    fn opening_prompt_uses_opencodes_native_system_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = node_config();
+        let mut run_spec = spec_for(dir.path(), "answer the question");
+        run_spec.system_prompt = Some("Follow the task controls.".to_owned());
+        let mut session = open_opencode_session(&config, run_spec, &BTreeMap::new()).unwrap();
+
+        let body = session.build_prompt_body(
+            "answer the question",
+            &[],
+            true,
+            Some("Follow the task controls."),
+        );
+
+        assert_eq!(
+            body.get("system").and_then(Value::as_str),
+            Some("Follow the task controls.")
+        );
+        assert_eq!(
+            body.pointer("/parts/0/text").and_then(Value::as_str),
+            Some("answer the question")
+        );
+        session.finish(&mut |_| Ok(())).unwrap();
     }
     use std::path::PathBuf;
 
