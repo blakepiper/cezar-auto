@@ -1166,7 +1166,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let composer_height = app.new_task_ui.composer.height() + 2;
     let pill_height = pill_row_height(column_width, &effective);
     let action_height = action_row_height(column_width);
-    let header = 3;
+    let header = 2;
     let constraints = [
         Constraint::Length(header),
         Constraint::Length(composer_height),
@@ -1179,9 +1179,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         .constraints(constraints)
         .split(column);
 
-    // Project context + hero title + run-mode note. This is deliberately non-editable: the
-    // pending StartRun already captured the same project id.
-    let note = new_task_form::composer_run_mode_note(effective.worktree_on, effective.has_git);
+    // Project context + hero title. This is deliberately non-editable: the pending StartRun
+    // already captured the same project id.
     let project = app.current_project().to_owned();
     let root = app
         .project_registry
@@ -1205,10 +1204,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                 Style::default()
                     .fg(theme.palette.fg)
                     .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(Span::styled(
-                note,
-                Style::default().fg(theme.palette.soft_fg),
             )),
         ]))
         .alignment(ratatui::layout::Alignment::Center)

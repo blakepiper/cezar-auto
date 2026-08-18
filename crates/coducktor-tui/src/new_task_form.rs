@@ -503,17 +503,6 @@ pub fn resolve_composer_run_mode(
     (autonomous, worktree)
 }
 
-/// The `/new` header's one-line answer to "where will this run land?" (#793).
-pub fn composer_run_mode_note(worktree: bool, has_git: bool) -> &'static str {
-    if worktree {
-        "Runs in an isolated worktree — review everything before it lands."
-    } else if has_git {
-        "Runs in the repo working tree — your checkout is modified directly."
-    } else {
-        "Runs in place — no git repository detected, so there is no worktree to isolate in."
-    }
-}
-
 /// The config a project contributes to the composer's effective values.
 #[derive(Debug, Clone)]
 pub struct ComposerConfig {

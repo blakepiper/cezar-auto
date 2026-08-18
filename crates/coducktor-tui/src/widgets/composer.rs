@@ -602,8 +602,8 @@ impl Composer {
         self.text.split('\n').count().clamp(3, 8) as u16
     }
 
-    /// Render the composer card (textarea + attachment row + footer). The host draws
-    /// the pill row below it.
+    /// Render the composer card (textarea + attachment row). The host draws the
+    /// pill row below it.
     pub fn render(
         &self,
         frame: &mut Frame<'_>,
@@ -632,7 +632,7 @@ impl Composer {
         frame.render_widget(block, area);
 
         let (caret_line, caret_col) = self.caret_position();
-        let reserved_height = if self.attachments.is_empty() { 3 } else { 4 };
+        let reserved_height = if self.attachments.is_empty() { 2 } else { 3 };
         let visible = area.height.saturating_sub(reserved_height).clamp(1, 6);
         let scroll = caret_line.saturating_sub(visible as usize - 1);
         let hscroll = caret_col.saturating_sub(usize::from(inner.width.saturating_sub(1)));
@@ -675,7 +675,7 @@ impl Composer {
             row += 1;
         }
 
-        // Pasted-image removal row + footer.
+        // Pasted-image removal row.
         if !self.attachments.is_empty() && row < inner.bottom() {
             let footer = Line::from(
                 self.attachments
@@ -702,18 +702,7 @@ impl Composer {
                 );
                 cursor += name_len;
             }
-            row += 1;
         }
-        if row < inner.bottom() {
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    " Enter send · Shift+Enter newline · Ctrl+V paste",
-                    Style::default().fg(theme.palette.soft_fg),
-                ))),
-                Rect::new(inner.x + 1, row, inner.width.saturating_sub(2), 1),
-            );
-        }
-
         if let Some(menu) = &self.menu {
             render_menu_overlay(frame, menu, area, theme);
         }
