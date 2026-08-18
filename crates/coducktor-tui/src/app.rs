@@ -27,6 +27,7 @@ const SIDEBAR_MAX_WIDTH: u16 = 44;
 pub enum NavItem {
     NewTask,
     Tasks,
+    Scratchpad,
     Ide,
     Terminal,
     RepoGit,
@@ -38,8 +39,8 @@ pub enum NavItem {
 
 impl NavItem {
     const ALL: [Self; 9] = [
-        Self::NewTask,
         Self::Tasks,
+        Self::Scratchpad,
         Self::Ide,
         Self::Terminal,
         Self::RepoGit,
@@ -53,6 +54,7 @@ impl NavItem {
         match self {
             Self::NewTask => "New task",
             Self::Tasks => "Tasks",
+            Self::Scratchpad => "Scratchpad",
             Self::Ide => "IDE",
             Self::Terminal => "Terminal",
             Self::RepoGit => "Git",
@@ -67,6 +69,7 @@ impl NavItem {
         match self {
             Self::NewTask => "new",
             Self::Tasks => "tasks",
+            Self::Scratchpad => "scratchpad",
             Self::Ide => "ide",
             Self::Terminal => "terminal",
             Self::RepoGit => "repo-git",
@@ -81,6 +84,7 @@ impl NavItem {
         match segment {
             "new" | "new-task" => Some(Self::NewTask),
             "tasks" => Some(Self::Tasks),
+            "scratchpad" | "notes" => Some(Self::Scratchpad),
             "ide" => Some(Self::Ide),
             "terminal" => Some(Self::Terminal),
             "git" | "repo-git" => Some(Self::RepoGit),
@@ -170,6 +174,9 @@ pub enum Route {
     NewTask {
         project: String,
     },
+    Scratchpad {
+        project: String,
+    },
     Thread {
         project: String,
         id: String,
@@ -236,6 +243,7 @@ impl Route {
             return match parts.get(2).copied() {
                 None => Some(Self::Tasks { project }),
                 Some("new") => Some(Self::NewTask { project }),
+                Some("scratchpad" | "notes") => Some(Self::Scratchpad { project }),
                 Some("tasks") if parts.len() >= 5 => {
                     let id = (*parts.get(3)?).to_owned();
                     match TaskGitTab::parse(parts.get(4)?) {
@@ -285,6 +293,7 @@ impl Route {
             Self::GlobalTasks => "/tasks".to_owned(),
             Self::GlobalSettings => "/settings".to_owned(),
             Self::NewTask { project } => format!("/p/{project}/new"),
+            Self::Scratchpad { project } => format!("/p/{project}/scratchpad"),
             Self::Thread { project, id } => format!("/p/{project}/tasks/{id}"),
             Self::TaskGit { project, id, tab } => {
                 format!("/p/{project}/tasks/{id}/{}", tab.path_segment())
@@ -311,6 +320,7 @@ impl Route {
             Self::GlobalTasks => "GLOBAL TASKS",
             Self::GlobalSettings => "GLOBAL SETTINGS",
             Self::NewTask { .. } => "NEW TASK",
+            Self::Scratchpad { .. } => "SCRATCHPAD",
             Self::Thread { .. } => "TASK THREAD",
             Self::TaskGit { .. } => "TASK GIT",
             Self::Ide { .. } => "IDE",
@@ -329,6 +339,7 @@ impl Route {
         match self {
             Self::Tasks { project }
             | Self::NewTask { project }
+            | Self::Scratchpad { project }
             | Self::Thread { project, .. }
             | Self::TaskGit { project, .. }
             | Self::Ide { project }
@@ -585,6 +596,13 @@ pub enum PendingAction {
     /// Load the new-task screen's per-project data (skills, workflows, config, …).
     RefreshNewTask {
         project: String,
+    },
+    LoadScratchpad {
+        project: String,
+    },
+    SaveScratchpad {
+        project: String,
+        content: String,
     },
     /// Load the model catalog for one runner.
     RefreshModels {
@@ -950,6 +968,7 @@ pub struct App {
     pub tasks_ui: crate::screens::tasks::TasksUi,
     pub global_ui: crate::screens::global_tasks::GlobalUi,
     pub new_task_ui: crate::screens::new_task::NewTaskUi,
+    pub scratchpad_ui: crate::screens::scratchpad::ScratchpadUi,
     /// Per-project New Task drafts, keyed by project id. Survives navigation and
     /// project switching for the lifetime of the cockpit (a TUI has no reload).
     pub new_task_drafts: BTreeMap<String, crate::new_task_form::NewTaskDraft>,
@@ -1032,6 +1051,7 @@ impl App {
             tasks_ui: crate::screens::tasks::TasksUi::default(),
             global_ui: crate::screens::global_tasks::GlobalUi::default(),
             new_task_ui: crate::screens::new_task::NewTaskUi::default(),
+            scratchpad_ui: crate::screens::scratchpad::ScratchpadUi::default(),
             new_task_drafts: BTreeMap::new(),
             pending_start_drafts: BTreeMap::new(),
             thread_ui: crate::screens::thread::ThreadUi::default(),
@@ -1111,9 +1131,8 @@ impl App {
         for (index, project) in self.projects.iter().enumerate() {
             rows.push(SidebarRow::Project(index));
             if project.id == self.current_project() && !project.collapsed {
-                rows.push(SidebarRow::Nav(NavItem::NewTask));
                 rows.push(SidebarRow::Nav(NavItem::Tasks));
-                for nav in NavItem::ALL.into_iter().skip(2) {
+                for nav in NavItem::ALL.into_iter().skip(1) {
                     rows.push(SidebarRow::Nav(nav));
                 }
             }
@@ -1137,6 +1156,7 @@ impl App {
                 .position(|entry| entry.id == *project)
                 .map(SidebarRow::Project),
             HitAction::NewTask => Some(SidebarRow::Nav(NavItem::NewTask)),
+            HitAction::Scratchpad => Some(SidebarRow::Nav(NavItem::Scratchpad)),
             HitAction::Tasks => Some(SidebarRow::Nav(NavItem::Tasks)),
             HitAction::Ide => Some(SidebarRow::Nav(NavItem::Ide)),
             HitAction::Terminal => Some(SidebarRow::Nav(NavItem::Terminal)),
@@ -1418,7 +1438,8 @@ impl App {
         let row = match self.route() {
             Route::Placeholder { nav, .. } => SidebarRow::Nav(*nav),
             Route::Tasks { .. } | Route::Thread { .. } => SidebarRow::Nav(NavItem::Tasks),
-            Route::NewTask { .. } => SidebarRow::Nav(NavItem::NewTask),
+            Route::NewTask { .. } => SidebarRow::Nav(NavItem::Tasks),
+            Route::Scratchpad { .. } => SidebarRow::Nav(NavItem::Scratchpad),
             Route::Ide { .. } => SidebarRow::Nav(NavItem::Ide),
             Route::Terminal { .. } => SidebarRow::Nav(NavItem::Terminal),
             Route::Github { .. } => SidebarRow::Nav(NavItem::Github),
@@ -1847,16 +1868,6 @@ impl App {
             if project.id == self.current_project() && !project.collapsed {
                 rows.push((
                     sidebar_nav_line(
-                        "New task",
-                        None,
-                        self.route_is(NavItem::NewTask),
-                        selected == Some(SidebarRow::Nav(NavItem::NewTask)),
-                        self.nav_style(self.route_is(NavItem::NewTask)),
-                    ),
-                    Some(HitAction::NewTask),
-                ));
-                rows.push((
-                    sidebar_nav_line(
                         "Tasks",
                         None,
                         self.route_is(NavItem::Tasks),
@@ -1865,7 +1876,7 @@ impl App {
                     ),
                     Some(HitAction::Tasks),
                 ));
-                for nav in NavItem::ALL.into_iter().skip(2) {
+                for nav in NavItem::ALL.into_iter().skip(1) {
                     rows.push((
                         sidebar_nav_line(
                             nav.label(),
@@ -1952,6 +1963,10 @@ impl App {
                 crate::screens::new_task::render(frame, area, self);
                 return;
             }
+            Route::Scratchpad { .. } => {
+                crate::screens::scratchpad::render(frame, area, self);
+                return;
+            }
             Route::Thread { .. } => {
                 crate::screens::thread::render(frame, area, self);
                 return;
@@ -2036,8 +2051,9 @@ impl App {
         } else if let Some(notice) = &self.notice {
             format!(" {mode}  {notice}")
         } else {
+            let (focus, hint) = self.focus_summary();
             format!(
-                " {mode}  {}  {}  v0.1.0  {}  ? help",
+                " {mode}  FOCUS: {focus} — {hint}  ·  {}  {}  v0.1.0  {}  ? help",
                 self.current_project(),
                 self.theme.name.label(),
                 self.provider_summary(),
@@ -2094,8 +2110,8 @@ impl App {
         }
         if self.help_open {
             self.render_help(frame, area);
-        } else if let Some(confirm) = &self.confirm {
-            self.render_confirm(frame, area, confirm);
+        } else if let Some(confirm) = self.confirm.clone() {
+            self.render_confirm(frame, area, &confirm);
         } else if let Some(menu) = &self.row_menu {
             self.render_row_menu(frame, area, menu);
         } else if self.tasks_ui.sort_picker {
@@ -2132,7 +2148,7 @@ impl App {
         );
     }
 
-    fn render_confirm(&self, frame: &mut Frame<'_>, area: Rect, confirm: &ConfirmRequest) {
+    fn render_confirm(&mut self, frame: &mut Frame<'_>, area: Rect, confirm: &ConfirmRequest) {
         let rect = centered_rect(area, 48.min(area.width), 7.min(area.height));
         frame.render_widget(Clear, rect);
         frame.render_widget(
@@ -2141,6 +2157,20 @@ impl App {
                 .style(Style::default().fg(self.theme.palette.fg))
                 .wrap(Wrap { trim: false }),
             rect,
+        );
+        let buttons_y = rect
+            .y
+            .saturating_add(4)
+            .min(rect.bottom().saturating_sub(1));
+        self.hitmap.register(
+            Rect::new(rect.x.saturating_add(2), buttons_y, 9, 1),
+            20,
+            HitAction::ConfirmYes,
+        );
+        self.hitmap.register(
+            Rect::new(rect.x.saturating_add(13), buttons_y, 8, 1),
+            20,
+            HitAction::ConfirmNo,
         );
     }
 
@@ -2332,7 +2362,13 @@ impl App {
             self.focus_step(key.code);
             return;
         }
-        if self.sidebar_focus && self.handle_sidebar_key(key) {
+        if self.sidebar_focus {
+            if self.handle_sidebar_key(key) {
+                return;
+            }
+            if let Some(action) = self.keymap.action_for(KeyMode::Normal, &key) {
+                self.apply_action(action);
+            }
             return;
         }
         match self.route().clone() {
@@ -2340,6 +2376,7 @@ impl App {
             Route::GlobalTasks if crate::screens::global_tasks::handle_key(self, key) => return,
             Route::GlobalSettings if crate::screens::settings::handle_key(self, key) => return,
             Route::NewTask { .. } if crate::screens::new_task::handle_key(self, key) => return,
+            Route::Scratchpad { .. } if crate::screens::scratchpad::handle_key(self, key) => return,
             Route::Thread { .. } if crate::screens::thread::handle_key(self, key) => return,
             Route::TaskGit { .. } if crate::screens::task_git::handle_key(self, key) => return,
             Route::Ide { .. } if crate::screens::ide::handle_key(self, key) => return,
@@ -2473,6 +2510,24 @@ impl App {
             Some("theme") => {
                 if let Some(name) = parts.next().and_then(ThemeName::parse) {
                     self.theme = Theme::new(name, self.theme.capability);
+                    let mut appearance = self
+                        .settings_ui
+                        .workspace_ui_state
+                        .as_ref()
+                        .and_then(|state| state.appearance.clone())
+                        .unwrap_or_default();
+                    appearance.theme = Some(match name {
+                        ThemeName::Light => coducktor_contract::ThemePreference::Light,
+                        ThemeName::Dark => coducktor_contract::ThemePreference::Dark,
+                        ThemeName::LazyVim => coducktor_contract::ThemePreference::Lazyvim,
+                    });
+                    self.pending
+                        .push(PendingAction::SettingsPutWorkspaceUiState {
+                            input: coducktor_contract::WorkspaceUiState {
+                                appearance: Some(appearance),
+                                ..Default::default()
+                            },
+                        });
                 } else {
                     self.notice = Some("theme must be light, dark, or lazyvim".to_owned());
                 }
@@ -2528,6 +2583,7 @@ impl App {
             }
             HitAction::GlobalSettings => crate::screens::settings::open_global(self),
             HitAction::NewTask => self.navigate(NavItem::NewTask),
+            HitAction::Scratchpad => self.navigate(NavItem::Scratchpad),
             HitAction::Ide => self.navigate(NavItem::Ide),
             HitAction::Terminal => self.navigate(NavItem::Terminal),
             HitAction::RepoGit => self.navigate(NavItem::RepoGit),
@@ -2548,6 +2604,15 @@ impl App {
                 self.request_forward();
             }
             HitAction::Quit => self.request_quit(),
+            HitAction::ConfirmYes => {
+                if let Some(confirm) = self.confirm.clone() {
+                    self.handle_confirm_key(
+                        &confirm,
+                        KeyEvent::new(KeyCode::Char('y'), crossterm::event::KeyModifiers::NONE),
+                    );
+                }
+            }
+            HitAction::ConfirmNo => self.confirm = None,
             HitAction::MarkAllRead => {
                 self.pending.push(PendingAction::MarkAllRead {
                     project: self.current_project().to_owned(),
@@ -2684,6 +2749,7 @@ impl App {
                 self.new_task_ui.composer_focused = true;
                 self.new_task_ui.composer.focus();
             }
+            NavItem::Scratchpad => crate::screens::scratchpad::open(self, &project),
             NavItem::Ide => crate::screens::ide::open(self, &project),
             NavItem::Terminal => crate::screens::terminal::open(self, &project),
             NavItem::Github => crate::screens::github::open(self, &project),
@@ -2750,6 +2816,7 @@ impl App {
             || (nav == NavItem::Tasks
                 && matches!(self.route(), Route::Tasks { .. } | Route::Thread { .. }))
             || (nav == NavItem::NewTask && matches!(self.route(), Route::NewTask { .. }))
+            || (nav == NavItem::Scratchpad && matches!(self.route(), Route::Scratchpad { .. }))
             || (nav == NavItem::Ide && matches!(self.route(), Route::Ide { .. }))
             || (nav == NavItem::Terminal && matches!(self.route(), Route::Terminal { .. }))
             || (nav == NavItem::Github && matches!(self.route(), Route::Github { .. }))
@@ -2902,6 +2969,10 @@ impl App {
             (KeyCode::Left, false) => {
                 let pane = self.current_screen_pane();
                 if pane == 0 {
+                    if matches!(self.route(), Route::NewTask { .. }) {
+                        self.new_task_ui.composer_focused = false;
+                        self.new_task_ui.composer.focused = false;
+                    }
                     self.focus_sidebar();
                 } else {
                     self.set_screen_pane(pane - 1);
@@ -2932,19 +3003,26 @@ impl App {
                 let Some(row) = rows.get(self.sidebar_selected).copied() else {
                     return false;
                 };
-                self.sidebar_focus = false;
                 match row {
                     SidebarRow::Project(index) => {
                         if let Some(project) = self.projects.get(index) {
                             self.select_project(project.id.clone());
+                            self.sidebar_focus = true;
                         }
                     }
-                    SidebarRow::Nav(nav) => self.navigate(nav),
+                    SidebarRow::Nav(nav) => {
+                        self.sidebar_focus = false;
+                        self.navigate(nav);
+                    }
                     SidebarRow::GlobalTasks => {
+                        self.sidebar_focus = false;
                         self.request_navigate(Route::GlobalTasks);
                         self.pending.push(PendingAction::RefreshIndex);
                     }
-                    SidebarRow::GlobalSettings => crate::screens::settings::open_global(self),
+                    SidebarRow::GlobalSettings => {
+                        self.sidebar_focus = false;
+                        crate::screens::settings::open_global(self);
+                    }
                     SidebarRow::Filter(filter) => self.set_task_filter(filter),
                 }
                 true
@@ -2990,6 +3068,52 @@ impl App {
             .join(" ")
     }
 
+    fn focus_summary(&self) -> (&'static str, &'static str) {
+        if self.sidebar_focus {
+            return ("SIDEBAR", "↑↓ choose project or view · Enter open");
+        }
+        match self.route() {
+            Route::Tasks { .. } | Route::GlobalTasks => {
+                ("TASKS", "↑↓ choose task · Enter open · n new")
+            }
+            Route::NewTask { .. } if self.new_task_ui.composer_focused => {
+                ("COMPOSER", "type prompt · Ctrl+← returns to sidebar")
+            }
+            Route::NewTask { .. } => ("NEW TASK", "i edit prompt · Ctrl+← sidebar"),
+            Route::Scratchpad { .. } => ("SCRATCHPAD", "type notes · saved locally"),
+            Route::Ide { .. } if self.current_screen_pane() == 0 => {
+                ("FILE TREE", "↑↓ choose file · Enter open")
+            }
+            Route::Ide { .. } => ("EDITOR", "edit file · Ctrl+S save"),
+            Route::RepoGit { tab, .. } if self.current_screen_pane() == 0 => match tab {
+                RepoGitTab::Commits => ("COMMIT LIST", "↑↓ browse · Enter load diff"),
+                RepoGitTab::Changes => ("FILE LIST", "↑↓ browse changed files"),
+                RepoGitTab::Branches => ("BRANCH LIST", "↑↓ browse branches"),
+            },
+            Route::RepoGit { .. } => ("GIT DETAIL", "↑↓ scroll · Ctrl+← list"),
+            Route::TaskGit { .. } if self.current_screen_pane() == 0 => {
+                ("TASK FILES", "↑↓ browse · Enter open")
+            }
+            Route::TaskGit { .. } => ("TASK DIFF", "↑↓ scroll · Ctrl+← files"),
+            Route::Workflows { .. } if self.current_screen_pane() == 0 => {
+                ("SKILL PALETTE", "↑↓ choose skill · Enter add")
+            }
+            Route::Workflows { .. } => ("WORKFLOW STEPS", "↑↓ choose step"),
+            Route::Github { .. } if self.current_screen_pane() == 0 => {
+                ("GITHUB LIST", "↑↓ choose item · Enter open")
+            }
+            Route::Github { .. } => ("GITHUB DETAIL", "↑↓ scroll · Ctrl+← list"),
+            Route::Settings { .. } | Route::GlobalSettings => {
+                if self.current_screen_pane() == 0 {
+                    ("SETTINGS NAV", "↑↓ choose section · Ctrl+→ values")
+                } else {
+                    ("SETTINGS VALUES", "↑↓ choose setting · ←/→ change")
+                }
+            }
+            _ => ("CONTENT", "Ctrl+←/→ changes panel"),
+        }
+    }
+
     fn normal_style(&self) -> Style {
         Style::default().fg(self.theme.palette.fg)
     }
@@ -3017,6 +3141,7 @@ fn nav_hit_action(nav: NavItem) -> HitAction {
     match nav {
         NavItem::NewTask => HitAction::NewTask,
         NavItem::Tasks => HitAction::Tasks,
+        NavItem::Scratchpad => HitAction::Scratchpad,
         NavItem::Ide => HitAction::Ide,
         NavItem::Terminal => HitAction::Terminal,
         NavItem::RepoGit => HitAction::RepoGit,
@@ -3250,6 +3375,7 @@ impl UppercaseTitle for NavItem {
         match self {
             Self::NewTask => "NEW TASK",
             Self::Tasks => "TASKS",
+            Self::Scratchpad => "SCRATCHPAD",
             Self::Ide => "IDE",
             Self::Terminal => "TERMINAL",
             Self::RepoGit => "GIT",
@@ -3310,7 +3436,7 @@ mod tests {
         app.handle_event(Event::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 2,
-            row: 4,
+            row: 3,
             modifiers: KeyModifiers::NONE,
         }));
         assert!(matches!(app.route(), Route::Tasks { .. }));
@@ -3785,6 +3911,43 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_left_releases_the_composer_so_q_quits_from_the_sidebar() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.navigate(NavItem::NewTask);
+        assert!(app.new_task_ui.composer_focused);
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Left,
+            KeyModifiers::CONTROL,
+        )));
+        assert!(app.sidebar_focus);
+        assert!(!app.new_task_ui.composer_focused);
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('q'),
+            KeyModifiers::NONE,
+        )));
+        assert!(app.should_quit());
+        assert!(app.new_task_ui.composer.text.is_empty());
+    }
+
+    #[test]
+    fn confirmation_buttons_are_clickable() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.confirm = Some(ConfirmRequest {
+            text: "Quit?".to_owned(),
+            action: PendingAction::Quit,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        app.handle_event(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 39,
+            row: 15,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert!(app.should_quit());
+    }
+
+    #[test]
     fn startup_ctrl_right_enters_the_tasks_screen() {
         fn ctrl(app: &mut App, code: KeyCode) {
             app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::CONTROL)));
@@ -3921,7 +4084,7 @@ mod tests {
         assert_eq!(app.sidebar_selected, 5);
 
         app.request_back();
-        assert_eq!(app.sidebar_selected, 2);
+        assert_eq!(app.sidebar_selected, 1);
     }
 
     #[test]

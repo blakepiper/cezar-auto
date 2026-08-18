@@ -5,7 +5,7 @@
 //! area, attachment row — no Dictation, per decision 2), a pill row —
 //! `skill/workflow ▾` · `runner ▾` · `model ▾` · `reasoning ▾` · `×N variants ▾` ·
 //! `base: <branch> ▾` · `agent account ▾` · `autonomous ☐` — then `Start` / `Plan
-//! first` and the send button, with prompt-template suggestion chips below.
+//! first` and the send button.
 
 use coducktor_contract::{
     AgentProfilesResponse, ImageInput, PlanResponse, ProviderStatusResponse, ReasoningEffort,
@@ -371,20 +371,6 @@ pub fn apply_hit(app: &mut App, action: NewTaskAction) {
         NewTaskAction::AutonomousPill => toggle_autonomous(app),
         NewTaskAction::Start => request_start(app),
         NewTaskAction::Plan => request_plan(app),
-        NewTaskAction::Suggestion(index) => {
-            const SUGGESTIONS: [&str; 3] = [
-                "Fix a failing or flaky test",
-                "Summarize recent commits on this branch",
-                "Update the README for recent changes",
-            ];
-            if let Some(suggestion) = SUGGESTIONS.get(index) {
-                app.new_task_ui.composer.set_text(suggestion);
-                app.new_task_ui.draft.text = suggestion.to_string();
-                write_draft(app);
-                app.new_task_ui.composer_focused = true;
-                app.new_task_ui.composer.focus();
-            }
-        }
         NewTaskAction::Compose => {
             app.new_task_ui.composer_focused = true;
             app.new_task_ui.composer.focus();
@@ -802,16 +788,25 @@ fn runner_picker_items(data: &NewTaskData) -> Vec<PickerItem> {
     } else {
         effective.runners.clone()
     };
-    runners
-        .into_iter()
-        .map(|runner| {
-            PickerItem::simple(
-                format!("runner:{}", runner_label(runner)),
-                runner_label(runner).to_owned(),
-                Some(runner_desc(runner).to_owned()),
-            )
-        })
-        .collect()
+    let mut items = Vec::new();
+    if runners
+        .iter()
+        .any(|runner| matches!(runner, Runner::Claude | Runner::Codex | Runner::OpenCode))
+    {
+        items.push(PickerItem::simple(
+            "runner:auto",
+            "auto",
+            Some("Choose an available provider for this task".to_owned()),
+        ));
+    }
+    items.extend(runners.into_iter().map(|runner| {
+        PickerItem::simple(
+            format!("runner:{}", runner_label(runner)),
+            runner_label(runner).to_owned(),
+            Some(runner_desc(runner).to_owned()),
+        )
+    }));
+    items
 }
 
 fn runner_desc(runner: Runner) -> &'static str {
@@ -992,6 +987,7 @@ fn parse_source(value: &str) -> Option<TaskSource> {
 
 fn parse_runner(value: &str) -> Option<RunnerSelection> {
     match value.strip_prefix("runner:") {
+        Some("auto") => Some(RunnerSelection::Auto),
         Some("claude") => Some(RunnerSelection::Claude),
         Some("codex") => Some(RunnerSelection::Codex),
         Some("opencode") => Some(RunnerSelection::OpenCode),
@@ -1119,7 +1115,7 @@ fn media_type_for_path(path: &str) -> Option<&'static str> {
     }
 }
 
-/// Render the whole screen: hero title, composer card, pill row, actions, chips,
+/// Render the whole screen: hero title, composer card, pill row, actions,
 /// then the open picker/plan overlays.
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     sync_draft(app);
@@ -1151,14 +1147,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let composer_height = app.new_task_ui.composer.height() + 2;
     let pill_height = pill_row_height(column_width, &effective);
     let action_height = action_row_height(column_width);
-    let suggestion_height = suggestion_row_height(column_width);
     let header = 3;
     let constraints = [
         Constraint::Length(header),
         Constraint::Length(composer_height),
         Constraint::Length(pill_height),
         Constraint::Length(action_height),
-        Constraint::Length(suggestion_height),
         Constraint::Min(1),
     ];
     let rows = Layout::default()
@@ -1217,9 +1211,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     // Pill row.
     render_pills(frame, rows[2], app, &effective);
 
-    // Start / Plan first + suggestion chips.
+    // Start / Plan first.
     render_actions(frame, rows[3], app, &effective);
-    render_suggestions(frame, rows[4], app);
 
     // Overlays: open picker, then the plan.
     if app.new_task_ui.picker.is_some() {
@@ -1355,25 +1348,6 @@ fn action_row_height(width: u16) -> u16 {
     wrapped_height(content, width)
 }
 
-fn suggestion_row_height(width: u16) -> u16 {
-    let suggestions = [
-        "Fix a failing or flaky test",
-        "Summarize recent commits on this branch",
-        "Update the README for recent changes",
-    ];
-    let mut rows = 1_usize;
-    let mut row_width = 0_usize;
-    for suggestion in suggestions {
-        let item_width = suggestion.chars().count() + 2;
-        if row_width > 0 && row_width + item_width > usize::from(width.max(1)) {
-            rows += 1;
-            row_width = 0;
-        }
-        row_width += item_width + 2;
-    }
-    rows as u16
-}
-
 fn wrapped_height(content: &str, width: u16) -> u16 {
     let width = usize::from(width.max(1));
     content.chars().count().div_ceil(width).max(1) as u16
@@ -1414,55 +1388,6 @@ fn render_actions(frame: &mut Frame<'_>, area: Rect, app: &mut App, effective: &
         6,
         HitAction::NewTaskScreen(NewTaskAction::Plan),
     );
-}
-
-fn render_suggestions(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
-    let theme = app.theme;
-    let suggestions = [
-        "Fix a failing or flaky test",
-        "Summarize recent commits on this branch",
-        "Update the README for recent changes",
-    ];
-    let line = Line::from(
-        suggestions
-            .iter()
-            .flat_map(|suggestion| {
-                [
-                    Span::styled(
-                        format!("[{suggestion}]"),
-                        Style::default().fg(theme.palette.soft_fg),
-                    ),
-                    Span::raw("  "),
-                ]
-            })
-            .collect::<Vec<_>>(),
-    );
-    frame.render_widget(
-        Paragraph::new(line)
-            .wrap(Wrap { trim: false })
-            .style(Style::default().bg(theme.palette.bg)),
-        area,
-    );
-    let mut column = area.x;
-    let mut row = area.y;
-    for (index, suggestion) in suggestions.iter().enumerate() {
-        let width = (suggestion.len() + 2) as u16;
-        if column != area.x && column.saturating_add(width) > area.right() {
-            column = area.x;
-            row = row.saturating_add(1);
-        }
-        app.hitmap.register(
-            Rect::new(
-                column,
-                row,
-                width.min(area.right().saturating_sub(column)),
-                1,
-            ),
-            6,
-            HitAction::NewTaskScreen(NewTaskAction::Suggestion(index)),
-        );
-        column = column.saturating_add(width + 2);
-    }
 }
 
 fn theme_soft(theme: Theme) -> Style {
@@ -1932,6 +1857,22 @@ mod tests {
     }
 
     #[test]
+    fn runner_picker_offers_auto_before_connected_providers() {
+        let data = NewTaskData {
+            provider_status: Some(ProviderStatusResponse {
+                providers: vec![connected_provider(Runner::Codex)],
+            }),
+            ..NewTaskData::default()
+        };
+        let items = runner_picker_items(&data);
+        assert_eq!(
+            items.first().map(|item| item.value.as_str()),
+            Some("runner:auto")
+        );
+        assert!(items.iter().any(|item| item.value == "runner:codex"));
+    }
+
+    #[test]
     fn narrow_new_task_layout_wraps_everything_under_the_composer() {
         let mut app = app_with_new_task("t-layout");
         let content = render(&mut app, 80, 24);
@@ -1943,10 +1884,7 @@ mod tests {
             content.contains("Esc leaves the composer"),
             "action help must remain visible"
         );
-        assert!(
-            content.contains("Update the README for recent changes"),
-            "suggestions must wrap instead of disappearing off the right edge"
-        );
+        assert!(!content.contains("Fix a failing or flaky test"));
     }
 
     #[test]

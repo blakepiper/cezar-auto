@@ -275,11 +275,21 @@ pub struct WorkspaceUsageResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Appearance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<ThemePreference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accent: Option<Accent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub density: Option<Density>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub width: Option<ReadingWidth>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemePreference {
+    Light,
+    Dark,
+    Lazyvim,
 }
 
 /// Appearance accent.

@@ -561,6 +561,10 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         return crate::app::handle_row_menu_key(app, &menu, key);
     }
     match key.code {
+        KeyCode::Char('n') => {
+            app.navigate(crate::app::NavItem::NewTask);
+            true
+        }
         KeyCode::Char('j') | KeyCode::Down => {
             app.tasks_ui.table.move_selection(1);
             remember_selection(app);
@@ -875,6 +879,20 @@ mod tests {
         assert!(content.contains("done"));
         assert!(content.contains("feat/shell"));
         assert!(content.contains("+12 −3"));
+    }
+
+    #[test]
+    fn n_opens_the_new_task_composer() {
+        let mut app = app_with_tasks(Vec::new());
+        assert!(handle_key(
+            &mut app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('n'),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        ));
+        assert!(matches!(app.route(), crate::app::Route::NewTask { .. }));
+        assert!(app.new_task_ui.composer_focused);
     }
 
     #[test]

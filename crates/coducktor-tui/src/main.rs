@@ -381,11 +381,28 @@ fn apply_prime_snapshot(app: &mut App, snapshot: PrimeSnapshot) {
         app.set_global_index(index);
     }
     if let Some(state) = snapshot.workspace_ui_state {
+        if let Some(theme) = state
+            .appearance
+            .as_ref()
+            .and_then(|appearance| appearance.theme)
+        {
+            let name = match theme {
+                coducktor_contract::ThemePreference::Light => {
+                    coducktor_tui::theme::ThemeName::Light
+                }
+                coducktor_contract::ThemePreference::Dark => coducktor_tui::theme::ThemeName::Dark,
+                coducktor_contract::ThemePreference::Lazyvim => {
+                    coducktor_tui::theme::ThemeName::LazyVim
+                }
+            };
+            app.theme = Theme::new(name, app.theme.capability);
+        }
         app.notifications_enabled = state
             .notifications
             .as_ref()
             .and_then(|notifications| notifications.enabled)
             .unwrap_or(false);
+        app.settings_ui.workspace_ui_state = Some(state);
     }
     apply_new_task_snapshot(app, snapshot.new_task);
 }
@@ -584,6 +601,36 @@ async fn execute_pending(
                     async move { load_new_task_snapshot(engine_for_task, &project_for_task).await },
                     move |snapshot| BackgroundResult::RefreshNewTask { project, snapshot },
                 );
+            }
+            PendingAction::LoadScratchpad { project } => {
+                let scope = Scope::Project(project.clone());
+                match engine.scratchpad(&scope).await {
+                    Ok(scratchpad) if app.scratchpad_ui.project == project => {
+                        app.scratchpad_ui.editor.set_text(&scratchpad.content);
+                        app.scratchpad_ui.loaded = true;
+                        app.scratchpad_ui.saving = false;
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        app.scratchpad_ui.loaded = true;
+                        app.notice = Some(format!("scratchpad: {error}"));
+                    }
+                }
+            }
+            PendingAction::SaveScratchpad { project, content } => {
+                let scope = Scope::Project(project.clone());
+                let input = coducktor_contract::SetScratchpadInput { content };
+                match engine.put_scratchpad(&scope, &input).await {
+                    Ok(_) if app.scratchpad_ui.project == project => {
+                        app.scratchpad_ui.loaded = true;
+                        app.scratchpad_ui.saving = false;
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        app.scratchpad_ui.saving = false;
+                        app.notice = Some(format!("save scratchpad failed: {error}"));
+                    }
+                }
             }
             PendingAction::RefreshModels { runner } => {
                 let engine_for_task = engine.clone();

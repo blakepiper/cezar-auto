@@ -4,7 +4,7 @@
 //!
 //! The screen contains only the sections listed above. Terminal-only concerns such as
 //! keymaps and external-link safety stay in their owning screens or local configuration. The
-//! Theme control changes `app.theme` for the running session only.
+//! Appearance controls are persisted in the workspace UI state.
 //! Provider usage graphs are not rendered in Resources — only the
 //! editable knobs are. Per-project account overrides are read-only here; the "Default
 //! account" rows write the WORKSPACE default (`projectId: None`) only, not a per-project
@@ -463,7 +463,7 @@ fn rows_appearance(app: &App) -> Vec<Row> {
         .and_then(|state| state.appearance.clone())
         .unwrap_or_default();
     vec![
-        row("Theme (this session)", app.theme.name.label().to_owned()),
+        row("Theme", app.theme.name.label().to_owned()),
         row(
             "Accent",
             appearance
@@ -899,6 +899,13 @@ fn cycle_appearance(app: &mut App, row: usize, backward: bool) {
                 (position + 1) % len
             };
             app.theme = Theme::new(THEMES[next], app.theme.capability);
+            let mut appearance = current_appearance(app);
+            appearance.theme = Some(match THEMES[next] {
+                ThemeName::Light => coducktor_contract::ThemePreference::Light,
+                ThemeName::Dark => coducktor_contract::ThemePreference::Dark,
+                ThemeName::LazyVim => coducktor_contract::ThemePreference::Lazyvim,
+            });
+            put_appearance(app, appearance);
         }
         1 => {
             let mut appearance = current_appearance(app);
@@ -1549,12 +1556,18 @@ mod tests {
     }
 
     #[test]
-    fn global_settings_theme_control_changes_the_session_theme() {
+    fn global_settings_theme_control_persists_the_theme() {
         let mut app = app_with_global_settings();
         handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(current_section(&app), SettingsSection::Appearance);
         handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         assert_eq!(app.theme.name, ThemeName::Light);
+        assert!(app.pending.iter().any(|action| matches!(
+            action,
+            PendingAction::SettingsPutWorkspaceUiState { input }
+                if input.appearance.as_ref().and_then(|appearance| appearance.theme)
+                    == Some(coducktor_contract::ThemePreference::Light)
+        )));
     }
 
     #[test]

@@ -75,8 +75,6 @@ pub enum NewTaskAction {
     Start,
     Plan,
     Compose,
-    /// A suggestion chip below the composer — inserts the template into the draft.
-    Suggestion(usize),
 }
 
 /// Clickable actions registered while a frame renders.
@@ -86,6 +84,7 @@ pub enum HitAction {
     Tasks,
     GlobalTasks,
     NewTask,
+    Scratchpad,
     Ide,
     Terminal,
     RepoGit,
@@ -102,6 +101,8 @@ pub enum HitAction {
     Back,
     Forward,
     Quit,
+    ConfirmYes,
+    ConfirmNo,
     /// A column header on the active run table — click to sort.
     TableHeader(ColumnId),
     /// A row of the active run table — click to open, right-click to menu.

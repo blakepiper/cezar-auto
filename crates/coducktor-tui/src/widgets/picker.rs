@@ -13,8 +13,8 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::input::hitmap::{HitAction, HitMap};
 use crate::theme::Theme;
@@ -144,20 +144,15 @@ impl Picker {
         let height = (content_lines + 2).min(area.height.saturating_sub(2));
         let rect = centered_rect(area, width, height);
         frame.render_widget(Clear, rect);
-        let lines = self.lines(theme);
         frame.render_widget(
-            Paragraph::new(Text::from(lines))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(self.title.clone()),
-                )
+            Block::default()
+                .borders(Borders::ALL)
+                .title(self.title.clone())
                 .style(
                     Style::default()
                         .fg(theme.palette.fg)
                         .bg(theme.palette.surface),
-                )
-                .wrap(Wrap { trim: false }),
+                ),
             rect,
         );
         let mut row = rect.y + 1;
@@ -209,8 +204,7 @@ impl Picker {
             let marker = if selected { ">" } else { " " };
             let mut spans = vec![Span::styled(format!(" {marker} {} ", item.label), style)];
             if let Some(description) = &item.description {
-                let mut desc = description.clone();
-                desc.truncate(desc.len().min(40));
+                let desc = description.chars().take(40).collect::<String>();
                 spans.push(Span::styled(
                     format!("  {desc}"),
                     if selected {
@@ -232,52 +226,6 @@ impl Picker {
             row += 1;
             index += 1;
         }
-    }
-
-    fn lines(&self, theme: Theme) -> Vec<Line<'static>> {
-        let mut lines = Vec::new();
-        let mut index = 0;
-        let mut previous_group: Option<&str> = None;
-        while index < self.items.len() {
-            let item = &self.items[index];
-            if item.group.as_deref() != previous_group {
-                lines.push(Line::from(Span::styled(
-                    format!(" {} ", item.group.clone().unwrap_or_default()),
-                    Style::default()
-                        .fg(theme.palette.soft_fg)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                previous_group = item.group.as_deref();
-            }
-            let selected = index == self.selected;
-            let mut style = if selected {
-                Style::default()
-                    .fg(theme.palette.bg)
-                    .bg(theme.palette.accent)
-            } else {
-                Style::default().fg(theme.palette.fg)
-            };
-            if item.emphasized && !selected {
-                style = style.add_modifier(Modifier::BOLD);
-            }
-            let marker = if selected { ">" } else { " " };
-            let mut spans = vec![Span::styled(format!(" {marker} {} ", item.label), style)];
-            if let Some(description) = &item.description {
-                let mut desc = description.clone();
-                desc.truncate(desc.len().min(40));
-                spans.push(Span::styled(
-                    format!("  {desc}"),
-                    if selected {
-                        Style::default().fg(theme.palette.bg)
-                    } else {
-                        Style::default().fg(theme.palette.soft_fg)
-                    },
-                ));
-            }
-            lines.push(Line::from(spans));
-            index += 1;
-        }
-        lines
     }
 }
 

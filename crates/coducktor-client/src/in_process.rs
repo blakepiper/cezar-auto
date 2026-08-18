@@ -422,11 +422,18 @@ impl InProcessEngine {
                     .ok_or(EngineError::NotFound)?
             }
         };
+        let requested_runner = input.runner;
+        let resolved_runner = if requested_runner == Some(RunnerSelection::Auto) {
+            auto_runner(&provider_status_response())
+        } else {
+            None
+        };
         let core_input = CoreStartRunInput {
             task: input.task,
             model: input.model,
             reasoning_effort: input.reasoning_effort,
-            runner: input.runner,
+            runner: requested_runner,
+            resolved_runner,
             agent_profile: input.agent_profile,
             system_prompt: input.system_prompt,
             autonomous: input.autonomous,
@@ -709,6 +716,38 @@ impl InProcessEngine {
         }
         std::fs::write(&path, serialized).map_err(io_err)?;
         Ok(Value::Object(current))
+    }
+
+    pub async fn scratchpad(
+        &self,
+        scope: &Scope,
+    ) -> Result<coducktor_contract::Scratchpad, EngineError> {
+        let _ = self.project_manager(scope)?;
+        let project = match scope {
+            Scope::Project(id) if id != "default" => id.clone(),
+            _ => self.boot_project_id.clone(),
+        };
+        let path = coducktor_core::workspace::scratchpad::scratchpad_path(&ProcessEnv, &project);
+        Ok(coducktor_contract::Scratchpad {
+            content: coducktor_core::workspace::scratchpad::read(&path),
+        })
+    }
+
+    pub async fn put_scratchpad(
+        &self,
+        scope: &Scope,
+        input: &coducktor_contract::SetScratchpadInput,
+    ) -> Result<coducktor_contract::Scratchpad, EngineError> {
+        let _ = self.project_manager(scope)?;
+        let project = match scope {
+            Scope::Project(id) if id != "default" => id.clone(),
+            _ => self.boot_project_id.clone(),
+        };
+        let path = coducktor_core::workspace::scratchpad::scratchpad_path(&ProcessEnv, &project);
+        coducktor_core::workspace::scratchpad::write(&path, &input.content).map_err(io_err)?;
+        Ok(coducktor_contract::Scratchpad {
+            content: input.content.clone(),
+        })
     }
 
     // ---- workspace: projects ----------------------------------------------------------------
@@ -6102,6 +6141,20 @@ fn provider_status_response() -> ProviderStatusResponse {
     ProviderStatusResponse { providers }
 }
 
+/// Pick the first connected, enabled general-purpose backend. The stable order makes `auto`
+/// predictable, while still degrading past missing CLIs and disabled providers.
+fn auto_runner(status: &ProviderStatusResponse) -> Option<Runner> {
+    [Runner::Claude, Runner::Codex, Runner::OpenCode]
+        .into_iter()
+        .find(|candidate| {
+            status.providers.iter().any(|provider| {
+                provider.provider == *candidate
+                    && provider.enabled == Some(true)
+                    && provider.status == ProviderConnectionState::Connected
+            })
+        })
+}
+
 fn provider_models_locked() -> bool {
     std::env::var("DUCK_AGENT_MODELS_LOCKED").is_ok_and(|value| value == "1")
 }
@@ -6696,6 +6749,27 @@ fn first_line(bytes: &[u8]) -> Option<String> {
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn auto_runner_skips_unavailable_providers_and_excludes_pi() {
+        let provider = |runner, status, enabled| ProviderStatus {
+            provider: runner,
+            status,
+            enabled: Some(enabled),
+            hint: None,
+            auth_failure_id: None,
+            profile_id: None,
+        };
+        let status = ProviderStatusResponse {
+            providers: vec![
+                provider(Runner::Claude, ProviderConnectionState::NotInstalled, true),
+                provider(Runner::Codex, ProviderConnectionState::Connected, false),
+                provider(Runner::OpenCode, ProviderConnectionState::Connected, true),
+                provider(Runner::Pi, ProviderConnectionState::Connected, true),
+            ],
+        };
+        assert_eq!(auto_runner(&status), Some(Runner::OpenCode));
+    }
     use coducktor_contract::WorkflowStepDef;
     use coducktor_core::workflows::run::{
         AgentSession, EventInput, SessionFactory, SessionRequest,

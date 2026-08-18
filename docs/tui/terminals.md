@@ -9,7 +9,8 @@ records what is implemented and which terminal observations remain unverified.
 - **Color.** `ColorCapability::detect()` (`crates/coducktor-tui/src/theme.rs`) reads `COLORTERM` for
   `truecolor`/`24bit` → 24-bit RGB; else falls back to 256-color if `TERM` contains
   `"256"`, else 16-color. Three named themes (`light`/`dark`/`lazyvim`), no `system`
-  theme, no separate accent picker.
+  theme, no separate accent picker. The chosen theme is persisted in
+  `~/.coducktor/ui-state.json` and restored on later launches.
 - **Images.** `ImageSupport::detect()` (`crates/coducktor-tui/src/image.rs`) calls `ratatui-image`'s
   `Picker::from_query_stdio()`, which probes the terminal (kitty graphics protocol,
   iTerm2 protocol, or sixel) over stdio at startup; falls back to a halfblock Unicode
@@ -31,6 +32,11 @@ records what is implemented and which terminal observations remain unverified.
   on 2026-08-17: from the focused sidebar, `Ctrl+Right` moved control into the Tasks table,
   `Down` highlighted the first task row, and `Enter` opened that task's thread. Quitting restored
   the alternate screen.
+- **Focus feedback.** The status line names the keyboard-owned space (for example `SIDEBAR`,
+  `TASKS`, `COMMIT LIST`, or `GIT DETAIL`) and lists its movement keys. Manual PTY smoke test on
+  2026-08-18: `Ctrl+Right` changed the focus label from `SIDEBAR` to `TASKS`, `n` opened the New
+  task composer, `Ctrl+Left` returned focus to `SIDEBAR`, and `q` exited cleanly. Project expansion
+  and switching retain sidebar focus.
 - **Embedded project terminals.** The per-project Terminal tab (`screens/terminal.rs` + `pty.rs`)
   runs a real `$SHELL` inside the cockpit — no external terminal emulator is spawned. Each
   project gets one persistent session (`portable-pty` master pair + a background reader thread

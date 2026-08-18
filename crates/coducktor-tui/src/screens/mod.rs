@@ -5,6 +5,7 @@ pub mod ide;
 pub mod new_task;
 pub mod repo_git;
 pub mod runs_util;
+pub mod scratchpad;
 pub mod settings;
 pub mod skills;
 pub mod task_git;

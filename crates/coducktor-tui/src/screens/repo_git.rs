@@ -492,10 +492,6 @@ fn move_selection(app: &mut App, delta: i32) {
         RepoGitTab::Commits => {
             let next = app.repo_git_ui.commits_selected as i32 + delta;
             app.repo_git_ui.commits_selected = next.max(0) as usize;
-            apply_hit(
-                app,
-                RepoGitAction::SelectCommit(app.repo_git_ui.commits_selected),
-            );
         }
         RepoGitTab::Branches => {
             app.repo_git_ui.branches_selected =
@@ -539,6 +535,7 @@ pub fn apply_hit(app: &mut App, action: RepoGitAction) {
             let Some(entry) = present.log.get(index) else {
                 return;
             };
+            app.repo_git_ui.commit_detail = None;
             app.pending.push(PendingAction::LoadRepoGitCommitDiff {
                 project: app.repo_git_ui.project.clone(),
                 sha: entry.hash.clone(),

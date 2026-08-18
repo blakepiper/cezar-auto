@@ -427,6 +427,9 @@ pub struct StartRunInput {
     pub model: Option<String>,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub runner: Option<RunnerSelection>,
+    /// Concrete backend chosen for an authored `auto` request. The durable request remains
+    /// `auto`, while execution and affinity use this provider.
+    pub resolved_runner: Option<Runner>,
     pub agent_profile: Option<String>,
     pub system_prompt: Option<String>,
     pub autonomous: Option<bool>,
@@ -922,7 +925,9 @@ impl RunManager {
         let mut create = CreateRunInput::from_workflow(workflow, input.task.clone());
         create.model = input.model;
         create.reasoning_effort = input.reasoning_effort;
-        create.runner = input.runner.and_then(concrete_runner);
+        create.runner = input
+            .resolved_runner
+            .or_else(|| input.runner.and_then(concrete_runner));
         create.requested_runner = input.runner;
         create.agent_profile = input.agent_profile;
         create.system_prompt = input.system_prompt;
@@ -960,7 +965,9 @@ impl RunManager {
             create.title = format!("{} ({})", create.title, variant.variant);
             create.model = variant_input.model;
             create.reasoning_effort = variant_input.reasoning_effort;
-            create.runner = variant_input.runner.and_then(concrete_runner);
+            create.runner = variant_input
+                .resolved_runner
+                .or_else(|| variant_input.runner.and_then(concrete_runner));
             create.requested_runner = variant_input.runner;
             create.agent_profile = variant_input.agent_profile;
             create.system_prompt = variant_input.system_prompt;
@@ -1990,10 +1997,18 @@ impl RunManager {
             } else {
                 prompt
             };
-            let runner = continuation_runner
+            let requested_runner = continuation_runner
                 .or(step.runner)
                 .or_else(|| self.get_run(run_id).and_then(|run| run.requested_runner))
                 .unwrap_or(RunnerSelection::Claude);
+            let runner = if requested_runner == RunnerSelection::Auto {
+                self.get_run(run_id)
+                    .and_then(|run| run.runner)
+                    .map(runner_selection)
+                    .unwrap_or(RunnerSelection::Claude)
+            } else {
+                requested_runner
+            };
             let model = continuation_model
                 .clone()
                 .or_else(|| self.get_run(run_id).and_then(|run| run.model.clone()));
@@ -2049,7 +2064,7 @@ impl RunManager {
             if !run_affinity.fields().is_empty() {
                 self.update_run(run_id, run_affinity)?;
             }
-            let mut step_affinity = StepPatch::new().set("requestedRunner", runner);
+            let mut step_affinity = StepPatch::new().set("requestedRunner", requested_runner);
             if let Some(backend) = concrete_runner(runner) {
                 step_affinity = step_affinity.set("backend", backend);
             }
@@ -4024,6 +4039,26 @@ mod tests {
         assert_eq!(requests.lock().unwrap()[0].prompt, "ship it");
         assert!(manager.active.is_empty());
         assert!(manager.jobs.is_empty());
+    }
+
+    #[test]
+    fn authored_auto_uses_the_resolved_provider_and_preserves_the_request() {
+        let dir = tempdir().unwrap();
+        let (factory, requests) = fake_factory(vec![completed_session("session-auto")]);
+        let mut manager = RunManager::with_session_factory(dir.path(), factory);
+        let workflow = workflow_with_steps(vec![agent_workflow_step("implement")]);
+        let mut input = start_input("ship it");
+        input.runner = Some(RunnerSelection::Auto);
+        input.resolved_runner = Some(Runner::OpenCode);
+
+        let run = manager.start_run(&workflow, input).unwrap();
+
+        assert_eq!(run.requested_runner, Some(RunnerSelection::Auto));
+        assert_eq!(run.runner, Some(Runner::OpenCode));
+        assert_eq!(
+            requests.lock().unwrap()[0].runner,
+            RunnerSelection::OpenCode
+        );
     }
 
     #[test]

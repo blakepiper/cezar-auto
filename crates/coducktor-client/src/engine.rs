@@ -18,10 +18,10 @@ use coducktor_contract::{
     RemoveQueuedMessageResponse, RemoveWorktreeResponse, RepoBranchRequest, RepoBranchResponse,
     RepoCommitPayload, RepoResponse, RunCommitsResponse, RunHistoryContext, RunHistoryPage, Runner,
     RunnerModelCatalogResponse, RunsIndexResponse, SaveWorkflowInput, SaveWorkflowResponse,
-    SelectAgentProfileInput, SetAgentConfigInput, SetConfigInput, SetWorkspaceConfigInput,
-    SetWorkspaceUiStateInput, Skill, UiState, UpdateAgentProfileInput, UpdateProjectInput,
-    UpdateProjectResponse, WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUiState,
-    WorkspaceUsageResponse, WorktreeEntry, WorktreesResponse,
+    Scratchpad, SelectAgentProfileInput, SetAgentConfigInput, SetConfigInput, SetScratchpadInput,
+    SetWorkspaceConfigInput, SetWorkspaceUiStateInput, Skill, UiState, UpdateAgentProfileInput,
+    UpdateProjectInput, UpdateProjectResponse, WorkflowsResponse, WorkspaceConfigResponse,
+    WorkspaceUiState, WorkspaceUsageResponse, WorktreeEntry, WorktreesResponse,
 };
 use futures_core::stream::BoxStream;
 use serde_json::Value;
@@ -149,6 +149,12 @@ pub trait Engine: Send + Sync {
     async fn agent_profiles(&self) -> Result<AgentProfilesResponse, EngineError>;
     async fn ui_state(&self, scope: &Scope) -> Result<UiState, EngineError>;
     async fn put_ui_state(&self, scope: &Scope, state: &UiState) -> Result<UiState, EngineError>;
+    async fn scratchpad(&self, scope: &Scope) -> Result<Scratchpad, EngineError>;
+    async fn put_scratchpad(
+        &self,
+        scope: &Scope,
+        input: &SetScratchpadInput,
+    ) -> Result<Scratchpad, EngineError>;
     async fn plan(&self, scope: &Scope, task: &str) -> Result<PlanResponse, EngineError>;
 
     // ---- task thread ----------------------------------------------------------------------
@@ -591,6 +597,18 @@ impl Engine for InProcessEngine {
             EngineError::Transport(format!("could not encode ui state: {error}"))
         })?;
         decode_in_process_ui_state(self.scoped(scope)?.put_ui_state(value).await?)
+    }
+
+    async fn scratchpad(&self, scope: &Scope) -> Result<Scratchpad, EngineError> {
+        InProcessEngine::scratchpad(self, scope).await
+    }
+
+    async fn put_scratchpad(
+        &self,
+        scope: &Scope,
+        input: &SetScratchpadInput,
+    ) -> Result<Scratchpad, EngineError> {
+        InProcessEngine::put_scratchpad(self, scope, input).await
     }
 
     async fn plan(&self, scope: &Scope, task: &str) -> Result<PlanResponse, EngineError> {

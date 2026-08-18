@@ -17,9 +17,8 @@ Regenerate these excerpts after any UI change with `cargo insta test`.
  [=] coducktor / main /p/main  [running 0] [needs 0]  [Ctrl+K]                                                          
   PROJECTS                   Tasks Archived 0    /                                                                      
   - main                    ┌TASKS — main──────────────────────────────────────────────────────────────────────────────┐
-    New task                │STATUS TASK WORKFLOW br ± REF        IN/OUT     COST     CPU                              │
-  > Tasks                   │No tasks yet. Describe a task to get started.                                             │
-    Inbox  [0]              │                                                                                          │
+  > Tasks                   │No tasks in this project. Press n for New task.                                           │
+    Scratchpad              │                                                                                          │
     IDE                     │                                                                                          │
     Terminal                │                                                                                          │
     Git                     │                                                                                          │
@@ -31,9 +30,7 @@ Regenerate these excerpts after any UI change with `cargo insta test`.
   WORKSPACE                 │                                                                                          │
     All tasks               │                                                                                          │
                             │                                                                                          │
-  TASKS                     │                                                                                          │
-  > Active                  │                                                                                          │
-    Archived                │                                                                                          │
+    Settings                │                                                                                          │
   NEEDS YOU                 │                                                                                          │
   WORKING                   │                                                                                          │
   RECENT                    │                                                                                          │
@@ -54,7 +51,7 @@ Regenerate these excerpts after any UI change with `cargo insta test`.
                             │                                                                                          │
                             │                                                                                          │
                             └──────────────────────────────────────────────────────────────────────────────────────────┘
- NORMAL  main  lazyvim  v0.1.0  [providers --]  ? help
+ NORMAL  FOCUS: SIDEBAR — ↑↓ choose project or view · Enter open  ·  main  lazyvim  v0.1.0  [providers --]  ? help
 ```
 
 ## Tasks screen, 80×24 (sidebar auto-collapsed below the 100-column breakpoint)
@@ -83,5 +80,5 @@ Regenerate these excerpts after any UI change with `cargo insta test`.
 │                                                                              │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
- NORMAL  main  lazyvim  v0.1.0  [providers --]  ? help
+ NORMAL  FOCUS: TASKS — ↑↓ choose task · Enter open · n new  ·  main  lazyvim  v0.1.0  [providers --]  ? help
 ```

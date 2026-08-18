@@ -30,6 +30,8 @@ user bindings are merged over these defaults, key by key.
 focus sections, so they are not rebindable).
 
 The cockpit starts with the sidebar focused, so `Ctrl+Right` enters the initial Tasks screen.
+The status line names the focused space and shows its local movement keys. `Ctrl+Left` from a
+composer releases text input and returns to the sidebar, where normal bindings such as `q` work.
 
 The left navigation panel shows a persistent arrow selector that the keyboard and
 the mouse share: clicking a sidebar row with the mouse moves it there and activates
@@ -45,7 +47,9 @@ All Tasks headers. `Esc` (or `Right`) returns focus to the screen. The
 command palette (`Ctrl+K`) and `:open <route>` remain available too.
 
 Clicking a non-active project row switches the sidebar context to that registered project and
-refreshes its tasks. Clicking the active project row still expands or collapses its navigation.
+refreshes its tasks without moving focus out of the sidebar. Clicking the active project row still
+expands or collapses its navigation. Project navigation contains Tasks and Scratchpad; New task is
+an action opened from Tasks rather than a separate tab.
 
 ### Command line (`:`)
 
@@ -72,6 +76,7 @@ re-documented per row.
 | Key | Action |
 |---|---|
 | `j` / `k` | Move selection |
+| `n` | Open the New task composer |
 | `t` | Toggle Current/Archived view |
 | `/` | Filter |
 | `a` | Archive selected |
@@ -85,6 +90,7 @@ re-documented per row.
 | Key | Action |
 |---|---|
 | `j` / `k` | Move selection |
+| `n` | Open the New task composer for the active project |
 | `t` | Toggle Current/Archived view |
 | `/` | Filter |
 | `f` | Open the project-filter picker |
@@ -106,6 +112,17 @@ re-documented per row.
 | `p` | Request a plan |
 | `y` / `Enter` | Accept the plan preview |
 | `n` / `Esc` | Dismiss the plan preview |
+
+### Scratchpad (`screens/scratchpad.rs`)
+
+The Scratchpad is a free-form editor that saves after every edit. Notes live under
+`$DUCK_HOME/scratchpads/` (normally `~/.coducktor/scratchpads/`), outside the project and Git.
+
+| Key | Action |
+|---|---|
+| text / editing keys | Edit the project note and save locally |
+| `Ctrl+S` | Save immediately |
+| `Ctrl+Left` | Return focus to the sidebar |
 
 ### Task thread (`screens/thread/mod.rs`)
 
