@@ -601,10 +601,29 @@ impl Composer {
         }
     }
 
-    /// The number of text rows the composer occupies: grows with content between a
-    /// three-line floor and an eight-line cap suitable for the terminal layout.
+    /// The number of text rows the composer occupies at the given text width.
+    /// It grows with wrapped content between a three-line floor and an eight-line cap.
+    pub fn height_for_width(&self, width: u16) -> u16 {
+        let width = usize::from(width).max(1);
+        let mut rows = self
+            .text
+            .split('\n')
+            .map(|line| line.chars().count().div_ceil(width).max(1))
+            .sum::<usize>();
+        let (line, col) = self.caret_position();
+        if line + 1 == self.text.split('\n').count()
+            && col > 0
+            && col % width == 0
+            && self.caret == self.line_end(line)
+        {
+            rows += 1;
+        }
+        rows.clamp(3, 8) as u16
+    }
+
+    /// The default height used by callers that do not have a terminal width available.
     pub fn height(&self) -> u16 {
-        self.text.split('\n').count().clamp(3, 8) as u16
+        self.height_for_width(u16::MAX)
     }
 
     /// Render the composer card (textarea + attachment row). The host draws the
@@ -636,33 +655,37 @@ impl Composer {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let (caret_line, caret_col) = self.caret_position();
         let reserved_height = if self.attachments.is_empty() { 2 } else { 3 };
         let visible = area.height.saturating_sub(reserved_height).clamp(1, 6);
-        let scroll = caret_line.saturating_sub(visible as usize - 1);
-        let hscroll = caret_col.saturating_sub(usize::from(inner.width.saturating_sub(1)));
+        let text_width = usize::from(inner.width.saturating_sub(1)).max(1);
+        let mut visual_lines = self.visual_lines(text_width);
+        let (last_line, last_col) = self.caret_position();
+        if last_line + 1 == self.text.split('\n').count()
+            && last_col > 0
+            && last_col % text_width == 0
+            && self.caret == self.line_end(last_line)
+        {
+            visual_lines.push((self.caret, self.caret));
+        }
+        let (caret_row, caret_col) = self.visual_caret(text_width, &visual_lines);
+        let scroll = caret_row.saturating_sub(visible as usize - 1);
 
         let mut row = inner.y;
         for offset in 0..visible as usize {
             if row >= inner.bottom() {
                 break;
             }
-            let line = scroll + offset;
-            let content = &self.text[self.line_start(line)..self.line_end(line)];
+            let visual_row = scroll + offset;
+            let content = visual_lines
+                .get(visual_row)
+                .map(|(start, end)| &self.text[*start..*end])
+                .unwrap_or("");
             let chars: Vec<char> = content.chars().collect();
-            let from = hscroll.min(chars.len());
-            let is_caret_line = line == caret_line && self.focused;
-            let mut spans = vec![Span::raw(format!(
-                " {}",
-                chars[from..].iter().collect::<String>()
-            ))];
+            let is_caret_line = visual_row == caret_row && self.focused;
+            let mut spans = vec![Span::raw(format!(" {}", chars.iter().collect::<String>()))];
             if is_caret_line {
-                let caret_col_in_box = caret_col.saturating_sub(hscroll);
-                let prefix: String = chars
-                    [from..from + caret_col_in_box.min(chars.len().saturating_sub(from))]
-                    .iter()
-                    .collect();
-                let caret_char = chars.get(from + caret_col_in_box).copied().unwrap_or(' ');
+                let prefix: String = chars[..caret_col.min(chars.len())].iter().collect();
+                let caret_char = chars.get(caret_col).copied().unwrap_or(' ');
                 spans = vec![
                     Span::raw(format!(" {prefix}")),
                     Span::styled(
@@ -710,6 +733,48 @@ impl Composer {
         }
         if let Some(menu) = &self.menu {
             render_menu_overlay(frame, menu, area, theme);
+        }
+    }
+
+    fn visual_lines(&self, width: usize) -> Vec<(usize, usize)> {
+        let mut lines = Vec::new();
+        for logical_line in 0..self.text.split('\n').count() {
+            let start = self.line_start(logical_line);
+            let end = self.line_end(logical_line);
+            let chars: Vec<(usize, char)> = self.text[start..end].char_indices().collect();
+            if chars.is_empty() {
+                lines.push((start, end));
+                continue;
+            }
+            for chunk in chars.chunks(width) {
+                let chunk_start = start + chunk[0].0;
+                let (offset, character) = chunk[chunk.len() - 1];
+                let chunk_end = start + offset + character.len_utf8();
+                lines.push((chunk_start, chunk_end));
+            }
+        }
+        lines
+    }
+
+    fn visual_caret(&self, width: usize, lines: &[(usize, usize)]) -> (usize, usize) {
+        let (logical_line, col) = self.caret_position();
+        let row_before = (0..logical_line)
+            .map(|line| {
+                self.text[self.line_start(line)..self.line_end(line)]
+                    .chars()
+                    .count()
+                    .div_ceil(width)
+                    .max(1)
+            })
+            .sum::<usize>();
+        let row_offset = col / width;
+        let row = row_before + row_offset;
+        let local_col = col % width;
+        if row < lines.len() && lines[row].0 <= self.caret && self.caret <= lines[row].1 {
+            (row, local_col)
+        } else {
+            // At an exact wrap boundary the caret belongs to the empty start of the next row.
+            (row.min(lines.len().saturating_sub(1)), 0)
         }
     }
 }
@@ -799,6 +864,22 @@ mod tests {
         composer.handle_key(key(KeyCode::Char('i'), KeyModifiers::NONE), &ctx());
         assert_eq!(composer.text, "hi");
         assert_eq!(composer.caret, 2);
+    }
+
+    #[test]
+    fn long_lines_wrap_and_reserve_rows_for_the_wrapped_caret() {
+        let mut composer = Composer::default();
+        composer.set_text("abcdefghij");
+
+        assert_eq!(composer.height_for_width(5), 3);
+        let mut lines = composer.visual_lines(5);
+        lines.push((composer.caret, composer.caret));
+        assert_eq!(composer.visual_lines(5), vec![(0, 5), (5, 10)]);
+        assert_eq!(composer.visual_caret(5, &lines), (2, 0));
+
+        composer.set_text("abcdefghijk");
+        assert_eq!(composer.visual_lines(5), vec![(0, 5), (5, 10), (10, 11)]);
+        assert_eq!(composer.visual_caret(5, &composer.visual_lines(5)), (2, 1));
     }
 
     #[test]

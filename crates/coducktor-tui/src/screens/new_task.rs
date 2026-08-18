@@ -1207,7 +1207,11 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         column_width,
         area.height,
     );
-    let composer_height = app.new_task_ui.composer.height() + 2;
+    let composer_height = app
+        .new_task_ui
+        .composer
+        .height_for_width(column_width.saturating_sub(3))
+        + 2;
     let pill_height = pill_row_height(column_width, &effective);
     let action_height = action_row_height(column_width);
     let header = 2;

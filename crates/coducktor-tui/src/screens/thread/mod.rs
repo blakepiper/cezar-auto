@@ -670,7 +670,11 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         0
     };
     let hint_height = 1;
-    let composer_height = app.thread_ui.composer.height() + 2;
+    let composer_height = app
+        .thread_ui
+        .composer
+        .height_for_width(area.width.saturating_sub(3))
+        + 2;
     let dock_height =
         ask_height + review_height + auto_resume_height + hint_height + composer_height;
 
