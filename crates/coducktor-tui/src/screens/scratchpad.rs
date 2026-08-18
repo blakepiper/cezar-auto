@@ -299,6 +299,35 @@ mod tests {
     }
 
     #[test]
+    fn holding_shift_vertical_arrows_extends_a_multiline_selection() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        open(&mut app, "main");
+        app.pending.clear();
+        app.handle_event(crossterm::event::Event::Key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::CONTROL,
+        )));
+        app.scratchpad_ui.editor.set_text("one\ntwo\nthree\nfour");
+        app.scratchpad_ui.editor.row = 3;
+        app.scratchpad_ui.editor.move_end();
+
+        app.handle_event(crossterm::event::Event::Key(KeyEvent::new(
+            KeyCode::Up,
+            KeyModifiers::SHIFT,
+        )));
+        app.handle_event(crossterm::event::Event::Key(KeyEvent::new_with_kind(
+            KeyCode::Up,
+            KeyModifiers::SHIFT,
+            crossterm::event::KeyEventKind::Repeat,
+        )));
+
+        assert_eq!(
+            app.scratchpad_ui.editor.selected_text().as_deref(),
+            Some("\nthree\nfour")
+        );
+    }
+
+    #[test]
     fn clear_scratchpad_requires_confirmation_and_queues_an_empty_save() {
         let mut app = App::new("main", Theme::detect(), Keymap::default());
         open(&mut app, "main");

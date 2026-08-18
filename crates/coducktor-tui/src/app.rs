@@ -1823,7 +1823,13 @@ impl App {
 
     pub fn handle_event(&mut self, event: Event) {
         match event {
-            Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(key),
+            Event::Key(key)
+                if key.kind == KeyEventKind::Press
+                    || (key.kind == KeyEventKind::Repeat
+                        && matches!(self.route(), Route::Scratchpad { .. })) =>
+            {
+                self.handle_key(key)
+            }
             Event::Mouse(mouse) => self.handle_mouse(mouse),
             Event::Paste(text) if !self.sidebar_focus => match self.route().clone() {
                 Route::Terminal { .. } => {
