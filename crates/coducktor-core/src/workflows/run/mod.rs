@@ -958,9 +958,11 @@ impl RunManager {
         self.create_run(CreateRunInput::from_workflow(workflow, task))
     }
 
-    /// Create, queue, and pump one workflow. The returned record is the current durable state,
-    /// which may already be terminal when the injected session completes synchronously.
-    pub fn start_run(
+    /// Create and queue one workflow without running it.
+    ///
+    /// Interactive clients use this accepted-first boundary to obtain the durable run id and
+    /// subscribe to its event stream before a potentially long-running agent turn begins.
+    pub fn enqueue_run(
         &mut self,
         workflow: &WorkflowDef,
         input: StartRunInput,
@@ -988,13 +990,24 @@ impl RunManager {
             },
         );
         self.enqueue(run.id.clone());
+        Ok(run)
+    }
+
+    /// Create, queue, and pump one workflow. The returned record is the current durable state,
+    /// which may already be terminal when the injected session completes synchronously.
+    pub fn start_run(
+        &mut self,
+        workflow: &WorkflowDef,
+        input: StartRunInput,
+    ) -> io::Result<RunRecord> {
+        let run = self.enqueue_run(workflow, input)?;
         self.pump()?;
         Ok(self.get_run(&run.id).cloned().unwrap_or(run))
     }
 
     /// Start up to the three built-in variants in one queue pass. Variant B/C receive the same
     /// fixed diversification hints while the runtime still treats them as ordinary queued jobs.
-    pub fn start_variants(
+    pub fn enqueue_variants(
         &mut self,
         workflow: &WorkflowDef,
         input: StartRunInput,
@@ -1039,10 +1052,23 @@ impl RunManager {
             );
             self.enqueue(run.id);
         }
-        self.pump()?;
         Ok(ids
             .into_iter()
             .filter_map(|run_id| self.get_run(&run_id).cloned())
+            .collect())
+    }
+
+    pub fn start_variants(
+        &mut self,
+        workflow: &WorkflowDef,
+        input: StartRunInput,
+        count: usize,
+    ) -> io::Result<Vec<RunRecord>> {
+        let runs = self.enqueue_variants(workflow, input, count)?;
+        self.pump()?;
+        Ok(runs
+            .into_iter()
+            .map(|run| self.get_run(&run.id).cloned().unwrap_or(run))
             .collect())
     }
 
@@ -4127,6 +4153,25 @@ mod tests {
         assert_eq!(requests.lock().unwrap()[0].prompt, "ship it");
         assert!(manager.active.is_empty());
         assert!(manager.jobs.is_empty());
+    }
+
+    #[test]
+    fn enqueue_returns_the_durable_run_before_opening_an_agent_session() {
+        let dir = tempdir().unwrap();
+        let (factory, requests) = fake_factory(vec![completed_session("session-1")]);
+        let mut manager = RunManager::with_session_factory(dir.path(), factory);
+        let workflow = workflow_with_steps(vec![agent_workflow_step("implement")]);
+
+        let queued = manager
+            .enqueue_run(&workflow, start_input("show activity immediately"))
+            .unwrap();
+
+        assert_eq!(queued.status, RunStatus::Queued);
+        assert_eq!(queued.task, "show activity immediately");
+        assert!(requests.lock().unwrap().is_empty());
+
+        manager.pump().unwrap();
+        assert_eq!(requests.lock().unwrap().len(), 1);
     }
 
     #[test]

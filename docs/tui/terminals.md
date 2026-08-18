@@ -65,6 +65,14 @@ records what is implemented and which terminal observations remain unverified.
 
 ## Task experience smoke test
 
+- **120×40 pseudo-terminal, 2026-08-18.** Built and launched the real `duck` binary against a
+  temporary Git repository with `DUCK_DRY_RUN=1`, opened New task, and submitted `Show the prompt
+  and stream agent activity`. Submission immediately replaced the composer with the run's Session
+  screen: the exact prompt was visible on the first queued frame, then the header/status changed to
+  `running` / `Thinking…`, and the dry-run runner's eventual process error appeared inline as a
+  failed activity/outcome instead of a blank loading screen. `q` exited and restored the alternate
+  screen.
+
 - **80×24 pseudo-terminal, 2026-08-18.** Launched the real `duck` binary against the coducktor
   repository. The Tasks screen showed the `Current`/`Needs you`/`Finished` stats row and the
   bordered `TASKS — coducktor` panel title without rendering the project title twice. `q` exited

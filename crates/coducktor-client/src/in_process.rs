@@ -393,6 +393,27 @@ impl InProcessEngine {
 
     /// Mirrors `create_run`'s handler exactly, including its `variants` validation.
     pub async fn start_run(&self, input: CreateRunInput) -> Result<CreateRunResponse, EngineError> {
+        let response = self.enqueue_run(input).await?;
+        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        manager.pump().map_err(io_err)?;
+        Ok(match response {
+            CreateRunResponse::Single(run) => CreateRunResponse::Single(Box::new(
+                manager.get_run(&run.id).cloned().unwrap_or(*run),
+            )),
+            CreateRunResponse::Group { runs } => CreateRunResponse::Group {
+                runs: runs
+                    .into_iter()
+                    .map(|run| manager.get_run(&run.id).cloned().unwrap_or(run))
+                    .collect(),
+            },
+        })
+    }
+
+    /// Persist queued runs and return their ids before any agent process is opened.
+    pub async fn enqueue_run(
+        &self,
+        input: CreateRunInput,
+    ) -> Result<CreateRunResponse, EngineError> {
         let workflow = {
             let repo_root = self.repo_root.clone();
             let name = input.workflow.clone();
@@ -456,12 +477,29 @@ impl InProcessEngine {
         let mut manager = self.manager.lock().map_err(|_| lock_err())?;
         if variants > 1.0 {
             let runs = manager
-                .start_variants(&workflow, core_input, variants as usize)
+                .enqueue_variants(&workflow, core_input, variants as usize)
                 .map_err(io_err)?;
             return Ok(CreateRunResponse::Group { runs });
         }
-        let run = manager.start_run(&workflow, core_input).map_err(io_err)?;
+        let run = manager.enqueue_run(&workflow, core_input).map_err(io_err)?;
         Ok(CreateRunResponse::Single(Box::new(run)))
+    }
+
+    /// Run the accepted queue on a worker so the engine loop can keep drawing and consuming the
+    /// live broadcast emitted by the manager's event sink.
+    pub fn activate_runs(&self) -> Result<(), EngineError> {
+        let manager = self.manager.clone();
+        std::thread::Builder::new()
+            .name("coducktor-runner".to_owned())
+            .spawn(move || {
+                if let Ok(mut manager) = manager.lock() {
+                    let _ = manager.pump();
+                }
+            })
+            .map(|_| ())
+            .map_err(|error| EngineError::Unavailable {
+                reason: format!("could not start the agent worker: {error}"),
+            })
     }
 
     pub async fn archive_run(&self, run_id: &str, archived: bool) -> Result<ApiRun, EngineError> {
@@ -7162,6 +7200,20 @@ mod tests {
         .unwrap() else {
             panic!("expected a single run");
         };
+        <InProcessEngine as crate::Engine>::activate_runs(&engine, &scope_b)
+            .await
+            .unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if !cwds.lock().unwrap().is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
 
         assert_eq!(
             <InProcessEngine as crate::Engine>::list_runs(&engine, &scope_a)

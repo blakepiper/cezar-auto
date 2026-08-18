@@ -52,6 +52,9 @@ pub trait Engine: Send + Sync {
         scope: &Scope,
         input: StartRunInput,
     ) -> Result<CreateRunResponse, EngineError>;
+    /// Begin executing runs previously accepted by [`Engine::start_run`]. This is separate so a
+    /// UI can install the run-scoped live subscription before the first event is emitted.
+    async fn activate_runs(&self, scope: &Scope) -> Result<(), EngineError>;
     async fn get_run(&self, scope: &Scope, run_id: &str) -> Result<ApiRun, EngineError>;
     async fn archive_run(
         &self,
@@ -411,7 +414,11 @@ impl Engine for InProcessEngine {
         scope: &Scope,
         input: StartRunInput,
     ) -> Result<CreateRunResponse, EngineError> {
-        self.scoped(scope)?.start_run(input).await
+        self.scoped(scope)?.enqueue_run(input).await
+    }
+
+    async fn activate_runs(&self, scope: &Scope) -> Result<(), EngineError> {
+        self.scoped(scope)?.activate_runs()
     }
 
     async fn get_run(&self, scope: &Scope, run_id: &str) -> Result<ApiRun, EngineError> {

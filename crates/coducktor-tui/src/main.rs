@@ -569,6 +569,12 @@ async fn execute_pending(
                     move |result| BackgroundResult::StartRun { project, result },
                 );
             }
+            PendingAction::ActivateRuns { project } => {
+                let scope = Scope::Project(project);
+                if let Err(error) = engine.activate_runs(&scope).await {
+                    app.notice = Some(format!("start failed: {error}"));
+                }
+            }
             PendingAction::RefreshNewTask { project } => {
                 let project_for_task = project.clone();
                 let engine_for_task = engine.clone();
@@ -1426,18 +1432,16 @@ fn apply_started_run(
             starts_in_flight.remove(&project);
             app.pending_start_drafts.remove(&project);
             app.pending_start_composers.remove(&project);
-            if let Some(id) = new_task_form::started_run_id(&response) {
-                let already_open = matches!(
-                    app.route(),
-                    app::Route::Thread {
-                        project: route_project,
-                        id: route_id,
-                    } if route_project == &project && route_id == &id
-                );
-                if !already_open {
-                    screens::thread::open(app, &project, &id);
-                }
+            let started = match &response {
+                coducktor_contract::CreateRunResponse::Single(run) => Some((**run).clone()),
+                coducktor_contract::CreateRunResponse::Group { runs } => runs.first().cloned(),
+            };
+            if let Some(run) = started {
+                screens::thread::open_started(app, &project, run);
             }
+            app.pending.push(PendingAction::ActivateRuns {
+                project: project.clone(),
+            });
             screens::new_task::clear_draft(app);
             app.pending.push(PendingAction::RefreshTasks {
                 project: project.clone(),
@@ -1656,6 +1660,9 @@ fn drain_background_results(
                         if let Some(id) = new_task_form::started_run_id(&response) {
                             app.github_ui.queued = Some(id);
                         }
+                        app.pending.push(PendingAction::ActivateRuns {
+                            project: project.clone(),
+                        });
                         app.pending.push(PendingAction::RefreshTasks { project });
                     }
                     Err(error) => app.notice = Some(format!("start failed: {error}")),
@@ -1972,6 +1979,7 @@ async fn run(
                 }
             }
         }
+        drain_background_results(&background_receiver, app, &mut starts_in_flight);
         let desired_thread = match app.route() {
             app::Route::Thread { project, id } => Some((project.clone(), id.clone())),
             _ => None,
@@ -2013,7 +2021,6 @@ async fn run(
                 }
             }
         }
-        drain_background_results(&background_receiver, app, &mut starts_in_flight);
         // Bracketed paste is enabled for the whole TUI so composers receive multiline clipboard
         // contents as one event, while the embedded Terminal tab forwards that same event to its
         // shell.
@@ -2339,6 +2346,51 @@ mod tests {
 
         assert_eq!(app.projects[0].id, "blarchy");
         assert_eq!(app.project_registry[0].root, "/home/przvl/blarchy");
+    }
+
+    #[test]
+    fn accepted_run_opens_the_live_thread_before_execution_is_activated() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        let mut starts_in_flight = HashSet::from(["main".to_owned()]);
+        let run = coducktor_contract::RunRecord {
+            id: "run-live".to_owned(),
+            title: "Show live activity".to_owned(),
+            workflow: "quick-task".to_owned(),
+            task: "Show my prompt and what the agent is doing".to_owned(),
+            status: coducktor_contract::RunStatus::Queued,
+            created_at: "2026-08-18T00:00:00Z".to_owned(),
+            ..coducktor_contract::RunRecord::default()
+        };
+
+        apply_started_run(
+            &mut app,
+            "main".to_owned(),
+            Ok(coducktor_contract::CreateRunResponse::Single(Box::new(run))),
+            &mut starts_in_flight,
+        );
+
+        assert!(matches!(
+            app.route(),
+            app::Route::Thread { project, id }
+                if project == "main" && id == "run-live"
+        ));
+        assert_eq!(
+            app.thread_ui
+                .data
+                .run
+                .as_ref()
+                .map(|run| run.record.task.as_str()),
+            Some("Show my prompt and what the agent is doing")
+        );
+        assert!(matches!(
+            app.pending.first(),
+            Some(PendingAction::ActivateRuns { project }) if project == "main"
+        ));
+        assert!(
+            !app.pending
+                .iter()
+                .any(|action| matches!(action, PendingAction::LoadThread { .. }))
+        );
     }
 
     #[test]

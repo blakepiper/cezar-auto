@@ -587,6 +587,10 @@ pub enum PendingAction {
         project: String,
         input: coducktor_contract::CreateRunInput,
     },
+    /// Release accepted queued work only after the thread route has installed its live listener.
+    ActivateRuns {
+        project: String,
+    },
     /// Load the new-task screen's per-project data (skills, workflows, config, …).
     RefreshNewTask {
         project: String,

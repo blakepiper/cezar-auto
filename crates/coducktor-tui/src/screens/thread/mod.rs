@@ -526,6 +526,22 @@ pub fn open(app: &mut App, project: &str, id: &str) {
                 .flatten()
         });
     app.thread_ui.set_project_root(root);
+    if (app.thread_ui.data.project != project || app.thread_ui.data.run_id != id)
+        && let Some(run) = app
+            .project_tasks
+            .get(project)
+            .and_then(|state| state.runs.iter().find(|run| run.record.id == id))
+            .cloned()
+    {
+        app.thread_ui.load(
+            project.to_owned(),
+            id.to_owned(),
+            run,
+            Vec::new(),
+            -1.0,
+            None,
+        );
+    }
     app.navigate_route(crate::app::Route::Thread {
         project: project.to_owned(),
         id: id.to_owned(),
@@ -533,6 +549,39 @@ pub fn open(app: &mut App, project: &str, id: &str) {
     app.pending.push(PendingAction::LoadThread {
         project: project.to_owned(),
         id: id.to_owned(),
+    });
+}
+
+/// Open a newly accepted run without a round trip through the manager. Agent execution may hold
+/// that manager for the duration of a turn, so the create response is the authoritative first
+/// frame: it contains the exact prompt, queued status, and durable run id needed by the listener.
+pub fn open_started(app: &mut App, project: &str, run: coducktor_contract::RunRecord) {
+    let id = run.id.clone();
+    let root = app
+        .project_registry
+        .iter()
+        .find(|entry| entry.id == project)
+        .map(|entry| PathBuf::from(&entry.root))
+        .or_else(|| {
+            (app.default_project == project)
+                .then(|| app.boot_root.clone())
+                .flatten()
+        });
+    app.thread_ui.set_project_root(root);
+    app.thread_ui.load(
+        project.to_owned(),
+        id.clone(),
+        ApiRun {
+            record: run,
+            usage: None,
+        },
+        Vec::new(),
+        -1.0,
+        None,
+    );
+    app.navigate_route(crate::app::Route::Thread {
+        project: project.to_owned(),
+        id,
     });
 }
 
@@ -1270,6 +1319,36 @@ mod tests {
             id: "run-1".to_owned(),
         });
         app
+    }
+
+    #[test]
+    fn opening_a_cached_task_paints_its_prompt_before_history_loads() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        let cached = run(RunStatus::Running, "Fix the task experience");
+        app.project_tasks
+            .entry("main".to_owned())
+            .or_default()
+            .runs
+            .push(cached);
+
+        open(&mut app, "main", "run-1");
+
+        assert_eq!(
+            app.thread_ui
+                .data
+                .run
+                .as_ref()
+                .map(|run| run.record.task.as_str()),
+            Some("Fix the task experience")
+        );
+        assert!(matches!(
+            app.pending.as_slice(),
+            [PendingAction::LoadThread { project, id }]
+                if project == "main" && id == "run-1"
+        ));
+        let content = render_to_string(&mut app);
+        assert!(content.contains("Fix the task experience"));
+        assert!(!content.contains("Loading"));
     }
 
     fn render_to_string(app: &mut App) -> String {
