@@ -207,11 +207,7 @@ impl Picker {
                 let desc = description.chars().take(40).collect::<String>();
                 spans.push(Span::styled(
                     format!("  {desc}"),
-                    if selected {
-                        Style::default().fg(theme.palette.bg)
-                    } else {
-                        Style::default().fg(theme.palette.soft_fg)
-                    },
+                    Style::default().fg(theme.palette.soft_fg),
                 ));
             }
             frame.render_widget(
@@ -242,7 +238,12 @@ fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
     use super::*;
+    use crate::input::hitmap::HitMap;
+    use crate::theme::{ColorCapability, ThemeName};
 
     fn picker(items: Vec<PickerItem>) -> Picker {
         let mut picker = Picker::new("SOURCE");
@@ -304,6 +305,31 @@ mod tests {
         assert_eq!(picker.selected, 2);
         picker.set_items(vec![item("x", None)]);
         assert_eq!(picker.selected, 0);
+    }
+
+    #[test]
+    fn selected_descriptions_use_a_readable_foreground() {
+        let picker = picker(vec![PickerItem {
+            value: "execution".to_owned(),
+            label: "execution".to_owned(),
+            description: Some("readable description".to_owned()),
+            group: Some("task mode".to_owned()),
+            emphasized: false,
+        }]);
+        let theme = Theme::new(ThemeName::LazyVim, ColorCapability::TrueColor);
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        let mut hitmap = HitMap::default();
+        terminal
+            .draw(|frame| picker.render(frame, frame.area(), theme, &mut hitmap))
+            .unwrap();
+
+        let description_start = terminal
+            .backend()
+            .buffer()
+            .cell((24, 10))
+            .expect("description starts at the expected cell");
+        assert_eq!(description_start.symbol(), "r");
+        assert_eq!(description_start.fg, theme.palette.soft_fg);
     }
 
     fn key_char(character: char) -> crossterm::event::KeyEvent {

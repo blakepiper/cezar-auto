@@ -31,7 +31,7 @@ pub const SKILL_DIRS: &[(&str, SkillSource)] = &[
 /// The application-provided planning mode exposed by the New Task source picker.
 pub const BUILT_IN_PLANNING_SKILL_NAME: &str = "planning";
 pub const BUILT_IN_PLANNING_SKILL_DESCRIPTION: &str =
-    "Think through the task and return a concise plan without making changes";
+    "think through the task and return a concise plan without making changes";
 pub const BUILT_IN_PLANNING_SKILL_BODY: &str = r#"You are in planning mode.
 
 Analyze the user's task and the repository before proposing a solution. Return a concise,

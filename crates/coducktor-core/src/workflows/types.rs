@@ -137,7 +137,7 @@ pub fn chain_step_note(steps: &[WorkflowStepDef], index: usize) -> Option<String
 pub fn quick_task_workflow() -> WorkflowDef {
     WorkflowDef {
         name: "quick-task".to_owned(),
-        description: Some("One agent run on your task — no ceremony.".to_owned()),
+        description: Some("one agent run on your task — no ceremony.".to_owned()),
         steps: vec![WorkflowStepDef {
             id: "task".to_owned(),
             name: Some("Do the task".to_owned()),

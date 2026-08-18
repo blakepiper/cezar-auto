@@ -1,1 +1,1 @@
-{"workflows":[{"name":"quick-task","description":"One agent run on your task — no ceremony.","source":"built-in","steps":[{"id":"task","name":"Do the task","prompt":"{{task}}"}]}],"issues":[]}
+{"workflows":[{"name":"quick-task","description":"one agent run on your task — no ceremony.","source":"built-in","steps":[{"id":"task","name":"Do the task","prompt":"{{task}}"}]}],"issues":[]}

@@ -428,7 +428,7 @@ fn task_step(id: &str, name: &str, skill: Option<&str>) -> WorkflowStepDef {
 /// name; `model`/`variants`/`images` only when they say something.
 pub fn build_create_run_body(opts: &CreateRunBodyOpts) -> CreateRunInput {
     let (workflow, steps) = match &opts.source {
-        TaskSource::Baseline => (None, Some(vec![task_step("task", "Baseline", None)])),
+        TaskSource::Baseline => (None, Some(vec![task_step("task", "execution", None)])),
         TaskSource::Skill { reference } => (
             None,
             Some(vec![task_step("task", reference, Some(reference))]),
@@ -862,7 +862,7 @@ mod tests {
             json,
             serde_json::json!({
                 "task": "do the thing",
-                "steps": [{ "id": "task", "name": "Baseline", "prompt": "{{task}}" }],
+                "steps": [{ "id": "task", "name": "execution", "prompt": "{{task}}" }],
             })
         );
     }

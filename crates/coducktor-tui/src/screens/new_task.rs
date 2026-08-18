@@ -615,7 +615,7 @@ fn open_pill(app: &mut App, pill: PillId) {
 
 fn picker_title(pill: PillId) -> &'static str {
     match pill {
-        PillId::Source => "SKILL / WORKFLOW",
+        PillId::Source => "skill / workflow",
         PillId::Runner => "RUNNER",
         PillId::Model => "MODEL",
         PillId::Reasoning => "REASONING",
@@ -677,13 +677,13 @@ fn source_picker_items(
     let tiers =
         crate::skills::partition_skill_refs(&matched, usage, crate::skills::MOST_USED_LIMIT);
     let query = query.trim().to_lowercase();
-    let baseline_matches = "baseline no skill plain task".contains(&query);
+    let baseline_matches = "execution baseline no skill plain task".contains(&query);
     if baseline_matches {
         items.push(PickerItem {
             value: "baseline".to_owned(),
-            label: "Baseline".to_owned(),
-            description: Some("Run the task as written, without a skill or workflow".to_owned()),
-            group: Some("Task mode".to_owned()),
+            label: "execution".to_owned(),
+            description: Some("run the task as written, without a skill or workflow".to_owned()),
+            group: Some("task mode".to_owned()),
             emphasized: false,
         });
     }
@@ -697,13 +697,13 @@ fn source_picker_items(
             description: Some(
                 coducktor_core::skills::BUILT_IN_PLANNING_SKILL_DESCRIPTION.to_owned(),
             ),
-            group: Some("Task mode".to_owned()),
+            group: Some("task mode".to_owned()),
             emphasized: false,
         });
     }
     for (group, skills) in [
-        ("Most used", tiers.most_used),
-        ("Project skills", tiers.project),
+        ("most used", tiers.most_used),
+        ("project skills", tiers.project),
     ] {
         for skill in skills {
             items.push(PickerItem {
@@ -721,7 +721,7 @@ fn source_picker_items(
             value: format!("workflow:{}", workflow.name),
             label: workflow.name.clone(),
             description: workflow.description.clone(),
-            group: Some("Workflows".to_owned()),
+            group: Some("workflows".to_owned()),
             emphasized: false,
         });
     }
@@ -730,7 +730,7 @@ fn source_picker_items(
             value: format!("skill:{}", skill.name),
             label: skill.name.clone(),
             description: skill.description.clone(),
-            group: Some("Global".to_owned()),
+            group: Some("global".to_owned()),
             emphasized: false,
         });
     }
@@ -1273,7 +1273,7 @@ fn pill_entries(effective: &Effective) -> Vec<(PillId, String)> {
         (
             PillId::Source,
             match &effective.source {
-                TaskSource::Baseline => "baseline".to_owned(),
+                TaskSource::Baseline => "execution".to_owned(),
                 TaskSource::Skill { reference } | TaskSource::Workflow { reference } => {
                     reference.clone()
                 }
@@ -1519,7 +1519,7 @@ mod tests {
             json,
             serde_json::json!({
                 "task": "ship the shell",
-                "steps": [{ "id": "task", "name": "Baseline", "prompt": "{{task}}" }],
+                "steps": [{ "id": "task", "name": "execution", "prompt": "{{task}}" }],
                 "autonomous": true,
             })
         );
@@ -1645,11 +1645,17 @@ mod tests {
                 .and_then(|state| state.skill_usage.as_ref()),
         );
         let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
-        // Task modes lead for an empty query, then Most used across localities, then project,
+        // Task modes lead for an empty query, then most used across localities, then project,
         // workflows, and global entries.
         assert_eq!(
             labels,
-            ["Baseline", "planning", "om-open-pr", "om-fix", "quick-task"]
+            [
+                "execution",
+                "planning",
+                "om-open-pr",
+                "om-fix",
+                "quick-task"
+            ]
         );
 
         let tiers: Vec<&str> = items
@@ -1659,11 +1665,11 @@ mod tests {
         assert_eq!(
             tiers,
             [
-                "Task mode",
-                "Task mode",
-                "Most used",
-                "Project skills",
-                "Workflows"
+                "task mode",
+                "task mode",
+                "most used",
+                "project skills",
+                "workflows"
             ]
         );
 
