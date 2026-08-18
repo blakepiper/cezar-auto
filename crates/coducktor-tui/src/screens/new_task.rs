@@ -2,7 +2,7 @@
 //!
 //! Layout: a centered hero with
 //! "What should the agent work on?", the shared composer card (auto-growing text
-//! area, attachment row — no Dictation, per decision 2), a pill row —
+//! area, pasted-image row — no Dictation, per decision 2), a pill row —
 //! `skill/workflow ▾` · `runner ▾` · `model ▾` · `reasoning ▾` · `×N variants ▾` ·
 //! `branch: <branch> ▾` · `worktree: on ▾` · `mode: autonomous ▾` — then the send hint.
 
@@ -379,12 +379,6 @@ fn picker_pill(kind: &PickerKind) -> PillId {
         PickerKind::Base(_) => PillId::Base,
         PickerKind::Worktree(_) => PillId::Worktree,
         PickerKind::Autonomous(_) => PillId::Autonomous,
-    }
-}
-
-pub fn open_attach(app: &mut App) {
-    if app.new_task_ui.composer.attaching.is_none() {
-        app.new_task_ui.composer.attaching = Some(String::new());
     }
 }
 

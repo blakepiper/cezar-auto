@@ -1,5 +1,5 @@
 //! Shared composer widget for the New Task and thread screens. It owns terminal-native editing,
-//! skill completion and image-file attachment behavior.
+//! skill completion and pasted-image behavior.
 //!
 //! The host owns the draft (`NewTaskDraft`): every `TextChanged` event tells it to
 //! copy `composer.text` into the draft and persist it, so navigation never loses a
@@ -24,14 +24,11 @@ use crate::widgets::picker::PickerItem;
 /// Codex's threshold for replacing a large clipboard paste with a compact placeholder.
 pub const LARGE_PASTE_CHAR_THRESHOLD: usize = 1_000;
 
-/// An image attachment. Manually attached images keep their path until submit; clipboard images
-/// are already PNG-encoded so they do not depend on a temporary file remaining available.
+/// A PNG image pasted from the native clipboard.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attachment {
-    pub path: String,
-    pub png: Option<Vec<u8>>,
-    /// Clipboard images are represented inline; manual path attachments remain in the footer.
-    pub placeholder: Option<String>,
+    pub png: Vec<u8>,
+    pub placeholder: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,8 +130,6 @@ pub struct Composer {
     pub focused: bool,
     /// Host-provided semantic label, such as `GUIDANCE` or `FOLLOW UP`.
     pub title: String,
-    /// A path being typed in the attach prompt (`None` when no prompt is open).
-    pub attaching: Option<String>,
     pub attachments: Vec<Attachment>,
     /// Large clipboard payloads keyed by the compact placeholder shown in `text`.
     pub pending_pastes: Vec<PendingPaste>,
@@ -148,7 +143,6 @@ impl Default for Composer {
             caret: 0,
             focused: false,
             title: "COMPOSER".to_owned(),
-            attaching: None,
             attachments: Vec::new(),
             pending_pastes: Vec::new(),
             menu: None,
@@ -230,10 +224,6 @@ impl Composer {
     /// Pasted text above Codex's 1,000-character threshold is represented by a compact chip and
     /// expanded back to the exact payload when the host asks for submission text.
     pub fn handle_paste(&mut self, text: &str, ctx: &ComposerContext<'_>) -> ComposerEvent {
-        if let Some(path) = self.attaching.as_mut() {
-            path.push_str(text);
-            return ComposerEvent::Changed;
-        }
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         if text.is_empty() {
             return ComposerEvent::Changed;
@@ -278,7 +268,7 @@ impl Composer {
         let next_index = self
             .attachments
             .iter()
-            .filter_map(|attachment| attachment.placeholder.as_deref())
+            .map(|attachment| attachment.placeholder.as_str())
             .filter_map(|placeholder| {
                 placeholder
                     .strip_prefix("[Image #")?
@@ -291,11 +281,7 @@ impl Composer {
             + 1;
         let placeholder = format!("[Image #{next_index}]");
         self.insert_text(&placeholder);
-        self.attachments.push(Attachment {
-            path: String::new(),
-            png: Some(png),
-            placeholder: Some(placeholder),
-        });
+        self.attachments.push(Attachment { png, placeholder });
         self.close_menu();
     }
 
@@ -309,7 +295,7 @@ impl Composer {
             });
         self.attachments
             .iter()
-            .filter_map(|attachment| attachment.placeholder.as_deref())
+            .map(|attachment| attachment.placeholder.as_str())
             .fold(expanded, |text, placeholder| {
                 text.replacen(placeholder, "", 1)
             })
@@ -320,18 +306,9 @@ impl Composer {
     pub fn image_inputs(&self) -> Vec<ImageInput> {
         self.attachments
             .iter()
-            .filter_map(|attachment| {
-                let (media_type, bytes) = if let Some(png) = &attachment.png {
-                    ("image/png", png.clone())
-                } else {
-                    let media_type = media_type_for_path(&attachment.path)?;
-                    let bytes = std::fs::read(&attachment.path).ok()?;
-                    (media_type, bytes)
-                };
-                Some(ImageInput {
-                    media_type: media_type.to_owned(),
-                    data: base64::engine::general_purpose::STANDARD.encode(bytes),
-                })
+            .map(|attachment| ImageInput {
+                media_type: "image/png".to_owned(),
+                data: base64::engine::general_purpose::STANDARD.encode(&attachment.png),
             })
             .collect()
     }
@@ -353,14 +330,7 @@ impl Composer {
         {
             return event;
         }
-        if self.attaching.is_some() {
-            return self.handle_attach_key(key);
-        }
         match key.code {
-            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.attaching = Some(String::new());
-                ComposerEvent::Changed
-            }
             KeyCode::Char(character) => {
                 self.insert_char(character);
                 self.refresh_menu(ctx);
@@ -470,44 +440,18 @@ impl Composer {
         }
     }
 
-    fn handle_attach_key(&mut self, key: KeyEvent) -> ComposerEvent {
-        match key.code {
-            KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(path) = self.attaching.as_mut() {
-                    path.push(character);
-                }
-            }
-            KeyCode::Backspace => {
-                if let Some(path) = self.attaching.as_mut() {
-                    path.pop();
-                }
-            }
-            KeyCode::Enter => {
-                if let Some(path) = self.attaching.take()
-                    && !path.trim().is_empty()
-                {
-                    self.attachments.push(Attachment {
-                        path,
-                        png: None,
-                        placeholder: None,
-                    });
-                }
-            }
-            KeyCode::Esc => self.attaching = None,
-            _ => {}
-        }
-        ComposerEvent::Changed
-    }
-
     pub fn remove_attachment(&mut self, index: usize) {
         if index < self.attachments.len() {
             let attachment = self.attachments.remove(index);
-            if let Some(placeholder) = attachment.placeholder
-                && let Some(start) = self.text.find(&placeholder)
-            {
+            if let Some(start) = self.text.find(&attachment.placeholder) {
+                let placeholder = attachment.placeholder;
                 let end = start + placeholder.len();
                 self.text.replace_range(start..end, "");
-                self.caret = self.caret.saturating_sub(end - start).min(self.text.len());
+                if self.caret > end {
+                    self.caret -= end - start;
+                } else if self.caret >= start {
+                    self.caret = start;
+                }
             }
         }
     }
@@ -532,6 +476,14 @@ impl Composer {
         if self.caret == 0 {
             return;
         }
+        if let Some(index) = self
+            .attachments
+            .iter()
+            .position(|attachment| self.text[..self.caret].ends_with(&attachment.placeholder))
+        {
+            self.remove_attachment(index);
+            return;
+        }
         let end = self.caret;
         let start = self.text[..end]
             .char_indices()
@@ -544,6 +496,14 @@ impl Composer {
 
     fn delete_forward(&mut self) {
         if self.caret >= self.text.len() {
+            return;
+        }
+        if let Some(index) = self
+            .attachments
+            .iter()
+            .position(|attachment| self.text[self.caret..].starts_with(&attachment.placeholder))
+        {
+            self.remove_attachment(index);
             return;
         }
         let start = self.caret;
@@ -621,6 +581,8 @@ impl Composer {
         for _ in 0..line {
             if let Some(offset) = self.text[index..].find('\n') {
                 index += offset + 1;
+            } else {
+                return self.text.len();
             }
         }
         index
@@ -637,8 +599,7 @@ impl Composer {
     /// The number of text rows the composer occupies: grows with content between a
     /// three-line floor and an eight-line cap suitable for the terminal layout.
     pub fn height(&self) -> u16 {
-        let lines = self.text.split('\n').count() + usize::from(self.attaching.is_some());
-        lines.clamp(3, 8) as u16
+        self.text.split('\n').count().clamp(3, 8) as u16
     }
 
     /// Render the composer card (textarea + attachment row + footer). The host draws
@@ -671,7 +632,8 @@ impl Composer {
         frame.render_widget(block, area);
 
         let (caret_line, caret_col) = self.caret_position();
-        let visible = (area.height.saturating_sub(4)).clamp(1, 6);
+        let reserved_height = if self.attachments.is_empty() { 3 } else { 4 };
+        let visible = area.height.saturating_sub(reserved_height).clamp(1, 6);
         let scroll = caret_line.saturating_sub(visible as usize - 1);
         let hscroll = caret_col.saturating_sub(usize::from(inner.width.saturating_sub(1)));
 
@@ -713,46 +675,26 @@ impl Composer {
             row += 1;
         }
 
-        // Attachment row + footer.
-        if row < inner.bottom() {
-            let footer = if let Some(path) = &self.attaching {
-                Line::from(vec![
-                    Span::styled(" attach path: ", Style::default().fg(theme.palette.accent)),
-                    Span::raw(path.clone()),
-                    Span::styled("▌", Style::default().fg(theme.palette.fg)),
-                ])
-            } else {
-                let mut attach_spans = vec![Span::styled(
-                    " [attach]",
-                    if self.attachments.is_empty() {
-                        Style::default().fg(theme.palette.soft_fg)
-                    } else {
-                        Style::default().fg(theme.palette.fg)
-                    },
-                )];
-                for (index, attachment) in self.attachments.iter().enumerate() {
-                    let name = attachment_label(attachment, index);
-                    attach_spans.push(Span::styled(
-                        format!(" {name} ×"),
-                        Style::default().fg(theme.palette.soft_fg),
-                    ));
-                }
-                Line::from(attach_spans)
-            };
+        // Pasted-image removal row + footer.
+        if !self.attachments.is_empty() && row < inner.bottom() {
+            let footer = Line::from(
+                self.attachments
+                    .iter()
+                    .map(|attachment| {
+                        Span::styled(
+                            format!(" {} ×", attachment.placeholder),
+                            Style::default().fg(theme.palette.soft_fg),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            );
             frame.render_widget(
                 Paragraph::new(footer).style(style),
                 Rect::new(inner.x + 1, row, inner.width.saturating_sub(2), 1),
             );
             let mut cursor = inner.x + 1;
-            hitmap.register(
-                Rect::new(cursor, row, 9, 1),
-                z + 1,
-                HitAction::ComposerAttach,
-            );
-            cursor += 9;
             for (index, attachment) in self.attachments.iter().enumerate() {
-                let name = attachment_label(attachment, index);
-                let name_len = (name.chars().count() + 2) as u16;
+                let name_len = (attachment.placeholder.chars().count() + 3) as u16;
                 hitmap.register(
                     Rect::new(cursor, row, name_len, 1),
                     z + 1,
@@ -775,26 +717,6 @@ impl Composer {
         if let Some(menu) = &self.menu {
             render_menu_overlay(frame, menu, area, theme);
         }
-    }
-}
-
-fn attachment_label(attachment: &Attachment, _index: usize) -> String {
-    if let Some(placeholder) = &attachment.placeholder {
-        return placeholder.clone();
-    }
-    let mut name = attachment.path.clone();
-    name.truncate(name.len().min(20));
-    name
-}
-
-fn media_type_for_path(path: &str) -> Option<&'static str> {
-    let extension = path.rsplit('.').next()?.to_ascii_lowercase();
-    match extension.as_str() {
-        "png" => Some("image/png"),
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "gif" => Some("image/gif"),
-        "webp" => Some("image/webp"),
-        _ => None,
     }
 }
 
@@ -920,7 +842,7 @@ mod tests {
         composer.attach_clipboard_image(vec![1, 2, 3]);
 
         assert!(composer.has_content());
-        assert_eq!(attachment_label(&composer.attachments[0], 0), "[Image #1]");
+        assert_eq!(composer.attachments[0].placeholder, "[Image #1]");
         assert_eq!(composer.text, "[Image #1]");
         assert_eq!(composer.submission_text(), "");
         assert_eq!(
@@ -1086,25 +1008,32 @@ mod tests {
     }
 
     #[test]
-    fn attachments_are_added_by_path_and_removable() {
+    fn pasted_images_are_removable() {
         let mut composer = Composer::default();
-        composer.handle_key(key(KeyCode::Char('p'), KeyModifiers::CONTROL), &ctx());
-        assert!(composer.attaching.is_some());
-        for character in "shot.png".chars() {
-            composer.handle_key(key(KeyCode::Char(character), KeyModifiers::NONE), &ctx());
-        }
-        composer.handle_key(key(KeyCode::Enter, KeyModifiers::NONE), &ctx());
+        composer.attach_clipboard_image(vec![1, 2, 3]);
         assert_eq!(
             composer.attachments,
             vec![Attachment {
-                path: "shot.png".to_owned(),
-                png: None,
-                placeholder: None,
+                png: vec![1, 2, 3],
+                placeholder: "[Image #1]".to_owned(),
             }]
         );
-        assert!(composer.attaching.is_none());
 
         composer.remove_attachment(0);
+        assert!(composer.attachments.is_empty());
+        assert!(composer.text.is_empty());
+    }
+
+    #[test]
+    fn backspace_removes_a_pasted_image_as_one_chip() {
+        let mut composer = Composer::default();
+        composer.set_text("before ");
+        composer.attach_clipboard_image(vec![1, 2, 3]);
+
+        composer.handle_key(key(KeyCode::Backspace, KeyModifiers::NONE), &ctx());
+
+        assert_eq!(composer.text, "before ");
+        assert_eq!(composer.caret, "before ".len());
         assert!(composer.attachments.is_empty());
     }
 

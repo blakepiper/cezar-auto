@@ -2640,14 +2640,11 @@ impl App {
                     crate::screens::new_task::pick_index(self, index);
                 }
             }
-            HitAction::ComposerAttach => {
-                if matches!(self.route(), Route::NewTask { .. }) {
-                    crate::screens::new_task::open_attach(self);
-                }
-            }
             HitAction::ComposerRemoveAttachment(index) => {
                 if matches!(self.route(), Route::NewTask { .. }) {
                     crate::screens::new_task::remove_attachment(self, index);
+                } else if matches!(self.route(), Route::Thread { .. }) {
+                    self.thread_ui.composer.remove_attachment(index);
                 }
             }
             HitAction::NewTaskScreen(action) => {

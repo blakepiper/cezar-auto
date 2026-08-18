@@ -109,9 +109,7 @@ pub enum HitAction {
     OpenCompare(String),
     /// A row of the open new-task picker overlay.
     PickerRow(usize),
-    /// The new-task composer's paperclip (attach row).
-    ComposerAttach,
-    /// Remove the attachment at this index from the composer's attachment row.
+    /// Remove the pasted image at this index from the composer's image row.
     ComposerRemoveAttachment(usize),
     /// A new-task screen control (pill/button/composer) — routed by the screen.
     NewTaskScreen(NewTaskAction),
