@@ -31,7 +31,7 @@ The cockpit can:
 
 - Start a plain task, apply a Markdown skill, or run a saved YAML workflow.
 - Run Claude Code, Codex, OpenCode, or pi sessions through one normalized runner interface.
-- Select a model, reasoning effort, base branch, agent account, and autonomous mode.
+- Select a model, reasoning effort, branch, worktree mode, and task mode.
 - Run up to three competing Git variants and compare their diffs before choosing one.
 - Use an isolated Git worktree by default in Git repositories, or run directly in the checkout.
 - Stream agent text, tool activity, plans, questions, images, token counts, costs, and step status.
@@ -109,7 +109,7 @@ git pull && ./install.sh
 2. Press `c` to open **New task**.
 3. Enter what the agent should do.
 4. Choose a baseline task, skill, or workflow. Then choose an available runner, model, reasoning
-   effort, base branch, and agent account as needed.
+   effort, branch, worktree mode, and task mode as needed.
 5. Leave autonomous mode enabled to let the run continue through its workflow without waiting for
    confirmation, or toggle it off when you want a more interactive handoff.
 6. Choose **Start**, or choose **Plan first** and accept the plan preview.

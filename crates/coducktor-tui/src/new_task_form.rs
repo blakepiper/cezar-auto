@@ -303,7 +303,7 @@ pub fn reasoning_levels() -> Vec<ReasoningOption> {
     vec![
         ReasoningOption {
             value: ReasoningEffort::Auto,
-            label: "Auto",
+            label: "auto",
             desc: "Choose per work chunk",
         },
         ReasoningOption {
@@ -398,7 +398,6 @@ pub struct CreateRunBodyOpts {
     pub runner: RunnerSelection,
     pub runner_explicit: bool,
     pub default_runner: Option<RunnerSelection>,
-    pub agent_profile: Option<String>,
     pub variants: u64,
     pub images: Vec<ImageInput>,
     /// Resolved worktree flag: `false` → run in the repo working tree (single runs only).
@@ -446,9 +445,7 @@ pub fn build_create_run_body(opts: &CreateRunBodyOpts) -> CreateRunInput {
             .reasoning_effort
             .filter(|effort| *effort != ReasoningEffort::Auto),
         runner: runner_override(opts.runner, opts.default_runner, opts.runner_explicit),
-        agent_profile: (!opts.agent_profile.as_deref().unwrap_or("").is_empty())
-            .then(|| opts.agent_profile.clone())
-            .flatten(),
+        agent_profile: None,
         variants: (opts.variants > 1).then_some(opts.variants as f64),
         worktree: match opts.worktree {
             Some(false) if opts.variants <= 1 => Some(false),
@@ -545,7 +542,6 @@ pub struct NewTaskDraft {
     pub text: String,
     pub source: Option<TaskSource>,
     pub runner: Option<RunnerSelection>,
-    pub agent_profile: Option<String>,
     pub model: Option<String>,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub variants: u64,
@@ -560,7 +556,6 @@ impl Default for NewTaskDraft {
             text: String::new(),
             source: None,
             runner: None,
-            agent_profile: None,
             model: None,
             reasoning_effort: None,
             variants: 1,
@@ -750,6 +745,7 @@ mod tests {
                 ReasoningEffort::XHigh,
             ]
         );
+        assert_eq!(reasoning_levels()[0].label, "auto");
     }
 
     #[test]
@@ -833,7 +829,6 @@ mod tests {
             runner: RunnerSelection::Claude,
             runner_explicit: false,
             default_runner: Some(RunnerSelection::Claude),
-            agent_profile: None,
             variants: 1,
             images: Vec::new(),
             worktree: None,

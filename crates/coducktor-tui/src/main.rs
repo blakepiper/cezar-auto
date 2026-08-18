@@ -133,9 +133,9 @@ struct PrimeNewTaskSnapshot {
     workflows: Option<coducktor_contract::WorkflowsResponse>,
     workspace_config: Option<coducktor_contract::WorkspaceConfigResponse>,
     provider_status: Option<coducktor_contract::ProviderStatusResponse>,
-    agent_profiles: Option<coducktor_contract::AgentProfilesResponse>,
     ui_state: Option<coducktor_contract::UiState>,
     repo: Option<coducktor_contract::RepoInfo>,
+    branches: Vec<String>,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -275,7 +275,6 @@ fn spawn_prime(engine: Arc<dyn Engine>) -> (JoinHandle<()>, UnboundedReceiver<Pr
             workflows,
             workspace_config,
             provider_status,
-            agent_profiles,
             ui_state,
             repo,
         ) = tokio::join!(
@@ -288,19 +287,19 @@ fn spawn_prime(engine: Arc<dyn Engine>) -> (JoinHandle<()>, UnboundedReceiver<Pr
             engine.workflows(&scope),
             engine.workspace_config(),
             engine.provider_status(),
-            engine.agent_profiles(),
             engine.ui_state(&scope),
             engine.repo(&scope),
         );
+        let (repo, branches) = repo.ok().map(repo_snapshot).unwrap_or_default();
         let new_task = PrimeNewTaskSnapshot {
             config: config.ok(),
             skills: skills.ok(),
             workflows: workflows.ok(),
             workspace_config: workspace_config.ok(),
             provider_status: provider_status.ok(),
-            agent_profiles: agent_profiles.ok(),
             ui_state: ui_state.ok(),
-            repo: repo.ok().and_then(repo_info),
+            repo,
+            branches,
         };
         let _ = sender.send(PrimeSnapshot {
             health,
@@ -423,19 +422,19 @@ fn apply_new_task_snapshot(app: &mut App, snapshot: PrimeNewTaskSnapshot) {
     if let Some(provider_status) = snapshot.provider_status {
         app.new_task_ui.data.provider_status = Some(provider_status);
     }
-    if let Some(agent_profiles) = snapshot.agent_profiles {
-        app.new_task_ui.data.agent_profiles = Some(agent_profiles);
-    }
     if let Some(ui_state) = snapshot.ui_state {
         app.new_task_ui.data.ui_state = Some(ui_state);
     }
     app.new_task_ui.data.repo = snapshot.repo;
+    app.new_task_ui.data.branches = snapshot.branches;
 }
 
-fn repo_info(response: coducktor_contract::RepoResponse) -> Option<coducktor_contract::RepoInfo> {
+fn repo_snapshot(
+    response: coducktor_contract::RepoResponse,
+) -> (Option<coducktor_contract::RepoInfo>, Vec<String>) {
     match response {
-        coducktor_contract::RepoResponse::Present(repo) => Some(repo.info),
-        coducktor_contract::RepoResponse::Empty(_) => None,
+        coducktor_contract::RepoResponse::Present(repo) => (Some(repo.info), repo.branches),
+        coducktor_contract::RepoResponse::Empty(_) => (None, Vec::new()),
     }
 }
 
@@ -1422,34 +1421,25 @@ async fn execute_pending(
 
 async fn load_new_task_snapshot(engine: Arc<dyn Engine>, project: &str) -> PrimeNewTaskSnapshot {
     let scope = Scope::Project(project.to_owned());
-    let (
-        config,
-        skills,
-        workflows,
-        workspace_config,
-        provider_status,
-        agent_profiles,
-        ui_state,
-        repo,
-    ) = tokio::join!(
+    let (config, skills, workflows, workspace_config, provider_status, ui_state, repo) = tokio::join!(
         engine.config(&scope),
         engine.skills(&scope),
         engine.workflows(&scope),
         engine.workspace_config(),
         engine.provider_status(),
-        engine.agent_profiles(),
         engine.ui_state(&scope),
         engine.repo(&scope),
     );
+    let (repo, branches) = repo.ok().map(repo_snapshot).unwrap_or_default();
     PrimeNewTaskSnapshot {
         config: config.ok(),
         skills: skills.ok(),
         workflows: workflows.ok(),
         workspace_config: workspace_config.ok(),
         provider_status: provider_status.ok(),
-        agent_profiles: agent_profiles.ok(),
         ui_state: ui_state.ok(),
-        repo: repo.ok().and_then(repo_info),
+        repo,
+        branches,
     }
 }
 
@@ -1853,13 +1843,17 @@ async fn refresh_new_task(engine: &dyn Engine, app: &mut App, project: &str) {
     if let Ok(provider_status) = engine.provider_status().await {
         app.new_task_ui.data.provider_status = Some(provider_status);
     }
-    if let Ok(agent_profiles) = engine.agent_profiles().await {
-        app.new_task_ui.data.agent_profiles = Some(agent_profiles);
-    }
     if let Ok(ui_state) = engine.ui_state(&scope).await {
         app.new_task_ui.data.ui_state = Some(ui_state);
     }
-    app.new_task_ui.data.repo = engine.repo(&scope).await.ok().and_then(repo_info);
+    if let Ok(repo) = engine.repo(&scope).await {
+        let (info, branches) = repo_snapshot(repo);
+        app.new_task_ui.data.repo = info;
+        app.new_task_ui.data.branches = branches;
+    } else {
+        app.new_task_ui.data.repo = None;
+        app.new_task_ui.data.branches.clear();
+    }
 }
 
 async fn open_workspace_listener(
@@ -2363,9 +2357,9 @@ mod tests {
                     workflows: None,
                     workspace_config: None,
                     provider_status: None,
-                    agent_profiles: None,
                     ui_state: None,
                     repo: None,
+                    branches: Vec::new(),
                 },
             },
         );

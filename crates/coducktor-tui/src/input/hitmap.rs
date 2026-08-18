@@ -70,7 +70,7 @@ pub enum NewTaskAction {
     ReasoningPill,
     VariantsPill,
     BasePill,
-    AccountPill,
+    WorktreePill,
     AutonomousPill,
     Start,
     Plan,

@@ -4,13 +4,13 @@
 //! "What should the agent work on?", the shared composer card (auto-growing text
 //! area, attachment row — no Dictation, per decision 2), a pill row —
 //! `skill/workflow ▾` · `runner ▾` · `model ▾` · `reasoning ▾` · `×N variants ▾` ·
-//! `base: <branch> ▾` · `agent account ▾` · `autonomous ☐` — then `Start` / `Plan
-//! first` and the send button.
+//! `branch: <branch> ▾` · `worktree: on ▾` · `mode: autonomous ▾` — then `Start` /
+//! `Plan first` and the send button.
 
 use coducktor_contract::{
-    AgentProfilesResponse, ImageInput, PlanResponse, ProviderStatusResponse, ReasoningEffort,
-    RepoInfo, Runner, RunnerModelCatalogResponse, RunnerSelection, Skill, TaskSource, UiState,
-    WorkflowDef, WorkspaceConfigResponse,
+    ImageInput, PlanResponse, ProviderStatusResponse, ReasoningEffort, RepoInfo, Runner,
+    RunnerModelCatalogResponse, RunnerSelection, Skill, TaskSource, UiState, WorkflowDef,
+    WorkspaceConfigResponse,
 };
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
@@ -37,7 +37,7 @@ pub enum PillId {
     Reasoning,
     Variants,
     Base,
-    Account,
+    Worktree,
     Autonomous,
 }
 
@@ -49,7 +49,7 @@ impl PillId {
         Self::Reasoning,
         Self::Variants,
         Self::Base,
-        Self::Account,
+        Self::Worktree,
         Self::Autonomous,
     ];
 
@@ -75,7 +75,8 @@ pub enum PickerKind {
     Reasoning(Picker),
     Variants(Picker),
     Base(Picker),
-    Account(Picker),
+    Worktree(Picker),
+    Autonomous(Picker),
 }
 
 impl PickerKind {
@@ -87,7 +88,8 @@ impl PickerKind {
             | Self::Reasoning(picker)
             | Self::Variants(picker)
             | Self::Base(picker)
-            | Self::Account(picker) => picker,
+            | Self::Worktree(picker)
+            | Self::Autonomous(picker) => picker,
         }
     }
 
@@ -99,7 +101,8 @@ impl PickerKind {
             | Self::Reasoning(picker)
             | Self::Variants(picker)
             | Self::Base(picker)
-            | Self::Account(picker) => picker,
+            | Self::Worktree(picker)
+            | Self::Autonomous(picker) => picker,
         }
     }
 }
@@ -112,12 +115,12 @@ pub struct NewTaskData {
     pub config: Option<ComposerConfig>,
     pub workspace_config: Option<WorkspaceConfigResponse>,
     pub provider_status: Option<ProviderStatusResponse>,
-    pub agent_profiles: Option<AgentProfilesResponse>,
     pub ui_state: Option<UiState>,
     pub model_catalog: Option<RunnerModelCatalogResponse>,
     /// The runner the catalog was requested for; a runner change re-requests it.
     pub models_requested_for: Option<Runner>,
     pub repo: Option<RepoInfo>,
+    pub branches: Vec<String>,
 }
 
 /// Screen-local state: the per-project draft, the shared composer, focus, and the
@@ -151,7 +154,6 @@ pub struct Effective {
     pub worktree_on: bool,
     pub autonomous_on: bool,
     pub base_branch: String,
-    pub account: Option<String>,
     pub providers_ready: bool,
 }
 
@@ -273,13 +275,6 @@ pub fn effective_values(draft: &NewTaskDraft, data: &NewTaskData) -> Effective {
         .or_else(|| data.repo.as_ref().map(|repo| repo.branch.clone()))
         .unwrap_or_else(|| "main".to_owned());
 
-    let account_choices = account_choices(data, display_runner);
-    let account = draft.agent_profile.clone().filter(|id| {
-        account_choices
-            .iter()
-            .any(|choice| choice.1.as_deref() == Some(id.as_str()))
-    });
-
     Effective {
         providers_ready: !runners.is_empty(),
         source,
@@ -295,26 +290,7 @@ pub fn effective_values(draft: &NewTaskDraft, data: &NewTaskData) -> Effective {
         worktree_on,
         autonomous_on,
         base_branch,
-        account,
     }
-}
-
-/// Every login for one runner: the agent row (`claude`) and any extra accounts
-/// (`claude · Klaudiusz`), as `(value, account_id)` pairs where `account_id` is
-/// `None` for the plain agent row.
-fn account_choices(data: &NewTaskData, runner: Runner) -> Vec<(String, Option<String>)> {
-    let mut choices = vec![(runner_label(runner).to_owned(), None)];
-    if let Some(profiles) = &data.agent_profiles {
-        for profile in profiles
-            .profiles
-            .iter()
-            .filter(|profile| profile.provider == runner)
-        {
-            let label = format!("{} · {}", runner_label(runner), profile.label);
-            choices.push((label, Some(profile.id.clone())));
-        }
-    }
-    choices
 }
 
 fn runner_label(runner: Runner) -> &'static str {
@@ -367,8 +343,8 @@ pub fn apply_hit(app: &mut App, action: NewTaskAction) {
         NewTaskAction::ReasoningPill => open_pill(app, PillId::Reasoning),
         NewTaskAction::VariantsPill => open_pill(app, PillId::Variants),
         NewTaskAction::BasePill => open_pill(app, PillId::Base),
-        NewTaskAction::AccountPill => open_pill(app, PillId::Account),
-        NewTaskAction::AutonomousPill => toggle_autonomous(app),
+        NewTaskAction::WorktreePill => open_pill(app, PillId::Worktree),
+        NewTaskAction::AutonomousPill => open_pill(app, PillId::Autonomous),
         NewTaskAction::Start => request_start(app),
         NewTaskAction::Plan => request_plan(app),
         NewTaskAction::Compose => {
@@ -400,7 +376,8 @@ fn picker_pill(kind: &PickerKind) -> PillId {
         PickerKind::Reasoning(_) => PillId::Reasoning,
         PickerKind::Variants(_) => PillId::Variants,
         PickerKind::Base(_) => PillId::Base,
-        PickerKind::Account(_) => PillId::Account,
+        PickerKind::Worktree(_) => PillId::Worktree,
+        PickerKind::Autonomous(_) => PillId::Autonomous,
     }
 }
 
@@ -483,6 +460,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         }
         KeyCode::Char(' ') if app.new_task_ui.pill_focus == Some(PillId::Autonomous) => {
             toggle_autonomous(app);
+            true
+        }
+        KeyCode::Char(' ') if app.new_task_ui.pill_focus == Some(PillId::Worktree) => {
+            toggle_worktree(app);
             true
         }
         KeyCode::Enter if app.new_task_ui.pill_focus.is_some() => {
@@ -683,9 +664,19 @@ fn toggle_autonomous(app: &mut App) {
     write_draft(app);
 }
 
+fn toggle_worktree(app: &mut App) {
+    let draft = &mut app.new_task_ui.draft;
+    let effective = effective_values(draft, &app.new_task_ui.data);
+    if effective.variants > 1 {
+        return;
+    }
+    draft.worktree = Some(!effective.worktree_on);
+    write_draft(app);
+}
+
 fn open_pill(app: &mut App, pill: PillId) {
     let mut picker = Picker::new(picker_title(pill));
-    picker.searchable = matches!(pill, PillId::Source);
+    picker.searchable = matches!(pill, PillId::Source | PillId::Base);
     app.new_task_ui.pill_focus = Some(pill);
     app.new_task_ui.picker = Some(match pill {
         PillId::Source => PickerKind::Source(picker),
@@ -694,8 +685,8 @@ fn open_pill(app: &mut App, pill: PillId) {
         PillId::Reasoning => PickerKind::Reasoning(picker),
         PillId::Variants => PickerKind::Variants(picker),
         PillId::Base => PickerKind::Base(picker),
-        PillId::Account => PickerKind::Account(picker),
-        PillId::Autonomous => PickerKind::Source(Picker::new("AUTONOMOUS")),
+        PillId::Worktree => PickerKind::Worktree(picker),
+        PillId::Autonomous => PickerKind::Autonomous(picker),
     });
     refresh_picker_items(app);
 }
@@ -707,9 +698,9 @@ fn picker_title(pill: PillId) -> &'static str {
         PillId::Model => "MODEL",
         PillId::Reasoning => "REASONING",
         PillId::Variants => "VARIANTS",
-        PillId::Base => "BASE BRANCH",
-        PillId::Account => "AGENT ACCOUNT",
-        PillId::Autonomous => "AUTONOMOUS",
+        PillId::Base => "BRANCH",
+        PillId::Worktree => "WORKTREE",
+        PillId::Autonomous => "TASK MODE",
     }
 }
 
@@ -740,10 +731,13 @@ fn refresh_picker_items(app: &mut App) {
         PickerKind::Variants(_) => {
             variants_picker_items(&app.new_task_ui.draft, &app.new_task_ui.data)
         }
-        PickerKind::Base(_) => base_picker_items(&app.new_task_ui.draft, &app.new_task_ui.data),
-        PickerKind::Account(_) => {
-            account_picker_items(&app.new_task_ui.draft, &app.new_task_ui.data)
+        PickerKind::Base(_) => {
+            base_picker_items(&app.new_task_ui.draft, &app.new_task_ui.data, &query)
         }
+        PickerKind::Worktree(_) => {
+            worktree_picker_items(&app.new_task_ui.draft, &app.new_task_ui.data)
+        }
+        PickerKind::Autonomous(_) => autonomous_picker_items(),
     };
     kind.picker_mut().set_items(items);
 }
@@ -901,39 +895,82 @@ fn variants_picker_items(draft: &NewTaskDraft, data: &NewTaskData) -> Vec<Picker
     items
 }
 
-fn base_picker_items(_draft: &NewTaskDraft, data: &NewTaskData) -> Vec<PickerItem> {
+fn base_picker_items(_draft: &NewTaskDraft, data: &NewTaskData, query: &str) -> Vec<PickerItem> {
     let branch = data
         .repo
         .as_ref()
         .map(|repo| repo.branch.clone())
         .unwrap_or_else(|| "main".to_owned());
-    let mut items = vec![PickerItem::simple(
-        "base:",
-        "follow checked-out branch",
-        Some(format!("({branch})")),
-    )];
-    if data.repo.is_some() {
+    let query = query.trim().to_ascii_lowercase();
+    let matches = |label: &str| query.is_empty() || label.to_ascii_lowercase().contains(&query);
+    let mut items = Vec::new();
+    if matches("follow checked-out branch") {
         items.push(PickerItem::simple(
-            format!("base:{branch}"),
-            branch.clone(),
-            Some("Worktrees fork from this branch".to_owned()),
+            "base:",
+            "follow checked-out branch",
+            Some(format!("({branch})")),
+        ));
+    }
+    if data.repo.is_some() {
+        let configured = data
+            .config
+            .as_ref()
+            .and_then(|config| config.base_branch.as_ref());
+        let mut candidates = Vec::with_capacity(data.branches.len() + 2);
+        candidates.push(branch.clone());
+        if let Some(configured) = configured
+            && !candidates.iter().any(|candidate| candidate == configured)
+        {
+            candidates.push(configured.clone());
+        }
+        for candidate in &data.branches {
+            if !candidates.iter().any(|existing| existing == candidate) {
+                candidates.push(candidate.clone());
+            }
+        }
+        for candidate in candidates {
+            if matches(&candidate) {
+                items.push(PickerItem::simple(
+                    format!("base:{candidate}"),
+                    candidate,
+                    Some("Task worktrees start from this branch".to_owned()),
+                ));
+            }
+        }
+    }
+    items
+}
+
+fn worktree_picker_items(draft: &NewTaskDraft, data: &NewTaskData) -> Vec<PickerItem> {
+    let effective = effective_values(draft, data);
+    let mut items = vec![PickerItem::simple(
+        "worktree:true",
+        "on",
+        Some("Run in an isolated task worktree".to_owned()),
+    )];
+    if effective.variants <= 1 {
+        items.push(PickerItem::simple(
+            "worktree:false",
+            "off",
+            Some("Modify the currently checked-out branch directly".to_owned()),
         ));
     }
     items
 }
 
-fn account_picker_items(draft: &NewTaskDraft, data: &NewTaskData) -> Vec<PickerItem> {
-    let effective = effective_values(draft, data);
-    account_choices(data, effective.display_runner)
-        .into_iter()
-        .map(|(label, account)| {
-            PickerItem::simple(
-                format!("account:{}", account.unwrap_or_default()),
-                label,
-                Some("which login runs the task".to_owned()),
-            )
-        })
-        .collect()
+fn autonomous_picker_items() -> Vec<PickerItem> {
+    vec![
+        PickerItem::simple(
+            "autonomous:true",
+            "autonomous",
+            Some("Continue through the workflow without waiting for approval".to_owned()),
+        ),
+        PickerItem::simple(
+            "autonomous:false",
+            "manual approval",
+            Some("Pause for your input before continuing or reviewing changes".to_owned()),
+        ),
+    ]
 }
 
 fn apply_pick(app: &mut App, pill: PillId, value: &str) {
@@ -977,14 +1014,16 @@ fn apply_pick(app: &mut App, pill: PillId, value: &str) {
                 base_branch,
             });
         }
-        PillId::Account => {
-            let account = value
-                .strip_prefix("account:")
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned);
-            app.new_task_ui.draft.agent_profile = account;
+        PillId::Worktree => {
+            if let Some(worktree) = value.strip_prefix("worktree:") {
+                app.new_task_ui.draft.worktree = Some(worktree == "true");
+            }
         }
-        PillId::Autonomous => {}
+        PillId::Autonomous => {
+            if let Some(autonomous) = value.strip_prefix("autonomous:") {
+                app.new_task_ui.draft.autonomous = Some(autonomous == "true");
+            }
+        }
     }
     write_draft(app);
 }
@@ -1061,7 +1100,6 @@ fn request_start(app: &mut App) {
             .config
             .as_ref()
             .map(|config| config.default_runner),
-        agent_profile: effective.account.clone(),
         variants: effective.variants,
         images,
         worktree: Some(effective.worktree_on),
@@ -1263,17 +1301,11 @@ fn render_pills(frame: &mut Frame<'_>, area: Rect, app: &mut App, effective: &Ef
                 Style::default()
                     .fg(theme.palette.bg)
                     .bg(theme.palette.accent)
-            } else if pill == PillId::Autonomous && label.ends_with('☑') {
-                Style::default().fg(theme.palette.accent)
             } else {
                 Style::default().fg(theme.palette.soft_fg)
             };
             let width = (label.chars().count() + 4) as u16;
-            let display = if pill == PillId::Autonomous {
-                label
-            } else {
-                format!("{label} ▾")
-            };
+            let display = format!("{label} ▾");
             spans.push(Span::styled(format!(" {display} "), style));
             app.hitmap.register(
                 Rect::new(column, y, width.min(area.right().saturating_sub(column)), 1),
@@ -1285,7 +1317,7 @@ fn render_pills(frame: &mut Frame<'_>, area: Rect, app: &mut App, effective: &Ef
                     PillId::Reasoning => NewTaskAction::ReasoningPill,
                     PillId::Variants => NewTaskAction::VariantsPill,
                     PillId::Base => NewTaskAction::BasePill,
-                    PillId::Account => NewTaskAction::AccountPill,
+                    PillId::Worktree => NewTaskAction::WorktreePill,
                     PillId::Autonomous => NewTaskAction::AutonomousPill,
                 }),
             );
@@ -1323,21 +1355,21 @@ fn pill_entries(effective: &Effective) -> Vec<(PillId, String)> {
             reasoning_label(effective.reasoning_effort),
         ),
         (PillId::Variants, format!("×{}", effective.variants)),
-        (PillId::Base, format!("base: {}", effective.base_branch)),
+        (PillId::Base, format!("branch: {}", effective.base_branch)),
         (
-            PillId::Account,
-            effective
-                .account
-                .clone()
-                .unwrap_or_else(|| "default".to_owned()),
+            PillId::Worktree,
+            format!(
+                "worktree: {}",
+                if effective.worktree_on { "on" } else { "off" }
+            ),
         ),
     ];
-    let autonomous = if effective.autonomous_on {
-        "☑"
+    let mode = if effective.autonomous_on {
+        "autonomous"
     } else {
-        "☐"
+        "manual approval"
     };
-    pills.push((PillId::Autonomous, format!("autonomous {autonomous}")));
+    pills.push((PillId::Autonomous, format!("mode: {mode}")));
     pills
 }
 
@@ -1428,7 +1460,7 @@ fn runner_selection_label(selection: RunnerSelection) -> String {
 
 fn reasoning_label(effort: ReasoningEffort) -> String {
     match effort {
-        ReasoningEffort::Auto => "Auto".to_owned(),
+        ReasoningEffort::Auto => "auto".to_owned(),
         ReasoningEffort::Low => "Low".to_owned(),
         ReasoningEffort::Medium => "Medium".to_owned(),
         ReasoningEffort::High => "High".to_owned(),
@@ -1574,6 +1606,7 @@ mod tests {
             branch: "main".to_owned(),
             remote: None,
         });
+        app.new_task_ui.data.branches = vec!["main".to_owned(), "feature/login".to_owned()];
         app.new_task_ui.data.config = Some(ComposerConfig::default());
         app
     }
@@ -1794,6 +1827,71 @@ mod tests {
             "worktrees are the zero-config default"
         );
         assert_eq!(effective.base_branch, "main");
+    }
+
+    #[test]
+    fn branch_picker_lists_the_checked_out_and_available_branches() {
+        let mut app = app_with_new_task("t-branch");
+        open_pill(&mut app, PillId::Base);
+        let items = app
+            .new_task_ui
+            .picker
+            .as_ref()
+            .map(|kind| kind.picker().items.clone())
+            .unwrap_or_default();
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["follow checked-out branch", "main", "feature/login"]
+        );
+        assert!(items.iter().all(|item| !item.label.contains("skill")));
+    }
+
+    #[test]
+    fn worktree_picker_separates_isolation_from_branch_selection() {
+        let mut app = app_with_new_task("t-worktree");
+        open_pill(&mut app, PillId::Worktree);
+        let items = app
+            .new_task_ui
+            .picker
+            .as_ref()
+            .map(|kind| kind.picker().items.clone())
+            .unwrap_or_default();
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["on", "off"]
+        );
+        pick_index(&mut app, 1);
+        assert_eq!(app.new_task_ui.draft.worktree, Some(false));
+        assert!(!effective_values(&app.new_task_ui.draft, &app.new_task_ui.data).worktree_on);
+    }
+
+    #[test]
+    fn task_mode_picker_has_only_autonomous_and_manual_approval() {
+        let mut app = app_with_new_task("t-mode");
+        open_pill(&mut app, PillId::Autonomous);
+        let items = app
+            .new_task_ui
+            .picker
+            .as_ref()
+            .map(|kind| kind.picker().items.clone())
+            .unwrap_or_default();
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["autonomous", "manual approval"]
+        );
+        assert!(items.iter().all(|item| !item.value.starts_with("skill:")));
+        pick_index(&mut app, 1);
+        assert_eq!(app.new_task_ui.draft.autonomous, Some(false));
+        assert!(!effective_values(&app.new_task_ui.draft, &app.new_task_ui.data).autonomous_on);
     }
 
     #[test]
