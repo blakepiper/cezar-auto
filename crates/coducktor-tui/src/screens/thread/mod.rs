@@ -102,6 +102,9 @@ pub struct ThreadUi {
     pub plan_collapsed: bool,
     pub steps_collapsed: bool,
     pub focus: ThreadFocus,
+    /// The transcript's inner rectangle from the last render, used to keep mouse-wheel input
+    /// scoped to the task activity rather than the composer and other controls.
+    pub(crate) transcript_area: Option<Rect>,
     pub pending_prompt: Option<String>,
     pending_prompt_after_seq: f64,
     pending_composer: Option<crate::widgets::composer::Composer>,
@@ -124,6 +127,7 @@ impl Default for ThreadUi {
             plan_collapsed: false,
             steps_collapsed: true,
             focus: ThreadFocus::Transcript,
+            transcript_area: None,
             pending_prompt: None,
             pending_prompt_after_seq: -1.0,
             pending_composer: None,
@@ -164,6 +168,7 @@ impl ThreadUi {
         self.ask_focus = (0, 0);
         self.subagent_sheet = None;
         self.focus = ThreadFocus::Transcript;
+        self.transcript_area = None;
         if !same_thread {
             self.pending_prompt = None;
             self.pending_prompt_after_seq = -1.0;
@@ -617,6 +622,16 @@ fn request_earlier(app: &mut App) {
     });
 }
 
+/// Scroll the task transcript in response to a wheel event. A wheel notch moves three
+/// transcript rows, matching the usual terminal mouse-wheel behavior while preserving the
+/// transcript's existing bounds and follow-mode handling.
+pub fn handle_scroll(app: &mut App, up: bool) {
+    if up && app.thread_ui.transcript.at_top() {
+        request_earlier(app);
+    }
+    app.thread_ui.transcript.scroll_by(if up { -3 } else { 3 });
+}
+
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let Some(run) = app.thread_ui.data.run.clone() else {
         frame.render_widget(
@@ -708,6 +723,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         .borders(Borders::TOP)
         .border_style(Style::default().fg(theme.palette.border));
     let transcript_area = transcript_block.inner(rows[2]);
+    app.thread_ui.transcript_area = Some(transcript_area);
     frame.render_widget(transcript_block, rows[2]);
     if transcript_area.height > 0 {
         app.thread_ui.transcript.render_interactive(
@@ -1286,6 +1302,7 @@ mod tests {
     use crate::input::keymap::Keymap;
     use crate::theme::Theme;
     use coducktor_contract::{RunRecord, StepKind, StepState, StepStatus};
+    use crossterm::event::{Event, MouseEvent, MouseEventKind};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use serde_json::json;
@@ -1361,6 +1378,31 @@ mod tests {
             id: "run-1".to_owned(),
         });
         app
+    }
+
+    #[test]
+    fn mouse_wheel_scrolls_the_transcript() {
+        let mut app = app_with_run(RunStatus::Running);
+        for index in 0..50 {
+            app.thread_ui
+                .transcript
+                .push(TranscriptItem::Note(NoteItem::new(
+                    format!("n{index}"),
+                    format!("note {index}"),
+                    TranscriptNoteTone::Dim,
+                )));
+        }
+        app.thread_ui.transcript_area = Some(Rect::new(10, 5, 60, 10));
+        app.thread_ui.transcript.scroll_by(10);
+
+        app.handle_event(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 20,
+            row: 8,
+            modifiers: KeyModifiers::NONE,
+        }));
+
+        assert!(!app.thread_ui.transcript.at_top());
     }
 
     #[test]

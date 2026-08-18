@@ -2409,6 +2409,20 @@ impl App {
             }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
                 if !self.sidebar_focus
+                    && matches!(self.route(), Route::Thread { .. })
+                    && self.thread_ui.focus == crate::screens::thread::ThreadFocus::Transcript
+                    && self
+                        .thread_ui
+                        .transcript_area
+                        .is_some_and(|area| area.contains((mouse.column, mouse.row).into())) =>
+            {
+                crate::screens::thread::handle_scroll(
+                    self,
+                    matches!(mouse.kind, MouseEventKind::ScrollUp),
+                );
+            }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                if !self.sidebar_focus
                     && matches!(self.route(), Route::Terminal { .. })
                     && self
                         .terminal_ui
