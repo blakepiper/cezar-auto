@@ -20,6 +20,26 @@ pub enum TurnMarkerDecision {
 /// backend churn through dozens of paid turns.
 pub const MAX_AUTONOMOUS_CONTINUES: u32 = 4;
 
+/// Backend-neutral control contract appended to every agent session. Runners must see this on
+/// the opening turn: without it, an ordinary final answer has no way to distinguish "finished"
+/// from "waiting for the user", and autonomous mode will keep prompting a task that is already
+/// complete.
+pub const TASK_CONTROL_INSTRUCTIONS: &str = "## Coducktor task controls
+
+When the task is fully complete and verified, end your final response with a line containing exactly DUCK:DONE. Do not emit DUCK:DONE while anything remains unfinished or unverified. If you need a user reply, end normally without that marker.
+
+If you end a turn only because your own downstream work is still running, end with a line containing exactly DUCK:MONITORING. Use it only while monitoring work that does not need user input, and never combine it with DUCK:DONE.";
+
+/// Preserve an authored system prompt while ensuring every backend receives the task-control
+/// contract. Returning a concrete string also makes the no-custom-prompt path explicit instead
+/// of relying on individual runner defaults.
+pub fn system_prompt_with_task_controls(authored: Option<&str>) -> String {
+    match authored.map(str::trim).filter(|prompt| !prompt.is_empty()) {
+        Some(prompt) => format!("{prompt}\n\n---\n\n{TASK_CONTROL_INSTRUCTIONS}"),
+        None => TASK_CONTROL_INSTRUCTIONS.to_owned(),
+    }
+}
+
 fn is_standalone_legacy_done(text: &str) -> bool {
     matches!(
         text.trim_end().lines().next_back().map(str::trim),
@@ -141,6 +161,22 @@ mod tests {
         assert_eq!(
             autonomous_turn_decision("progress", false, true, 0, 1, false),
             TurnMarkerDecision::Closed
+        );
+    }
+
+    #[test]
+    fn task_controls_are_always_present_and_preserve_an_authored_prompt() {
+        assert_eq!(
+            system_prompt_with_task_controls(None),
+            TASK_CONTROL_INSTRUCTIONS
+        );
+        assert_eq!(
+            system_prompt_with_task_controls(Some("Stay focused.")),
+            format!("Stay focused.\n\n---\n\n{TASK_CONTROL_INSTRUCTIONS}")
+        );
+        assert_eq!(
+            system_prompt_with_task_controls(Some("  \n")),
+            TASK_CONTROL_INSTRUCTIONS
         );
     }
 

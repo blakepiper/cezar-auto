@@ -23,7 +23,7 @@ pub use review_gate::{enabled as review_gate_enabled, settle_status as success_s
 pub use semaphore::{RepositoryRootLease, WorkspaceSemaphore};
 pub use session::{
     MAX_AUTONOMOUS_CONTINUES, TurnMarkerDecision, append_turn_text, decide_turn_marker,
-    strip_turn_marker,
+    strip_turn_marker, system_prompt_with_task_controls,
 };
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -48,7 +48,7 @@ use crate::runs::store;
 use crate::runs::task_markers::{self, TaskMarkers};
 use crate::time::{is_zod_datetime, now_iso8601};
 
-const AUTONOMOUS_NUDGE: &str = "Continue working autonomously until the task is fully complete. Do not ask me for confirmation or clarification — make reasonable assumptions and proceed. When everything is done, end the session with your done signal.";
+const AUTONOMOUS_NUDGE: &str = "Continue working autonomously until the task is fully complete. Do not ask me for confirmation or clarification — make reasonable assumptions and proceed. When everything is done and verified, end your final response with a line containing exactly DUCK:DONE.";
 
 /// A patch represented with the same camelCase keys as the persisted contract.
 ///
@@ -573,8 +573,8 @@ pub struct SessionRequest {
     pub allowed_tools: Vec<String>,
     /// From `step.bash_allowlist`, verbatim (empty when unset).
     pub bash_allowlist: Vec<String>,
-    /// From `RunRecord.system_prompt`, verbatim. Skill and handoff instructions are assembled by
-    /// the caller that owns those features.
+    /// From `RunRecord.system_prompt`, followed by the backend-neutral task-control contract.
+    /// Skill and handoff instructions are assembled by the caller that owns those features.
     pub system_prompt: Option<String>,
     /// From `RunRecord.reasoning_effort`, mapped from the `auto`-inclusive contract enum to the
     /// concrete one a backend spawn actually takes (`Auto` becomes `None`, letting the backend
@@ -2162,7 +2162,9 @@ impl RunManager {
             });
             let bash_allowlist = step.bash_allowlist.clone().unwrap_or_default();
             let run_record = self.get_run(run_id);
-            let system_prompt = run_record.and_then(|run| run.system_prompt.clone());
+            let system_prompt = Some(system_prompt_with_task_controls(
+                run_record.and_then(|run| run.system_prompt.as_deref()),
+            ));
             let reasoning_effort = run_record
                 .and_then(|run| run.reasoning_effort)
                 .and_then(concrete_reasoning_effort);
@@ -4271,10 +4273,17 @@ mod tests {
         manager.start_run(&workflow, input).unwrap();
 
         let requests = requests.lock().unwrap();
+        let expected_system_prompt = format!(
+            "Stay focused.\n\n---\n\n{}",
+            session::TASK_CONTROL_INSTRUCTIONS
+        );
         assert_eq!(requests[0].cwd, dir.path());
         assert_eq!(requests[0].allowed_tools, vec!["Read", "Bash"]);
         assert_eq!(requests[0].bash_allowlist, vec!["npm test"]);
-        assert_eq!(requests[0].system_prompt.as_deref(), Some("Stay focused."));
+        assert_eq!(
+            requests[0].system_prompt.as_deref(),
+            Some(expected_system_prompt.as_str())
+        );
         assert_eq!(
             requests[0].reasoning_effort,
             Some(ConcreteReasoningEffort::High)
@@ -4299,7 +4308,10 @@ mod tests {
             .collect();
         assert_eq!(requests[0].allowed_tools, expected);
         assert!(requests[0].bash_allowlist.is_empty());
-        assert_eq!(requests[0].system_prompt, None);
+        assert_eq!(
+            requests[0].system_prompt.as_deref(),
+            Some(session::TASK_CONTROL_INSTRUCTIONS)
+        );
         assert_eq!(requests[0].reasoning_effort, None);
     }
 
