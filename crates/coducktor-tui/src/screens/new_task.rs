@@ -1336,7 +1336,7 @@ fn pill_row_height(width: u16, effective: &Effective) -> u16 {
 }
 
 fn action_row_height(width: u16) -> u16 {
-    let content = " Enter or Ctrl+Enter sends · Esc leaves the composer";
+    let content = " Enter sends · Esc leaves the composer";
     wrapped_height(content, width)
 }
 
@@ -1348,7 +1348,7 @@ fn wrapped_height(content: &str, width: u16) -> u16 {
 fn render_actions(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let line = Line::from(Span::styled(
-        " Enter or Ctrl+Enter sends · Esc leaves the composer",
+        " Enter sends · Esc leaves the composer",
         theme_soft(theme),
     ));
     frame.render_widget(

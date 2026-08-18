@@ -259,9 +259,7 @@ impl Composer {
                 ComposerEvent::Changed
             }
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let text = self.text.trim().to_owned();
-                self.close_menu();
-                ComposerEvent::Submit { text }
+                ComposerEvent::Changed
             }
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 self.insert_char('\n');
@@ -632,7 +630,7 @@ impl Composer {
         if row < inner.bottom() {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
-                    " Enter send · Shift+Enter newline · Ctrl+Enter send · / skills",
+                    " Enter send · Shift+Enter newline · / skills",
                     Style::default().fg(theme.palette.soft_fg),
                 ))),
                 Rect::new(inner.x + 1, row, inner.width.saturating_sub(2), 1),
@@ -765,15 +763,8 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_enter_and_alt_enter_also_send() {
+    fn alt_enter_also_sends() {
         let mut composer = Composer::default();
-        composer.set_text("go");
-        assert_eq!(
-            composer.handle_key(key(KeyCode::Enter, KeyModifiers::CONTROL), &ctx()),
-            ComposerEvent::Submit {
-                text: "go".to_owned()
-            }
-        );
         composer.set_text("go");
         assert_eq!(
             composer.handle_key(key(KeyCode::Enter, KeyModifiers::ALT), &ctx()),
@@ -781,6 +772,17 @@ mod tests {
                 text: "go".to_owned()
             }
         );
+    }
+
+    #[test]
+    fn ctrl_enter_does_not_send() {
+        let mut composer = Composer::default();
+        composer.set_text("go");
+        assert_eq!(
+            composer.handle_key(key(KeyCode::Enter, KeyModifiers::CONTROL), &ctx()),
+            ComposerEvent::Changed
+        );
+        assert_eq!(composer.text, "go");
     }
 
     #[test]
