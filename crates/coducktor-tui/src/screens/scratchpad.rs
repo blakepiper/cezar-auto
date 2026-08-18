@@ -27,7 +27,7 @@ impl Default for ScratchpadUi {
             loaded: false,
             saving: false,
             viewport: 0,
-            highlighter: Highlighter::new(false),
+            highlighter: Highlighter::new(true),
         }
     }
 }
