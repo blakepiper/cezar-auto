@@ -2033,14 +2033,6 @@ impl App {
             self.focus_step(key.code);
             return;
         }
-        if !self.sidebar_focus
-            && matches!(self.route(), Route::Tasks { .. } | Route::GlobalTasks)
-            && matches!(key.code, KeyCode::Up | KeyCode::Down)
-        {
-            self.focus_sidebar();
-            self.handle_sidebar_key(key);
-            return;
-        }
         if self.sidebar_focus && self.handle_sidebar_key(key) {
             return;
         }
@@ -3193,21 +3185,46 @@ mod tests {
     }
 
     #[test]
-    fn task_screen_arrows_focus_and_cycle_the_sidebar() {
+    fn task_screen_arrows_select_rows_after_ctrl_right_and_enter_opens_one() {
         let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.apply_workspace_event(run_event(
+            "main",
+            "run-1",
+            "First task",
+            RunStatus::Running,
+            None,
+        ));
+        app.apply_workspace_event(run_event(
+            "main",
+            "run-2",
+            "Second task",
+            RunStatus::Running,
+            None,
+        ));
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
         terminal.draw(|frame| app.render(frame)).unwrap();
 
-        // The arrow selector starts on the current project's row.
-        assert_eq!(app.sidebar_selected, 0);
-        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
         assert!(app.sidebar_focus);
-        assert_eq!(app.sidebar_selected, 1);
+        assert_eq!(app.tasks_ui.table.selected, None);
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::CONTROL,
+        )));
+        assert!(!app.sidebar_focus);
+
+        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        assert_eq!(app.tasks_ui.table.selected, Some(0));
+        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+        assert_eq!(app.tasks_ui.table.selected, Some(1));
         app.handle_event(Event::Key(KeyEvent::new(
             KeyCode::Enter,
             KeyModifiers::NONE,
         )));
-        assert!(matches!(app.route(), Route::NewTask { project } if project == "main"));
+
+        assert!(matches!(
+            app.route(),
+            Route::Thread { project, id } if project == "main" && id == "run-2"
+        ));
     }
 
     #[test]

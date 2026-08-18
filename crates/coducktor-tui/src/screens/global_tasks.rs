@@ -628,11 +628,11 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         return crate::app::handle_row_menu_key(app, &menu, key);
     }
     match key.code {
-        KeyCode::Char('j') => {
+        KeyCode::Char('j') | KeyCode::Down => {
             app.global_ui.table.move_selection(1);
             true
         }
-        KeyCode::Char('k') => {
+        KeyCode::Char('k') | KeyCode::Up => {
             app.global_ui.table.move_selection(-1);
             true
         }

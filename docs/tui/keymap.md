@@ -19,7 +19,7 @@ user bindings are merged over these defaults, key by key.
 | `Ctrl+B` | Toggle sidebar |
 | `Ctrl+Left` / `Ctrl+Right` | Move keyboard focus one section left or right — sidebar → screen (and, in the IDE, sidebar → file tree → editor). Each press steps exactly one section; `j`/`k` or `Up`/`Down` move in the panel, `Enter` opens, `Esc` returns |
 
-| `Up` / `Down` on Tasks | Move into and cycle the left navigation panel; `Enter` opens the highlighted destination |
+| `Up` / `Down` | Move the selection in the focused panel; on Tasks, `Enter` opens the selected task |
 | `?` | Help overlay (context-filtered) |
 | `:` | Open the command line |
 | `Ctrl+O` | Navigate back |
@@ -33,8 +33,8 @@ The cockpit starts with the sidebar focused, so `Ctrl+Right` enters the initial 
 
 The left navigation panel shows a persistent arrow selector that the keyboard and
 the mouse share: clicking a sidebar row with the mouse moves it there and activates
-it, and `j`/`k`/`Up`/`Down` move it once the panel has focus (`Ctrl+Left`, or
-`Up`/`Down` from the Tasks screens). `Ctrl+Left`/`Ctrl+Right` step the keyboard
+it, and `j`/`k`/`Up`/`Down` move it once the panel has focus (`Ctrl+Left` from
+the Tasks screen). `Ctrl+Left`/`Ctrl+Right` step the keyboard
 focus one section at a time (sidebar → screen, with the IDE's file tree between
 them), so `Ctrl+Left` from a file in the IDE lands on the file tree and `Ctrl+Right`
 from the sidebar lands back on it, never skipping a section. The selector starts on

@@ -27,6 +27,10 @@ records what is implemented and which terminal observations remain unverified.
 - **Global settings.** Manually exercised through `:open /settings` in the same `script` pseudo-terminal
   at `120x40` on 2026-08-17: the `Global settings` panel exposed `Add repository` and `Appearance`,
   and quitting restored the alternate screen.
+- **Tasks keyboard focus.** Manually exercised through the real TUI in an 80x24 pseudo-terminal
+  on 2026-08-17: from the focused sidebar, `Ctrl+Right` moved control into the Tasks table,
+  `Down` highlighted the first task row, and `Enter` opened that task's thread. Quitting restored
+  the alternate screen.
 - **Embedded project terminals.** The per-project Terminal tab (`screens/terminal.rs` + `pty.rs`)
   runs a real `$SHELL` inside the cockpit — no external terminal emulator is spawned. Each
   project gets one persistent session (`portable-pty` master pair + a background reader thread
