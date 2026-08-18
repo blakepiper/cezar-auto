@@ -1,4 +1,4 @@
-//! The command palette — `Ctrl+K`, `nucleo`-scored, over Tasks
+//! The command palette — `nucleo`-scored, over Tasks
 //! (cross-project, from `/workspace/runs-index`), Views, Projects and Actions. Every entry
 //! shares a stable action with `:` command-line equivalents where one exists (`execute_command`
 //! is `pub(crate)` for exactly this reuse) and the keymap.
@@ -188,7 +188,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     frame.render_widget(Clear, popup);
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!("⌘K  {}_", app.palette.query));
+        .title(format!("Command palette  {}_", app.palette.query));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 

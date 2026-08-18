@@ -206,4 +206,11 @@ mod tests {
         let event = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
         assert_eq!(key_id(&event), "ctrl-o");
     }
+
+    #[test]
+    fn ctrl_k_is_not_bound_by_default() {
+        let keymap = Keymap::default();
+        let event = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert_eq!(keymap.action_for(KeyMode::Normal, &event), None);
+    }
 }

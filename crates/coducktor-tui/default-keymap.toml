@@ -8,7 +8,6 @@ c = "new-task"
 ":" = "command"
 "ctrl-o" = "back"
 "ctrl-i" = "forward"
-"ctrl-k" = "palette"
 
 [command]
 escape = "normal"

@@ -5,7 +5,7 @@ expression: terminal.backend().buffer()
 Buffer {
     area: Rect { x: 0, y: 0, width: 200, height: 60 },
     content: [
-        " [=] coducktor / t-10 /p/t-10/new  [running 0] [needs 0]  [Ctrl+K]                                                                                                                                      ",
+        " [=] coducktor / t-10 /p/t-10/new  [running 0] [needs 0]                                                                                                                                                ",
         "  PROJECTS                                                                                       New task in t-10 · root unavailable                                                                    ",
         "  - t-10                                                                                           What should the agent work on?                                                                       ",
         "  ▸ Tasks                                                                         Runs in an isolated worktree — review everything before it lands.                                                     ",

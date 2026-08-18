@@ -24,7 +24,6 @@ user bindings are merged over these defaults, key by key.
 | `:` | Open the command line |
 | `Ctrl+O` | Navigate back |
 | `Ctrl+I` | Navigate forward |
-| `Ctrl+K` | Command palette |
 
 `Ctrl+Left` / `Ctrl+Right` are handled before the keymap (they move between
 focus sections, so they are not rebindable).
@@ -43,8 +42,8 @@ from the sidebar lands back on it, never skipping a section. The selector starts
 the current project row and follows every navigation, so the highlighted row always
 matches the screen you are on. `Enter` opens the highlighted row (a project row
 switches to that project and a nav row opens its screen). Task filtering lives in the Tasks and
-All Tasks headers. `Esc` (or `Right`) returns focus to the screen. The
-command palette (`Ctrl+K`) and `:open <route>` remain available too.
+All Tasks headers. `Esc` (or `Right`) returns focus to the screen. The `:open <route>` command
+remains available too.
 
 Clicking a non-active project row switches the sidebar context to that registered project and
 refreshes its tasks without moving focus out of the sidebar. Clicking the active project row still

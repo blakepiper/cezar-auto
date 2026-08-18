@@ -144,7 +144,6 @@ The global keymap is intentionally small:
 | `c` | New task |
 | `t` | Project tasks |
 | `g` | All tasks across registered projects |
-| `Ctrl+K` | Command palette |
 | `?` | Contextual help |
 | `:` | Command line |
 | `Ctrl+O` / `Ctrl+I` | Back / forward |

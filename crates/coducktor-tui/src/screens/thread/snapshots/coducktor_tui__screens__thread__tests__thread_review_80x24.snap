@@ -5,7 +5,7 @@ expression: terminal.backend().buffer()
 Buffer {
     area: Rect { x: 0, y: 0, width: 80, height: 24 },
     content: [
-        " [=] coducktor / main /p/main/tasks/run-1  [running 0] [needs 0]  [Ctrl+K]      ",
+        " [=] coducktor / main /p/main/tasks/run-1  [running 0] [needs 0]                ",
         "Ship the shell  [needs review] ●                                                ",
         "quick-task  0 tok  $0.00                                                        ",
         " Session  Changes  Files  Commits                                               ",

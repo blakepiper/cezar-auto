@@ -5,7 +5,7 @@ expression: terminal.backend().buffer()
 Buffer {
     area: Rect { x: 0, y: 0, width: 200, height: 60 },
     content: [
-        " [=] coducktor / main /p/main/github  [running 0] [needs 0]  [Ctrl+K]                                                                                                                                   ",
+        " [=] coducktor / main /p/main/github  [running 0] [needs 0]                                                                                                                                             ",
         "  PROJECTS                   Issues · 1  Pull requests · 1                                                                                                                                              ",
         "  - main                    ┌Issues────────────────────────────────────────┐#12  Fix the thing #12   bug                                                                                                ",
         "    Tasks                   │  #12  Fix the thing #12  ·2                  │┌Body──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐",

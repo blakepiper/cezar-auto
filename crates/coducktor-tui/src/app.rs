@@ -1802,7 +1802,6 @@ impl App {
                 format!("[needs {}]", self.needs_you_count()),
                 Style::default().fg(self.theme.palette.waiting),
             ),
-            Span::raw("  [Ctrl+K]"),
         ]);
         frame.render_widget(
             Paragraph::new(line).style(Style::default().bg(self.theme.palette.surface)),

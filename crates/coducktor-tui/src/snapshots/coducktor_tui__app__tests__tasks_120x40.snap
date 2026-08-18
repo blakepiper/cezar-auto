@@ -5,7 +5,7 @@ expression: terminal.backend().buffer()
 Buffer {
     area: Rect { x: 0, y: 0, width: 120, height: 40 },
     content: [
-        " [=] coducktor / main /p/main  [running 0] [needs 0]  [Ctrl+K]                                                          ",
+        " [=] coducktor / main /p/main  [running 0] [needs 0]                                                                    ",
         "  PROJECTS                   TASKS — main  Current 0  Needs you 0  Finished 0                                           ",
         "  - main                    ┌TASKS — main──────────────────────────────────────────────────────────────────────────────┐",
         "  > Tasks                   │No tasks in this project. Press n for New task.                                           │",

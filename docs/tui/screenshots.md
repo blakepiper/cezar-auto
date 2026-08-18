@@ -14,7 +14,7 @@ Regenerate these excerpts after any UI change with `cargo insta test`.
 ## Tasks screen, 120×40 (sidebar visible)
 
 ```text
- [=] coducktor / main /p/main  [running 0] [needs 0]  [Ctrl+K]                                                          
+ [=] coducktor / main /p/main  [running 0] [needs 0]
   PROJECTS                   Tasks Archived 0    /                                                                      
   - main                    ┌TASKS — main──────────────────────────────────────────────────────────────────────────────┐
   > Tasks                   │No tasks in this project. Press n for New task.                                           │
@@ -57,7 +57,7 @@ Regenerate these excerpts after any UI change with `cargo insta test`.
 ## Tasks screen, 80×24 (sidebar auto-collapsed below the 100-column breakpoint)
 
 ```text
- [=] coducktor / main /p/main  [running 0] [needs 0]  [Ctrl+K]                  
+ [=] coducktor / main /p/main  [running 0] [needs 0]
  Tasks Archived 0    /                                                          
 ┌TASKS — main──────────────────────────────────────────────────────────────────┐
 │STATUS TASK WORKFLOW br ± REF        IN/OUT     COST                          │

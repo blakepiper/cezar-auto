@@ -5,7 +5,7 @@ expression: terminal.backend().buffer()
 Buffer {
     area: Rect { x: 0, y: 0, width: 80, height: 24 },
     content: [
-        " [=] coducktor / main /p/main/workflows  [running 0] [needs 0]  [Ctrl+K]        ",
+        " [=] coducktor / main /p/main/workflows  [running 0] [needs 0]                  ",
         " quick-task  + new (draft)                                                      ",
         "┌Skills──────────────────┐┌Steps — my-chain────────────────────────────────────┐",
         "│/ filter:               ││1 [agent] om-fix  {{task}}                          │",
