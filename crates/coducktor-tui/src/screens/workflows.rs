@@ -40,6 +40,7 @@ pub struct WorkflowsUi {
     /// The skills palette.
     pub palette_skills: Vec<Skill>,
     pub palette_query: String,
+    /// Index into `palette_skills` for the selected visible skill.
     pub palette_selected: usize,
 
     pub focus: WorkflowFocus,
@@ -388,32 +389,11 @@ fn render_palette(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         });
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let query = app.workflows_ui.palette_query.to_lowercase();
     let mut lines = vec![Line::from(Span::styled(
         format!("/ filter: {}", app.workflows_ui.palette_query),
         Style::default().fg(app.theme.palette.soft_fg),
     ))];
-    let matches: Vec<usize> = app
-        .workflows_ui
-        .palette_skills
-        .iter()
-        .enumerate()
-        .filter_map(|(index, skill)| {
-            if query.is_empty()
-                || skill.name.to_lowercase().contains(&query)
-                || skill
-                    .description
-                    .clone()
-                    .unwrap_or_default()
-                    .to_lowercase()
-                    .contains(&query)
-            {
-                Some(index)
-            } else {
-                None
-            }
-        })
-        .collect();
+    let matches = palette_matches(app);
     if matches.is_empty() {
         lines.push(Line::from(Span::styled(
             "No skills match.",
@@ -427,7 +407,7 @@ fn render_palette(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     {
         let skill = &app.workflows_ui.palette_skills[*index];
         let selected = app.workflows_ui.focus == WorkflowFocus::Palette
-            && position == app.workflows_ui.palette_selected.min(matches.len() - 1);
+            && *index == app.workflows_ui.palette_selected;
         let mut style = Style::default().fg(app.theme.palette.fg);
         if selected {
             style = style.add_modifier(Modifier::REVERSED);
@@ -623,22 +603,22 @@ fn handle_palette_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         KeyCode::Char('j') | KeyCode::Down => {
-            let count = app.workflows_ui.palette_skills.len().min(1);
-            app.workflows_ui.palette_selected =
-                (app.workflows_ui.palette_selected + 1).min(count.saturating_sub(1));
+            move_palette_selection(app, 1);
             true
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            app.workflows_ui.palette_selected = app.workflows_ui.palette_selected.saturating_sub(1);
+            move_palette_selection(app, -1);
             true
         }
         KeyCode::Enter => {
-            let Some(skill) = app
-                .workflows_ui
-                .palette_skills
-                .get(app.workflows_ui.palette_selected)
-                .cloned()
+            let selected = app.workflows_ui.palette_selected;
+            let Some(index) = palette_matches(app)
+                .into_iter()
+                .find(|index| *index == selected)
             else {
+                return true;
+            };
+            let Some(skill) = app.workflows_ui.palette_skills.get(index).cloned() else {
                 return true;
             };
             let steps = current_steps_mut(app);
@@ -648,14 +628,55 @@ fn handle_palette_key(app: &mut App, key: KeyEvent) -> bool {
         }
         KeyCode::Backspace => {
             app.workflows_ui.palette_query.pop();
+            app.workflows_ui.palette_selected = 0;
             true
         }
         KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.workflows_ui.palette_query.push(character);
+            app.workflows_ui.palette_selected = 0;
             true
         }
         _ => false,
     }
+}
+
+fn palette_matches(app: &App) -> Vec<usize> {
+    let query = app.workflows_ui.palette_query.to_lowercase();
+    app.workflows_ui
+        .palette_skills
+        .iter()
+        .enumerate()
+        .filter_map(|(index, skill)| {
+            if query.is_empty()
+                || skill.name.to_lowercase().contains(&query)
+                || skill
+                    .description
+                    .clone()
+                    .unwrap_or_default()
+                    .to_lowercase()
+                    .contains(&query)
+            {
+                Some(index)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn move_palette_selection(app: &mut App, delta: i32) {
+    let matches = palette_matches(app);
+    let Some(current) = matches
+        .iter()
+        .position(|index| *index == app.workflows_ui.palette_selected)
+    else {
+        if let Some(index) = matches.first() {
+            app.workflows_ui.palette_selected = *index;
+        }
+        return;
+    };
+    let next = (current as i32 + delta).clamp(0, matches.len() as i32 - 1) as usize;
+    app.workflows_ui.palette_selected = matches[next];
 }
 
 fn handle_import_key(app: &mut App, key: KeyEvent) -> bool {
@@ -819,6 +840,26 @@ mod tests {
         let content = render(&mut app, 120, 40);
         assert!(content.contains("my-chain"));
         assert!(content.contains("agent"));
+    }
+
+    #[test]
+    fn palette_arrows_move_between_visible_skills() {
+        let mut app = app_with_workflows();
+        app.workflows_ui.selected_tab = 1;
+        app.workflows_ui.focus = WorkflowFocus::Palette;
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.workflows_ui.palette_selected, 1);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.workflows_ui.palette_selected, 0);
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.workflows_ui.draft_steps.len(), 1);
+        assert_eq!(
+            app.workflows_ui.draft_steps[0].skill.as_deref(),
+            Some("omarchy")
+        );
     }
 
     #[test]

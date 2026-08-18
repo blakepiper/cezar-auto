@@ -984,7 +984,8 @@ impl App {
             editor_handoff: None,
             filter_mode: false,
             sort_picker_index: 0,
-            sidebar_focus: false,
+            // Start on the sidebar so `Ctrl+Right` enters the initial Tasks screen.
+            sidebar_focus: true,
             sidebar_selected: 0,
             screen_focus: 0,
         }
@@ -1162,6 +1163,7 @@ impl App {
             };
         }
         self.history.navigate(route);
+        self.sidebar_focus = false;
         self.screen_focus = 0;
         if let Route::Ide { project } = self.route() {
             let path = if self.ide_ui.directory_path.is_empty() {
@@ -1191,6 +1193,7 @@ impl App {
 
     fn go_back(&mut self) {
         if self.history.back() {
+            self.sidebar_focus = false;
             self.screen_focus = 0;
             self.anchor_sidebar_selection();
         }
@@ -1210,6 +1213,7 @@ impl App {
 
     fn go_forward(&mut self) {
         if self.history.forward() {
+            self.sidebar_focus = false;
             self.screen_focus = 0;
             self.anchor_sidebar_selection();
         }
@@ -1921,6 +1925,7 @@ impl App {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(action) = self.hitmap.hit(mouse.column, mouse.row) {
+                    let sidebar_action = self.sidebar_row_for_hit(&action).is_some();
                     if let Some(row) = self.sidebar_row_for_hit(&action)
                         && let Some(index) = self.sidebar_position(row)
                     {
@@ -1938,6 +1943,9 @@ impl App {
                         self.sidebar_dragging = true;
                     } else {
                         self.apply_hit_action(action);
+                        if sidebar_action {
+                            self.sidebar_focus = true;
+                        }
                     }
                 }
             }
@@ -2467,7 +2475,7 @@ impl App {
         }
     }
 
-    fn focus_sidebar(&mut self) {
+    pub fn focus_sidebar(&mut self) {
         if self.last_width != 0 && self.last_width < SIDEBAR_BREAKPOINT {
             self.sidebar_overlay_open = true;
         } else if self.last_width >= SIDEBAR_BREAKPOINT {
@@ -3328,7 +3336,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
         terminal.draw(|frame| app.render(frame)).unwrap();
 
-        assert!(!app.sidebar_focus);
+        assert!(app.sidebar_focus);
         ctrl(&mut app, KeyCode::Left);
         assert!(app.sidebar_focus);
         ctrl(&mut app, KeyCode::Left);
@@ -3337,6 +3345,22 @@ mod tests {
         assert!(!app.sidebar_focus);
         ctrl(&mut app, KeyCode::Right);
         assert!(!app.sidebar_focus, "already rightmost, no-op");
+    }
+
+    #[test]
+    fn startup_ctrl_right_enters_the_tasks_screen() {
+        fn ctrl(app: &mut App, code: KeyCode) {
+            app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::CONTROL)));
+        }
+
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        assert!(matches!(app.route(), Route::Tasks { .. }));
+        assert!(app.sidebar_focus);
+
+        ctrl(&mut app, KeyCode::Right);
+
+        assert!(!app.sidebar_focus);
+        assert!(matches!(app.route(), Route::Tasks { .. }));
     }
 
     #[test]
@@ -3664,6 +3688,10 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
         terminal.draw(|frame| app.render(frame)).unwrap();
 
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::CONTROL,
+        )));
         app.handle_event(Event::Key(KeyEvent::new(
             KeyCode::Char('j'),
             KeyModifiers::NONE,

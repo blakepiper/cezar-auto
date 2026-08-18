@@ -29,6 +29,8 @@ user bindings are merged over these defaults, key by key.
 `Ctrl+Left` / `Ctrl+Right` are handled before the keymap (they move between
 focus sections, so they are not rebindable).
 
+The cockpit starts with the sidebar focused, so `Ctrl+Right` enters the initial Tasks screen.
+
 The left navigation panel shows a persistent arrow selector that the keyboard and
 the mouse share: clicking a sidebar row with the mouse moves it there and activates
 it, and `j`/`k`/`Up`/`Down` move it once the panel has focus (`Ctrl+Left`, or

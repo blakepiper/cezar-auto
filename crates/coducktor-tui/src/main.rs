@@ -360,6 +360,8 @@ fn apply_prime_snapshot(app: &mut App, snapshot: PrimeSnapshot) {
             app.request_navigate(app::Route::Tasks {
                 project: boot_project.clone(),
             });
+            // Keep the startup interaction model: the first Ctrl+Right should enter Tasks.
+            app.focus_sidebar();
             app.pending.push(PendingAction::RefreshTasks {
                 project: boot_project.clone(),
             });
