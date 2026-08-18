@@ -1,5 +1,5 @@
 //! Shared composer widget for the New Task and thread screens. It owns terminal-native editing,
-//! skill completion, quick replies, and image-file attachment behavior.
+//! skill completion and image-file attachment behavior.
 //!
 //! The host owns the draft (`NewTaskDraft`): every `TextChanged` event tells it to
 //! copy `composer.text` into the draft and persist it, so navigation never loses a
@@ -89,8 +89,6 @@ pub enum ComposerEvent {
     Changed,
     /// The user asked to send the current draft.
     Submit { text: String },
-    /// A canned quick reply (`Alt+A` / `Alt+C`).
-    QuickReply { text: String },
     /// A `/`-menu pick counted a skill use (for the ui-state frequency sort).
     PickedSkill { name: String },
     /// Leave the composer (Esc / Tab).
@@ -126,8 +124,6 @@ pub struct Composer {
     pub attaching: Option<String>,
     pub attachments: Vec<Attachment>,
     pub menu: Option<ComposerMenu>,
-    /// `Alt+A` / `Alt+C` quick replies (the thread host wants them; the hero does not).
-    pub quick_replies: bool,
 }
 
 impl Default for Composer {
@@ -140,7 +136,6 @@ impl Default for Composer {
             attaching: None,
             attachments: Vec::new(),
             menu: None,
-            quick_replies: true,
         }
     }
 }
@@ -244,20 +239,6 @@ impl Composer {
             return self.handle_attach_key(key);
         }
         match key.code {
-            KeyCode::Char('a')
-                if self.quick_replies && key.modifiers.contains(KeyModifiers::ALT) =>
-            {
-                ComposerEvent::QuickReply {
-                    text: "Yes, approved.".to_owned(),
-                }
-            }
-            KeyCode::Char('c')
-                if self.quick_replies && key.modifiers.contains(KeyModifiers::ALT) =>
-            {
-                ComposerEvent::QuickReply {
-                    text: "Continue.".to_owned(),
-                }
-            }
             KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.attaching = Some(String::new());
                 ComposerEvent::Changed
@@ -651,7 +632,7 @@ impl Composer {
         if row < inner.bottom() {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
-                    " Enter send · Shift+Enter newline · Ctrl+Enter send · / skills · Alt+A / Alt+C quick replies",
+                    " Enter send · Shift+Enter newline · Ctrl+Enter send · / skills",
                     Style::default().fg(theme.palette.soft_fg),
                 ))),
                 Rect::new(inner.x + 1, row, inner.width.saturating_sub(2), 1),
@@ -798,23 +779,6 @@ mod tests {
             composer.handle_key(key(KeyCode::Enter, KeyModifiers::ALT), &ctx()),
             ComposerEvent::Submit {
                 text: "go".to_owned()
-            }
-        );
-    }
-
-    #[test]
-    fn alt_a_and_alt_c_fire_the_quick_replies() {
-        let mut composer = Composer::default();
-        assert_eq!(
-            composer.handle_key(key(KeyCode::Char('a'), KeyModifiers::ALT), &ctx()),
-            ComposerEvent::QuickReply {
-                text: "Yes, approved.".to_owned()
-            }
-        );
-        assert_eq!(
-            composer.handle_key(key(KeyCode::Char('c'), KeyModifiers::ALT), &ctx()),
-            ComposerEvent::QuickReply {
-                text: "Continue.".to_owned()
             }
         );
     }

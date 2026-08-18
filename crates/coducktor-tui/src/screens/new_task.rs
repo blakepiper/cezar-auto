@@ -518,7 +518,6 @@ fn handle_composer_event(app: &mut App, event: ComposerEvent) -> bool {
             request_start(app);
             true
         }
-        ComposerEvent::QuickReply { .. } => true,
         ComposerEvent::PickedSkill { name } => {
             bump_skill_usage(app, &name);
             app.new_task_ui.draft.text = app.new_task_ui.composer.text.clone();
