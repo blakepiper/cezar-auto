@@ -196,6 +196,7 @@ pub fn open(app: &mut App, project: &str) {
     app.request_navigate(Route::Settings {
         project: project.to_owned(),
     });
+    app.set_screen_focus(1);
     app.pending.push(PendingAction::LoadSettings {
         project: project.to_owned(),
     });
@@ -208,6 +209,7 @@ pub fn open_global(app: &mut App) {
         ..SettingsUi::default()
     };
     app.request_navigate(Route::GlobalSettings);
+    app.set_screen_focus(1);
     app.pending.push(PendingAction::LoadSettings { project });
 }
 
@@ -581,7 +583,14 @@ fn render_nav(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     } else {
         "Settings"
     };
-    let block = Block::default().borders(Borders::ALL).title(title);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(if app.screen_focus() == 0 {
+            Style::default().fg(app.theme.palette.accent)
+        } else {
+            Style::default().fg(app.theme.palette.border)
+        });
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -595,7 +604,7 @@ fn render_nav(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             )));
         }
         let mut style = Style::default().fg(app.theme.palette.fg);
-        if index == app.settings_ui.section {
+        if index == app.settings_ui.section && app.screen_focus() == 0 {
             style = style.add_modifier(Modifier::REVERSED);
         }
         lines.push(Line::from(Span::styled(
@@ -621,7 +630,14 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(2), Constraint::Min(1)])
         .split(area);
-    let block = Block::default().borders(Borders::BOTTOM);
+    let block =
+        Block::default()
+            .borders(Borders::BOTTOM)
+            .border_style(if app.screen_focus() == 1 {
+                Style::default().fg(app.theme.palette.accent)
+            } else {
+                Style::default().fg(app.theme.palette.border)
+            });
     let header_inner = block.inner(rows_layout[0]);
     frame.render_widget(block, rows_layout[0]);
     frame.render_widget(
@@ -638,7 +654,7 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let inner = rows_layout[1];
     let mut lines: Vec<Line<'static>> = Vec::new();
     for (index, entry) in rows.iter().enumerate() {
-        let selected = index == app.settings_ui.row;
+        let selected = index == app.settings_ui.row && app.screen_focus() == 1;
         let mut label_style = Style::default().fg(app.theme.palette.fg);
         if selected {
             label_style = label_style.add_modifier(Modifier::REVERSED);
@@ -724,6 +740,17 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             app.settings_ui.row = 0;
             true
         }
+        KeyCode::Char('j') | KeyCode::Down if app.screen_focus() == 0 => {
+            let len = visible_sections(app).len();
+            app.settings_ui.section = (app.settings_ui.section + 1).min(len.saturating_sub(1));
+            app.settings_ui.row = 0;
+            true
+        }
+        KeyCode::Char('k') | KeyCode::Up if app.screen_focus() == 0 => {
+            app.settings_ui.section = app.settings_ui.section.saturating_sub(1);
+            app.settings_ui.row = 0;
+            true
+        }
         KeyCode::Char('j') | KeyCode::Down => {
             let len = rows_for(app, current_section(app)).len();
             app.settings_ui.row = (app.settings_ui.row + 1).min(len.saturating_sub(1));
@@ -733,14 +760,15 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             app.settings_ui.row = app.settings_ui.row.saturating_sub(1);
             true
         }
-        KeyCode::Left => {
+        KeyCode::Left if app.screen_focus() == 1 => {
             cycle(app, true);
             true
         }
-        KeyCode::Right => {
+        KeyCode::Right if app.screen_focus() == 1 => {
             cycle(app, false);
             true
         }
+        KeyCode::Left | KeyCode::Right => true,
         KeyCode::Enter => {
             activate(app);
             true

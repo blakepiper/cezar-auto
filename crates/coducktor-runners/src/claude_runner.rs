@@ -233,6 +233,16 @@ fn handle_claude_message(msg: &Value, text_chunks: &mut Vec<String>) -> ClaudeMe
                                 events.push(EventInput::new("text").field("text", text));
                             }
                         }
+                        Some("thinking") | Some("reasoning") => {
+                            if let Some(text) = block
+                                .get("thinking")
+                                .or_else(|| block.get("text"))
+                                .and_then(Value::as_str)
+                                .filter(|text| !text.is_empty())
+                            {
+                                events.push(EventInput::new("reasoning").field("text", text));
+                            }
+                        }
                         Some("tool_use") => {
                             if let (Some(id), Some(name)) = (
                                 block.get("id").and_then(Value::as_str),

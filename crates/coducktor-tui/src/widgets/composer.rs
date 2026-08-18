@@ -532,7 +532,7 @@ impl Composer {
         let (caret_line, caret_col) = self.caret_position();
         let visible = (area.height.saturating_sub(4)).clamp(1, 6);
         let scroll = caret_line.saturating_sub(visible as usize - 1);
-        let hscroll = caret_col.saturating_sub(inner.width as usize - 1);
+        let hscroll = caret_col.saturating_sub(usize::from(inner.width.saturating_sub(1)));
 
         let mut row = inner.y;
         for offset in 0..visible as usize {
@@ -927,5 +927,20 @@ mod tests {
         assert_eq!(composer.caret, 3);
         composer.handle_key(key(KeyCode::Home, KeyModifiers::NONE), &ctx());
         assert_eq!(composer.caret, 0, "home lands at the line start");
+    }
+
+    #[test]
+    fn rendering_a_zero_width_inner_area_does_not_panic() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut composer = Composer::default();
+        composer.focus();
+        composer.set_text("a very long prompt");
+        let mut hitmap = HitMap::default();
+        let mut terminal = Terminal::new(TestBackend::new(1, 8)).unwrap();
+        terminal
+            .draw(|frame| composer.render(frame, frame.area(), Theme::detect(), &mut hitmap, 1))
+            .unwrap();
     }
 }

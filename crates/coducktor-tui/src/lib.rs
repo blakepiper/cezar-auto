@@ -14,6 +14,7 @@ pub mod markdown;
 pub mod new_task_form;
 pub mod notify;
 pub mod overlay;
+pub mod pty;
 pub mod screens;
 pub mod skills;
 pub mod terminal;

@@ -1047,6 +1047,13 @@ fn finish_submit(
         project: project.clone(),
         input,
     });
+    // The task now belongs to the background engine operation. Return keyboard focus to the
+    // shell immediately so `q` remains a quit key instead of becoming the first character of a
+    // second prompt while the agent is starting.
+    app.new_task_ui.composer_focused = false;
+    app.new_task_ui.composer.focused = false;
+    app.new_task_ui.composer.menu = None;
+    app.new_task_ui.pill_focus = None;
     clear_draft(app);
     let mut state = app.new_task_ui.data.ui_state.clone().unwrap_or_default();
     state.last_task = Some(effective.source.clone());
@@ -1101,7 +1108,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 
     // Model catalog is per-runner; request it once per runner change. A failed
     // catalog degrades to the static presets — never a retry loop.
-    if app.new_task_ui.data.models_requested_for != Some(effective.display_runner) {
+    if coducktor_contract::runner_discovers_models(effective.display_runner)
+        && app.new_task_ui.data.models_requested_for != Some(effective.display_runner)
+    {
         app.new_task_ui.data.models_requested_for = Some(effective.display_runner);
         app.pending.push(PendingAction::RefreshModels {
             runner: effective.display_runner,
@@ -1643,6 +1652,13 @@ mod tests {
         );
         // The text is spent; the source is remembered for the next visit.
         assert!(app.new_task_ui.composer.text.is_empty());
+        assert!(!app.new_task_ui.composer_focused);
+        assert!(!app.new_task_ui.composer.focused);
+        app.handle_event(crossterm::event::Event::Key(key('q')));
+        assert!(
+            app.should_quit(),
+            "q must remain available while start is pending"
+        );
         assert!(
             app.pending
                 .iter()
@@ -1853,6 +1869,28 @@ mod tests {
         assert_eq!(
             app.new_task_ui.draft.model.as_deref(),
             Some("gpt-5.5-codex")
+        );
+    }
+
+    #[test]
+    fn auto_runner_does_not_request_a_non_discovery_claude_catalog() {
+        let mut app = app_with_new_task("t-auto-model");
+        app.new_task_ui.data.provider_status = Some(ProviderStatusResponse {
+            providers: vec![
+                connected_provider(Runner::Claude),
+                connected_provider(Runner::Codex),
+            ],
+        });
+        app.new_task_ui.data.config = Some(ComposerConfig {
+            default_runner: RunnerSelection::Auto,
+            ..ComposerConfig::default()
+        });
+        app.pending.clear();
+        render_app(&mut app, 120, 40);
+        assert!(
+            app.pending
+                .iter()
+                .all(|action| !matches!(action, PendingAction::RefreshModels { .. }))
         );
     }
 

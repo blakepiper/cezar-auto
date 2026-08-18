@@ -27,13 +27,31 @@ records what is implemented and which terminal observations remain unverified.
 - **Global settings.** Manually exercised through `:open /settings` in the same `script` pseudo-terminal
   at `120x40` on 2026-08-17: the `Global settings` panel exposed `Add repository` and `Appearance`,
   and quitting restored the alternate screen.
+- **Embedded project terminals.** The per-project Terminal tab (`screens/terminal.rs` + `pty.rs`)
+  runs a real `$SHELL` inside the cockpit — no external terminal emulator is spawned. Each
+  project gets one persistent session (`portable-pty` master pair + a background reader thread
+  feeding a `vt100` parser), keyed in `TerminalUi::sessions` and kept alive across navigation.
+  The shell's grid renders inside the tab with per-cell colors and a reversed cursor block;
+  every key on the tab goes to the shell (Esc included), scrollback is browsable with the mouse
+  wheel, and bracketed paste is enabled for the tab's lifetime (and disabled on leaving/quit).
+  Leaving the tab: `Ctrl+Left` to the sidebar, mouse, or a sidebar nav row; a dead shell falls
+  back to degraded keys (Enter/r restarts, Esc leaves). Resize follows the tab's rect and
+  forwards SIGWINCH to the shell. Sessions are killed on quit via the session `Drop`.
+  The parser grid, key encoding, scrollback, and the spawn/error states are covered by unit
+  tests and insta snapshots. Manually exercised through the real TUI in an 80x24 pseudo-terminal
+  on 2026-08-17: opened `/p/coducktor/terminal`, verified the shell prompt and project cwd,
+  ran `printf 'manual-terminal-check\n'` and saw its output in the pane, sent `Ctrl+C`, used
+  `Ctrl+Left` to reach the sidebar, navigated to Git, and quit with the alternate screen restored.
+  Mouse-wheel scrollback and bracketed paste remain unverified in a live terminal.
 
 ## Known gaps — not yet wired, not a detection failure
 
-- **Bracketed paste.** `crossterm::event::{Enable,Disable}BracketedPaste` is not
-  called anywhere in the tree yet, and there is no `Event::Paste` handler. Pasting
-  multi-line text currently arrives as a burst of individual key events, not a paste
-  event — this is an implementation gap, not something to "test" per terminal.
+- **Bracketed paste outside the Terminal tab.** `EnableBracketedPaste` is sent while the
+  embedded Terminal tab is active, and `Event::Paste` there forwards into the shell (the tab
+  needs it: multi-line pastes arrive as a single paste event). Everywhere else the app still
+  does not call `{Enable,Disable}BracketedPaste` and has no `Event::Paste` handler, so pasting
+  in the composer or command box still arrives as a burst of individual key events — a smaller
+  gap than before, but still an implementation gap, not something to "test" per terminal.
 - **Kitty keyboard protocol.** `PushKeyboardEnhancementFlags` is not enabled.
   Terminals that support it (kitty, Ghostty, WezTerm) get ordinary `crossterm` key
   events, not the enhanced disambiguation (distinguishing e.g. `Ctrl+I` from `Tab`).

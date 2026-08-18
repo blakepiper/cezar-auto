@@ -253,7 +253,14 @@ fn render_steps(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             app.workflows_ui.workflows[app.workflows_ui.selected_tab].name
         )
     };
-    let block = Block::default().borders(Borders::ALL).title(title);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(if app.workflows_ui.focus == WorkflowFocus::Steps {
+            Style::default().fg(app.theme.palette.accent)
+        } else {
+            Style::default().fg(app.theme.palette.border)
+        });
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -371,7 +378,14 @@ fn truncate(text: &str, max: usize) -> String {
 }
 
 fn render_palette(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
-    let block = Block::default().borders(Borders::ALL).title("Skills");
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Skills")
+        .border_style(if app.workflows_ui.focus == WorkflowFocus::Palette {
+            Style::default().fg(app.theme.palette.accent)
+        } else {
+            Style::default().fg(app.theme.palette.border)
+        });
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let query = app.workflows_ui.palette_query.to_lowercase();
@@ -406,7 +420,11 @@ fn render_palette(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             Style::default().fg(app.theme.palette.soft_fg),
         )));
     }
-    for (position, index) in matches.iter().enumerate().take(inner.height as usize - 1) {
+    for (position, index) in matches
+        .iter()
+        .enumerate()
+        .take((inner.height as usize).saturating_sub(1))
+    {
         let skill = &app.workflows_ui.palette_skills[*index];
         let selected = app.workflows_ui.focus == WorkflowFocus::Palette
             && position == app.workflows_ui.palette_selected.min(matches.len() - 1);

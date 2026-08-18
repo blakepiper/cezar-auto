@@ -1,0 +1,47 @@
+---
+source: crates/coducktor-tui/src/screens/terminal.rs
+assertion_line: 463
+expression: terminal.backend().buffer()
+---
+Buffer {
+    area: Rect { x: 0, y: 0, width: 80, height: 24 },
+    content: [
+        " [=] coducktor / main /p/main/terminal  [running 0] [needs 0]  [Ctrl+K]         ",
+        "┌TERMINAL — main───────────────────────────────────────────────────────────────┐",
+        "│Starting a shell                                                              │",
+        "│                                                                              │",
+        "│The shell opens inside this tab at the project root.                          │",
+        "│                                                                              │",
+        "│Press Enter or r to start it now.                                             │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "│                                                                              │",
+        "└──────────────────────────────────────────────────────────────────────────────┘",
+        " NORMAL  main  lazyvim  v0.1.0  [providers --]  ? help                          ",
+    ],
+    styles: [
+        x: 0, y: 0, fg: Rgb(122, 162, 247), bg: Rgb(36, 40, 59), underline: Reset, modifier: BOLD,
+        x: 15, y: 0, fg: Rgb(192, 202, 245), bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
+        x: 38, y: 0, fg: Reset, bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
+        x: 40, y: 0, fg: Rgb(100, 180, 255), bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
+        x: 51, y: 0, fg: Reset, bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
+        x: 52, y: 0, fg: Rgb(245, 190, 80), bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
+        x: 61, y: 0, fg: Reset, bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
+        x: 0, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 1, y: 2, fg: Rgb(245, 105, 105), bg: Reset, underline: Reset, modifier: BOLD,
+        x: 17, y: 2, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 0, y: 23, fg: Rgb(130, 139, 184), bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
+    ]
+}

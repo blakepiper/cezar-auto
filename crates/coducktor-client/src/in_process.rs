@@ -1539,7 +1539,8 @@ impl InProcessEngine {
     }
 
     // ---- open-targets -----------------------------------------------------------------------
-    // `open_project_in` takes the validated target id directly from the contract.
+    // `open_project_in` takes the validated target id directly from the contract and opens it in
+    // the *scoped* project root (the boot repo only when the scope resolves to it).
 
     pub async fn open_targets(&self) -> Result<OpenTargetsResponse, EngineError> {
         tokio::task::spawn_blocking(|| OpenTargetsResponse {
@@ -1551,6 +1552,7 @@ impl InProcessEngine {
 
     pub async fn open_project_in(
         &self,
+        scope: &Scope,
         target: &str,
     ) -> Result<OpenProjectInResponse, EngineError> {
         let target = target.trim();
@@ -1572,7 +1574,8 @@ impl InProcessEngine {
                 reason: format!("no such app on this machine: {target}"),
             });
         }
-        let repo_root = self.repo_root.clone();
+        let repo_root = self.root_for_scope(scope)?;
+        let path_for_response = repo_root.to_string_lossy().into_owned();
         let target = target.to_owned();
         let target_for_error = target.clone();
         let opened = tokio::task::spawn_blocking(move || open_target(&repo_root, &target))
@@ -1585,7 +1588,7 @@ impl InProcessEngine {
         }
         Ok(OpenProjectInResponse {
             opened: true,
-            path: self.repo_root.to_string_lossy().into_owned(),
+            path: path_for_response,
         })
     }
 
@@ -1741,7 +1744,10 @@ impl InProcessEngine {
     }
 
     pub async fn github(&self) -> Result<GithubData, EngineError> {
-        let repo_root = self.repo_root.clone();
+        Self::github_at(self.repo_root.clone()).await
+    }
+
+    pub(crate) async fn github_at(repo_root: PathBuf) -> Result<GithubData, EngineError> {
         tokio::task::spawn_blocking(move || match Self::github_driver_blocking(&repo_root) {
             Some(driver) => driver.list(false, 30),
             None => Self::unavailable_github(Self::github_unavailable_reason(&repo_root)),
@@ -1753,6 +1759,13 @@ impl InProcessEngine {
     /// `prs` mirrors the trait's already-parsed `&[String]` — each entry must be a bare positive
     /// integer, matching `parse_github_numbers`'s validation.
     pub async fn github_checks(&self, prs: &[String]) -> Result<GithubChecksData, EngineError> {
+        Self::github_checks_at(self.repo_root.clone(), prs).await
+    }
+
+    pub(crate) async fn github_checks_at(
+        repo_root: PathBuf,
+        prs: &[String],
+    ) -> Result<GithubChecksData, EngineError> {
         if prs.is_empty() || prs.len() > 100 {
             return Err(EngineError::Conflict {
                 reason: "invalid prs query".to_owned(),
@@ -1767,7 +1780,6 @@ impl InProcessEngine {
                 reason: "invalid prs query".to_owned(),
             });
         };
-        let repo_root = self.repo_root.clone();
         tokio::task::spawn_blocking(move || {
             let Some(driver) = Self::github_driver_blocking(&repo_root) else {
                 return GithubChecksData::Unavailable(GithubChecksUnavailable {
@@ -1795,6 +1807,14 @@ impl InProcessEngine {
 
     pub async fn github_ref_status(
         &self,
+        prs: &[String],
+        issues: &[String],
+    ) -> Result<GithubRefStatusData, EngineError> {
+        Self::github_ref_status_at(self.repo_root.clone(), prs, issues).await
+    }
+
+    pub(crate) async fn github_ref_status_at(
+        repo_root: PathBuf,
         prs: &[String],
         issues: &[String],
     ) -> Result<GithubRefStatusData, EngineError> {
@@ -1826,7 +1846,6 @@ impl InProcessEngine {
                 reason: "invalid ref-status query".to_owned(),
             });
         };
-        let repo_root = self.repo_root.clone();
         tokio::task::spawn_blocking(move || {
             let Some(driver) = Self::github_driver_blocking(&repo_root) else {
                 return GithubRefStatusData::Unavailable(GithubRefStatusUnavailable {
@@ -1869,6 +1888,14 @@ impl InProcessEngine {
         kind: &str,
         number: u64,
     ) -> Result<GithubCommentsData, EngineError> {
+        Self::github_comments_at(self.repo_root.clone(), kind, number).await
+    }
+
+    pub(crate) async fn github_comments_at(
+        repo_root: PathBuf,
+        kind: &str,
+        number: u64,
+    ) -> Result<GithubCommentsData, EngineError> {
         let kind = match kind {
             "issue" => GithubItemKind::Issue,
             "pr" => GithubItemKind::Pr,
@@ -1883,7 +1910,6 @@ impl InProcessEngine {
                 reason: "invalid kind or number".to_owned(),
             });
         }
-        let repo_root = self.repo_root.clone();
         tokio::task::spawn_blocking(move || {
             Self::github_driver_blocking(&repo_root)
                 .map(|driver| driver.comments(kind, number, false))
@@ -1903,12 +1929,18 @@ impl InProcessEngine {
         &self,
         number: u64,
     ) -> Result<GithubPrMergeStateResponse, EngineError> {
+        Self::github_pr_merge_state_at(self.repo_root.clone(), number).await
+    }
+
+    pub(crate) async fn github_pr_merge_state_at(
+        repo_root: PathBuf,
+        number: u64,
+    ) -> Result<GithubPrMergeStateResponse, EngineError> {
         if number == 0 {
             return Err(EngineError::Conflict {
                 reason: "invalid pull request number".to_owned(),
             });
         }
-        let repo_root = self.repo_root.clone();
         tokio::task::spawn_blocking(move || {
             let Some(driver) = Self::github_driver_blocking(&repo_root) else {
                 return GithubPrMergeStateResponse::Unavailable {
@@ -1941,6 +1973,14 @@ impl InProcessEngine {
         number: u64,
         input: &GithubMergeInput,
     ) -> Result<GithubMergeResponse, EngineError> {
+        Self::github_merge_pr_at(self.repo_root.clone(), number, input).await
+    }
+
+    pub(crate) async fn github_merge_pr_at(
+        repo_root: PathBuf,
+        number: u64,
+        input: &GithubMergeInput,
+    ) -> Result<GithubMergeResponse, EngineError> {
         if number == 0 {
             return Err(EngineError::Conflict {
                 reason: "invalid pull request number".to_owned(),
@@ -1956,7 +1996,6 @@ impl InProcessEngine {
                 reason: "invalid merge request".to_owned(),
             });
         }
-        let repo_root = self.repo_root.clone();
         let input = ForgeMergeInput {
             method: input.method,
             expected_head_sha: input.expected_head_sha.clone(),
@@ -1991,12 +2030,18 @@ impl InProcessEngine {
     }
 
     pub async fn github_pr_changes(&self, number: u64) -> Result<GithubPrChangesData, EngineError> {
+        Self::github_pr_changes_at(self.repo_root.clone(), number).await
+    }
+
+    pub(crate) async fn github_pr_changes_at(
+        repo_root: PathBuf,
+        number: u64,
+    ) -> Result<GithubPrChangesData, EngineError> {
         if number == 0 {
             return Err(EngineError::Conflict {
                 reason: "invalid pull request number or refresh flag".to_owned(),
             });
         }
-        let repo_root = self.repo_root.clone();
         tokio::task::spawn_blocking(move || {
             let Some(driver) = Self::github_driver_blocking(&repo_root) else {
                 return GithubPrChangesData::Unavailable(GithubPrChangesUnavailable {
@@ -3642,11 +3687,15 @@ async fn discover_codex_models(repo_root: &Path) -> Result<Vec<RunnerModelOption
 // name (renamed `open_targets` -> `open_targets_list` to avoid colliding with the method above)
 
 fn executable_on_path(binary: &str) -> bool {
+    executable_in_path(binary, std::env::var_os("PATH").as_deref())
+}
+
+fn executable_in_path(binary: &str, path: Option<&std::ffi::OsStr>) -> bool {
     if binary.is_empty() {
         return false;
     }
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    for directory in std::env::split_paths(&path) {
+    let path = path.unwrap_or_default();
+    for directory in std::env::split_paths(path) {
         let candidate = directory.join(binary);
         let Ok(metadata) = std::fs::metadata(candidate) else {
             continue;
@@ -3846,13 +3895,7 @@ fn open_target_command(target: &str, root: &Path) -> Option<(String, Vec<String>
                 vec![root.to_string_lossy().into_owned()],
             ));
         }
-        return Some((
-            "x-terminal-emulator".to_owned(),
-            vec![
-                "--working-directory".to_owned(),
-                root.to_string_lossy().into_owned(),
-            ],
-        ));
+        return linux_terminal_command(root);
     }
     let binary = match target {
         "vscode" => "code",
@@ -3887,6 +3930,53 @@ fn open_target_command(target: &str, root: &Path) -> Option<(String, Vec<String>
     }
     executable_on_path(binary)
         .then(|| (binary.to_owned(), vec![root.to_string_lossy().into_owned()]))
+}
+
+/// The first Linux terminal emulator present on this machine, with the argument spelling
+/// that opens it at `root`. `x-terminal-emulator` comes first (Debian's alternatives slot);
+/// everything after it is a direct probe so machines without it still get a terminal.
+fn linux_terminal_command(root: &Path) -> Option<(String, Vec<String>)> {
+    linux_terminal_command_in(root, std::env::var_os("PATH").as_deref())
+}
+
+fn linux_terminal_command_in(
+    root: &Path,
+    path: Option<&std::ffi::OsStr>,
+) -> Option<(String, Vec<String>)> {
+    let root_str = root.to_string_lossy().into_owned();
+    for binary in [
+        "x-terminal-emulator",
+        "gnome-terminal",
+        "konsole",
+        "xfce4-terminal",
+        "alacritty",
+        "kitty",
+        "foot",
+        "wezterm",
+        "xterm",
+    ] {
+        if !executable_in_path(binary, path) {
+            continue;
+        }
+        let args = match binary {
+            "x-terminal-emulator" | "xfce4-terminal" | "alacritty" | "foot" => {
+                vec!["--working-directory".to_owned(), root_str.clone()]
+            }
+            "gnome-terminal" => vec![format!("--working-directory={root_str}")],
+            "konsole" => vec!["--workdir".to_owned(), root_str.clone()],
+            "kitty" => vec!["--directory".to_owned(), root_str.clone()],
+            "wezterm" => vec!["start".to_owned(), "--cwd".to_owned(), root_str.clone()],
+            "xterm" => vec![
+                "-e".to_owned(),
+                "sh".to_owned(),
+                "-c".to_owned(),
+                format!("cd {root_str} && exec $SHELL"),
+            ],
+            _ => continue,
+        };
+        return Some((binary.to_owned(), args));
+    }
+    None
 }
 
 fn open_target(root: &Path, target: &str) -> bool {
@@ -6292,18 +6382,12 @@ fn read_repo_ui_state(repo_root: &Path) -> Map<String, Value> {
 
 fn health_payload(repo_root: &Path, version: &str, probe_backends: bool) -> HealthResponse {
     let repo_root_str = repo_root.to_string_lossy().into_owned();
-    let branch = git_output(repo_root, &["branch", "--show-current"]);
-    let remote = repository_remote(repo_root);
+    let repo = repo_info_at(repo_root).map(|info| RepoInfo {
+        root: info.root,
+        branch: info.branch,
+        remote: info.remote,
+    });
     let forge_available = github_remote(repo_root).is_some();
-    let repo = if branch.is_some() || remote.is_some() {
-        Some(RepoInfo {
-            root: repo_root_str.clone(),
-            branch: branch.unwrap_or_default(),
-            remote,
-        })
-    } else {
-        None
-    };
     HealthResponse {
         version: version.to_owned(),
         repo_root: repo_root_str,
@@ -6343,35 +6427,6 @@ fn health_payload(repo_root: &Path, version: &str, probe_backends: bool) -> Heal
         }],
         boot_project: "default".to_owned(),
     }
-}
-
-/// Return the checkout's preferred remote, retaining the old `origin` preference while
-/// gracefully handling repositories that only define `upstream` or another remote name.
-fn repository_remote(repo_root: &Path) -> Option<String> {
-    let names = git_capture(repo_root, &["remote"])
-        .ok()?
-        .lines()
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>();
-    let mut ordered = Vec::with_capacity(names.len());
-    for preferred in ["origin", "upstream"] {
-        if names.iter().any(|name| name == preferred) {
-            ordered.push(preferred.to_owned());
-        }
-    }
-    for name in names {
-        if !ordered.iter().any(|existing| existing == &name) {
-            ordered.push(name);
-        }
-    }
-    ordered.into_iter().find_map(|name| {
-        git_capture(repo_root, &["remote", "get-url", name.as_str()])
-            .ok()
-            .map(|remote| remote.trim().to_owned())
-            .filter(|remote| !remote.is_empty())
-    })
 }
 
 /// Find a GitHub remote regardless of its configured name. This intentionally only parses local
@@ -6465,6 +6520,7 @@ fn first_line(bytes: &[u8]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use coducktor_contract::WorkflowStepDef;
     use coducktor_core::workflows::run::{
@@ -6554,6 +6610,25 @@ mod tests {
         assert_eq!(health.version, "0.0.0-test");
         assert_eq!(health.repo_root, dir.path().to_string_lossy());
         assert!(!health.checks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn health_reports_a_detached_git_checkout_without_a_remote_or_branch() {
+        let dir = fixture_repo();
+        assert!(
+            Command::new("git")
+                .current_dir(dir.path())
+                .args(["checkout", "--detach", "-q"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let health = engine(&dir).health().await.unwrap();
+        assert!(
+            health.repo.is_some(),
+            "a detached checkout is still a Git repo"
+        );
+        assert_eq!(health.repo.as_ref().unwrap().branch, "HEAD");
     }
 
     #[tokio::test]
@@ -8016,7 +8091,10 @@ mod tests {
     async fn open_project_in_rejects_an_empty_target() {
         let dir = TempDir::new().unwrap();
         let engine = engine(&dir);
-        let error = engine.open_project_in("").await.unwrap_err();
+        let error = engine
+            .open_project_in(&Scope::Project("default".to_owned()), "")
+            .await
+            .unwrap_err();
         assert_eq!(
             error,
             EngineError::Conflict {
@@ -8030,7 +8108,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let engine = engine(&dir);
         let overlong = "x".repeat(201);
-        let error = engine.open_project_in(&overlong).await.unwrap_err();
+        let error = engine
+            .open_project_in(&Scope::Project("default".to_owned()), &overlong)
+            .await
+            .unwrap_err();
         assert_eq!(
             error,
             EngineError::Conflict {
@@ -8043,7 +8124,10 @@ mod tests {
     async fn open_project_in_rejects_agent_cli_handoffs() {
         let dir = TempDir::new().unwrap();
         let engine = engine(&dir);
-        let error = engine.open_project_in("cli:claude").await.unwrap_err();
+        let error = engine
+            .open_project_in(&Scope::Project("default".to_owned()), "cli:claude")
+            .await
+            .unwrap_err();
         assert_eq!(
             error,
             EngineError::Conflict {
@@ -8056,7 +8140,10 @@ mod tests {
     async fn open_project_in_rejects_an_app_not_present_on_this_machine() {
         let dir = TempDir::new().unwrap();
         let engine = engine(&dir);
-        let error = engine.open_project_in("missing-editor").await.unwrap_err();
+        let error = engine
+            .open_project_in(&Scope::Project("default".to_owned()), "missing-editor")
+            .await
+            .unwrap_err();
         assert_eq!(
             error,
             EngineError::Conflict {
@@ -8092,6 +8179,31 @@ mod tests {
                 "{target}'s args should carry the repo root: {args:?}"
             );
         }
+    }
+
+    #[test]
+    fn linux_terminal_command_probes_present_emulators_in_order() {
+        let dir = TempDir::new().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        for name in ["xterm", "alacritty"] {
+            let path = bin.join(name);
+            std::fs::write(&path, b"#!/bin/sh\n").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        let previous = std::env::var_os("PATH").unwrap_or_default();
+        let probe_path = std::env::join_paths([&bin, &std::path::PathBuf::from(&previous)])
+            .unwrap_or_else(|_| bin.clone().into_os_string());
+        // xterm is only the last-resort candidate, so the probe must pick alacritty and
+        // pass it the repo root.
+        let (program, args) = linux_terminal_command_in(dir.path(), Some(&probe_path))
+            .expect("a terminal command should resolve");
+        assert_eq!(program, "alacritty");
+        assert!(args.iter().any(|arg| arg == &dir.path().to_string_lossy()));
     }
 
     // ---- variant groups -------------------------------------------------------------------

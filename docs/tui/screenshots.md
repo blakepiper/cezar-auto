@@ -21,6 +21,7 @@ Regenerate these excerpts after any UI change with `cargo insta test`.
   > Tasks                   │No tasks yet. Describe a task to get started.                                             │
     Inbox  [0]              │                                                                                          │
     IDE                     │                                                                                          │
+    Terminal                │                                                                                          │
     Git                     │                                                                                          │
     GitHub                  │                                                                                          │
     Skills                  │                                                                                          │

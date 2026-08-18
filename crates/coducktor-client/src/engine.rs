@@ -499,59 +499,66 @@ impl Engine for InProcessEngine {
         InProcessEngine::models(self, runner).await
     }
 
-    async fn github(&self, _scope: &Scope) -> Result<GithubData, EngineError> {
-        InProcessEngine::github(self).await
+    async fn github(&self, scope: &Scope) -> Result<GithubData, EngineError> {
+        let root = self.root_for_scope(scope)?;
+        InProcessEngine::github_at(root).await
     }
 
     async fn github_checks(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         prs: &[String],
     ) -> Result<GithubChecksData, EngineError> {
-        InProcessEngine::github_checks(self, prs).await
+        let root = self.root_for_scope(scope)?;
+        InProcessEngine::github_checks_at(root, prs).await
     }
 
     async fn github_ref_status(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         prs: &[String],
         issues: &[String],
     ) -> Result<GithubRefStatusData, EngineError> {
-        InProcessEngine::github_ref_status(self, prs, issues).await
+        let root = self.root_for_scope(scope)?;
+        InProcessEngine::github_ref_status_at(root, prs, issues).await
     }
 
     async fn github_comments(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         kind: &str,
         number: u64,
     ) -> Result<GithubCommentsData, EngineError> {
-        InProcessEngine::github_comments(self, kind, number).await
+        let root = self.root_for_scope(scope)?;
+        InProcessEngine::github_comments_at(root, kind, number).await
     }
 
     async fn github_pr_merge_state(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         number: u64,
     ) -> Result<GithubPrMergeStateResponse, EngineError> {
-        InProcessEngine::github_pr_merge_state(self, number).await
+        let root = self.root_for_scope(scope)?;
+        InProcessEngine::github_pr_merge_state_at(root, number).await
     }
 
     async fn github_merge_pr(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         number: u64,
         input: &GithubMergeInput,
     ) -> Result<GithubMergeResponse, EngineError> {
-        InProcessEngine::github_merge_pr(self, number, input).await
+        let root = self.root_for_scope(scope)?;
+        InProcessEngine::github_merge_pr_at(root, number, input).await
     }
 
     async fn github_pr_changes(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         number: u64,
     ) -> Result<GithubPrChangesData, EngineError> {
-        InProcessEngine::github_pr_changes(self, number).await
+        let root = self.root_for_scope(scope)?;
+        InProcessEngine::github_pr_changes_at(root, number).await
     }
 
     async fn save_workflow(
@@ -967,10 +974,10 @@ impl Engine for InProcessEngine {
 
     async fn open_project_in(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         target: &str,
     ) -> Result<OpenProjectInResponse, EngineError> {
-        InProcessEngine::open_project_in(self, target).await
+        InProcessEngine::open_project_in(self, scope, target).await
     }
 
     fn subscribe(&self, topic: Topic) -> BoxStream<'static, EngineEvent> {

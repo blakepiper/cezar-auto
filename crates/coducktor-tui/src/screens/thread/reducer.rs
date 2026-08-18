@@ -332,6 +332,139 @@ pub fn reduce_thread(events: &[RunEvent], options: ThreadReduceOptions) -> Threa
                     }
                 }
             }
+            // The runner seam still stores normalized v1 events for Claude, Codex, OpenCode, and
+            // pi. Keep those events visible until every backend emits the v2 item union directly;
+            // dropping them makes a live run look frozen even though the durable stream is moving.
+            "text" => {
+                let text = str_field(extra, "text").unwrap_or_default();
+                if text.is_empty() {
+                    continue;
+                }
+                let turn_idx = current_turn(&mut turns, &mut turn_seq);
+                let key = format!("legacy-message:{turn_idx}");
+                if let Some(&(item_turn, entry_idx)) = items_by_key.get(&key) {
+                    if let ThreadEntry::Item(UiItem::Message(message)) =
+                        &mut turns[item_turn].items[entry_idx]
+                    {
+                        message.text.push_str(&text);
+                    }
+                } else {
+                    let item = UiItem::Message(coducktor_protocol::UiMessageItem {
+                        id: format!("v1-message:{turn_idx}"),
+                        role: coducktor_protocol::MessageRole::Assistant,
+                        text,
+                        phase: None,
+                        parent_item_id: None,
+                    });
+                    turns[turn_idx].items.push(ThreadEntry::Item(item));
+                    items_by_key.insert(key, (turn_idx, turns[turn_idx].items.len() - 1));
+                }
+            }
+            "reasoning" => {
+                let text = str_field(extra, "text").unwrap_or_default();
+                if text.is_empty() {
+                    continue;
+                }
+                let turn_idx = current_turn(&mut turns, &mut turn_seq);
+                let key = format!("legacy-reasoning:{turn_idx}");
+                if let Some(&(item_turn, entry_idx)) = items_by_key.get(&key) {
+                    if let ThreadEntry::Item(UiItem::Reasoning(reasoning)) =
+                        &mut turns[item_turn].items[entry_idx]
+                    {
+                        reasoning.text.push_str(&text);
+                    }
+                } else {
+                    let item = UiItem::Reasoning(coducktor_protocol::UiReasoningItem {
+                        id: format!("v1-reasoning:{turn_idx}"),
+                        text,
+                        parent_item_id: None,
+                    });
+                    turns[turn_idx].items.push(ThreadEntry::Item(item));
+                    items_by_key.insert(key, (turn_idx, turns[turn_idx].items.len() - 1));
+                }
+            }
+            "tool-call" => {
+                let id = str_field(extra, "id")
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| format!("v1-tool:{}", event.seq));
+                let name = str_field(extra, "tool")
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| "tool".to_owned());
+                let input = extra.get("input").cloned();
+                let display = coducktor_protocol::tool_display(&name, input.as_ref());
+                let item = UiItem::Tool(coducktor_protocol::UiToolItem {
+                    id: id.clone(),
+                    name,
+                    tool_kind: display.tool_kind,
+                    title: display.title,
+                    status: coducktor_protocol::ToolStatus::Running,
+                    input,
+                    output: None,
+                    error: None,
+                    diffs: None,
+                    locations: None,
+                    exit_code: None,
+                    parent_item_id: None,
+                });
+                let key = item_key(&event.step_id, &id);
+                let turn_idx = current_turn(&mut turns, &mut turn_seq);
+                if let Some(&(item_turn, entry_idx)) = items_by_key.get(&key) {
+                    turns[item_turn].items[entry_idx] = ThreadEntry::Item(item);
+                } else {
+                    turns[turn_idx].items.push(ThreadEntry::Item(item));
+                    items_by_key.insert(key, (turn_idx, turns[turn_idx].items.len() - 1));
+                }
+            }
+            "tool-result" => {
+                let id = str_field(extra, "toolCallId")
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| format!("v1-tool-result:{}", event.seq));
+                let result = value_text(extra.get("result"));
+                let failed = extra
+                    .get("isError")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let key = item_key(&event.step_id, &id);
+                if let Some(&(item_turn, entry_idx)) = items_by_key.get(&key) {
+                    if let ThreadEntry::Item(UiItem::Tool(tool)) =
+                        &mut turns[item_turn].items[entry_idx]
+                    {
+                        tool.status = if failed {
+                            coducktor_protocol::ToolStatus::Failed
+                        } else {
+                            coducktor_protocol::ToolStatus::Completed
+                        };
+                        if failed {
+                            tool.error = Some(result);
+                        } else {
+                            tool.output = Some(result);
+                        }
+                    }
+                } else {
+                    let turn_idx = current_turn(&mut turns, &mut turn_seq);
+                    let display = coducktor_protocol::tool_display("tool", None);
+                    let item = UiItem::Tool(coducktor_protocol::UiToolItem {
+                        id: id.clone(),
+                        name: "tool".to_owned(),
+                        tool_kind: display.tool_kind,
+                        title: display.title,
+                        status: if failed {
+                            coducktor_protocol::ToolStatus::Failed
+                        } else {
+                            coducktor_protocol::ToolStatus::Completed
+                        },
+                        input: None,
+                        output: (!failed).then_some(result.clone()),
+                        error: failed.then_some(result),
+                        diffs: None,
+                        locations: None,
+                        exit_code: extra.get("exitCode").and_then(Value::as_f64),
+                        parent_item_id: None,
+                    });
+                    turns[turn_idx].items.push(ThreadEntry::Item(item));
+                    items_by_key.insert(key, (turn_idx, turns[turn_idx].items.len() - 1));
+                }
+            }
             "plan.updated" => {
                 let Some(entries) = extra
                     .get("entries")
@@ -489,9 +622,7 @@ pub fn reduce_thread(events: &[RunEvent], options: ThreadReduceOptions) -> Threa
             }
             // Pure engine control-flow / header material — never rendered in the body.
             "step-start" | "token-usage" | "cost" | "turn-end" | "done" | "session" => {}
-            // Legacy v1 item-ish fallback (`text`, `tool-call`, `tool-result`) and
-            // `session.started`, `usage.updated`, `permission.*`: header/telemetry material,
-            // not guessed at in the body.
+            // `session.started`, `usage.updated`, `permission.*`: header/telemetry material.
             _ => {}
         }
     }
@@ -549,6 +680,14 @@ fn item_id(item: &UiItem) -> &str {
 
 fn str_field(extra: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
     extra.get(key).and_then(Value::as_str).map(str::to_owned)
+}
+
+fn value_text(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::String(text)) => text.clone(),
+        Some(value) => value.to_string(),
+        None => String::new(),
+    }
 }
 
 fn valid_ask_question(value: &Value) -> Option<UiAskQuestion> {
@@ -684,6 +823,54 @@ mod tests {
             turn.completed.as_ref().unwrap().stop_reason,
             StopReason::EndTurn
         );
+    }
+
+    #[test]
+    fn legacy_runner_events_render_messages_reasoning_and_tool_lifecycle() {
+        let events = vec![
+            event(1.0, "user-message", json!({"text": "inspect it"})),
+            event(
+                2.0,
+                "reasoning",
+                json!({"text": "I will inspect the file."}),
+            ),
+            event(
+                3.0,
+                "tool-call",
+                json!({"id": "tool-1", "tool": "Read", "input": {"path": "README.md"}}),
+            ),
+            event(
+                4.0,
+                "tool-result",
+                json!({"toolCallId": "tool-1", "result": "contents", "isError": false}),
+            ),
+            event(5.0, "text", json!({"text": "The file looks good."})),
+        ];
+        let state = reduce_thread(&events, ThreadReduceOptions::default());
+        let items = &state.turns[0].items;
+        assert!(items.iter().any(|entry| {
+            matches!(
+                entry,
+                ThreadEntry::Item(UiItem::Message(message))
+                    if message.text == "The file looks good."
+            )
+        }));
+        assert!(items.iter().any(|entry| {
+            matches!(
+                entry,
+                ThreadEntry::Item(UiItem::Reasoning(reasoning))
+                    if reasoning.text == "I will inspect the file."
+            )
+        }));
+        assert!(items.iter().any(|entry| {
+            matches!(
+                entry,
+                ThreadEntry::Item(UiItem::Tool(tool))
+                    if tool.id == "tool-1"
+                        && tool.status == coducktor_protocol::ToolStatus::Completed
+                        && tool.output.as_deref() == Some("contents")
+            )
+        }));
     }
 
     #[test]

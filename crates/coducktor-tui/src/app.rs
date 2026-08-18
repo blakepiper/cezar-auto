@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use coducktor_contract::{ApiRun, ProcessUsage, ProjectListEntry, RunStatus, RunsIndexResponse};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
@@ -25,6 +26,7 @@ pub enum NavItem {
     NewTask,
     Tasks,
     Ide,
+    Terminal,
     RepoGit,
     Github,
     Skills,
@@ -33,10 +35,11 @@ pub enum NavItem {
 }
 
 impl NavItem {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::NewTask,
         Self::Tasks,
         Self::Ide,
+        Self::Terminal,
         Self::RepoGit,
         Self::Github,
         Self::Skills,
@@ -49,6 +52,7 @@ impl NavItem {
             Self::NewTask => "New task",
             Self::Tasks => "Tasks",
             Self::Ide => "IDE",
+            Self::Terminal => "Terminal",
             Self::RepoGit => "Git",
             Self::Github => "GitHub",
             Self::Skills => "Skills",
@@ -62,6 +66,7 @@ impl NavItem {
             Self::NewTask => "new",
             Self::Tasks => "tasks",
             Self::Ide => "ide",
+            Self::Terminal => "terminal",
             Self::RepoGit => "repo-git",
             Self::Github => "github",
             Self::Skills => "skills",
@@ -75,6 +80,7 @@ impl NavItem {
             "new" | "new-task" => Some(Self::NewTask),
             "tasks" => Some(Self::Tasks),
             "ide" => Some(Self::Ide),
+            "terminal" => Some(Self::Terminal),
             "git" | "repo-git" => Some(Self::RepoGit),
             "github" => Some(Self::Github),
             "skills" => Some(Self::Skills),
@@ -125,7 +131,7 @@ impl TaskGitTab {
     }
 }
 
-/// A `screens/repo_git` sub-tab — Changes / Commits / Branches.
+/// A `screens/repo_git` sub-tab — Commits / Changes / Branches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RepoGitTab {
     Changes,
@@ -172,6 +178,9 @@ pub enum Route {
         tab: TaskGitTab,
     },
     Ide {
+        project: String,
+    },
+    Terminal {
         project: String,
     },
     Github {
@@ -242,6 +251,7 @@ impl Route {
                     group_id: (*parts.get(3)?).to_owned(),
                 }),
                 Some("ide") => Some(Self::Ide { project }),
+                Some("terminal") => Some(Self::Terminal { project }),
                 Some("github") => Some(Self::Github { project }),
                 Some("skills") => Some(Self::Skills { project }),
                 Some("workflows") => Some(Self::Workflows { project }),
@@ -249,7 +259,7 @@ impl Route {
                     let tab = parts
                         .get(3)
                         .and_then(|segment| RepoGitTab::parse(segment))
-                        .unwrap_or(RepoGitTab::Changes);
+                        .unwrap_or(RepoGitTab::Commits);
                     Some(Self::RepoGit { project, tab })
                 }
                 Some("settings") => Some(Self::Settings { project }),
@@ -278,6 +288,7 @@ impl Route {
                 format!("/p/{project}/tasks/{id}/{}", tab.path_segment())
             }
             Self::Ide { project } => format!("/p/{project}/ide"),
+            Self::Terminal { project } => format!("/p/{project}/terminal"),
             Self::Github { project } => format!("/p/{project}/github"),
             Self::Skills { project } => format!("/p/{project}/skills"),
             Self::Workflows { project } => format!("/p/{project}/workflows"),
@@ -301,6 +312,7 @@ impl Route {
             Self::Thread { .. } => "TASK THREAD",
             Self::TaskGit { .. } => "TASK GIT",
             Self::Ide { .. } => "IDE",
+            Self::Terminal { .. } => "TERMINAL",
             Self::Github { .. } => "GITHUB",
             Self::Skills { .. } => "SKILLS",
             Self::Workflows { .. } => "WORKFLOWS",
@@ -318,6 +330,7 @@ impl Route {
             | Self::Thread { project, .. }
             | Self::TaskGit { project, .. }
             | Self::Ide { project }
+            | Self::Terminal { project }
             | Self::Github { project }
             | Self::Skills { project }
             | Self::Workflows { project }
@@ -870,6 +883,9 @@ pub struct App {
     pub tasks: Vec<ApiRun>,
     pub global_index: Option<RunsIndexResponse>,
     pub project_registry: Vec<ProjectListEntry>,
+    /// The launch directory (`--repo` or the working directory), used by the
+    /// embedded terminal tab as the boot project's root before the registry loads.
+    pub boot_root: Option<PathBuf>,
     pub live_usage: BTreeMap<String, ProcessUsage>,
     pub now_epoch: i64,
     pub tasks_ui: crate::screens::tasks::TasksUi,
@@ -884,6 +900,7 @@ pub struct App {
     pub compare_ui: crate::screens::compare::CompareUi,
     pub ide_ui: crate::screens::ide::IdeUi,
     pub github_ui: crate::screens::github::GithubUi,
+    pub terminal_ui: crate::screens::terminal::TerminalUi,
     pub skills_ui: crate::screens::skills::SkillsUi,
     pub workflows_ui: crate::screens::workflows::WorkflowsUi,
     pub settings_ui: crate::screens::settings::SettingsUi,
@@ -902,6 +919,9 @@ pub struct App {
     /// Whether keyboard navigation is currently in the shell's left navigation panel.
     sidebar_focus: bool,
     sidebar_selected: usize,
+    /// Focused pane inside the current screen for routes that do not have a screen-specific
+    /// focus enum. Pane zero is the screen's leftmost pane.
+    screen_focus: usize,
 }
 
 impl App {
@@ -940,6 +960,7 @@ impl App {
             tasks: Vec::new(),
             global_index: None,
             project_registry: Vec::new(),
+            boot_root: None,
             live_usage: BTreeMap::new(),
             now_epoch: 0,
             tasks_ui: crate::screens::tasks::TasksUi::default(),
@@ -952,6 +973,7 @@ impl App {
             compare_ui: crate::screens::compare::CompareUi::default(),
             ide_ui: crate::screens::ide::IdeUi::default(),
             github_ui: crate::screens::github::GithubUi::default(),
+            terminal_ui: crate::screens::terminal::TerminalUi::default(),
             skills_ui: crate::screens::skills::SkillsUi::default(),
             workflows_ui: crate::screens::workflows::WorkflowsUi::default(),
             settings_ui: crate::screens::settings::SettingsUi::default(),
@@ -964,11 +986,20 @@ impl App {
             sort_picker_index: 0,
             sidebar_focus: false,
             sidebar_selected: 0,
+            screen_focus: 0,
         }
     }
 
     pub fn should_quit(&self) -> bool {
         self.quit
+    }
+
+    pub(crate) fn screen_focus(&self) -> usize {
+        self.current_screen_pane()
+    }
+
+    pub(crate) fn set_screen_focus(&mut self, pane: usize) {
+        self.screen_focus = pane;
     }
 
     pub fn route(&self) -> &Route {
@@ -1042,6 +1073,7 @@ impl App {
             HitAction::NewTask => Some(SidebarRow::Nav(NavItem::NewTask)),
             HitAction::Tasks => Some(SidebarRow::Nav(NavItem::Tasks)),
             HitAction::Ide => Some(SidebarRow::Nav(NavItem::Ide)),
+            HitAction::Terminal => Some(SidebarRow::Nav(NavItem::Terminal)),
             HitAction::RepoGit => Some(SidebarRow::Nav(NavItem::RepoGit)),
             HitAction::Github => Some(SidebarRow::Nav(NavItem::Github)),
             HitAction::Skills => Some(SidebarRow::Nav(NavItem::Skills)),
@@ -1086,6 +1118,12 @@ impl App {
         self.project_registry = projects;
     }
 
+    /// Remember the launch directory so the embedded terminal tab can start a shell
+    /// for the boot project before the registry has loaded.
+    pub fn set_boot_root(&mut self, root: PathBuf) {
+        self.boot_root = Some(root);
+    }
+
     pub fn take_pending(&mut self) -> Vec<PendingAction> {
         std::mem::take(&mut self.pending)
     }
@@ -1124,6 +1162,7 @@ impl App {
             };
         }
         self.history.navigate(route);
+        self.screen_focus = 0;
         if let Route::Ide { project } = self.route() {
             let path = if self.ide_ui.directory_path.is_empty() {
                 None
@@ -1152,6 +1191,7 @@ impl App {
 
     fn go_back(&mut self) {
         if self.history.back() {
+            self.screen_focus = 0;
             self.anchor_sidebar_selection();
         }
     }
@@ -1170,6 +1210,7 @@ impl App {
 
     fn go_forward(&mut self) {
         if self.history.forward() {
+            self.screen_focus = 0;
             self.anchor_sidebar_selection();
         }
     }
@@ -1183,6 +1224,7 @@ impl App {
             Route::Tasks { .. } | Route::Thread { .. } => SidebarRow::Nav(NavItem::Tasks),
             Route::NewTask { .. } => SidebarRow::Nav(NavItem::NewTask),
             Route::Ide { .. } => SidebarRow::Nav(NavItem::Ide),
+            Route::Terminal { .. } => SidebarRow::Nav(NavItem::Terminal),
             Route::Github { .. } => SidebarRow::Nav(NavItem::Github),
             Route::Skills { .. } => SidebarRow::Nav(NavItem::Skills),
             Route::Workflows { .. } => SidebarRow::Nav(NavItem::Workflows),
@@ -1346,6 +1388,11 @@ impl App {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(key),
             Event::Mouse(mouse) => self.handle_mouse(mouse),
+            Event::Paste(text)
+                if matches!(self.route(), Route::Terminal { .. }) && !self.sidebar_focus =>
+            {
+                crate::screens::terminal::paste(self, &text);
+            }
             _ => {}
         }
     }
@@ -1612,6 +1659,10 @@ impl App {
             }
             Route::Ide { .. } => {
                 crate::screens::ide::render(frame, area, self);
+                return;
+            }
+            Route::Terminal { .. } => {
+                crate::screens::terminal::render(frame, area, self);
                 return;
             }
             Route::Github { .. } => {
@@ -1921,6 +1972,19 @@ impl App {
                 }
                 self.sidebar_dragging = false;
             }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                if !self.sidebar_focus
+                    && matches!(self.route(), Route::Terminal { .. })
+                    && self
+                        .terminal_ui
+                        .last_area
+                        .is_some_and(|area| area.contains((mouse.column, mouse.row).into())) =>
+            {
+                crate::screens::terminal::scroll(
+                    self,
+                    matches!(mouse.kind, MouseEventKind::ScrollUp),
+                );
+            }
             _ => {}
         }
     }
@@ -1980,6 +2044,11 @@ impl App {
             Route::Thread { .. } if crate::screens::thread::handle_key(self, key) => return,
             Route::TaskGit { .. } if crate::screens::task_git::handle_key(self, key) => return,
             Route::Ide { .. } if crate::screens::ide::handle_key(self, key) => return,
+            Route::Terminal { .. }
+                if !self.sidebar_focus && crate::screens::terminal::handle_key(self, key) =>
+            {
+                return;
+            }
             Route::Github { .. } if crate::screens::github::handle_key(self, key) => return,
             Route::Skills { .. } if crate::screens::skills::handle_key(self, key) => return,
             Route::Workflows { .. } if crate::screens::workflows::handle_key(self, key) => return,
@@ -2161,6 +2230,7 @@ impl App {
             HitAction::GlobalSettings => crate::screens::settings::open_global(self),
             HitAction::NewTask => self.navigate(NavItem::NewTask),
             HitAction::Ide => self.navigate(NavItem::Ide),
+            HitAction::Terminal => self.navigate(NavItem::Terminal),
             HitAction::RepoGit => self.navigate(NavItem::RepoGit),
             HitAction::Github => self.navigate(NavItem::Github),
             HitAction::Skills => self.navigate(NavItem::Skills),
@@ -2316,16 +2386,11 @@ impl App {
                 self.new_task_ui.composer.focus();
             }
             NavItem::Ide => crate::screens::ide::open(self, &project),
+            NavItem::Terminal => crate::screens::terminal::open(self, &project),
             NavItem::Github => crate::screens::github::open(self, &project),
             NavItem::Skills => crate::screens::skills::open(self, &project),
             NavItem::Workflows => crate::screens::workflows::open(self, &project),
-            NavItem::RepoGit => {
-                self.request_navigate(Route::RepoGit {
-                    project: project.clone(),
-                    tab: RepoGitTab::Changes,
-                });
-                self.pending.push(PendingAction::LoadRepoGit { project });
-            }
+            NavItem::RepoGit => crate::screens::repo_git::open(self, &project, RepoGitTab::Commits),
             NavItem::Settings => crate::screens::settings::open(self, &project),
         }
         self.notice = None;
@@ -2368,6 +2433,7 @@ impl App {
         self.history.navigate(Route::Tasks {
             project: project.clone(),
         });
+        self.screen_focus = 0;
         if let Some(index) = self.projects.iter().position(|entry| entry.id == project) {
             self.sidebar_selected = index;
         }
@@ -2384,6 +2450,7 @@ impl App {
                 && matches!(self.route(), Route::Tasks { .. } | Route::Thread { .. }))
             || (nav == NavItem::NewTask && matches!(self.route(), Route::NewTask { .. }))
             || (nav == NavItem::Ide && matches!(self.route(), Route::Ide { .. }))
+            || (nav == NavItem::Terminal && matches!(self.route(), Route::Terminal { .. }))
             || (nav == NavItem::Github && matches!(self.route(), Route::Github { .. }))
             || (nav == NavItem::Skills && matches!(self.route(), Route::Skills { .. }))
             || (nav == NavItem::Workflows && matches!(self.route(), Route::Workflows { .. }))
@@ -2409,29 +2476,141 @@ impl App {
         self.sidebar_focus = true;
     }
 
-    /// Move keyboard focus one section left or right (`Ctrl+Left` / `Ctrl+Right`).
-    /// Sections run left to right: the sidebar, then the screen. The IDE's explorer
-    /// sits between them, so its order is sidebar → tree → editor, and every press
-    /// moves exactly one step — no jump across the sections.
-    fn focus_step(&mut self, dir: KeyCode) {
-        let on_ide = matches!(self.route(), Route::Ide { .. });
-        match (dir, self.sidebar_focus) {
-            (KeyCode::Left, false)
-                if on_ide && self.ide_ui.focus == crate::screens::ide::IdeFocus::Editor =>
-            {
-                self.ide_ui.focus = crate::screens::ide::IdeFocus::Tree;
-            }
-            (KeyCode::Left, false) => self.focus_sidebar(),
-            (KeyCode::Right, true) => {
-                self.sidebar_focus = false;
-                if on_ide {
-                    self.ide_ui.focus = crate::screens::ide::IdeFocus::Tree;
+    fn screen_pane_count(&self) -> usize {
+        match self.route() {
+            Route::Ide { .. }
+            | Route::Workflows { .. }
+            | Route::Github { .. }
+            | Route::Skills { .. } => 2,
+            Route::Settings { .. } | Route::GlobalSettings => {
+                if self.settings_ui.file_editing {
+                    1
+                } else {
+                    2
                 }
             }
-            (KeyCode::Right, false)
-                if on_ide && self.ide_ui.focus == crate::screens::ide::IdeFocus::Tree =>
-            {
-                self.ide_ui.focus = crate::screens::ide::IdeFocus::Editor;
+            Route::RepoGit { tab, .. } => match tab {
+                RepoGitTab::Changes | RepoGitTab::Commits => 2,
+                RepoGitTab::Branches => 1,
+            },
+            Route::TaskGit { tab, .. } => match tab {
+                TaskGitTab::Changes | TaskGitTab::Commits => 2,
+                TaskGitTab::Files => 1,
+            },
+            _ => 1,
+        }
+    }
+
+    fn current_screen_pane(&self) -> usize {
+        let max = self.screen_pane_count().saturating_sub(1);
+        let pane = match self.route() {
+            Route::Ide { .. } => match self.ide_ui.focus {
+                crate::screens::ide::IdeFocus::Tree => 0,
+                crate::screens::ide::IdeFocus::Editor => 1,
+            },
+            Route::Workflows { .. } => match self.workflows_ui.focus {
+                crate::screens::workflows::WorkflowFocus::Palette => 0,
+                crate::screens::workflows::WorkflowFocus::Steps
+                | crate::screens::workflows::WorkflowFocus::Tabs => 1,
+            },
+            Route::TaskGit { tab, .. } => match tab {
+                TaskGitTab::Changes | TaskGitTab::Commits => match self.task_git_ui.focus {
+                    crate::screens::task_git::TaskGitFocus::Tree => 0,
+                    crate::screens::task_git::TaskGitFocus::Diff => 1,
+                },
+                TaskGitTab::Files => 0,
+            },
+            Route::Github { .. } => match self.github_ui.focus {
+                crate::screens::github::GithubFocus::Detail => 1,
+                _ => 0,
+            },
+            _ => self.screen_focus,
+        };
+        pane.min(max)
+    }
+
+    fn set_screen_pane(&mut self, pane: usize) {
+        let pane = pane.min(self.screen_pane_count().saturating_sub(1));
+        self.screen_focus = pane;
+        match self.route().clone() {
+            Route::Ide { .. } => {
+                self.ide_ui.focus = if pane == 0 {
+                    crate::screens::ide::IdeFocus::Tree
+                } else {
+                    crate::screens::ide::IdeFocus::Editor
+                };
+            }
+            Route::Workflows { .. } => {
+                self.workflows_ui.focus = if pane == 0 {
+                    crate::screens::workflows::WorkflowFocus::Palette
+                } else {
+                    crate::screens::workflows::WorkflowFocus::Steps
+                };
+            }
+            Route::TaskGit { tab, .. } => {
+                if !matches!(tab, TaskGitTab::Files) {
+                    self.task_git_ui.focus = if pane == 0 {
+                        crate::screens::task_git::TaskGitFocus::Tree
+                    } else {
+                        crate::screens::task_git::TaskGitFocus::Diff
+                    };
+                }
+            }
+            Route::Github { .. } => {
+                self.github_ui.focus = if pane == 0 {
+                    crate::screens::github::GithubFocus::List
+                } else {
+                    crate::screens::github::GithubFocus::Detail
+                };
+            }
+            _ => {}
+        }
+    }
+
+    /// Move keyboard focus one pane left or right (`Ctrl+Left` / `Ctrl+Right`). The shell sidebar
+    /// is always the leftmost pane; screen-specific panes follow it in visual order.
+    fn focus_step(&mut self, dir: KeyCode) {
+        if matches!(
+            self.route(),
+            Route::Github { .. } if self.github_ui.focus == crate::screens::github::GithubFocus::SkillPicker
+        ) || matches!(
+            self.route(),
+            Route::Settings { .. } | Route::GlobalSettings
+                if self.settings_ui.file_editing || self.settings_ui.edit.is_some()
+        ) || matches!(
+            self.route(),
+            Route::Workflows { .. }
+                if self.workflows_ui.import_open
+                    || self.workflows_ui.name_open
+                    || self.workflows_ui.delete_confirm.is_some()
+        ) || matches!(
+            self.route(),
+            Route::RepoGit { .. } if self.repo_git_ui.new_branch_open
+        ) || matches!(
+            self.route(),
+            Route::TaskGit { .. } if self.task_git_ui.commit_dialog_open
+        ) {
+            return;
+        }
+        let count = self.screen_pane_count();
+        match (dir, self.sidebar_focus) {
+            (KeyCode::Right, true) if count > 0 => {
+                self.sidebar_focus = false;
+                self.set_screen_pane(0);
+            }
+            (KeyCode::Left, false) => {
+                let pane = self.current_screen_pane();
+                if pane == 0 {
+                    self.focus_sidebar();
+                } else {
+                    self.set_screen_pane(pane - 1);
+                }
+            }
+            (KeyCode::Right, false) => {
+                let pane = self.current_screen_pane();
+                if pane + 1 < count {
+                    self.set_screen_pane(pane + 1);
+                }
             }
             _ => {}
         }
@@ -2538,6 +2717,7 @@ fn nav_hit_action(nav: NavItem) -> HitAction {
         NavItem::NewTask => HitAction::NewTask,
         NavItem::Tasks => HitAction::Tasks,
         NavItem::Ide => HitAction::Ide,
+        NavItem::Terminal => HitAction::Terminal,
         NavItem::RepoGit => HitAction::RepoGit,
         NavItem::Github => HitAction::Github,
         NavItem::Skills => HitAction::Skills,
@@ -2784,6 +2964,7 @@ impl UppercaseTitle for NavItem {
             Self::NewTask => "NEW TASK",
             Self::Tasks => "TASKS",
             Self::Ide => "IDE",
+            Self::Terminal => "TERMINAL",
             Self::RepoGit => "GIT",
             Self::Github => "GITHUB",
             Self::Skills => "SKILLS",
@@ -3057,7 +3238,7 @@ mod tests {
             KeyCode::Left,
             KeyModifiers::CONTROL,
         )));
-        for _ in 0..10 {
+        for _ in 0..11 {
             app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
         }
         app.handle_event(Event::Key(KeyEvent::new(
@@ -3159,6 +3340,73 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_focus_reaches_workflow_palette_then_steps() {
+        fn ctrl(app: &mut App, code: KeyCode) {
+            app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::CONTROL)));
+        }
+
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.navigate(NavItem::Workflows);
+        app.focus_sidebar();
+
+        ctrl(&mut app, KeyCode::Right);
+        assert_eq!(
+            app.workflows_ui.focus,
+            crate::screens::workflows::WorkflowFocus::Palette
+        );
+        ctrl(&mut app, KeyCode::Right);
+        assert_eq!(
+            app.workflows_ui.focus,
+            crate::screens::workflows::WorkflowFocus::Steps
+        );
+        ctrl(&mut app, KeyCode::Left);
+        assert_eq!(
+            app.workflows_ui.focus,
+            crate::screens::workflows::WorkflowFocus::Palette
+        );
+        ctrl(&mut app, KeyCode::Left);
+        assert!(app.sidebar_focus);
+    }
+
+    #[test]
+    fn ctrl_focus_reaches_settings_navigation_then_body() {
+        fn ctrl(app: &mut App, code: KeyCode) {
+            app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::CONTROL)));
+        }
+
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.navigate(NavItem::Settings);
+        app.focus_sidebar();
+
+        ctrl(&mut app, KeyCode::Right);
+        assert_eq!(app.screen_focus(), 0);
+        ctrl(&mut app, KeyCode::Right);
+        assert_eq!(app.screen_focus(), 1);
+        ctrl(&mut app, KeyCode::Left);
+        assert_eq!(app.screen_focus(), 0);
+        ctrl(&mut app, KeyCode::Left);
+        assert!(app.sidebar_focus);
+    }
+
+    #[test]
+    fn sidebar_focus_keeps_normal_commands_out_of_a_live_terminal() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.navigate(NavItem::Terminal);
+        app.terminal_ui.sessions.insert(
+            "main".to_owned(),
+            crate::pty::TerminalSession::spawn(std::path::Path::new("/tmp"), 24, 80).unwrap(),
+        );
+        app.focus_sidebar();
+
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('q'),
+            KeyModifiers::NONE,
+        )));
+
+        assert!(app.should_quit());
+    }
+
+    #[test]
     fn startup_selector_anchors_on_the_current_project_row() {
         let mut app = App::new("main", Theme::detect(), Keymap::default());
         app.set_projects([
@@ -3177,9 +3425,9 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
         terminal.draw(|frame| app.render(frame)).unwrap();
 
-        // 13 rows: current project + 8 navs + All tasks + Settings + Active + Archived.
+        // 14 rows: current project + 9 navs + All tasks + Settings + Active + Archived.
         app.handle_event(Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)));
-        assert_eq!(app.sidebar_selected, 12);
+        assert_eq!(app.sidebar_selected, 13);
         app.handle_event(Event::Key(KeyEvent::new(
             KeyCode::Enter,
             KeyModifiers::NONE,
@@ -3201,7 +3449,7 @@ mod tests {
             project: "main".to_owned(),
             tab: RepoGitTab::Changes,
         });
-        assert_eq!(app.sidebar_selected, 4);
+        assert_eq!(app.sidebar_selected, 5);
 
         app.request_navigate(Route::NewTask {
             project: "main".to_owned(),
@@ -3209,10 +3457,39 @@ mod tests {
         assert_eq!(app.sidebar_selected, 1);
 
         app.request_back();
-        assert_eq!(app.sidebar_selected, 4);
+        assert_eq!(app.sidebar_selected, 5);
 
         app.request_back();
         assert_eq!(app.sidebar_selected, 2);
+    }
+
+    #[test]
+    fn repo_git_navigation_initializes_the_project_before_loading() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.navigate(NavItem::RepoGit);
+
+        assert_eq!(app.repo_git_ui.project, "main");
+        assert_eq!(app.repo_git_ui.tab, RepoGitTab::Commits);
+        assert!(!app.repo_git_ui.changes_loading);
+        assert!(app.pending.iter().any(
+            |action| matches!(action, PendingAction::LoadRepoGitCommits { project } if project == "main")
+        ));
+    }
+
+    #[test]
+    fn repo_git_tab_cycles_with_tab_and_shift_tab() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.navigate(NavItem::RepoGit);
+
+        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(app.repo_git_ui.tab, RepoGitTab::Changes);
+        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(app.repo_git_ui.tab, RepoGitTab::Branches);
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::BackTab,
+            KeyModifiers::SHIFT,
+        )));
+        assert_eq!(app.repo_git_ui.tab, RepoGitTab::Changes);
     }
 
     #[test]
@@ -3241,14 +3518,14 @@ mod tests {
         terminal.draw(|frame| app.render(frame)).unwrap();
         let buffer = terminal.backend().buffer();
         let cell = |x: usize, y: usize| &buffer.content[y * 120 + x];
-        // The Git row (sidebar row 7) shows the selector; the Tasks row (row 5) does not.
+        // The Git row (sidebar row 8) shows the selector; the Tasks row (row 6) does not.
         assert!(
-            cell(2, 7)
+            cell(2, 8)
                 .modifier
                 .contains(ratatui::style::Modifier::REVERSED)
         );
         assert!(
-            !cell(2, 5)
+            !cell(2, 6)
                 .modifier
                 .contains(ratatui::style::Modifier::REVERSED)
         );

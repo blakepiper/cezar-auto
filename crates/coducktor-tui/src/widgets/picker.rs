@@ -168,14 +168,14 @@ impl Picker {
             );
             frame.render_widget(
                 Paragraph::new(search),
-                Rect::new(rect.x + 1, row, rect.width - 2, 1),
+                Rect::new(rect.x + 1, row, rect.width.saturating_sub(2), 1),
             );
             row += 1;
         }
         let mut index = 0;
         let mut previous_group: Option<&str> = None;
         while index < self.items.len() {
-            if row >= rect.bottom() - 1 {
+            if row >= rect.bottom().saturating_sub(1) {
                 break;
             }
             let item = &self.items[index];
@@ -189,7 +189,7 @@ impl Picker {
                     );
                     frame.render_widget(
                         Paragraph::new(heading),
-                        Rect::new(rect.x + 1, row, rect.width - 2, 1),
+                        Rect::new(rect.x + 1, row, rect.width.saturating_sub(2), 1),
                     );
                     row += 1;
                 }
@@ -222,7 +222,7 @@ impl Picker {
             }
             frame.render_widget(
                 Paragraph::new(Line::from(spans)),
-                Rect::new(rect.x + 1, row, rect.width - 2, 1),
+                Rect::new(rect.x + 1, row, rect.width.saturating_sub(2), 1),
             );
             hitmap.register(
                 Rect::new(rect.x + 1, row, rect.width.saturating_sub(2), 1),

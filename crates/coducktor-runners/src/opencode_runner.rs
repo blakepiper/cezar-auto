@@ -564,6 +564,17 @@ impl OpencodeSession {
                 on_event(EventInput::new("text").field("text", text))
                     .map_err(|error| error.to_string())?;
             }
+        } else if kind == "reasoning" {
+            let text = part
+                .get("text")
+                .or_else(|| part.get("reasoning"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let ended = part.pointer("/time/end").and_then(Value::as_f64).is_some();
+            if ended && !text.is_empty() {
+                on_event(EventInput::new("reasoning").field("text", text))
+                    .map_err(|error| error.to_string())?;
+            }
         } else if kind == "tool" {
             let state = part.get("state").cloned().unwrap_or(Value::Null);
             let status = state.get("status").and_then(Value::as_str).unwrap_or("");

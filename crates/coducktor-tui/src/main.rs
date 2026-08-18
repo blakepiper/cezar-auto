@@ -1,7 +1,10 @@
+use std::collections::HashSet;
 use std::env;
+use std::future::Future;
 use std::io;
 use std::io::Write;
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver as BackgroundReceiver, Sender as BackgroundSender, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -74,6 +77,7 @@ async fn main() -> io::Result<()> {
     let user_keymap = Keymap::default_path();
     let keymap = Keymap::load(user_keymap.as_deref()).unwrap_or_default();
     let mut app = App::new("main", Theme::detect(), keymap);
+    app.set_boot_root(repo_root.clone());
     let engine: Arc<dyn Engine> =
         Arc::new(InProcessEngine::new(repo_root, env!("CARGO_PKG_VERSION")));
     let mut workspace_listener =
@@ -125,6 +129,114 @@ struct PrimeNewTaskSnapshot {
     provider_status: Option<coducktor_contract::ProviderStatusResponse>,
     agent_profiles: Option<coducktor_contract::AgentProfilesResponse>,
     ui_state: Option<coducktor_contract::UiState>,
+    repo: Option<coducktor_contract::RepoInfo>,
+}
+
+#[allow(clippy::large_enum_variant)]
+enum BackgroundResult {
+    StartRun {
+        project: String,
+        result: Result<coducktor_contract::CreateRunResponse, coducktor_client::EngineError>,
+    },
+    Github {
+        project: String,
+        result: Result<coducktor_contract::GithubData, coducktor_client::EngineError>,
+    },
+    GithubComments {
+        project: String,
+        number: u64,
+        result: Result<coducktor_contract::GithubCommentsData, coducktor_client::EngineError>,
+    },
+    GithubMergeState {
+        project: String,
+        number: u64,
+        result:
+            Result<coducktor_contract::GithubPrMergeStateResponse, coducktor_client::EngineError>,
+    },
+    GithubPrChanges {
+        project: String,
+        number: u64,
+        result: Result<coducktor_contract::GithubPrChangesData, coducktor_client::EngineError>,
+    },
+    GithubMerge {
+        project: String,
+        number: u64,
+        result: Result<coducktor_contract::GithubMergeResponse, coducktor_client::EngineError>,
+    },
+    LoadThread {
+        project: String,
+        id: String,
+        run: Result<coducktor_contract::ApiRun, coducktor_client::EngineError>,
+        history: Result<coducktor_contract::RunHistoryPage, coducktor_client::EngineError>,
+    },
+    RefreshTasks {
+        project: String,
+        result: Result<Vec<coducktor_contract::ApiRun>, coducktor_client::EngineError>,
+    },
+    RefreshIndex {
+        result: Result<coducktor_contract::RunsIndexResponse, coducktor_client::EngineError>,
+    },
+    RefreshModels {
+        runner: coducktor_contract::Runner,
+        result:
+            Result<coducktor_contract::RunnerModelCatalogResponse, coducktor_client::EngineError>,
+    },
+    RefreshNewTask {
+        project: String,
+        snapshot: PrimeNewTaskSnapshot,
+    },
+    LoadRepoGit {
+        project: String,
+        repo: Result<coducktor_contract::RepoResponse, coducktor_client::EngineError>,
+    },
+    LoadRepoGitChanges {
+        project: String,
+        changes: Result<coducktor_contract::ChangesPayload, coducktor_client::EngineError>,
+    },
+    LoadRepoGitCommit {
+        project: String,
+        result: Result<coducktor_contract::RepoCommitPayload, coducktor_client::EngineError>,
+    },
+    GithubHandToAgent {
+        project: String,
+        result: Result<coducktor_contract::CreateRunResponse, coducktor_client::EngineError>,
+    },
+    SessionMutation {
+        action: SessionMutation,
+        project: String,
+        id: String,
+        result: Result<(), coducktor_client::EngineError>,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum SessionMutation {
+    Send,
+    Cancel,
+    Continue,
+    Finish,
+}
+
+/// Run an engine future away from the TUI task. In-process engine methods intentionally retain
+/// synchronous run/session seams, so a Tokio task alone would only move the freeze to another
+/// runtime worker and still leave shutdown waiting on an agent process. A plain worker thread lets
+/// the cockpit keep polling input and lets a confirmed quit return without joining a live agent.
+fn spawn_background<F, T, M>(
+    handle: &tokio::runtime::Handle,
+    sender: &BackgroundSender<BackgroundResult>,
+    future: F,
+    map: M,
+) where
+    F: Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+    M: FnOnce(T) -> BackgroundResult + Send + 'static,
+{
+    let handle = handle.clone();
+    let sender = sender.clone();
+    thread::spawn(move || {
+        let result = handle.block_on(future);
+        let _ = sender.send(map(result));
+    });
 }
 
 /// Load the data that makes the first screen useful without holding up the first frame. The
@@ -140,26 +252,49 @@ fn spawn_prime(engine: Arc<dyn Engine>) -> (JoinHandle<()>, UnboundedReceiver<Pr
             .map(|health| health.boot_project.clone())
             .unwrap_or_else(|| "main".to_owned());
         let scope = Scope::Project(project);
-
-        let runs = engine.list_runs(&scope).await.ok();
-        let projects = engine.projects().await.ok();
-        let index = engine.runs_index().await.ok();
-        let workspace_ui_state = engine.workspace_ui_state().await.ok();
-        let new_task = PrimeNewTaskSnapshot {
-            config: engine.config(&scope).await.ok(),
-            skills: engine.skills(&scope).await.ok(),
-            workflows: engine.workflows(&scope).await.ok(),
-            workspace_config: engine.workspace_config().await.ok(),
-            provider_status: engine.provider_status().await.ok(),
-            agent_profiles: engine.agent_profiles().await.ok(),
-            ui_state: engine.ui_state(&scope).await.ok(),
-        };
-        let _ = sender.send(PrimeSnapshot {
-            health,
+        let (
             runs,
             projects,
             index,
             workspace_ui_state,
+            config,
+            skills,
+            workflows,
+            workspace_config,
+            provider_status,
+            agent_profiles,
+            ui_state,
+            repo,
+        ) = tokio::join!(
+            engine.list_runs(&scope),
+            engine.projects(),
+            engine.runs_index(),
+            engine.workspace_ui_state(),
+            engine.config(&scope),
+            engine.skills(&scope),
+            engine.workflows(&scope),
+            engine.workspace_config(),
+            engine.provider_status(),
+            engine.agent_profiles(),
+            engine.ui_state(&scope),
+            engine.repo(&scope),
+        );
+        let new_task = PrimeNewTaskSnapshot {
+            config: config.ok(),
+            skills: skills.ok(),
+            workflows: workflows.ok(),
+            workspace_config: workspace_config.ok(),
+            provider_status: provider_status.ok(),
+            agent_profiles: agent_profiles.ok(),
+            ui_state: ui_state.ok(),
+            repo: repo.ok().and_then(repo_info),
+        };
+        let _ = sender.send(PrimeSnapshot {
+            health,
+            runs: runs.ok(),
+            projects: projects.ok(),
+            index: index.ok(),
+            workspace_ui_state: workspace_ui_state.ok(),
             new_task,
         });
     });
@@ -203,6 +338,7 @@ fn apply_prime_snapshot(app: &mut App, snapshot: PrimeSnapshot) {
         );
     }
     if let Some(projects) = snapshot.projects {
+        let boot_project = projects.boot_project.clone();
         app.set_projects(
             projects
                 .projects
@@ -210,6 +346,27 @@ fn apply_prime_snapshot(app: &mut App, snapshot: PrimeSnapshot) {
                 .map(|project| (project.id.clone(), project.name.clone())),
         );
         app.set_project_registry(projects.projects);
+        // Health uses the zero-config `default` sentinel, while the workspace registry can
+        // already know the real checkout's project id. Replace that placeholder before the user
+        // opens a project-scoped screen, otherwise GitHub/Git reads quite correctly target the
+        // launch directory instead of the registered boot project.
+        if boot_project != "default"
+            && matches!(
+                app.route(),
+                app::Route::Tasks { project } if project == "default"
+            )
+        {
+            app.default_project = boot_project.clone();
+            app.request_navigate(app::Route::Tasks {
+                project: boot_project.clone(),
+            });
+            app.pending.push(PendingAction::RefreshTasks {
+                project: boot_project.clone(),
+            });
+            app.pending.push(PendingAction::RefreshNewTask {
+                project: boot_project,
+            });
+        }
     }
     if let Some(index) = snapshot.index {
         app.set_global_index(index);
@@ -221,27 +378,38 @@ fn apply_prime_snapshot(app: &mut App, snapshot: PrimeSnapshot) {
             .and_then(|notifications| notifications.enabled)
             .unwrap_or(false);
     }
-    let new_task = snapshot.new_task;
-    if let Some(config) = new_task.config {
+    apply_new_task_snapshot(app, snapshot.new_task);
+}
+
+fn apply_new_task_snapshot(app: &mut App, snapshot: PrimeNewTaskSnapshot) {
+    if let Some(config) = snapshot.config {
         app.new_task_ui.data.config = Some(new_task_form::ComposerConfig::from_config(&config));
     }
-    if let Some(skills) = new_task.skills {
+    if let Some(skills) = snapshot.skills {
         app.new_task_ui.data.skills = skills;
     }
-    if let Some(workflows) = new_task.workflows {
+    if let Some(workflows) = snapshot.workflows {
         app.new_task_ui.data.workflows = workflows.workflows;
     }
-    if let Some(workspace_config) = new_task.workspace_config {
+    if let Some(workspace_config) = snapshot.workspace_config {
         app.new_task_ui.data.workspace_config = Some(workspace_config);
     }
-    if let Some(provider_status) = new_task.provider_status {
+    if let Some(provider_status) = snapshot.provider_status {
         app.new_task_ui.data.provider_status = Some(provider_status);
     }
-    if let Some(agent_profiles) = new_task.agent_profiles {
+    if let Some(agent_profiles) = snapshot.agent_profiles {
         app.new_task_ui.data.agent_profiles = Some(agent_profiles);
     }
-    if let Some(ui_state) = new_task.ui_state {
+    if let Some(ui_state) = snapshot.ui_state {
         app.new_task_ui.data.ui_state = Some(ui_state);
+    }
+    app.new_task_ui.data.repo = snapshot.repo;
+}
+
+fn repo_info(response: coducktor_contract::RepoResponse) -> Option<coducktor_contract::RepoInfo> {
+    match response {
+        coducktor_contract::RepoResponse::Present(repo) => Some(repo.info),
+        coducktor_contract::RepoResponse::Empty(_) => None,
     }
 }
 
@@ -289,7 +457,12 @@ async fn apply_launch_args(engine: &dyn Engine, app: &mut App, cli: &Cli) {
 
 /// Run one pending action against the engine and reconcile the app with the
 /// engine's answer. Failures surface as a toast rather than a crash.
-async fn execute_pending(engine: &dyn Engine, app: &mut App) {
+async fn execute_pending(
+    engine: Arc<dyn Engine>,
+    app: &mut App,
+    background_sender: &BackgroundSender<BackgroundResult>,
+    background_handle: &tokio::runtime::Handle,
+) {
     for action in app.take_pending() {
         match action {
             PendingAction::Archive {
@@ -301,7 +474,7 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
                 match engine.archive_run(&scope, &id, archived).await {
                     Ok(run) => {
                         app.apply_workspace_event(WorkspaceEvent::Run { project, run });
-                        refresh_index_if_global(engine, app).await;
+                        refresh_index_if_global(engine.as_ref(), app).await;
                     }
                     Err(error) => app.notice = Some(format!("archive failed: {error}")),
                 }
@@ -311,7 +484,7 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
                 match engine.delete_run(&scope, &id).await {
                     Ok(_) => {
                         app.apply_workspace_event(WorkspaceEvent::RunDeleted { project, id });
-                        refresh_index_if_global(engine, app).await;
+                        refresh_index_if_global(engine.as_ref(), app).await;
                     }
                     Err(error) => app.notice = Some(format!("delete failed: {error}")),
                 }
@@ -321,7 +494,7 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
                 match engine.read_run(&scope, &id).await {
                     Ok(run) => {
                         app.apply_workspace_event(WorkspaceEvent::Run { project, run });
-                        refresh_index_if_global(engine, app).await;
+                        refresh_index_if_global(engine.as_ref(), app).await;
                     }
                     Err(error) => app.notice = Some(format!("mark read failed: {error}")),
                 }
@@ -331,7 +504,7 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
                 match engine.unread_run(&scope, &id).await {
                     Ok(run) => {
                         app.apply_workspace_event(WorkspaceEvent::Run { project, run });
-                        refresh_index_if_global(engine, app).await;
+                        refresh_index_if_global(engine.as_ref(), app).await;
                     }
                     Err(error) => app.notice = Some(format!("mark unread failed: {error}")),
                 }
@@ -341,8 +514,8 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
                 match engine.archive_finished(&scope).await {
                     Ok(response) => {
                         app.notice = Some(format!("archived {} finished", response.archived));
-                        refresh_tasks(engine, app, &project).await;
-                        refresh_index_if_global(engine, app).await;
+                        refresh_tasks(engine.as_ref(), app, &project).await;
+                        refresh_index_if_global(engine.as_ref(), app).await;
                     }
                     Err(error) => app.notice = Some(format!("archive finished failed: {error}")),
                 }
@@ -352,45 +525,60 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
                 match engine.mark_all_read(&scope).await {
                     Ok(response) => {
                         app.notice = Some(format!("marked {} read", response.read));
-                        refresh_tasks(engine, app, &project).await;
-                        refresh_index_if_global(engine, app).await;
+                        refresh_tasks(engine.as_ref(), app, &project).await;
+                        refresh_index_if_global(engine.as_ref(), app).await;
                     }
                     Err(error) => app.notice = Some(format!("mark all read failed: {error}")),
                 }
             }
             PendingAction::RefreshTasks { project } => {
-                refresh_tasks(engine, app, &project).await;
+                let scope = Scope::Project(project.clone());
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.list_runs(&scope).await },
+                    move |result| BackgroundResult::RefreshTasks { project, result },
+                );
             }
             PendingAction::RefreshIndex => {
-                if let Ok(index) = engine.runs_index().await {
-                    app.set_global_index(index);
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.runs_index().await },
+                    |result| BackgroundResult::RefreshIndex { result },
+                );
             }
             PendingAction::StartRun { project, input } => {
                 let scope = Scope::Project(project.clone());
-                match engine.start_run(&scope, input).await {
-                    Ok(response) => {
-                        if let Some(id) = new_task_form::started_run_id(&response) {
-                            screens::thread::open(app, &project, &id);
-                        }
-                        screens::new_task::clear_draft(app);
-                        refresh_tasks(engine, app, &project).await;
-                        refresh_index_if_global(engine, app).await;
-                    }
-                    Err(error) => app.notice = Some(format!("start failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.start_run(&scope, input).await },
+                    move |result| BackgroundResult::StartRun { project, result },
+                );
             }
             PendingAction::RefreshNewTask { project } => {
-                refresh_new_task(engine, app, &project).await;
+                let project_for_task = project.clone();
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { load_new_task_snapshot(engine_for_task, &project_for_task).await },
+                    move |snapshot| BackgroundResult::RefreshNewTask { project, snapshot },
+                );
             }
-            PendingAction::RefreshModels { runner } => match engine.models(runner).await {
-                Ok(catalog) => {
-                    app.new_task_ui.data.model_catalog = Some(catalog);
-                }
-                Err(error) => {
-                    app.notice = Some(format!("model catalog failed: {error}"));
-                }
-            },
+            PendingAction::RefreshModels { runner } => {
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.models(runner).await },
+                    move |result| BackgroundResult::RefreshModels { runner, result },
+                );
+            }
             PendingAction::PlanTask { project, task } => {
                 let scope = Scope::Project(project.clone());
                 match engine.plan(&scope, &task).await {
@@ -431,36 +619,66 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
             }
             PendingAction::LoadThread { project, id } => {
                 let scope = Scope::Project(project.clone());
-                let run = engine.get_run(&scope, &id).await;
-                let history = engine.run_history(&scope, &id, None).await;
-                match (run, history) {
-                    (Ok(run), Ok(history)) => {
-                        let events = history
-                            .events
-                            .into_iter()
-                            .map(thread_history_event)
-                            .collect();
-                        app.thread_ui
-                            .load(project, id, run, events, history.as_of_seq as f64);
-                    }
-                    (Err(error), _) | (_, Err(error)) => {
-                        app.notice = Some(format!("load task failed: {error}"));
-                    }
-                }
+                let engine_for_task = engine.clone();
+                let id_for_task = id.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move {
+                        tokio::join!(
+                            engine_for_task.get_run(&scope, &id_for_task),
+                            engine_for_task.run_history(&scope, &id_for_task, None),
+                        )
+                    },
+                    move |(run, history)| BackgroundResult::LoadThread {
+                        project,
+                        id,
+                        run,
+                        history,
+                    },
+                );
             }
             PendingAction::SendMessage { project, id, input } => {
                 let scope = Scope::Project(project.clone());
-                if let Err(error) = engine.send_message(&scope, &id, input).await {
-                    app.notice = Some(format!("send failed: {error}"));
-                }
-                refresh_thread_run(engine, app, &project, &id).await;
+                let engine_for_task = engine.clone();
+                let id_for_task = id.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move {
+                        engine_for_task
+                            .send_message(&scope, &id_for_task, input)
+                            .await
+                            .map(|_| ())
+                    },
+                    move |result| BackgroundResult::SessionMutation {
+                        action: SessionMutation::Send,
+                        project,
+                        id,
+                        result,
+                    },
+                );
             }
             PendingAction::CancelRun { project, id } => {
                 let scope = Scope::Project(project.clone());
-                if let Err(error) = engine.cancel_run(&scope, &id).await {
-                    app.notice = Some(format!("cancel failed: {error}"));
-                }
-                refresh_thread_run(engine, app, &project, &id).await;
+                let engine_for_task = engine.clone();
+                let id_for_task = id.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move {
+                        engine_for_task
+                            .cancel_run(&scope, &id_for_task)
+                            .await
+                            .map(|_| ())
+                    },
+                    move |result| BackgroundResult::SessionMutation {
+                        action: SessionMutation::Cancel,
+                        project,
+                        id,
+                        result,
+                    },
+                );
             }
             PendingAction::ContinueRun { project, id, text } => {
                 let scope = Scope::Project(project.clone());
@@ -468,17 +686,45 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
                     text,
                     ..coducktor_contract::ContinueInput::default()
                 };
-                if let Err(error) = engine.continue_run(&scope, &id, input).await {
-                    app.notice = Some(format!("continue failed: {error}"));
-                }
-                refresh_thread_run(engine, app, &project, &id).await;
+                let engine_for_task = engine.clone();
+                let id_for_task = id.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move {
+                        engine_for_task
+                            .continue_run(&scope, &id_for_task, input)
+                            .await
+                            .map(|_| ())
+                    },
+                    move |result| BackgroundResult::SessionMutation {
+                        action: SessionMutation::Continue,
+                        project,
+                        id,
+                        result,
+                    },
+                );
             }
             PendingAction::FinishRun { project, id } => {
                 let scope = Scope::Project(project.clone());
-                if let Err(error) = engine.finish_run(&scope, &id).await {
-                    app.notice = Some(format!("finish failed: {error}"));
-                }
-                refresh_thread_run(engine, app, &project, &id).await;
+                let engine_for_task = engine.clone();
+                let id_for_task = id.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move {
+                        engine_for_task
+                            .finish_run(&scope, &id_for_task)
+                            .await
+                            .map(|_| ())
+                    },
+                    move |result| BackgroundResult::SessionMutation {
+                        action: SessionMutation::Finish,
+                        project,
+                        id,
+                        result,
+                    },
+                );
             }
             PendingAction::CreatePr { project, id } => {
                 let scope = Scope::Project(project.clone());
@@ -488,7 +734,7 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
                     }
                     Err(error) => app.notice = Some(format!("draft PR failed: {error}")),
                 }
-                refresh_thread_run(engine, app, &project, &id).await;
+                refresh_thread_run(engine.as_ref(), app, &project, &id).await;
             }
             PendingAction::OpenInCli { project, id } => {
                 let scope = Scope::Project(project.clone());
@@ -505,14 +751,14 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
                 if let Err(error) = engine.remove_queued_message(&scope, &id, &message_id).await {
                     app.notice = Some(format!("remove message failed: {error}"));
                 }
-                refresh_thread_run(engine, app, &project, &id).await;
+                refresh_thread_run(engine.as_ref(), app, &project, &id).await;
             }
             PendingAction::CancelAutoResume { project, id } => {
                 let scope = Scope::Project(project.clone());
                 if let Err(error) = engine.cancel_auto_resume(&scope, &id).await {
                     app.notice = Some(format!("cancel auto-resume failed: {error}"));
                 }
-                refresh_thread_run(engine, app, &project, &id).await;
+                refresh_thread_run(engine.as_ref(), app, &project, &id).await;
             }
             PendingAction::LoadTaskGitChanges { project, id } => {
                 let scope = Scope::Project(project.clone());
@@ -584,27 +830,50 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
             }
             PendingAction::LoadRepoGit { project } => {
                 let scope = Scope::Project(project.clone());
-                match engine.repo(&scope).await {
-                    Ok(repo) => app.repo_git_ui.repo = Some(repo),
-                    Err(error) => app.notice = Some(format!("load repo failed: {error}")),
-                }
-                if let Ok(changes) = engine.repo_changes(&scope).await {
-                    app.repo_git_ui.repo_changes_files = changes.files;
-                }
+                let repo_scope = scope.clone();
+                let changes_scope = scope;
+                let repo_engine = engine.clone();
+                let repo_project = project.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { repo_engine.repo(&repo_scope).await },
+                    move |repo| BackgroundResult::LoadRepoGit {
+                        project: repo_project,
+                        repo,
+                    },
+                );
+                let changes_engine = engine.clone();
+                let changes_project = project;
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { changes_engine.repo_changes(&changes_scope).await },
+                    move |changes| BackgroundResult::LoadRepoGitChanges {
+                        project: changes_project,
+                        changes,
+                    },
+                );
             }
             PendingAction::LoadRepoGitCommits { project } => {
                 let scope = Scope::Project(project.clone());
-                match engine.repo(&scope).await {
-                    Ok(repo) => app.repo_git_ui.repo = Some(repo),
-                    Err(error) => app.notice = Some(format!("load repo failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.repo(&scope).await },
+                    move |repo| BackgroundResult::LoadRepoGit { project, repo },
+                );
             }
             PendingAction::LoadRepoGitCommitDiff { project, sha } => {
                 let scope = Scope::Project(project.clone());
-                match engine.repo_commit(&scope, &sha).await {
-                    Ok(commit) => app.repo_git_ui.commit_detail = Some(commit),
-                    Err(error) => app.notice = Some(format!("load commit failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.repo_commit(&scope, &sha).await },
+                    move |result| BackgroundResult::LoadRepoGitCommit { project, result },
+                );
             }
             PendingAction::RepoGitBranch {
                 project,
@@ -670,7 +939,7 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
                     Ok(_) => app.notice = Some("variant picked".to_owned()),
                     Err(error) => app.notice = Some(format!("pick failed: {error}")),
                 }
-                refresh_tasks(engine, app, &project).await;
+                refresh_tasks(engine.as_ref(), app, &project).await;
             }
             PendingAction::LoadIdeDirectory { project, path } => {
                 let scope = Scope::Project(project.clone());
@@ -747,16 +1016,13 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
             PendingAction::SwitchProject(_) => unreachable!("resolved in app.rs"),
             PendingAction::LoadGithub { project } => {
                 let scope = Scope::Project(project.clone());
-                match engine.github(&scope).await {
-                    Ok(data) => {
-                        if !data.available {
-                            app.github_ui.data = Some(data.clone());
-                        } else {
-                            app.github_ui.data = Some(data);
-                        }
-                    }
-                    Err(error) => app.notice = Some(format!("load github failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.github(&scope).await },
+                    move |result| BackgroundResult::Github { project, result },
+                );
             }
             PendingAction::LoadGithubPickers { project } => {
                 let scope = Scope::Project(project.clone());
@@ -773,24 +1039,45 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
                 number,
             } => {
                 let scope = Scope::Project(project.clone());
-                match engine.github_comments(&scope, &kind, number).await {
-                    Ok(comments) => app.github_ui.comments = Some(comments),
-                    Err(error) => app.notice = Some(format!("load comments failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.github_comments(&scope, &kind, number).await },
+                    move |result| BackgroundResult::GithubComments {
+                        project,
+                        number,
+                        result,
+                    },
+                );
             }
             PendingAction::LoadGithubMergeState { project, number } => {
                 let scope = Scope::Project(project.clone());
-                match engine.github_pr_merge_state(&scope, number).await {
-                    Ok(state) => app.github_ui.merge_state = Some(state),
-                    Err(error) => app.notice = Some(format!("load merge state failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.github_pr_merge_state(&scope, number).await },
+                    move |result| BackgroundResult::GithubMergeState {
+                        project,
+                        number,
+                        result,
+                    },
+                );
             }
             PendingAction::LoadGithubPrChanges { project, number } => {
                 let scope = Scope::Project(project.clone());
-                match engine.github_pr_changes(&scope, number).await {
-                    Ok(changes) => app.github_ui.pr_changes = Some(changes),
-                    Err(error) => app.notice = Some(format!("load changes failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.github_pr_changes(&scope, number).await },
+                    move |result| BackgroundResult::GithubPrChanges {
+                        project,
+                        number,
+                        result,
+                    },
+                );
             }
             PendingAction::GithubMerge {
                 project,
@@ -805,25 +1092,31 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
                     expected_head_sha: head_sha,
                     override_rules: Some(override_rules),
                 };
-                match engine.github_merge_pr(&scope, number, &input).await {
-                    Ok(response) => {
-                        app.notice = Some(format!("merged PR #{number} with {}", response.method));
-                        app.pending.push(PendingAction::LoadGithub { project });
-                    }
-                    Err(error) => app.notice = Some(format!("merge failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move {
+                        engine_for_task
+                            .github_merge_pr(&scope, number, &input)
+                            .await
+                    },
+                    move |result| BackgroundResult::GithubMerge {
+                        project,
+                        number,
+                        result,
+                    },
+                );
             }
             PendingAction::GithubHandToAgent { project, input } => {
                 let scope = Scope::Project(project.clone());
-                match engine.start_run(&scope, input).await {
-                    Ok(response) => {
-                        if let Some(id) = new_task_form::started_run_id(&response) {
-                            app.github_ui.queued = Some(id);
-                        }
-                        refresh_tasks(engine, app, &project).await;
-                    }
-                    Err(error) => app.notice = Some(format!("start failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.start_run(&scope, input).await },
+                    move |result| BackgroundResult::GithubHandToAgent { project, result },
+                );
             }
             PendingAction::LoadSkills { project } => {
                 let scope = Scope::Project(project.clone());
@@ -855,10 +1148,10 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
                 }
             }
             PendingAction::SaveWorkflow { project } => {
-                save_or_export_workflow(engine, app, &project, false).await;
+                save_or_export_workflow(engine.as_ref(), app, &project, false).await;
             }
             PendingAction::ExportWorkflow { project } => {
-                save_or_export_workflow(engine, app, &project, true).await;
+                save_or_export_workflow(engine.as_ref(), app, &project, true).await;
             }
             PendingAction::DeleteWorkflow { project, name } => {
                 let scope = Scope::Project(project.clone());
@@ -883,7 +1176,7 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
                 }
             }
             PendingAction::LoadSettings { project } => {
-                load_settings(engine, app, &project).await;
+                load_settings(engine.as_ref(), app, &project).await;
             }
             PendingAction::SettingsPutConfig { project, input } => {
                 let scope = Scope::Project(project.clone());
@@ -996,7 +1289,7 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
                             "registered {} — {}",
                             response.project.name, response.project.root
                         ));
-                        refresh_project_registry(engine, app).await;
+                        refresh_project_registry(engine.as_ref(), app).await;
                     }
                     Err(error) => {
                         app.settings_ui.notice = Some(format!("add repository failed: {error}"));
@@ -1025,14 +1318,14 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
             }
             PendingAction::SettingsRemoveProject { id } => match engine.remove_project(&id).await {
                 Ok(_) => {
-                    refresh_project_registry(engine, app).await;
+                    refresh_project_registry(engine.as_ref(), app).await;
                 }
                 Err(error) => app.notice = Some(format!("remove project failed: {error}")),
             },
             PendingAction::SettingsUpdateProject { id, input } => {
                 match engine.update_project(&id, &input).await {
                     Ok(_) => {
-                        refresh_project_registry(engine, app).await;
+                        refresh_project_registry(engine.as_ref(), app).await;
                     }
                     Err(error) => app.notice = Some(format!("update project failed: {error}")),
                 }
@@ -1040,6 +1333,282 @@ async fn execute_pending(engine: &dyn Engine, app: &mut App) {
             PendingAction::Quit => {}
         }
     }
+}
+
+async fn load_new_task_snapshot(engine: Arc<dyn Engine>, project: &str) -> PrimeNewTaskSnapshot {
+    let scope = Scope::Project(project.to_owned());
+    let (
+        config,
+        skills,
+        workflows,
+        workspace_config,
+        provider_status,
+        agent_profiles,
+        ui_state,
+        repo,
+    ) = tokio::join!(
+        engine.config(&scope),
+        engine.skills(&scope),
+        engine.workflows(&scope),
+        engine.workspace_config(),
+        engine.provider_status(),
+        engine.agent_profiles(),
+        engine.ui_state(&scope),
+        engine.repo(&scope),
+    );
+    PrimeNewTaskSnapshot {
+        config: config.ok(),
+        skills: skills.ok(),
+        workflows: workflows.ok(),
+        workspace_config: workspace_config.ok(),
+        provider_status: provider_status.ok(),
+        agent_profiles: agent_profiles.ok(),
+        ui_state: ui_state.ok(),
+        repo: repo.ok().and_then(repo_info),
+    }
+}
+
+fn apply_task_list(app: &mut App, project: &str, runs: Vec<ApiRun>) {
+    if app.current_project() != project {
+        return;
+    }
+    app.set_tasks(runs);
+    app.set_quick_tasks(
+        app.tasks
+            .iter()
+            .map(|run| QuickTask::from_api(project.to_owned(), run.clone()))
+            .collect::<Vec<_>>(),
+    );
+}
+
+fn apply_started_run(
+    app: &mut App,
+    project: String,
+    result: Result<coducktor_contract::CreateRunResponse, coducktor_client::EngineError>,
+    starts_in_flight: &mut HashSet<String>,
+) {
+    match result {
+        Ok(response) => {
+            if let Some(id) = new_task_form::started_run_id(&response) {
+                let already_open = matches!(
+                    app.route(),
+                    app::Route::Thread {
+                        project: route_project,
+                        id: route_id,
+                    } if route_project == &project && route_id == &id
+                );
+                if !already_open {
+                    screens::thread::open(app, &project, &id);
+                }
+            }
+            screens::new_task::clear_draft(app);
+            app.pending.push(PendingAction::RefreshTasks {
+                project: project.clone(),
+            });
+            if matches!(app.route(), app::Route::GlobalTasks) {
+                app.pending.push(PendingAction::RefreshIndex);
+            }
+        }
+        Err(error) => {
+            starts_in_flight.remove(&project);
+            app.notice = Some(format!("start failed: {error}"));
+        }
+    }
+}
+
+fn drain_background_results(
+    receiver: &BackgroundReceiver<BackgroundResult>,
+    app: &mut App,
+    starts_in_flight: &mut HashSet<String>,
+) {
+    while let Ok(result) = receiver.try_recv() {
+        match result {
+            BackgroundResult::StartRun { project, result } => {
+                apply_started_run(app, project, result, starts_in_flight);
+            }
+            BackgroundResult::Github { project, result } => {
+                if app.github_ui.project != project {
+                    continue;
+                }
+                match result {
+                    Ok(data) => app.github_ui.data = Some(data),
+                    Err(error) => app.notice = Some(format!("load github failed: {error}")),
+                }
+            }
+            BackgroundResult::GithubComments {
+                project,
+                number,
+                result,
+            } => {
+                if !github_detail_matches(app, &project, number) {
+                    continue;
+                }
+                match result {
+                    Ok(comments) => app.github_ui.comments = Some(comments),
+                    Err(error) => app.notice = Some(format!("load comments failed: {error}")),
+                }
+            }
+            BackgroundResult::GithubMergeState {
+                project,
+                number,
+                result,
+            } => {
+                if !github_detail_matches(app, &project, number) {
+                    continue;
+                }
+                match result {
+                    Ok(state) => app.github_ui.merge_state = Some(state),
+                    Err(error) => app.notice = Some(format!("load merge state failed: {error}")),
+                }
+            }
+            BackgroundResult::GithubPrChanges {
+                project,
+                number,
+                result,
+            } => {
+                if !github_detail_matches(app, &project, number) {
+                    continue;
+                }
+                match result {
+                    Ok(changes) => app.github_ui.pr_changes = Some(changes),
+                    Err(error) => app.notice = Some(format!("load changes failed: {error}")),
+                }
+            }
+            BackgroundResult::GithubMerge {
+                project,
+                number,
+                result,
+            } => {
+                if app.github_ui.project != project {
+                    continue;
+                }
+                match result {
+                    Ok(response) => {
+                        app.notice = Some(format!("merged PR #{number} with {}", response.method));
+                        app.pending.push(PendingAction::LoadGithub { project });
+                    }
+                    Err(error) => app.notice = Some(format!("merge failed: {error}")),
+                }
+            }
+            BackgroundResult::LoadThread {
+                project,
+                id,
+                run,
+                history,
+            } => {
+                if !matches!(
+                    app.route(),
+                    app::Route::Thread {
+                        project: route_project,
+                        id: route_id,
+                    } if route_project == &project && route_id == &id
+                ) {
+                    continue;
+                }
+                match (run, history) {
+                    (Ok(run), Ok(history)) => {
+                        let events = history
+                            .events
+                            .into_iter()
+                            .map(thread_history_event)
+                            .collect();
+                        app.thread_ui
+                            .load(project, id, run, events, history.as_of_seq as f64);
+                    }
+                    (Err(error), _) | (_, Err(error)) => {
+                        app.notice = Some(format!("load task failed: {error}"));
+                    }
+                }
+            }
+            BackgroundResult::RefreshTasks { project, result } => match result {
+                Ok(runs) => apply_task_list(app, &project, runs),
+                Err(error) => app.notice = Some(format!("refresh tasks failed: {error}")),
+            },
+            BackgroundResult::RefreshIndex { result } => {
+                if let Ok(index) = result {
+                    app.set_global_index(index);
+                }
+            }
+            BackgroundResult::RefreshModels { runner, result } => match result {
+                Ok(catalog) => app.new_task_ui.data.model_catalog = Some(catalog),
+                Err(error) => {
+                    app.notice = Some(format!("{runner:?} model catalog failed: {error}"))
+                }
+            },
+            BackgroundResult::RefreshNewTask { project, snapshot } => {
+                if app.current_project() == project {
+                    apply_new_task_snapshot(app, snapshot);
+                }
+            }
+            BackgroundResult::LoadRepoGit { project, repo } => {
+                if app.repo_git_ui.project != project {
+                    continue;
+                }
+                match repo {
+                    Ok(repo) => app.repo_git_ui.repo = Some(repo),
+                    Err(error) => app.notice = Some(format!("load repo failed: {error}")),
+                }
+            }
+            BackgroundResult::LoadRepoGitChanges { project, changes } => {
+                if app.repo_git_ui.project != project {
+                    continue;
+                }
+                app.repo_git_ui.changes_loading = false;
+                if let Ok(changes) = changes {
+                    app.repo_git_ui.repo_changes_files = changes.files;
+                }
+            }
+            BackgroundResult::LoadRepoGitCommit { project, result } => {
+                if app.repo_git_ui.project != project {
+                    continue;
+                }
+                match result {
+                    Ok(commit) => app.repo_git_ui.commit_detail = Some(commit),
+                    Err(error) => app.notice = Some(format!("load commit failed: {error}")),
+                }
+            }
+            BackgroundResult::GithubHandToAgent { project, result } => {
+                if app.github_ui.project != project {
+                    continue;
+                }
+                match result {
+                    Ok(response) => {
+                        if let Some(id) = new_task_form::started_run_id(&response) {
+                            app.github_ui.queued = Some(id);
+                        }
+                        app.pending.push(PendingAction::RefreshTasks { project });
+                    }
+                    Err(error) => app.notice = Some(format!("start failed: {error}")),
+                }
+            }
+            BackgroundResult::SessionMutation {
+                action,
+                project,
+                id,
+                result,
+            } => {
+                if let Err(error) = result {
+                    let label = match action {
+                        SessionMutation::Send => "send",
+                        SessionMutation::Cancel => "cancel",
+                        SessionMutation::Continue => "continue",
+                        SessionMutation::Finish => "finish",
+                    };
+                    app.notice = Some(format!("{label} failed: {error}"));
+                }
+                app.pending.push(PendingAction::LoadThread { project, id });
+            }
+        }
+    }
+}
+
+fn github_detail_matches(app: &App, project: &str, number: u64) -> bool {
+    app.github_ui.project == project
+        && app
+            .github_ui
+            .detail_item
+            .as_ref()
+            .is_some_and(|item| item.number == number)
 }
 
 async fn refresh_project_registry(engine: &dyn Engine, app: &mut App) {
@@ -1157,17 +1726,21 @@ async fn refresh_new_task(engine: &dyn Engine, app: &mut App, project: &str) {
     if let Ok(ui_state) = engine.ui_state(&scope).await {
         app.new_task_ui.data.ui_state = Some(ui_state);
     }
+    app.new_task_ui.data.repo = engine.repo(&scope).await.ok().and_then(repo_info);
 }
 
 async fn open_workspace_listener(
     engine: Arc<dyn Engine>,
-    project: String,
+    _project: String,
 ) -> Option<(JoinHandle<()>, UnboundedReceiver<WorkspaceEvent>)> {
     let (sender, receiver) = unbounded_channel();
     let handle = tokio::spawn(async move {
         let mut events = engine.subscribe(Topic::Named("workspace".to_owned()));
         while let Some(event) = events.next().await {
-            if let Some(event) = parse_workspace_event(event, &project)
+            // Workspace notifications do not carry a project id. Resolve them at drain time so
+            // the listener remains valid when bootstrap or the project switcher changes the
+            // active project after this task was spawned.
+            if let Some(event) = parse_workspace_event(event, "")
                 && sender.send(event).is_err()
             {
                 return;
@@ -1196,6 +1769,7 @@ struct ThreadListener {
     id: String,
     handle: JoinHandle<()>,
     receiver: UnboundedReceiver<EngineEvent>,
+    pending_events: Vec<coducktor_contract::RunEvent>,
 }
 
 async fn open_run_listener(engine: Arc<dyn Engine>, project: String, id: String) -> ThreadListener {
@@ -1216,6 +1790,7 @@ async fn open_run_listener(engine: Arc<dyn Engine>, project: String, id: String)
         id,
         handle,
         receiver,
+        pending_events: Vec::new(),
     }
 }
 
@@ -1229,9 +1804,13 @@ async fn run(
     let mut workspace_events = workspace_events;
     let mut thread_listener: Option<ThreadListener> = None;
     let mut bootstrap: Option<(JoinHandle<()>, UnboundedReceiver<PrimeSnapshot>)> = None;
+    let (background_sender, background_receiver) = channel();
+    let background_handle = tokio::runtime::Handle::current();
+    let mut starts_in_flight = HashSet::new();
     let mut welcome = WelcomeAnimation::new();
     let mut last_needs_you = usize::MAX;
     let mut bootstrap_applied = false;
+    let mut terminal_tab_active = false;
     let mut launch_args_applied =
         cli.repo.is_none() && cli.workflow.is_none() && cli.model.is_none();
     while !app.should_quit() {
@@ -1275,9 +1854,25 @@ async fn run(
         {
             app.handle_event(mouse);
         }
+        for action in &app.pending {
+            if let PendingAction::StartRun { project, .. } = action {
+                starts_in_flight.insert(project.clone());
+            }
+        }
         if let Some(events) = workspace_events.as_deref_mut() {
             while let Ok(event) = events.try_recv() {
-                app.apply_workspace_event(event);
+                match event {
+                    WorkspaceEvent::Run { project: _, run } => {
+                        let project = app.current_project().to_owned();
+                        if starts_in_flight.remove(&project)
+                            && matches!(app.route(), app::Route::NewTask { .. })
+                        {
+                            screens::thread::open(app, &project, &run.record.id);
+                        }
+                        app.apply_workspace_event(WorkspaceEvent::Run { project, run });
+                    }
+                    other => app.apply_workspace_event(other),
+                }
             }
         }
         let desired_thread = match app.route() {
@@ -1298,20 +1893,52 @@ async fn run(
         }
         if let Some(listener) = thread_listener.as_mut() {
             while let Ok(event) = listener.receiver.try_recv() {
+                if event.data.get("type").and_then(serde_json::Value::as_str) != Some("run-event") {
+                    continue;
+                }
+                let Some(run_event) = event.data.get("event").cloned().and_then(|event| {
+                    serde_json::from_value::<coducktor_contract::RunEvent>(event).ok()
+                }) else {
+                    continue;
+                };
                 if app.thread_ui.data.project == listener.project
                     && app.thread_ui.data.run_id == listener.id
-                    && event.data.get("type").and_then(serde_json::Value::as_str)
-                        == Some("run-event")
-                    && let Some(run_event) = event.data.get("event").cloned()
-                    && let Ok(run_event) =
-                        serde_json::from_value::<coducktor_contract::RunEvent>(run_event)
                 {
                     app.thread_ui.push_event(run_event.seq, run_event);
+                } else if matches!(
+                    app.route(),
+                    app::Route::Thread { project, id }
+                        if project == &listener.project && id == &listener.id
+                ) {
+                    // The durable history read can race the first live events. Keep them until
+                    // `ThreadUi::load` establishes its sequence watermark, then fold them below.
+                    listener.pending_events.push(run_event);
                 }
             }
         }
+        drain_background_results(&background_receiver, app, &mut starts_in_flight);
+        // The embedded Terminal tab owns its shell in-app; bracketed paste is enabled
+        // only while the tab is active so every other screen's paste keeps arriving as
+        // ordinary key events.
+        let tab_active = screens::terminal::maintain(app);
+        if tab_active != terminal_tab_active {
+            terminal_tab_active = tab_active;
+            if tab_active {
+                crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste)?;
+            } else {
+                crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste)?;
+            }
+        }
+        if let Some(listener) = thread_listener.as_mut()
+            && app.thread_ui.data.project == listener.project
+            && app.thread_ui.data.run_id == listener.id
+        {
+            for event in std::mem::take(&mut listener.pending_events) {
+                app.thread_ui.push_event(event.seq, event);
+            }
+        }
         if !app.pending.is_empty() {
-            execute_pending(engine.as_ref(), app).await;
+            execute_pending(engine.clone(), app, &background_sender, &background_handle).await;
         }
         for (summary, body) in app.take_pending_notifications() {
             coducktor_tui::notify::notify(app.notifications_enabled, &summary, &body);
@@ -1616,6 +2243,7 @@ mod tests {
                     provider_status: None,
                     agent_profiles: None,
                     ui_state: None,
+                    repo: None,
                 },
             },
         );

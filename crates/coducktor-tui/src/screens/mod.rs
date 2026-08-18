@@ -9,5 +9,6 @@ pub mod settings;
 pub mod skills;
 pub mod task_git;
 pub mod tasks;
+pub mod terminal;
 pub mod thread;
 pub mod workflows;

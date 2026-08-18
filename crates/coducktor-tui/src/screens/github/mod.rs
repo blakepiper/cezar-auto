@@ -44,6 +44,7 @@ pub enum GithubDetailTab {
 pub enum GithubFocus {
     Tab,
     List,
+    Detail,
     SkillPicker,
 }
 
@@ -322,6 +323,11 @@ fn render_list(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         .title(match app.github_ui.tab {
             GithubTab::Issues => "Issues",
             GithubTab::Prs => "Pull requests",
+        })
+        .border_style(if app.screen_focus() == 0 {
+            Style::default().fg(app.theme.palette.accent)
+        } else {
+            Style::default().fg(app.theme.palette.border)
         });
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -797,15 +803,37 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             apply_hit(app, GithubAction::SwitchTab(next));
             true
         }
-        KeyCode::Char('j') | KeyCode::Down => {
+        KeyCode::Char('j') | KeyCode::Down if app.github_ui.focus != GithubFocus::Detail => {
             let count = items(&app.github_ui).len();
             if count > 0 {
                 app.github_ui.list_selected = (app.github_ui.list_selected + 1).min(count - 1);
             }
             true
         }
-        KeyCode::Char('k') | KeyCode::Up => {
+        KeyCode::Char('k') | KeyCode::Up if app.github_ui.focus != GithubFocus::Detail => {
             app.github_ui.list_selected = app.github_ui.list_selected.saturating_sub(1);
+            true
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            match app.github_ui.detail_tab {
+                GithubDetailTab::Thread => {
+                    app.github_ui.comments_scroll = app.github_ui.comments_scroll.saturating_add(1)
+                }
+                GithubDetailTab::Changes => {
+                    app.github_ui.changes_scroll = app.github_ui.changes_scroll.saturating_add(1)
+                }
+            }
+            true
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            match app.github_ui.detail_tab {
+                GithubDetailTab::Thread => {
+                    app.github_ui.comments_scroll = app.github_ui.comments_scroll.saturating_sub(1)
+                }
+                GithubDetailTab::Changes => {
+                    app.github_ui.changes_scroll = app.github_ui.changes_scroll.saturating_sub(1)
+                }
+            }
             true
         }
         KeyCode::Enter => {

@@ -528,6 +528,16 @@ impl CodexSession {
                         on_event(EventInput::new("text").field("text", text))
                             .map_err(|error| error.to_string())?;
                     }
+                } else if item_type.as_deref() == Some("reasoning") {
+                    if let Some(text) = item
+                        .get("text")
+                        .or_else(|| item.get("summary"))
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                    {
+                        on_event(EventInput::new("reasoning").field("text", text))
+                            .map_err(|error| error.to_string())?;
+                    }
                 } else if let Some(item_type) = item_type.as_deref()
                     && !NON_TOOL_ITEMS.contains(&item_type)
                     && !id.is_empty()

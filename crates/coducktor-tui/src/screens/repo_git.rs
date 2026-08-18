@@ -1,4 +1,4 @@
-//! The repo Git screen — Changes, Commits, and Branches over the main working tree.
+//! The repo Git screen — Commits, Changes, and Branches over the main working tree.
 
 use coducktor_contract::{LogEntry, RepoCommitPayload, RepoResponse};
 use crossterm::event::{KeyCode, KeyEvent};
@@ -20,6 +20,7 @@ pub struct RepoGitUi {
     /// The main working tree's structured diff, separate from repository status, log, and branch
     /// metadata.
     pub repo_changes_files: Vec<coducktor_contract::ChangedFile>,
+    pub changes_loading: bool,
     pub diff_state: DiffViewState,
     pub diff_scroll: usize,
     pub tree_selected: usize,
@@ -41,9 +42,10 @@ impl Default for RepoGitUi {
     fn default() -> Self {
         Self {
             project: String::new(),
-            tab: RepoGitTab::Changes,
+            tab: RepoGitTab::Commits,
             repo: None,
             repo_changes_files: Vec::new(),
+            changes_loading: false,
             diff_state: DiffViewState::default(),
             diff_scroll: 0,
             tree_selected: 0,
@@ -72,6 +74,7 @@ pub fn open(app: &mut App, project: &str, tab: RepoGitTab) {
         project: project.to_owned(),
         tab,
     });
+    app.repo_git_ui.changes_loading = matches!(tab, RepoGitTab::Changes | RepoGitTab::Branches);
     match tab {
         RepoGitTab::Changes | RepoGitTab::Branches => {
             app.pending.push(PendingAction::LoadRepoGit {
@@ -122,8 +125,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 
 fn render_tabs(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let tabs = [
-        (RepoGitTab::Changes, "Changes"),
         (RepoGitTab::Commits, "Commits"),
+        (RepoGitTab::Changes, "Changes"),
         (RepoGitTab::Branches, "Branches"),
     ];
     let mut spans = Vec::new();
@@ -170,7 +173,14 @@ fn render_changes(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     };
     if cols.len() == 2 {
         let rows = file_tree::build_rows(&files, &app.repo_git_ui.tree_collapsed);
-        let block = Block::default().borders(Borders::ALL).title("Files");
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title("Files")
+            .border_style(if app.screen_focus() == 0 {
+                Style::default().fg(app.theme.palette.accent)
+            } else {
+                Style::default().fg(app.theme.palette.border)
+            });
         let inner = block.inner(cols[0]);
         frame.render_widget(block, cols[0]);
         let selected = app
@@ -199,9 +209,24 @@ fn render_changes(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let Some(diff_area) = cols.last().copied() else {
         return;
     };
-    let block = Block::default().borders(Borders::ALL).title("Diff");
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Diff")
+        .border_style(if app.screen_focus() == 1 {
+            Style::default().fg(app.theme.palette.accent)
+        } else {
+            Style::default().fg(app.theme.palette.border)
+        });
     let inner = block.inner(diff_area);
     frame.render_widget(block, diff_area);
+    if app.repo_git_ui.changes_loading {
+        frame.render_widget(
+            Paragraph::new("Loading changes…")
+                .style(Style::default().fg(app.theme.palette.soft_fg)),
+            inner,
+        );
+        return;
+    }
     let (lines, _) = diff::render_files(
         &files,
         &app.repo_git_ui.diff_state,
@@ -222,7 +247,14 @@ fn render_commits(frame: &mut Frame<'_>, area: Rect, app: &mut App, log: &[LogEn
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(area.width.min(48)), Constraint::Min(1)])
         .split(area);
-    let block = Block::default().borders(Borders::ALL).title("Commits");
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Commits")
+        .border_style(if app.screen_focus() == 0 {
+            Style::default().fg(app.theme.palette.accent)
+        } else {
+            Style::default().fg(app.theme.palette.border)
+        });
     let inner = block.inner(cols[0]);
     frame.render_widget(block, cols[0]);
     let selected = app
@@ -261,7 +293,14 @@ fn render_commits(frame: &mut Frame<'_>, area: Rect, app: &mut App, log: &[LogEn
     }
     app.repo_git_ui.commits_selected = selected;
 
-    let detail_block = Block::default().borders(Borders::ALL).title("Commit diff");
+    let detail_block = Block::default()
+        .borders(Borders::ALL)
+        .title("Commit diff")
+        .border_style(if app.screen_focus() == 1 {
+            Style::default().fg(app.theme.palette.accent)
+        } else {
+            Style::default().fg(app.theme.palette.border)
+        });
     let detail_inner = detail_block.inner(cols[1]);
     frame.render_widget(detail_block, cols[1]);
     if let Some(commit) = app.repo_git_ui.commit_detail.clone() {
@@ -363,17 +402,17 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
     match key.code {
-        KeyCode::Char('[') | KeyCode::Char(']') => {
+        KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('[') | KeyCode::Char(']') => {
             let order = [
-                RepoGitTab::Changes,
                 RepoGitTab::Commits,
+                RepoGitTab::Changes,
                 RepoGitTab::Branches,
             ];
             let current = order
                 .iter()
                 .position(|tab| *tab == app.repo_git_ui.tab)
                 .unwrap_or(0);
-            let delta = if key.code == KeyCode::Char('[') {
+            let delta = if matches!(key.code, KeyCode::BackTab | KeyCode::Char('[')) {
                 -1
             } else {
                 1
@@ -393,14 +432,40 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         KeyCode::Char('j') | KeyCode::Down => {
-            move_selection(app, 1);
+            if app.screen_focus() == 1 {
+                match app.repo_git_ui.tab {
+                    RepoGitTab::Changes => {
+                        app.repo_git_ui.diff_scroll = app.repo_git_ui.diff_scroll.saturating_add(1)
+                    }
+                    RepoGitTab::Commits => {
+                        app.repo_git_ui.commit_diff_scroll =
+                            app.repo_git_ui.commit_diff_scroll.saturating_add(1)
+                    }
+                    RepoGitTab::Branches => {}
+                }
+            } else {
+                move_selection(app, 1);
+            }
             true
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            move_selection(app, -1);
+            if app.screen_focus() == 1 {
+                match app.repo_git_ui.tab {
+                    RepoGitTab::Changes => {
+                        app.repo_git_ui.diff_scroll = app.repo_git_ui.diff_scroll.saturating_sub(1)
+                    }
+                    RepoGitTab::Commits => {
+                        app.repo_git_ui.commit_diff_scroll =
+                            app.repo_git_ui.commit_diff_scroll.saturating_sub(1)
+                    }
+                    RepoGitTab::Branches => {}
+                }
+            } else {
+                move_selection(app, -1);
+            }
             true
         }
-        KeyCode::Enter if app.repo_git_ui.tab == RepoGitTab::Commits => {
+        KeyCode::Enter if app.repo_git_ui.tab == RepoGitTab::Commits && app.screen_focus() == 0 => {
             apply_hit(
                 app,
                 RepoGitAction::SelectCommit(app.repo_git_ui.commits_selected),

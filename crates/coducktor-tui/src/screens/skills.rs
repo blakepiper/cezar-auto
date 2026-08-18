@@ -124,7 +124,14 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 }
 
 fn render_list(frame: &mut Frame<'_>, area: Rect, app: &mut App, visible_indices: &[usize]) {
-    let block = Block::default().borders(Borders::ALL).title("Skills");
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Skills")
+        .border_style(if app.screen_focus() == 0 {
+            Style::default().fg(app.theme.palette.accent)
+        } else {
+            Style::default().fg(app.theme.palette.border)
+        });
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let selected_position = visible_indices
@@ -138,7 +145,7 @@ fn render_list(frame: &mut Frame<'_>, area: Rect, app: &mut App, visible_indices
         .map(|(position, index)| {
             let skill = &app.skills_ui.skills[*index];
             let mut style = Style::default().fg(app.theme.palette.fg);
-            if position == selected_position {
+            if position == selected_position && app.screen_focus() == 0 {
                 style = style.add_modifier(Modifier::REVERSED);
             }
             Line::from(vec![
@@ -186,11 +193,14 @@ fn render_detail(frame: &mut Frame<'_>, area: Rect, app: &mut App, visible_indic
         );
         return;
     };
-    let block = Block::default().borders(Borders::ALL).title(format!(
-        "{}  [{}]",
-        skill.name,
-        source_badge(skill.source)
-    ));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!("{}  [{}]", skill.name, source_badge(skill.source)))
+        .border_style(if app.screen_focus() == 1 {
+            Style::default().fg(app.theme.palette.accent)
+        } else {
+            Style::default().fg(app.theme.palette.border)
+        });
     let inner = block.inner(area);
     frame.render_widget(block, area);
     // Description pinned above the body — two rows when present, body fills the rest.
@@ -244,7 +254,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             app.skills_ui.query.clear();
             true
         }
-        KeyCode::Char('j') | KeyCode::Down => {
+        KeyCode::Char('j') | KeyCode::Down if app.screen_focus() == 0 => {
             let visible_indices = visible(app);
             if !visible_indices.is_empty() {
                 let position = visible_indices
@@ -256,7 +266,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             }
             true
         }
-        KeyCode::Char('k') | KeyCode::Up => {
+        KeyCode::Char('k') | KeyCode::Up if app.screen_focus() == 0 => {
             let visible_indices = visible(app);
             if !visible_indices.is_empty() {
                 let position = visible_indices

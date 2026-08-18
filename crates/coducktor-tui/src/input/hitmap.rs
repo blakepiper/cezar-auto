@@ -87,6 +87,7 @@ pub enum HitAction {
     GlobalTasks,
     NewTask,
     Ide,
+    Terminal,
     RepoGit,
     Github,
     Skills,
