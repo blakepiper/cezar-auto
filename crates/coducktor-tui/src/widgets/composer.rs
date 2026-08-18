@@ -694,6 +694,13 @@ impl Composer {
                             .fg(theme.palette.bg)
                             .bg(theme.palette.accent),
                     ),
+                    Span::raw(
+                        chars
+                            .get(caret_col.saturating_add(1)..)
+                            .unwrap_or_default()
+                            .iter()
+                            .collect::<String>(),
+                    ),
                 ];
             }
             frame.render_widget(
@@ -1141,5 +1148,30 @@ mod tests {
         terminal
             .draw(|frame| composer.render(frame, frame.area(), Theme::detect(), &mut hitmap, 1))
             .unwrap();
+    }
+
+    #[test]
+    fn rendering_after_moving_the_caret_clears_the_old_caret_cell() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let theme = Theme::detect();
+        let mut composer = Composer::default();
+        composer.focus();
+        composer.set_text("abc");
+        let mut hitmap = HitMap::default();
+        let mut terminal = Terminal::new(TestBackend::new(12, 6)).unwrap();
+
+        terminal
+            .draw(|frame| composer.render(frame, frame.area(), theme, &mut hitmap, 1))
+            .unwrap();
+        composer.caret = 1;
+        terminal
+            .draw(|frame| composer.render(frame, frame.area(), theme, &mut hitmap, 1))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(4, 1)].symbol(), "c");
+        assert_ne!(buffer[(4, 1)].bg, theme.palette.accent);
     }
 }
