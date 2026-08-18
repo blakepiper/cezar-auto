@@ -600,6 +600,23 @@ async fn execute_pending(
                     }
                 }
             }
+            PendingAction::ClearScratchpad { project } => {
+                let scope = Scope::Project(project.clone());
+                let input = coducktor_contract::SetScratchpadInput {
+                    content: String::new(),
+                };
+                match engine.put_scratchpad(&scope, &input).await {
+                    Ok(_) if app.scratchpad_ui.project == project => {
+                        app.scratchpad_ui.loaded = true;
+                        app.scratchpad_ui.saving = false;
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        app.scratchpad_ui.saving = false;
+                        app.notice = Some(format!("clear scratchpad failed: {error}"));
+                    }
+                }
+            }
             PendingAction::SaveScratchpad { project, content } => {
                 let scope = Scope::Project(project.clone());
                 let input = coducktor_contract::SetScratchpadInput { content };

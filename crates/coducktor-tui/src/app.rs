@@ -418,18 +418,20 @@ enum CommandId {
     Forward,
     Theme,
     New,
+    ClearScratchpad,
     Help,
     Sidebar,
     Quit,
 }
 
 impl CommandId {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::Open,
         Self::Back,
         Self::Forward,
         Self::Theme,
         Self::New,
+        Self::ClearScratchpad,
         Self::Help,
         Self::Sidebar,
         Self::Quit,
@@ -442,6 +444,7 @@ impl CommandId {
             "forward" => Some(Self::Forward),
             "theme" => Some(Self::Theme),
             "new" => Some(Self::New),
+            "clear-scratchpad" => Some(Self::ClearScratchpad),
             "help" => Some(Self::Help),
             "sidebar" => Some(Self::Sidebar),
             "quit" => Some(Self::Quit),
@@ -456,6 +459,7 @@ impl CommandId {
             Self::Forward => ":forward",
             Self::Theme => ":theme <light|dark|lazyvim>",
             Self::New => ":new",
+            Self::ClearScratchpad => ":clear-scratchpad",
             Self::Help => ":help",
             Self::Sidebar => ":sidebar",
             Self::Quit => ":quit",
@@ -469,6 +473,7 @@ impl CommandId {
             Self::Forward => "go forward",
             Self::Theme => "switch theme",
             Self::New => "new task",
+            Self::ClearScratchpad => "clear the current scratchpad",
             Self::Help => "open this help",
             Self::Sidebar => "toggle sidebar",
             Self::Quit => "quit",
@@ -661,6 +666,10 @@ pub enum PendingAction {
         project: String,
     },
     LoadScratchpad {
+        project: String,
+    },
+    /// Clear the current scratchpad after the user confirms the destructive action.
+    ClearScratchpad {
         project: String,
     },
     SaveScratchpad {
@@ -2513,9 +2522,12 @@ impl App {
                     self.thread_ui.cancel_pending = true;
                 }
                 match action {
-                    // Quit and the IDE-discard resolutions are app-local state changes,
+                    // Quit, scratchpad clearing, and IDE-discard resolutions are app-local state changes,
                     // resolved here; everything else waits for main's engine.
                     PendingAction::Quit => self.quit = true,
+                    PendingAction::ClearScratchpad { project } => {
+                        crate::screens::scratchpad::clear_after_confirmation(self, &project);
+                    }
                     PendingAction::IdeDiscardThenNavigate(route) => {
                         self.ide_ui.discard();
                         self.navigate_route(*route);
@@ -2635,6 +2647,7 @@ impl App {
                 }
             }
             CommandId::New => self.navigate(NavItem::NewTask),
+            CommandId::ClearScratchpad => crate::screens::scratchpad::request_clear(self),
             CommandId::Help => self.help_open = true,
             CommandId::Sidebar => self.toggle_sidebar(),
             CommandId::Quit => self.request_quit(),
@@ -3167,7 +3180,10 @@ impl App {
                 ("COMPOSER", "type prompt · Ctrl+← returns to sidebar")
             }
             Route::NewTask { .. } => ("NEW TASK", "i edit prompt · Ctrl+← sidebar"),
-            Route::Scratchpad { .. } => ("SCRATCHPAD", "type notes · saved locally"),
+            Route::Scratchpad { .. } => (
+                "SCRATCHPAD",
+                "type notes · Shift+arrows select · Ctrl+K clear",
+            ),
             Route::Ide { .. } if self.current_screen_pane() == 0 => {
                 ("FILE TREE", "↑↓ choose file · Enter open")
             }

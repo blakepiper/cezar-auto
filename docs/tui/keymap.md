@@ -59,6 +59,7 @@ an action opened from Tasks rather than a separate tab.
 | `:forward` | Same as `Ctrl+I` |
 | `:theme <light\|dark\|lazyvim>` | Switch theme |
 | `:new` | Same as `c` |
+| `:clear-scratchpad` | Clear the current scratchpad after confirmation |
 | `:help` | Same as `?` |
 | `:sidebar` | Toggle sidebar |
 | `:quit` | Same as `q` |
@@ -116,7 +117,13 @@ The Scratchpad is a free-form editor that saves after every edit. Notes live und
 | Key | Action |
 |---|---|
 | text / editing keys | Edit the project note and save locally |
+| `Shift` + arrow keys | Select text; selection can span lines |
+| `Ctrl+A` | Select the entire scratchpad |
+| `Backspace` / `Delete` | Delete the selection, or edit at the caret |
+| `Ctrl+C` / `Ctrl+X` | Copy / cut the selection |
+| `Ctrl+V` | Paste text from the clipboard |
 | `Ctrl+S` | Save immediately |
+| `Ctrl+K` | Clear the scratchpad after confirmation |
 | `Ctrl+Left` | Return focus to the sidebar |
 
 ### Task thread (`screens/thread/mod.rs`)

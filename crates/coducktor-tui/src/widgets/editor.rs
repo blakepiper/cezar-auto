@@ -18,6 +18,12 @@ use crate::theme::Theme;
 /// IDE's 1 MB file cap and keeps the layout computation bounded.
 const MAX_GUTTER_DIGITS: usize = 6;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Position {
+    row: usize,
+    col: usize,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Editor {
     pub text: String,
@@ -30,6 +36,7 @@ pub struct Editor {
     /// Column memory for vertical movement (vi-style): set on the first up/down and kept
     /// until any horizontal movement or edit, so a zigzag down a ragged column stays put.
     pub preferred_col: Option<usize>,
+    selection_anchor: Option<Position>,
 }
 
 impl Editor {
@@ -39,6 +46,7 @@ impl Editor {
         self.col = 0;
         self.scroll = 0;
         self.preferred_col = None;
+        self.selection_anchor = None;
     }
 
     pub fn line_count(&self) -> usize {
@@ -56,7 +64,116 @@ impl Editor {
         self.row = self.row.min(lines.saturating_sub(1));
         let row_len = self.line(self.row).chars().count();
         self.col = self.col.min(row_len);
+        if let Some(anchor) = self.selection_anchor {
+            let row = anchor.row.min(lines.saturating_sub(1));
+            let col = anchor.col.min(self.line(row).chars().count());
+            self.selection_anchor = Some(Position { row, col });
+        }
         self.ensure_caret_visible(usize::MAX);
+    }
+
+    /// Start extending a selection from the current caret, if one is not already active.
+    pub fn begin_selection(&mut self) {
+        self.selection_anchor.get_or_insert(Position {
+            row: self.row,
+            col: self.col,
+        });
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selection_anchor = None;
+    }
+
+    pub fn select_all(&mut self) {
+        self.selection_anchor = Some(Position { row: 0, col: 0 });
+        self.row = self.line_count().saturating_sub(1);
+        self.col = self.line(self.row).chars().count();
+        self.preferred_col = None;
+    }
+
+    pub fn has_selection(&self) -> bool {
+        self.selection_range().is_some()
+    }
+
+    /// Return the selected text exactly as it appears in the editor, including newlines.
+    pub fn selected_text(&self) -> Option<String> {
+        let (start, end) = self.selection_offsets()?;
+        Some(self.text.chars().skip(start).take(end - start).collect())
+    }
+
+    /// Remove the selected text and place the caret at its beginning.
+    pub fn delete_selection(&mut self) -> bool {
+        let Some((start, end)) = self.selection_range() else {
+            return false;
+        };
+        let start_byte = self.byte_offset(self.position_offset(start));
+        let end_byte = self.byte_offset(self.position_offset(end));
+        self.text.replace_range(start_byte..end_byte, "");
+        self.row = start.row;
+        self.col = start.col;
+        self.preferred_col = None;
+        self.selection_anchor = None;
+        true
+    }
+
+    /// Insert text at the caret, replacing an active selection when present.
+    pub fn insert_text(&mut self, text: &str) {
+        self.delete_selection();
+        for character in text.chars() {
+            if character == '\n' {
+                self.insert_newline();
+            } else {
+                self.insert_char(character);
+            }
+        }
+        self.selection_anchor = None;
+    }
+
+    fn selection_range(&self) -> Option<(Position, Position)> {
+        let anchor = self.selection_anchor?;
+        let caret = Position {
+            row: self.row,
+            col: self.col,
+        };
+        if anchor == caret {
+            return None;
+        }
+        Some(if anchor < caret {
+            (anchor, caret)
+        } else {
+            (caret, anchor)
+        })
+    }
+
+    fn selection_offsets(&self) -> Option<(usize, usize)> {
+        let (start, end) = self.selection_range()?;
+        Some((self.position_offset(start), self.position_offset(end)))
+    }
+
+    fn position_offset(&self, position: Position) -> usize {
+        (0..position.row)
+            .map(|row| self.line(row).chars().count() + 1)
+            .sum::<usize>()
+            + position.col
+    }
+
+    fn byte_offset(&self, char_offset: usize) -> usize {
+        self.text
+            .char_indices()
+            .nth(char_offset)
+            .map(|(byte, _)| byte)
+            .unwrap_or(self.text.len())
+    }
+
+    fn selection_on_line(&self, row: usize) -> Option<(usize, usize)> {
+        let (start, end) = self.selection_range()?;
+        if row < start.row || row > end.row {
+            return None;
+        }
+        let line_len = self.line(row).chars().count();
+        let from = if row == start.row { start.col } else { 0 };
+        let to = if row == end.row { end.col } else { line_len };
+        (from < to).then_some((from, to))
     }
 
     /// Keep the caret row inside `[scroll, scroll + viewport)`.
@@ -234,41 +351,29 @@ impl Editor {
         start: usize,
         end: usize,
         caret: Option<usize>,
+        selection: Option<(usize, usize)>,
     ) -> Vec<Span<'static>> {
         let mut spans = Vec::new();
         let mut push_segment = |text: String, absolute_start: usize, color: Option<Color>| {
             if text.is_empty() {
                 return;
             }
-            let text_len = text.chars().count();
-            if let Some(caret) = caret
-                && caret >= absolute_start
-                && caret < absolute_start + text_len
-            {
-                let before: String = text.chars().take(caret - absolute_start).collect();
-                let caret_char = text
-                    .chars()
-                    .nth(caret - absolute_start)
-                    .unwrap_or(' ')
-                    .to_string();
-                let after: String = text.chars().skip(caret - absolute_start + 1).collect();
-                if !before.is_empty() {
-                    spans.push(match color {
-                        Some(color) => Span::styled(before, Style::default().fg(color)),
-                        None => Span::raw(before),
-                    });
+            for (offset, character) in text.chars().enumerate() {
+                let absolute = absolute_start + offset;
+                let is_caret = caret == Some(absolute);
+                let is_selected = selection.is_some_and(|(selection_start, selection_end)| {
+                    absolute >= selection_start && absolute < selection_end
+                });
+                let mut style = color
+                    .map(|color| Style::default().fg(color))
+                    .unwrap_or_default();
+                if is_caret || is_selected {
+                    style = style.add_modifier(Modifier::REVERSED);
                 }
-                spans.push(Self::caret_span(color, caret_char));
-                if !after.is_empty() {
-                    spans.push(match color {
-                        Some(color) => Span::styled(after, Style::default().fg(color)),
-                        None => Span::raw(after),
-                    });
-                }
-            } else {
-                spans.push(match color {
-                    Some(color) => Span::styled(text, Style::default().fg(color)),
-                    None => Span::raw(text),
+                spans.push(if color.is_some() || is_caret || is_selected {
+                    Span::styled(character.to_string(), style)
+                } else {
+                    Span::raw(character.to_string())
                 });
             }
         };
@@ -336,12 +441,14 @@ impl Editor {
         let content_len = content.chars().count();
         let start = horizontal_scroll.min(content_len);
         let caret = (focused && index == self.row).then_some(self.col.min(content_len));
+        let selection = self.selection_on_line(index);
         spans.extend(Self::content_spans(
             content,
             span,
             start,
             content_len,
             caret,
+            selection,
         ));
         Line::from(spans)
     }
@@ -457,12 +564,14 @@ impl Editor {
                     .and_then(|all| all.get(index))
                     .map(|runs| runs.as_slice());
                 let caret = (focused && index == caret_line).then_some(caret_col);
+                let selection = self.selection_on_line(index);
                 spans.extend(Self::content_spans(
                     line,
                     highlighted_line,
                     start,
                     end,
                     caret,
+                    selection,
                 ));
                 Line::from(spans)
             })

@@ -44,6 +44,21 @@ pub fn read() -> Result<ClipboardContent, String> {
     }
 }
 
+/// Write plain text to the native clipboard.
+#[cfg(not(target_os = "android"))]
+pub fn write_text(text: &str) -> Result<(), String> {
+    let mut clipboard =
+        arboard::Clipboard::new().map_err(|error| format!("clipboard unavailable: {error}"))?;
+    clipboard
+        .set_text(text.to_owned())
+        .map_err(|error| format!("could not copy text to clipboard: {error}"))
+}
+
+#[cfg(target_os = "android")]
+pub fn write_text(_text: &str) -> Result<(), String> {
+    Err("clipboard copy is unsupported on Android".to_owned())
+}
+
 #[cfg(not(target_os = "android"))]
 fn encode_dynamic_image(image: image::DynamicImage) -> Result<ClipboardContent, String> {
     let mut png = Vec::new();
