@@ -730,10 +730,16 @@ async fn execute_pending(
                     },
                 );
             }
-            PendingAction::ContinueRun { project, id, text } => {
+            PendingAction::ContinueRun {
+                project,
+                id,
+                text,
+                images,
+            } => {
                 let scope = Scope::Project(project.clone());
                 let input = coducktor_contract::ContinueInput {
                     text,
+                    images,
                     ..coducktor_contract::ContinueInput::default()
                 };
                 let engine_for_task = engine.clone();
@@ -1419,6 +1425,7 @@ fn apply_started_run(
         Ok(response) => {
             starts_in_flight.remove(&project);
             app.pending_start_drafts.remove(&project);
+            app.pending_start_composers.remove(&project);
             if let Some(id) = new_task_form::started_run_id(&response) {
                 let already_open = matches!(
                     app.route(),

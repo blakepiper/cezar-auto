@@ -13,7 +13,7 @@ pub mod projection;
 pub mod reducer;
 mod widgets;
 
-use coducktor_contract::{ApiRun, MessageInput, RunEvent, RunStatus};
+use coducktor_contract::{ApiRun, ImageInput, MessageInput, RunEvent, RunStatus};
 use coducktor_protocol::UiItem;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
@@ -103,6 +103,7 @@ pub struct ThreadUi {
     pub steps_collapsed: bool,
     pub focus: ThreadFocus,
     pub pending_prompt: Option<String>,
+    pending_composer: Option<crate::widgets::composer::Composer>,
     pub delivery_error: bool,
     pub project_root: Option<PathBuf>,
 }
@@ -122,6 +123,7 @@ impl Default for ThreadUi {
             steps_collapsed: true,
             focus: ThreadFocus::Transcript,
             pending_prompt: None,
+            pending_composer: None,
             delivery_error: false,
             project_root: None,
         }
@@ -160,12 +162,21 @@ impl ThreadUi {
         self.focus = ThreadFocus::Transcript;
         if !same_thread {
             self.pending_prompt = None;
+            self.pending_composer = None;
         }
         self.rebuild();
     }
 
     pub fn set_pending_prompt(&mut self, text: String) {
         self.pending_prompt = Some(text);
+        self.pending_composer = None;
+        self.delivery_error = false;
+        self.rebuild();
+    }
+
+    fn set_pending_composer(&mut self, text: String) {
+        self.pending_prompt = Some(text);
+        self.pending_composer = Some(self.composer.clone());
         self.delivery_error = false;
         self.rebuild();
     }
@@ -178,6 +189,7 @@ impl ThreadUi {
     pub fn resolve_pending_prompt(&mut self, project: &str, run_id: &str) {
         if self.data.project == project && self.data.run_id == run_id {
             self.pending_prompt = None;
+            self.pending_composer = None;
             self.delivery_error = false;
             self.rebuild();
         }
@@ -187,7 +199,11 @@ impl ThreadUi {
         if self.data.project != project || self.data.run_id != run_id {
             return;
         }
-        if let Some(text) = &self.pending_prompt {
+        if let Some(composer) = self.pending_composer.take() {
+            self.composer = composer;
+            self.composer.focus();
+            self.focus = ThreadFocus::Composer;
+        } else if let Some(text) = &self.pending_prompt {
             self.composer.set_text(text);
             self.composer.focus();
             self.focus = ThreadFocus::Composer;
@@ -218,6 +234,7 @@ impl ThreadUi {
         self.data.older_error = None;
         self.transcript = Transcript::new();
         self.pending_prompt = None;
+        self.pending_composer = None;
         self.delivery_error = false;
     }
 
@@ -821,26 +838,52 @@ fn handle_composer_key(app: &mut App, key: KeyEvent) -> bool {
         app.thread_ui.focus = ThreadFocus::Transcript;
         return true;
     }
+    if is_clipboard_paste_key(key) {
+        return handle_clipboard_paste(app);
+    }
     let ctx = crate::widgets::composer::ComposerContext {
         skills: &[],
         skill_usage: None,
         mention_candidates: &[],
     };
     let event = app.thread_ui.composer.handle_key(key, &ctx);
-    if let crate::widgets::composer::ComposerEvent::Submit { text } = event {
-        let delivered = if !text.is_empty() {
-            submit_composer(app, text)
+    if let crate::widgets::composer::ComposerEvent::Submit { .. } = event {
+        let text = app.thread_ui.composer.submission_text();
+        let images = app.thread_ui.composer.image_inputs();
+        let delivered = if !text.is_empty() || !images.is_empty() {
+            submit_composer(app, text, images)
         } else {
             false
         };
         if delivered {
-            app.thread_ui.composer.set_text("");
+            app.thread_ui.composer.clear_content();
         }
     }
     true
 }
 
-fn submit_composer(app: &mut App, text: String) -> bool {
+fn is_clipboard_paste_key(key: KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char(character) if character.eq_ignore_ascii_case(&'v'))
+        && key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+}
+
+fn handle_clipboard_paste(app: &mut App) -> bool {
+    match crate::clipboard::read() {
+        Ok(crate::clipboard::ClipboardContent::ImagePng(png)) => {
+            app.thread_ui.composer.attach_clipboard_image(png);
+            true
+        }
+        Ok(crate::clipboard::ClipboardContent::Text(text)) => handle_paste(app, &text),
+        Err(error) => {
+            app.notice = Some(format!("Could not paste: {error}"));
+            true
+        }
+    }
+}
+
+fn submit_composer(app: &mut App, text: String, images: Vec<ImageInput>) -> bool {
     if app.thread_ui.pending_prompt.is_some() {
         app.notice = Some("a message is already being delivered".to_owned());
         return false;
@@ -850,23 +893,30 @@ fn submit_composer(app: &mut App, text: String) -> bool {
     };
     let project = app.thread_ui.data.project.clone();
     let id = app.thread_ui.data.run_id.clone();
+    let images = (!images.is_empty()).then_some(images);
+    let pending_label = if text.is_empty() {
+        "[Image]".to_owned()
+    } else {
+        text.clone()
+    };
     if is_run_active(run.record.status) {
-        app.thread_ui.set_pending_prompt(text.clone());
+        app.thread_ui.set_pending_composer(pending_label);
         app.pending.push(PendingAction::SendMessage {
             project,
             id,
             input: MessageInput {
                 text: Some(text),
-                images: None,
+                images,
             },
         });
         true
     } else if last_session_id(&run.record).is_some() {
-        app.thread_ui.set_pending_prompt(text.clone());
+        app.thread_ui.set_pending_composer(pending_label);
         app.pending.push(PendingAction::ContinueRun {
             project,
             id,
             text: Some(text),
+            images,
         });
         true
     } else {
@@ -1001,6 +1051,7 @@ fn send_ask_answer(app: &mut App, ask: &ThreadAsk) {
             project,
             id,
             text: Some(text),
+            images: None,
         }),
         actions::DeliveryMode::Unavailable => {
             app.notice = Some(
@@ -1074,6 +1125,7 @@ fn apply_action(app: &mut App, action: ThreadAction) {
             project,
             id,
             text: None,
+            images: None,
         }),
         ThreadAction::Terminal => app.pending.push(PendingAction::OpenInCli { project, id }),
         ThreadAction::Archive => app.pending.push(PendingAction::Archive {
@@ -1108,6 +1160,7 @@ fn apply_action(app: &mut App, action: ThreadAction) {
                 project,
                 id,
                 text: Some(format!("Review feedback:\n{notes}")),
+                images: None,
             });
             app.thread_ui.review_notes.clear();
         }
@@ -1323,6 +1376,7 @@ mod tests {
                 project: "main".to_owned(),
                 id: "run-1".to_owned(),
                 text: Some("Review feedback:\nplease add a test".to_owned()),
+                images: None,
             }]
         );
         assert!(
@@ -1490,5 +1544,30 @@ mod tests {
         app.handle_event(crossterm::event::Event::Paste("first\nsecond".to_owned()));
 
         assert_eq!(app.thread_ui.composer.text, "first\nsecond");
+    }
+
+    #[test]
+    fn large_text_and_clipboard_image_are_delivered_and_restored_on_failure() {
+        let mut app = app_with_run(RunStatus::Running);
+        app.thread_ui.focus = ThreadFocus::Composer;
+        app.thread_ui.composer.focus();
+        let pasted = "x".repeat(crate::widgets::composer::LARGE_PASTE_CHAR_THRESHOLD + 1);
+        handle_paste(&mut app, &pasted);
+        app.thread_ui.composer.attach_clipboard_image(vec![1, 2, 3]);
+
+        handle_composer_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let Some(PendingAction::SendMessage { input, .. }) = app.pending.first() else {
+            panic!("a message is queued");
+        };
+        assert_eq!(input.text.as_deref(), Some(pasted.as_str()));
+        assert_eq!(input.images.as_ref().map(Vec::len), Some(1));
+        assert!(app.thread_ui.composer.text.is_empty());
+
+        app.thread_ui.restore_pending_prompt("main", "run-1");
+        assert!(app.thread_ui.composer.text.contains("[Pasted Content "));
+        assert!(app.thread_ui.composer.text.contains("[Image #1]"));
+        assert_eq!(app.thread_ui.composer.submission_text(), pasted);
+        assert_eq!(app.thread_ui.composer.image_inputs().len(), 1);
     }
 }

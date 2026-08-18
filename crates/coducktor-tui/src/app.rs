@@ -638,6 +638,7 @@ pub enum PendingAction {
         project: String,
         id: String,
         text: Option<String>,
+        images: Option<Vec<coducktor_contract::ImageInput>>,
     },
     FinishRun {
         project: String,
@@ -961,8 +962,12 @@ pub struct App {
     /// Per-project New Task drafts, keyed by project id. Survives navigation and
     /// project switching for the lifetime of the cockpit (a TUI has no reload).
     pub new_task_drafts: BTreeMap<String, crate::new_task_form::NewTaskDraft>,
+    /// Per-project full composer state, including clipboard payloads that are not in draft text.
+    pub new_task_composers: BTreeMap<String, crate::widgets::composer::Composer>,
     /// Drafts captured at submit time, restored if the scoped start fails after navigation.
     pub pending_start_drafts: BTreeMap<String, crate::new_task_form::NewTaskDraft>,
+    /// Full composer snapshots retain clipboard image bytes and compact large-paste payloads.
+    pub pending_start_composers: BTreeMap<String, crate::widgets::composer::Composer>,
     pub thread_ui: crate::screens::thread::ThreadUi,
     pub task_git_ui: crate::screens::task_git::TaskGitUi,
     pub repo_git_ui: crate::screens::repo_git::RepoGitUi,
@@ -1042,7 +1047,9 @@ impl App {
             new_task_ui: crate::screens::new_task::NewTaskUi::default(),
             scratchpad_ui: crate::screens::scratchpad::ScratchpadUi::default(),
             new_task_drafts: BTreeMap::new(),
+            new_task_composers: BTreeMap::new(),
             pending_start_drafts: BTreeMap::new(),
+            pending_start_composers: BTreeMap::new(),
             thread_ui: crate::screens::thread::ThreadUi::default(),
             task_git_ui: crate::screens::task_git::TaskGitUi::default(),
             repo_git_ui: crate::screens::repo_git::RepoGitUi::default(),

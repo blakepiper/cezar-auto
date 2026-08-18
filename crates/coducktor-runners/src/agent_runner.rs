@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use coducktor_contract::ConcreteReasoningEffort;
+use coducktor_core::workflows::run::PromptImage;
 use serde::{Deserialize, Serialize};
 
 /// Everything one agent-CLI backend needs to spawn and drive a session.
@@ -72,6 +73,25 @@ pub struct ImageSource {
     pub kind: String,
     pub media_type: String,
     pub data: String,
+}
+
+pub fn prompt_content(prompt: &str, images: &[PromptImage]) -> Vec<ContentBlock> {
+    let mut content = images
+        .iter()
+        .map(|image| ContentBlock::Image {
+            source: ImageSource {
+                kind: "base64".to_owned(),
+                media_type: image.media_type.clone(),
+                data: image.data.clone(),
+            },
+        })
+        .collect::<Vec<_>>();
+    if !prompt.is_empty() {
+        content.push(ContentBlock::Text {
+            text: prompt.to_owned(),
+        });
+    }
+    content
 }
 
 /// Backends without a dedicated system-prompt channel (codex app-server, opencode serve)

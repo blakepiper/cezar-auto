@@ -7,11 +7,10 @@
 //! `branch: <branch> ▾` · `worktree: on ▾` · `mode: autonomous ▾` — then the send hint.
 
 use coducktor_contract::{
-    ImageInput, ProviderStatusResponse, ReasoningEffort, RepoInfo, Runner,
-    RunnerModelCatalogResponse, RunnerSelection, Skill, TaskSource, UiState, WorkflowDef,
-    WorkspaceConfigResponse,
+    ProviderStatusResponse, ReasoningEffort, RepoInfo, Runner, RunnerModelCatalogResponse,
+    RunnerSelection, Skill, TaskSource, UiState, WorkflowDef, WorkspaceConfigResponse,
 };
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -24,7 +23,7 @@ use crate::new_task_form::{
     self, ComposerConfig, CreateRunBodyOpts, ModelPreset, NewTaskDraft, ReasoningOption,
 };
 use crate::theme::Theme;
-use crate::widgets::composer::{Attachment, Composer, ComposerContext, ComposerEvent};
+use crate::widgets::composer::{Composer, ComposerContext, ComposerEvent};
 use crate::widgets::picker::{Picker, PickerEvent, PickerItem};
 
 /// The pills on the composer's second row, in focus order.
@@ -308,7 +307,12 @@ fn sync_draft(app: &mut App) {
             .get(&project)
             .cloned()
             .unwrap_or_default();
-        app.new_task_ui.composer.set_text(&draft.text);
+        if let Some(composer) = app.new_task_composers.get(&project).cloned() {
+            app.new_task_ui.composer = composer;
+        } else {
+            app.new_task_ui.composer = Composer::default();
+            app.new_task_ui.composer.set_text(&draft.text);
+        }
         app.new_task_ui.draft = draft;
         app.new_task_ui.draft_project = Some(project);
     }
@@ -317,7 +321,9 @@ fn sync_draft(app: &mut App) {
 fn write_draft(app: &mut App) {
     let project = app.current_project().to_owned();
     app.new_task_drafts
-        .insert(project, app.new_task_ui.draft.clone());
+        .insert(project.clone(), app.new_task_ui.draft.clone());
+    app.new_task_composers
+        .insert(project, app.new_task_ui.composer.clone());
 }
 
 fn composer_context<'a>(app: &'a App) -> ComposerContext<'a> {
@@ -388,7 +394,7 @@ pub fn remove_attachment(app: &mut App, index: usize) {
 
 /// Main.rs calls this after a successful start: the text is spent, choices remain.
 pub fn clear_draft(app: &mut App) {
-    app.new_task_ui.composer.set_text("");
+    app.new_task_ui.composer.clear_content();
     app.new_task_ui.draft.text.clear();
     write_draft(app);
 }
@@ -400,12 +406,21 @@ pub fn restore_start_draft(app: &mut App, project: &str) {
     let Some(draft) = app.pending_start_drafts.remove(project) else {
         return;
     };
+    let composer = app.pending_start_composers.remove(project);
     app.new_task_drafts
         .insert(project.to_owned(), draft.clone());
+    if let Some(composer) = &composer {
+        app.new_task_composers
+            .insert(project.to_owned(), composer.clone());
+    }
     if app.current_project() == project {
         app.new_task_ui.draft = draft.clone();
         app.new_task_ui.draft_project = Some(project.to_owned());
-        app.new_task_ui.composer.set_text(&draft.text);
+        if let Some(composer) = composer {
+            app.new_task_ui.composer = composer;
+        } else {
+            app.new_task_ui.composer.set_text(&draft.text);
+        }
         app.new_task_ui.composer_focused = true;
         app.new_task_ui.composer.focus();
     }
@@ -493,6 +508,9 @@ pub fn handle_paste(app: &mut App, text: &str) -> bool {
 }
 
 fn handle_composer_key(app: &mut App, key: KeyEvent) -> bool {
+    if is_clipboard_paste_key(key) {
+        return handle_clipboard_paste(app);
+    }
     let ctx = composer_context(app);
     let event = {
         let mut composer = app.new_task_ui.composer.clone();
@@ -510,7 +528,9 @@ fn handle_composer_event(app: &mut App, event: ComposerEvent) -> bool {
             write_draft(app);
             true
         }
-        ComposerEvent::Submit { text } if text.trim().is_empty() => {
+        ComposerEvent::Submit { text }
+            if text.trim().is_empty() && app.new_task_ui.composer.attachments.is_empty() =>
+        {
             app.notice = Some("describe a task first".to_owned());
             true
         }
@@ -528,6 +548,27 @@ fn handle_composer_event(app: &mut App, event: ComposerEvent) -> bool {
             app.new_task_ui.composer_focused = false;
             app.new_task_ui.draft.text = app.new_task_ui.composer.text.clone();
             write_draft(app);
+            true
+        }
+    }
+}
+
+fn is_clipboard_paste_key(key: KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char(character) if character.eq_ignore_ascii_case(&'v'))
+        && key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+}
+
+fn handle_clipboard_paste(app: &mut App) -> bool {
+    match crate::clipboard::read() {
+        Ok(crate::clipboard::ClipboardContent::ImagePng(png)) => {
+            app.new_task_ui.composer.attach_clipboard_image(png);
+            handle_composer_event(app, ComposerEvent::Changed)
+        }
+        Ok(crate::clipboard::ClipboardContent::Text(text)) => handle_paste(app, &text),
+        Err(error) => {
+            app.notice = Some(format!("Could not paste: {error}"));
             true
         }
     }
@@ -1022,12 +1063,12 @@ fn request_start(app: &mut App) {
         app.notice = Some("connect an agent provider before starting a task".to_owned());
         return;
     }
-    let text = app.new_task_ui.composer.text.trim().to_owned();
-    if text.is_empty() {
+    let text = app.new_task_ui.composer.submission_text();
+    let images = app.new_task_ui.composer.image_inputs();
+    if text.is_empty() && images.is_empty() {
         app.notice = Some("describe a task first".to_owned());
         return;
     }
-    let images = read_attachments(&app.new_task_ui.composer.attachments);
     let opts = CreateRunBodyOpts {
         task: text,
         source: effective.source.clone(),
@@ -1071,6 +1112,8 @@ fn finish_submit(
     });
     app.pending_start_drafts
         .insert(project.clone(), app.new_task_ui.draft.clone());
+    app.pending_start_composers
+        .insert(project.clone(), app.new_task_ui.composer.clone());
     // The task now belongs to the background engine operation. Return keyboard focus to the
     // shell immediately so `q` remains a quit key instead of becoming the first character of a
     // second prompt while the agent is starting.
@@ -1095,32 +1138,6 @@ fn finish_submit(
     app.new_task_ui.data.ui_state = Some(state.clone());
     app.pending
         .push(PendingAction::PutUiState { project, state });
-}
-
-fn read_attachments(attachments: &[Attachment]) -> Vec<ImageInput> {
-    use base64::Engine;
-    attachments
-        .iter()
-        .filter_map(|attachment| {
-            let media_type = media_type_for_path(&attachment.path)?;
-            let data = std::fs::read(&attachment.path).ok()?;
-            Some(ImageInput {
-                media_type: media_type.to_owned(),
-                data: base64::engine::general_purpose::STANDARD.encode(data),
-            })
-        })
-        .collect()
-}
-
-fn media_type_for_path(path: &str) -> Option<&'static str> {
-    let extension = path.rsplit('.').next()?.to_ascii_lowercase();
-    match extension.as_str() {
-        "png" => Some("image/png"),
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "gif" => Some("image/gif"),
-        "webp" => Some("image/webp"),
-        _ => None,
-    }
 }
 
 /// Render the whole screen: hero title, composer card, pill row, actions,
@@ -1554,6 +1571,29 @@ mod tests {
 
         assert_eq!(app.new_task_ui.composer.text, "first\nsecond");
         assert_eq!(app.new_task_ui.draft.text, "first\nsecond");
+    }
+
+    #[test]
+    fn large_text_and_clipboard_image_expand_into_the_start_request() {
+        let mut app = app_with_new_task("t-rich-paste");
+        let pasted = "x".repeat(crate::widgets::composer::LARGE_PASTE_CHAR_THRESHOLD + 1);
+        handle_paste(&mut app, &pasted);
+        app.new_task_ui
+            .composer
+            .attach_clipboard_image(vec![1, 2, 3]);
+
+        app.handle_event(crossterm::event::Event::Key(enter_key()));
+
+        let Some(PendingAction::StartRun { input, .. }) = app
+            .pending
+            .iter()
+            .find(|action| matches!(action, PendingAction::StartRun { .. }))
+        else {
+            panic!("a start is queued");
+        };
+        assert_eq!(input.task, pasted);
+        assert_eq!(input.images.as_ref().map(Vec::len), Some(1));
+        assert_eq!(input.images.as_ref().unwrap()[0].data, "AQID");
     }
 
     #[test]

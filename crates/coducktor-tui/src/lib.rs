@@ -6,6 +6,7 @@
 
 pub mod app;
 pub mod cli;
+pub mod clipboard;
 pub mod diff;
 pub mod headless;
 pub mod image;

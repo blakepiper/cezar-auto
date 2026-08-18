@@ -16,7 +16,7 @@ use std::path::Path;
 use coducktor_contract::{Runner, RunnerSelection};
 use coducktor_core::workflows::run::{AgentSession, SessionFactory, SessionRequest};
 
-use crate::agent_runner::AgentRunSpec;
+use crate::agent_runner::{AgentRunSpec, ContentBlock, ImageSource};
 use crate::claude_runner::{self, ClaudeSpawnConfig};
 use crate::codex_runner::{self, CodexSpawnConfig};
 use crate::opencode_runner::{self, OpencodeSpawnConfig};
@@ -122,7 +122,17 @@ fn to_agent_run_spec(request: &SessionRequest) -> AgentRunSpec {
     AgentRunSpec {
         system_prompt: request.system_prompt.clone(),
         user_prompt: request.prompt.clone(),
-        images: Vec::new(),
+        images: request
+            .images
+            .iter()
+            .map(|image| ContentBlock::Image {
+                source: ImageSource {
+                    kind: "base64".to_owned(),
+                    media_type: image.media_type.clone(),
+                    data: image.data.clone(),
+                },
+            })
+            .collect(),
         cwd: request.cwd.clone(),
         allowed_tools: request.allowed_tools.clone(),
         bash_allowlist: request.bash_allowlist.clone(),
@@ -259,6 +269,10 @@ mod tests {
     #[test]
     fn to_agent_run_spec_carries_the_session_request_fields_through() {
         let request = SessionRequest {
+            images: vec![coducktor_core::workflows::run::PromptImage {
+                media_type: "image/png".to_owned(),
+                data: "AQID".to_owned(),
+            }],
             run_id: "run-1".to_owned(),
             step_id: "step-1".to_owned(),
             prompt: "do the thing".to_owned(),
@@ -281,6 +295,7 @@ mod tests {
         assert_eq!(spec.model.as_deref(), Some("sonnet"));
         assert_eq!(spec.session_id.as_deref(), Some("sess-1"));
         assert!(spec.resume);
+        assert_eq!(spec.images.len(), 1);
         assert_eq!(
             spec.reasoning_effort,
             Some(coducktor_contract::ConcreteReasoningEffort::High)
@@ -298,6 +313,7 @@ mod tests {
             .unwrap();
         let mut factory = factory_with_env(&[("DUCK_DRY_RUN", "1")]);
         let request = SessionRequest {
+            images: Vec::new(),
             run_id: "run-1".to_owned(),
             step_id: "step-1".to_owned(),
             prompt: "investigate the login redirect bug mock:done".to_owned(),

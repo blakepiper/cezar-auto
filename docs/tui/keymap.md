@@ -108,6 +108,7 @@ re-documented per row.
 | `Space` | Toggle Autonomous (when that pill is focused) |
 | `i` / `Enter` | Focus the composer |
 | `n` / `s` | Start the task |
+| `Ctrl+V` / `Alt+V` (composer focused) | Paste clipboard text or attach a clipboard image |
 
 ### Scratchpad (`screens/scratchpad.rs`)
 
@@ -125,6 +126,7 @@ The Scratchpad is a free-form editor that saves after every edit. Notes live und
 | Key | Action |
 |---|---|
 | `i` | Focus the composer |
+| `Ctrl+V` / `Alt+V` (composer focused) | Paste clipboard text or attach a clipboard image |
 | `j`/`Down`, `k`/`Up` | Scroll the transcript |
 | `G` | Jump to bottom (re-enables sticky-bottom) |
 | `Tab` / `Shift+Tab` | Select the next/previous expandable tool or reasoning item |

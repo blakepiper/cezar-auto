@@ -49,12 +49,15 @@ use std::time::{Duration, Instant};
 use coducktor_contract::Runner;
 use coducktor_core::runs::ask;
 use coducktor_core::workflows::run::{
-    AgentSession, EventInput, SessionOutcome, SessionReport, TurnMarkerDecision, decide_turn_marker,
+    AgentSession, EventInput, PromptImage, SessionOutcome, SessionReport, TurnMarkerDecision,
+    decide_turn_marker,
 };
 use regex::Regex;
 use serde_json::{Map, Value, json};
 
-use crate::agent_runner::{AgentRunSpec, prepend_system_prompt, reasoning_effort_str};
+use crate::agent_runner::{
+    AgentRunSpec, ContentBlock, prepend_system_prompt, reasoning_effort_str,
+};
 use crate::child_process::{ChildProcess, NextLine, SpawnConfig};
 use crate::claude_runner::{DEFAULT_RUN_TIMEOUT_MS, EOF_KILL_GRACE_MS};
 use crate::model_identity::parse_model_identity;
@@ -321,9 +324,17 @@ fn connect_sse(
 }
 
 impl OpencodeSession {
-    fn build_prompt_body(&self, text: &str, include_variant: bool) -> Value {
+    fn build_prompt_body(
+        &self,
+        text: &str,
+        images: &[PromptImage],
+        include_variant: bool,
+    ) -> Value {
         let mut body = Map::new();
-        body.insert("parts".to_owned(), json!([{"type": "text", "text": text}]));
+        body.insert(
+            "parts".to_owned(),
+            Value::Array(opencode_parts(text, images)),
+        );
         if include_variant && let Some(effort) = self.spec.reasoning_effort {
             body.insert("variant".to_owned(), json!(reasoning_effort_str(effort)));
         }
@@ -399,11 +410,12 @@ impl OpencodeSession {
     fn run_prompt(
         &mut self,
         text: &str,
+        images: &[PromptImage],
         deadline: Option<Instant>,
         on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
     ) -> Result<(), String> {
         let path = format!("/session/{}/message", self.session_id);
-        let body = self.build_prompt_body(text, true);
+        let body = self.build_prompt_body(text, images, true);
         let result = self.post_and_drain(&path, body, deadline, on_event);
         // OpenCode variants are model-specific; a generic Auto decision can name a level the
         // selected model doesn't advertise. Retry once with the provider default instead of
@@ -421,7 +433,7 @@ impl OpencodeSession {
                     ),
                 ))
                 .map_err(|error| error.to_string())?;
-                let fallback_body = self.build_prompt_body(text, false);
+                let fallback_body = self.build_prompt_body(text, images, false);
                 self.post_and_drain(&path, fallback_body, deadline, on_event)
             }
             other => other,
@@ -445,6 +457,7 @@ impl OpencodeSession {
     fn run_one_turn(
         &mut self,
         text: &str,
+        images: &[PromptImage],
         on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
     ) -> Result<SessionOutcome, String> {
         let deadline =
@@ -457,7 +470,7 @@ impl OpencodeSession {
         );
         let text_start = self.text_chunks.len();
 
-        let result = self.run_prompt(text, deadline, on_event);
+        let result = self.run_prompt(text, images, deadline, on_event);
         // A part that never saw `time.end` (abort, server quirk) still surfaces its prose before
         // the turn boundary.
         for flushed in self.coalescer.flush() {
@@ -656,6 +669,21 @@ impl OpencodeSession {
     }
 }
 
+fn opencode_parts(text: &str, images: &[PromptImage]) -> Vec<Value> {
+    let mut parts = Vec::with_capacity(images.len() + usize::from(!text.is_empty()));
+    for image in images {
+        parts.push(json!({
+            "type": "file",
+            "mime": image.media_type,
+            "url": image.data_url(),
+        }));
+    }
+    if !text.is_empty() {
+        parts.push(json!({"type": "text", "text": text}));
+    }
+    parts
+}
+
 impl AgentSession for OpencodeSession {
     fn turn(
         &mut self,
@@ -668,18 +696,31 @@ impl AgentSession for OpencodeSession {
             .map_err(|error| error.to_string())?;
         let first_text =
             prepend_system_prompt(self.spec.system_prompt.as_deref(), &self.spec.user_prompt);
-        self.run_one_turn(&first_text, on_event)
+        let images = self
+            .spec
+            .images
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Image { source } => Some(PromptImage {
+                    media_type: source.media_type.clone(),
+                    data: source.data.clone(),
+                }),
+                ContentBlock::Text { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        self.run_one_turn(&first_text, &images, on_event)
     }
 
     fn send_message(
         &mut self,
         prompt: &str,
+        images: &[PromptImage],
         on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
     ) -> Result<SessionOutcome, String> {
         if !self.open {
             return Err("session does not accept follow-up messages".to_owned());
         }
-        self.run_one_turn(prompt, on_event)
+        self.run_one_turn(prompt, images, on_event)
     }
 
     fn finish(
@@ -719,6 +760,21 @@ impl AgentSession for OpencodeSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opencode_parts_place_data_url_files_before_text() {
+        let image = PromptImage {
+            media_type: "image/png".to_owned(),
+            data: "AQID".to_owned(),
+        };
+        assert_eq!(
+            opencode_parts("inspect", &[image]),
+            vec![
+                json!({"type": "file", "mime": "image/png", "url": "data:image/png;base64,AQID"}),
+                json!({"type": "text", "text": "inspect"}),
+            ]
+        );
+    }
     use std::path::PathBuf;
 
     fn mock_script() -> String {

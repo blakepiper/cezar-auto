@@ -103,6 +103,7 @@ pub struct CreateRunInput {
     pub title: String,
     pub workflow: String,
     pub task: String,
+    pub task_images: Option<Vec<String>>,
     pub steps: Vec<StepSeed>,
     pub workflow_def: Option<WorkflowDef>,
     pub model: Option<String>,
@@ -353,6 +354,20 @@ pub fn hydrate_queued_prompt(run: &RunRecord) -> String {
         .join("\n\n")
 }
 
+fn hydrate_queued_images(run: &RunRecord) -> Vec<PromptImage> {
+    run.task_images
+        .iter()
+        .flatten()
+        .chain(
+            run.queued_messages
+                .iter()
+                .flatten()
+                .flat_map(|message| message.images.iter().flatten()),
+        )
+        .filter_map(|url| PromptImage::from_data_url(url))
+        .collect()
+}
+
 /// The account a run occupies: concrete provider plus profile, with a caller-supplied fallback
 /// for old queued records that have not resolved a provider yet.
 pub fn run_account_key(run: &RunRecord, fallback_runner: Runner) -> String {
@@ -424,6 +439,7 @@ pub struct RecoveryReport {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct StartRunInput {
     pub task: String,
+    pub images: Vec<PromptImage>,
     pub model: Option<String>,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub runner: Option<RunnerSelection>,
@@ -440,8 +456,31 @@ pub struct StartRunInput {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ContinueOptions {
     pub text: Option<String>,
+    pub images: Vec<PromptImage>,
     pub runner: Option<RunnerSelection>,
     pub model: Option<String>,
+}
+
+/// Backend-neutral base64 image carried with a user prompt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptImage {
+    pub media_type: String,
+    pub data: String,
+}
+
+impl PromptImage {
+    pub fn data_url(&self) -> String {
+        format!("data:{};base64,{}", self.media_type, self.data)
+    }
+
+    fn from_data_url(url: &str) -> Option<Self> {
+        let rest = url.strip_prefix("data:")?;
+        let (media_type, data) = rest.split_once(";base64,")?;
+        Some(Self {
+            media_type: media_type.to_owned(),
+            data: data.to_owned(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -472,14 +511,15 @@ impl ContinueResult {
 /// widening into the full `AgentRunSpec` a concrete backend ultimately needs (`cwd`,
 /// `allowed_tools`, `system_prompt`, …) — those fields either already had a single source of
 /// truth available at this call site (the workflow step, the run record) with nowhere else that
-/// needed them, so they ride along here, or (`images`, `additional_directories`, `timeout_ms`)
-/// have no source at this layer and are a concrete `SessionFactory`'s job to default sensibly.
+/// needed them, so they ride along here. Backend-only fields such as additional directories and
+/// timeout policy remain a concrete `SessionFactory`'s job to default sensibly.
 /// Extend this struct when a factory needs data that only the run manager can see.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRequest {
     pub run_id: String,
     pub step_id: String,
     pub prompt: String,
+    pub images: Vec<PromptImage>,
     pub runner: RunnerSelection,
     pub model: Option<String>,
     pub session_id: Option<String>,
@@ -546,6 +586,7 @@ pub trait AgentSession: Send {
     fn send_message(
         &mut self,
         _prompt: &str,
+        _images: &[PromptImage],
         _on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
     ) -> Result<SessionOutcome, String> {
         Err("session does not accept follow-up messages".to_owned())
@@ -615,6 +656,7 @@ enum RuntimeJob {
         step_index: usize,
         session_id: Option<String>,
         prompt: String,
+        images: Vec<PromptImage>,
         runner: RunnerSelection,
         model: Option<String>,
         retry_counts: BTreeMap<String, u32>,
@@ -878,6 +920,7 @@ impl RunManager {
             title: input.title,
             workflow: input.workflow,
             task: input.task,
+            task_images: input.task_images,
             model: input.model,
             reasoning_effort: input.reasoning_effort,
             model_identity: input.model_identity,
@@ -933,6 +976,8 @@ impl RunManager {
         create.system_prompt = input.system_prompt;
         create.autonomous = input.autonomous;
         create.worktree = input.worktree;
+        create.task_images = (!input.images.is_empty())
+            .then(|| input.images.iter().map(PromptImage::data_url).collect());
         let run = self.create_run(create)?;
         self.jobs.insert(
             run.id.clone(),
@@ -975,6 +1020,13 @@ impl RunManager {
             create.worktree = (!variant.isolated).then_some(false);
             create.group_id = Some(group_id.clone());
             create.variant = Some(variant.variant);
+            create.task_images = (!variant_input.images.is_empty()).then(|| {
+                variant_input
+                    .images
+                    .iter()
+                    .map(PromptImage::data_url)
+                    .collect()
+            });
             let run = self.create_run(create)?;
             ids.push(run.id.clone());
             self.jobs.insert(
@@ -1806,6 +1858,7 @@ impl RunManager {
                 step_index,
                 session_id,
                 prompt,
+                images,
                 runner,
                 model,
                 retry_counts,
@@ -1813,7 +1866,7 @@ impl RunManager {
                 workflow,
                 step_index,
                 retry_counts,
-                Some((session_id, prompt, runner, model)),
+                Some((session_id, prompt, images, runner, model)),
             ),
         };
         let Some(record) = self.get_run(run_id).cloned() else {
@@ -1854,15 +1907,20 @@ impl RunManager {
 
         let mut continuation_prompt = continuation
             .as_ref()
-            .map(|(_, prompt, _, _)| prompt.clone());
+            .map(|(_, prompt, _, _, _)| prompt.clone());
+        let mut continuation_images = continuation
+            .as_ref()
+            .map(|(_, _, images, _, _)| images.clone())
+            .unwrap_or_default();
         let continuation_session = continuation
             .as_ref()
-            .and_then(|(session_id, _, _, _)| session_id.clone());
-        let continuation_runner = continuation.as_ref().map(|(_, _, runner, _)| *runner);
+            .and_then(|(session_id, _, _, _, _)| session_id.clone());
+        let continuation_runner = continuation.as_ref().map(|(_, _, _, runner, _)| *runner);
         let continuation_model = continuation
             .as_ref()
-            .and_then(|(_, _, _, model)| model.clone());
+            .and_then(|(_, _, _, _, model)| model.clone());
         let continuation_step = continuation.is_some();
+        let mut initial_images_sent = false;
 
         while index < workflow.steps.len() {
             let step = workflow.steps[index].clone();
@@ -2040,6 +2098,16 @@ impl RunManager {
                 run_id: run_id.to_owned(),
                 step_id: step.id.clone(),
                 prompt,
+                images: if continuation_step {
+                    std::mem::take(&mut continuation_images)
+                } else if initial_images_sent {
+                    Vec::new()
+                } else {
+                    initial_images_sent = true;
+                    self.get_run(run_id)
+                        .map(hydrate_queued_images)
+                        .unwrap_or_default()
+                },
                 runner,
                 model,
                 session_id,
@@ -2170,9 +2238,11 @@ impl RunManager {
                         ),
                     ),
                 )?;
-                outcome = match session
-                    .send_message(AUTONOMOUS_NUDGE, &mut self.event_sink(run_id, &step.id))
-                {
+                outcome = match session.send_message(
+                    AUTONOMOUS_NUDGE,
+                    &[],
+                    &mut self.event_sink(run_id, &step.id),
+                ) {
                     Ok(outcome) => outcome,
                     Err(error) => SessionOutcome::Failed {
                         message: error,
@@ -2472,10 +2542,11 @@ impl RunManager {
                     ),
                 ),
             )?;
-            let next = match active
-                .session
-                .send_message(AUTONOMOUS_NUDGE, &mut self.event_sink(run_id, &step_id))
-            {
+            let next = match active.session.send_message(
+                AUTONOMOUS_NUDGE,
+                &[],
+                &mut self.event_sink(run_id, &step_id),
+            ) {
                 Ok(outcome) => outcome,
                 Err(error) => SessionOutcome::Failed {
                     message: error,
@@ -2770,30 +2841,39 @@ impl RunManager {
     /// state transition: `Running` reacquires a slot, `Waiting`/monitoring releases it again, and
     /// terminal outcomes use the same cleanup path as an initial turn.
     pub fn send_message(&mut self, run_id: &str, prompt: impl Into<String>) -> io::Result<bool> {
-        self.deliver_message(run_id, prompt)
+        self.deliver_message(run_id, prompt, Vec::new())
     }
 
     /// Backend-neutral delivery seam. A durable `user-message` event is written before invoking
     /// the injected session, matching the transcript contract even when the session declines the
     /// delivery. No active session means the caller should use `continue_run` instead.
-    pub fn deliver_message(&mut self, run_id: &str, prompt: impl Into<String>) -> io::Result<bool> {
+    pub fn deliver_message(
+        &mut self,
+        run_id: &str,
+        prompt: impl Into<String>,
+        images: Vec<PromptImage>,
+    ) -> io::Result<bool> {
         let prompt = prompt.into();
         let Some(active) = self.active.get(run_id) else {
             return Ok(false);
         };
         let step_id = active.workflow.steps[active.step_index].id.clone();
+        let image_urls = images.iter().map(PromptImage::data_url).collect::<Vec<_>>();
         self.append_event(
             run_id,
             EventInput::new("user-message")
                 .step(step_id.clone())
-                .field("text", prompt.clone()),
+                .field("text", prompt.clone())
+                .field("imageCount", image_urls.len())
+                .field("images", image_urls),
         )?;
         let Some(mut active) = self.active.remove(run_id) else {
             return Ok(false);
         };
-        let send_result = active
-            .session
-            .send_message(&prompt, &mut self.event_sink(run_id, &step_id));
+        let send_result =
+            active
+                .session
+                .send_message(&prompt, &images, &mut self.event_sink(run_id, &step_id));
         let outcome = match send_result {
             Ok(outcome) => outcome,
             Err(_) => {
@@ -2919,7 +2999,13 @@ impl RunManager {
         let prompt = options
             .text
             .filter(|text| !text.trim().is_empty())
-            .unwrap_or_else(|| "Continue.".to_owned());
+            .unwrap_or_else(|| {
+                if options.images.is_empty() {
+                    "Continue.".to_owned()
+                } else {
+                    String::new()
+                }
+            });
         let model = self.get_run(run_id).and_then(|run| run.model.clone());
         let mut continuation_workflow = workflow;
         continuation_workflow
@@ -2954,6 +3040,7 @@ impl RunManager {
                 step_index,
                 session_id: resume_session,
                 prompt,
+                images: options.images,
                 runner: target_runner,
                 model,
                 retry_counts: BTreeMap::new(),
@@ -3796,6 +3883,7 @@ mod tests {
         fn send_message(
             &mut self,
             _prompt: &str,
+            _images: &[PromptImage],
             on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
         ) -> Result<SessionOutcome, String> {
             let outcome = self
@@ -4303,6 +4391,25 @@ mod tests {
     }
 
     #[test]
+    fn initial_prompt_images_are_persisted_and_reach_the_session_request() {
+        let dir = tempdir().unwrap();
+        let (factory, requests) = fake_factory(vec![completed_session("image-session")]);
+        let mut manager = RunManager::with_session_factory(dir.path(), factory);
+        let workflow = workflow_with_steps(vec![agent_workflow_step("work")]);
+        let image = PromptImage {
+            media_type: "image/png".to_owned(),
+            data: "AQID".to_owned(),
+        };
+        let mut input = start_input("inspect this");
+        input.images.push(image.clone());
+
+        let run = manager.start_run(&workflow, input).unwrap();
+
+        assert_eq!(run.task_images, Some(vec![image.data_url()]));
+        assert_eq!(requests.lock().unwrap()[0].images, vec![image]);
+    }
+
+    #[test]
     fn runtime_fifo_blocks_the_second_job_and_finish_cleans_the_first() {
         let dir = tempdir().unwrap();
         let (factory, _requests) =
@@ -4409,7 +4516,11 @@ mod tests {
         assert_eq!(run.status, RunStatus::Running);
         assert_eq!(run.activity, Some(RunActivity::Monitoring));
 
-        assert!(manager.deliver_message(&run.id, "stop now").unwrap());
+        assert!(
+            manager
+                .deliver_message(&run.id, "stop now", Vec::new())
+                .unwrap()
+        );
         let cancelled = manager.get_run(&run.id).unwrap();
         assert_eq!(cancelled.status, RunStatus::Cancelled);
         assert!(cancelled.activity.is_none());
@@ -4764,6 +4875,7 @@ mod tests {
                 &run.id,
                 ContinueOptions {
                     text: Some("keep going".to_owned()),
+                    images: Vec::new(),
                     runner: Some(RunnerSelection::Codex),
                     model: Some("gpt-5.1-codex".to_owned()),
                 },

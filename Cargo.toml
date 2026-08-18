@@ -18,6 +18,7 @@ rust-version = "1.97.1"
 version = "0.1.0"
 
 [workspace.dependencies]
+arboard = { version = "3", features = ["wayland-data-control"] }
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 criterion = "0.8"

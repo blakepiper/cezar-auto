@@ -55,7 +55,8 @@ use coducktor_core::paths::{
 use coducktor_core::skills::discover_skills;
 use coducktor_core::workflows::load::{WORKFLOWS_DIR, load_workflows};
 use coducktor_core::workflows::run::{
-    EventInput, RunManager, SessionFactory, StartRunInput as CoreStartRunInput, review_gate_enabled,
+    EventInput, PromptImage, RunManager, SessionFactory, StartRunInput as CoreStartRunInput,
+    review_gate_enabled,
 };
 use coducktor_core::workflows::types::{parse_workflow_file_doc, steps_issue};
 use coducktor_core::workspace::agent_accounts::{
@@ -428,8 +429,15 @@ impl InProcessEngine {
         } else {
             None
         };
+        let images = prompt_images(input.images.unwrap_or_default());
+        if images.len() > 4 {
+            return Err(EngineError::Conflict {
+                reason: "task exceeds the 4 image limit".to_owned(),
+            });
+        }
         let core_input = CoreStartRunInput {
             task: input.task,
+            images,
             model: input.model,
             reasoning_effort: input.reasoning_effort,
             runner: requested_runner,
@@ -2420,16 +2428,23 @@ impl InProcessEngine {
         run_id: &str,
         input: MessageInput,
     ) -> Result<MessageResponse, EngineError> {
-        let Some(text) = input.text.filter(|value| !value.trim().is_empty()) else {
+        let text = input.text.unwrap_or_default();
+        let images = prompt_images(input.images.unwrap_or_default());
+        if text.trim().is_empty() && images.is_empty() {
             return Err(EngineError::Conflict {
                 reason: "message needs text or at least one image".to_owned(),
             });
-        };
+        }
+        if images.len() > 4 {
+            return Err(EngineError::Conflict {
+                reason: "message exceeds the 4 image limit".to_owned(),
+            });
+        }
         let mut manager = self.manager.lock().map_err(|_| lock_err())?;
         if manager.get_run(run_id).is_none() {
             return Err(EngineError::NotFound);
         }
-        match manager.send_message(run_id, text) {
+        match manager.deliver_message(run_id, text, images) {
             Ok(true) => Ok(MessageResponse::Delivered { delivered: true }),
             Ok(false) => Err(EngineError::Conflict {
                 reason: "session closed".to_owned(),
@@ -2443,8 +2458,15 @@ impl InProcessEngine {
         run_id: &str,
         input: ContinueInput,
     ) -> Result<ContinueResponse, EngineError> {
+        let images = prompt_images(input.images.unwrap_or_default());
+        if images.len() > 4 {
+            return Err(EngineError::Conflict {
+                reason: "continue exceeds the 4 image limit".to_owned(),
+            });
+        }
         let options = coducktor_core::workflows::run::ContinueOptions {
             text: input.text,
+            images,
             runner: input.runner,
             model: input.model,
         };
@@ -3079,6 +3101,16 @@ fn image_input_urls(images: &[ImageInput]) -> Vec<String> {
     images
         .iter()
         .map(|image| format!("data:{};base64,{}", image.media_type, image.data))
+        .collect()
+}
+
+fn prompt_images(images: Vec<ImageInput>) -> Vec<PromptImage> {
+    images
+        .into_iter()
+        .map(|image| PromptImage {
+            media_type: image.media_type,
+            data: image.data,
+        })
         .collect()
 }
 

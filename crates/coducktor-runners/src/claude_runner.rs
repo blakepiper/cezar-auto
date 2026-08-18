@@ -14,11 +14,12 @@ use std::time::{Duration, Instant};
 
 use coducktor_contract::Runner;
 use coducktor_core::workflows::run::{
-    AgentSession, EventInput, SessionOutcome, SessionReport, TurnMarkerDecision, decide_turn_marker,
+    AgentSession, EventInput, PromptImage, SessionOutcome, SessionReport, TurnMarkerDecision,
+    decide_turn_marker,
 };
 use serde_json::{Map, Value};
 
-use crate::agent_runner::{AgentRunSpec, ContentBlock, reasoning_effort_str};
+use crate::agent_runner::{AgentRunSpec, ContentBlock, prompt_content, reasoning_effort_str};
 use crate::child_process::{ChildProcess, NextLine, SpawnConfig};
 use crate::claude::{stringify_tool_result_content, tool_result_image_blocks};
 use crate::usage::{self, RawUsage};
@@ -522,14 +523,13 @@ impl AgentSession for ClaudeSession {
     fn send_message(
         &mut self,
         prompt: &str,
+        images: &[PromptImage],
         on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
     ) -> Result<SessionOutcome, String> {
         if !self.open {
             return Err("session does not accept follow-up messages".to_owned());
         }
-        self.write_message(&[ContentBlock::Text {
-            text: prompt.to_owned(),
-        }])?;
+        self.write_message(&prompt_content(prompt, images))?;
         self.read_until_turn_end(on_event)
     }
 
@@ -759,7 +759,7 @@ mod tests {
             .expect("first turn should complete");
 
         let outcome = session
-            .send_message("second turn mock:done", &mut |_| Ok(()))
+            .send_message("second turn mock:done", &[], &mut |_| Ok(()))
             .unwrap();
         match outcome {
             SessionOutcome::Completed(report) => {

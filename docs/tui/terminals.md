@@ -55,7 +55,13 @@ records what is implemented and which terminal observations remain unverified.
   `Ctrl+Left` to reach the sidebar, navigated to Git, and quit with the alternate screen restored.
   Mouse-wheel scrollback and bracketed paste remain unverified in a live terminal.
 - **Composer paste.** With bracketed paste enabled for the cockpit lifetime, `Event::Paste` inserts
-  the complete clipboard chunk at the caret in New Task and thread composers, including newlines.
+  clipboard text at the caret in New Task and thread composers, including newlines. Text above
+  1,000 characters is shown as `[Pasted Content N chars]` and expanded exactly when submitted.
+  With the composer focused, `Ctrl+V` (or `Alt+V`) reads the native clipboard directly: image data
+  is PNG-encoded and shown as `[Image #N]`, while text follows the same paste path. Native clipboard
+  access degrades to a scoped notice when no display/clipboard provider is available; it is covered
+  by pure encoding, composer, new-task, follow-up, and retry-state tests but still needs live checks
+  across the terminal matrix below.
 
 ## Task experience smoke test
 

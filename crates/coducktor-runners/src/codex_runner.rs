@@ -4,8 +4,8 @@
 //! Auth is the host's logged-in ChatGPT/Codex session (or `CODEX_API_KEY`). The agent runs
 //! autonomously via `sandbox: danger-full-access` + `approvalPolicy: never`; `DUCK_CODEX_NETWORK=0`
 //! retains the previous network-blocked `workspace-write` sandbox as an explicit restriction.
-//! Codex has no per-tool allowlist, so `spec.allowed_tools`/`bash_allowlist` are ignored, and it
-//! has no way to receive pasted images at task start (`spec.images` is unused here too).
+//! Codex has no per-tool allowlist, so `spec.allowed_tools`/`bash_allowlist` are ignored. Pasted
+//! images are forwarded as app-server `image` user-input items on opening and follow-up turns.
 //!
 //! # Architecture notes
 //!
@@ -33,11 +33,14 @@ use std::time::{Duration, Instant};
 use coducktor_contract::Runner;
 use coducktor_core::runs::ask::{self, AskQuestion};
 use coducktor_core::workflows::run::{
-    AgentSession, EventInput, SessionOutcome, SessionReport, TurnMarkerDecision, decide_turn_marker,
+    AgentSession, EventInput, PromptImage, SessionOutcome, SessionReport, TurnMarkerDecision,
+    decide_turn_marker,
 };
 use serde_json::{Map, Value, json};
 
-use crate::agent_runner::{AgentRunSpec, prepend_system_prompt, reasoning_effort_str};
+use crate::agent_runner::{
+    AgentRunSpec, ContentBlock, prepend_system_prompt, reasoning_effort_str,
+};
 use crate::child_process::{ChildProcess, NextLine, SpawnConfig};
 use crate::claude_runner::{
     DEFAULT_RUN_TIMEOUT_MS, EOF_KILL_GRACE_MS, EOF_TERM_GRACE_MS, KILL_GRACE_MS,
@@ -654,12 +657,24 @@ impl CodexSession {
         // block of the opening message.
         let first_text =
             prepend_system_prompt(self.spec.system_prompt.as_deref(), &self.spec.user_prompt);
-        self.start_or_steer_turn(&first_text, deadline, turn, on_event)
+        let image_urls = self
+            .spec
+            .images
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Image { source } => {
+                    Some(format!("data:{};base64,{}", source.media_type, source.data))
+                }
+                ContentBlock::Text { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        self.start_or_steer_turn(&first_text, &image_urls, deadline, turn, on_event)
     }
 
     fn start_or_steer_turn(
         &mut self,
         text: &str,
+        image_urls: &[String],
         deadline: Option<Instant>,
         turn: &mut TurnState,
         on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
@@ -667,7 +682,7 @@ impl CodexSession {
         let Some(thread_id) = self.thread_id.clone() else {
             return Ok(());
         };
-        let input = json!([{"type": "text", "text": text, "text_elements": []}]);
+        let input = codex_user_input(text, image_urls);
         if let Some(active_turn_id) = self.active_turn_id.clone() {
             self.call_rpc(
                 "turn/steer",
@@ -770,6 +785,17 @@ impl CodexSession {
     }
 }
 
+fn codex_user_input(text: &str, image_urls: &[String]) -> Vec<Value> {
+    let mut input = Vec::with_capacity(image_urls.len() + usize::from(!text.is_empty()));
+    for url in image_urls {
+        input.push(json!({"type": "image", "url": url}));
+    }
+    if !text.is_empty() {
+        input.push(json!({"type": "text", "text": text, "text_elements": []}));
+    }
+    input
+}
+
 impl AgentSession for CodexSession {
     fn turn(
         &mut self,
@@ -788,6 +814,7 @@ impl AgentSession for CodexSession {
     fn send_message(
         &mut self,
         prompt: &str,
+        images: &[PromptImage],
         on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
     ) -> Result<SessionOutcome, String> {
         if !self.open {
@@ -800,7 +827,8 @@ impl AgentSession for CodexSession {
             let answers = user_input_answers(&pending.questions, prompt);
             self.write_response(pending.rpc_id, json!({ "answers": answers }))?;
         } else {
-            self.start_or_steer_turn(prompt, deadline, &mut turn, on_event)?;
+            let image_urls = images.iter().map(PromptImage::data_url).collect::<Vec<_>>();
+            self.start_or_steer_turn(prompt, &image_urls, deadline, &mut turn, on_event)?;
         }
         self.finish_turn_reading(deadline, turn, on_event)
     }
@@ -962,13 +990,24 @@ mod tests {
             other => panic!("expected Waiting/Ask, got {other:?}"),
         }
         let outcome = session
-            .send_message("Library: Vitest", &mut |_| Ok(()))
+            .send_message("Library: Vitest", &[], &mut |_| Ok(()))
             .unwrap();
         assert!(matches!(
             outcome,
             SessionOutcome::Waiting(_) | SessionOutcome::Completed(_)
         ));
         session.finish(&mut |_| Ok(())).unwrap();
+    }
+
+    #[test]
+    fn codex_user_input_places_data_url_images_before_text() {
+        assert_eq!(
+            codex_user_input("inspect", &["data:image/png;base64,AQID".to_owned()]),
+            vec![
+                json!({"type": "image", "url": "data:image/png;base64,AQID"}),
+                json!({"type": "text", "text": "inspect", "text_elements": []}),
+            ]
+        );
     }
 
     #[test]

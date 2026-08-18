@@ -42,11 +42,12 @@ use std::time::{Duration, Instant};
 use coducktor_contract::Runner;
 use coducktor_core::runs::ask;
 use coducktor_core::workflows::run::{
-    AgentSession, EventInput, SessionOutcome, SessionReport, TurnMarkerDecision, decide_turn_marker,
+    AgentSession, EventInput, PromptImage, SessionOutcome, SessionReport, TurnMarkerDecision,
+    decide_turn_marker,
 };
 use serde_json::{Map, Value, json};
 
-use crate::agent_runner::{AgentRunSpec, ContentBlock, reasoning_effort_str};
+use crate::agent_runner::{AgentRunSpec, ContentBlock, prompt_content, reasoning_effort_str};
 use crate::child_process::{ChildProcess, NextLine, SpawnConfig};
 use crate::claude_runner::{
     DEFAULT_RUN_TIMEOUT_MS, EOF_KILL_GRACE_MS, EOF_TERM_GRACE_MS, KILL_GRACE_MS,
@@ -586,14 +587,13 @@ impl AgentSession for PiSession {
     fn send_message(
         &mut self,
         prompt: &str,
+        images: &[PromptImage],
         on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
     ) -> Result<SessionOutcome, String> {
         if !self.open {
             return Err("session does not accept follow-up messages".to_owned());
         }
-        self.write_prompt(&[ContentBlock::Text {
-            text: prompt.to_owned(),
-        }])?;
+        self.write_prompt(&prompt_content(prompt, images))?;
         self.read_until_turn_end(on_event)
     }
 
@@ -804,7 +804,7 @@ mod tests {
             .expect("first turn should complete");
 
         let outcome = session
-            .send_message("second turn mock:done", &mut |_| Ok(()))
+            .send_message("second turn mock:done", &[], &mut |_| Ok(()))
             .unwrap();
         match outcome {
             SessionOutcome::Completed(report) => {
