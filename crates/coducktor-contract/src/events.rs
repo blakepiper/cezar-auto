@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::compat::ExtraFields;
+use crate::routing::{RoutingDecision, RoutingWait};
 
 /// The fixed page size.
 pub const RUN_HISTORY_PAGE_ITEMS: u64 = 100;
@@ -80,6 +81,21 @@ pub struct RunHistoryPage {
 pub struct RunHistoryContext {
     pub context_events: Vec<RunHistoryEvent>,
     pub as_of_seq: u64,
+}
+
+/// Normalized automatic-routing selection event. The open event envelope remains the wire
+/// compatibility boundary; this typed payload is used by new producers and consumers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoutingDecisionEvent {
+    pub decision: RoutingDecision,
+}
+
+/// Normalized automatic-routing wait event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoutingWaitEvent {
+    pub wait: RoutingWait,
 }
 
 /// The checkout phase enum.

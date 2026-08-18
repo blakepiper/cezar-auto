@@ -869,7 +869,11 @@ impl InProcessEngine {
 
     /// Quota telemetry is not available in this build, so the provider list is empty.
     pub async fn workspace_usage(&self) -> Result<WorkspaceUsageResponse, EngineError> {
-        Ok(WorkspaceUsageResponse { providers: vec![] })
+        Ok(WorkspaceUsageResponse {
+            providers: vec![],
+            refresh: None,
+            policy_health: None,
+        })
     }
 
     // ---- provider status + agent-profile accounts ------------------------------------------
@@ -3451,8 +3455,12 @@ fn workspace_config_response(
             .enabled
             .then_some(coducktor_contract::QuotaRouting {
                 enabled: true,
-                provider_order: config.quota_routing.provider_order,
+                provider_order: config.quota_routing.provider_order.clone(),
+                quality_preference: Some(config.quota_routing.quality_preference),
                 unknown_usage_policy: config.quota_routing.unknown_usage_policy,
+                max_auto_attempts_per_generation: Some(
+                    config.quota_routing.max_auto_attempts_per_generation,
+                ),
             }),
         agent_defaults: coducktor_contract::AgentDefaults {
             runner: config.agent_defaults.runner,
@@ -3519,6 +3527,27 @@ fn validate_workspace_config_input(input: &SetWorkspaceConfigInput) -> Result<()
         })
     {
         return Err("model names must be between 1 and 200 characters".to_owned());
+    }
+    if let Some(quota) = &input.quota_routing {
+        if let Some(attempts) = quota.max_auto_attempts_per_generation
+            && !(1..=16).contains(&attempts)
+        {
+            return Err("maxAutoAttemptsPerGeneration must be an integer from 1 to 16".to_owned());
+        }
+        for policies in [&quota.accounts, &quota.routes].into_iter().flatten() {
+            if policies
+                .keys()
+                .any(|key| key.is_empty() || key.chars().count() > 256)
+                || policies
+                    .values()
+                    .filter_map(|policy| policy.priority)
+                    .any(|priority| priority > 10_000)
+            {
+                return Err(
+                    "quota account and route policy keys/priorities are out of range".to_owned(),
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -3597,10 +3626,48 @@ fn apply_workspace_config_input(
             }
         }
     }
-    if let Some(quota) = &input.quota_routing
-        && let Some(enabled) = quota.enabled
-    {
-        config.quota_routing.enabled = enabled;
+    if let Some(quota) = &input.quota_routing {
+        if let Some(enabled) = quota.enabled {
+            config.quota_routing.enabled = enabled;
+        }
+        if let Some(quality_preference) = quota.quality_preference {
+            config.quota_routing.quality_preference = quality_preference;
+        }
+        if let Some(unknown_usage_policy) = quota.unknown_usage_policy {
+            config.quota_routing.unknown_usage_policy = unknown_usage_policy;
+        }
+        if let Some(max_attempts) = quota.max_auto_attempts_per_generation {
+            config.quota_routing.max_auto_attempts_per_generation = max_attempts;
+        }
+        apply_quota_route_policy_patches(&mut config.quota_routing.accounts, &quota.accounts);
+        apply_quota_route_policy_patches(&mut config.quota_routing.routes, &quota.routes);
+    }
+}
+
+fn apply_quota_route_policy_patches(
+    policies: &mut std::collections::BTreeMap<
+        String,
+        coducktor_core::workspace::config::QuotaRoutePolicy,
+    >,
+    patches: &Option<std::collections::BTreeMap<String, coducktor_contract::QuotaRoutePolicyPatch>>,
+) {
+    let Some(patches) = patches else {
+        return;
+    };
+    for (key, patch) in patches {
+        let policy = policies.entry(key.clone()).or_insert_with(|| {
+            coducktor_core::workspace::config::QuotaRoutePolicy {
+                auto_eligible: false,
+                priority: 50,
+                extra: serde_json::Map::new(),
+            }
+        });
+        if let Some(auto_eligible) = patch.auto_eligible {
+            policy.auto_eligible = auto_eligible;
+        }
+        if let Some(priority) = patch.priority {
+            policy.priority = priority;
+        }
     }
 }
 
@@ -9361,6 +9428,46 @@ mod tests {
                 reason: "maxParallel must be an integer from 1 to 16".to_owned()
             }
         );
+    }
+
+    #[test]
+    fn quota_routing_patches_update_policy_without_enabling_execution() {
+        let mut config = coducktor_core::workspace::config::WorkspaceConfig::default_for(
+            &coducktor_core::paths::ProcessEnv,
+        );
+        let mut accounts = std::collections::BTreeMap::new();
+        accounts.insert(
+            "work-claude".to_owned(),
+            coducktor_contract::QuotaRoutePolicyPatch {
+                auto_eligible: Some(true),
+                priority: Some(80),
+            },
+        );
+        let input = SetWorkspaceConfigInput {
+            quota_routing: Some(coducktor_contract::QuotaRoutingPatch {
+                enabled: Some(false),
+                quality_preference: Some(coducktor_contract::QualityPreference::Economy),
+                unknown_usage_policy: Some(coducktor_contract::UnknownUsagePolicy::Exclude),
+                max_auto_attempts_per_generation: Some(4),
+                accounts: Some(accounts),
+                routes: None,
+            }),
+            ..Default::default()
+        };
+        validate_workspace_config_input(&input).unwrap();
+        apply_workspace_config_input(&mut config, &input);
+        assert!(!config.quota_routing.enabled);
+        assert_eq!(
+            config.quota_routing.quality_preference,
+            coducktor_contract::QualityPreference::Economy
+        );
+        assert_eq!(
+            config.quota_routing.unknown_usage_policy,
+            coducktor_contract::UnknownUsagePolicy::Exclude
+        );
+        assert_eq!(config.quota_routing.max_auto_attempts_per_generation, 4);
+        assert!(config.quota_routing.accounts["work-claude"].auto_eligible);
+        assert_eq!(config.quota_routing.accounts["work-claude"].priority, 80);
     }
 
     #[tokio::test]

@@ -5,9 +5,9 @@ use coducktor_contract::compat::{catch_optional, catch_or_default, salvage_entri
 use coducktor_contract::{
     AgentConfigListing, AgentProfilesResponse, ConfigResponse, GithubChecksData, GithubData,
     GithubRefStatusData, HealthResponse, IdeDirectoryResponse, OpenTargetsResponse,
-    ProjectsResponse, RunEvent, RunRecord, RunnerModelCatalogResponse, RunsIndexResponse, Skill,
-    UiState, WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUiState, WorkspaceUsageResponse,
-    WorktreesResponse,
+    ProjectsResponse, RunEvent, RunRecord, Runner, RunnerModelCatalogResponse, RunsIndexResponse,
+    Skill, UiState, WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUiState,
+    WorkspaceUsageResponse, WorktreesResponse,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -188,4 +188,57 @@ fn legacy_run_provenance_remains_readable() {
         "legacy run",
     );
     assert_eq!(parsed.automation.take().unwrap().event, "issues.opened");
+}
+
+#[test]
+fn routing_contracts_accept_opencode_and_preserve_sanitized_explanations() {
+    let value = json!({
+        "taskProfile": {
+            "kind": "debugging",
+            "qualityFloor": "strong",
+            "complexity": 72,
+            "risk": 30,
+            "breadth": 45,
+            "ambiguity": 20
+        },
+        "selected": {
+            "runner": "opencode",
+            "profileId": "default",
+            "upstreamProvider": "anthropic",
+            "model": "claude-sonnet",
+            "reasoningEffort": "high",
+            "routeKey": "opencode:default:anthropic/claude-sonnet"
+        },
+        "considered": [{
+            "routeKey": "claude:default:sonnet",
+            "runner": "claude",
+            "profileId": "default",
+            "model": "sonnet",
+            "eligible": false,
+            "reason": "reserved_quota"
+        }],
+        "generation": 1
+    });
+    let parsed: coducktor_contract::RoutingDecision =
+        serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(parsed.selected.as_ref().unwrap().runner, Runner::OpenCode);
+    assert_eq!(serde_json::to_value(parsed).unwrap(), value);
+}
+
+#[test]
+fn old_unknown_usage_policy_spellings_remain_readable() {
+    let allow: coducktor_contract::UnknownUsagePolicy =
+        serde_json::from_value(json!("allow")).unwrap();
+    let deny: coducktor_contract::UnknownUsagePolicy =
+        serde_json::from_value(json!("deny")).unwrap();
+    assert_eq!(
+        allow,
+        coducktor_contract::UnknownUsagePolicy::AllowWithPenalty
+    );
+    assert_eq!(deny, coducktor_contract::UnknownUsagePolicy::Exclude);
+    assert_eq!(
+        serde_json::to_value(allow).unwrap(),
+        json!("allow_with_penalty")
+    );
+    assert_eq!(serde_json::to_value(deny).unwrap(), json!("exclude"));
 }

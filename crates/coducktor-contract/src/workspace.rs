@@ -98,12 +98,13 @@ pub struct WorkspaceResources {
     pub worktree_retention_default: u64,
 }
 
-/// The two providers accepted by quota routing.
+/// Providers accepted by quota routing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum QuotaProvider {
     Claude,
     Codex,
+    OpenCode,
 }
 
 /// Mirrors the quota-routing object in `WorkspaceConfigResponse`.
@@ -111,16 +112,31 @@ pub enum QuotaProvider {
 #[serde(rename_all = "camelCase")]
 pub struct QuotaRouting {
     pub enabled: bool,
-    pub provider_order: [QuotaProvider; 2],
+    pub provider_order: Vec<QuotaProvider>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_preference: Option<QualityPreference>,
     pub unknown_usage_policy: UnknownUsagePolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_auto_attempts_per_generation: Option<u64>,
 }
 
 /// The unknown-usage policy enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UnknownUsagePolicy {
-    Allow,
-    Deny,
+    #[serde(rename = "allow_with_penalty", alias = "allow")]
+    AllowWithPenalty,
+    #[serde(rename = "exclude", alias = "deny")]
+    Exclude,
+}
+
+/// The quality/cost preference used by automatic routing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QualityPreference {
+    Economy,
+    Balanced,
+    Best,
 }
 
 /// Mirrors the workspace machine-wide agent defaults.
@@ -184,9 +200,30 @@ pub struct RunnerModelsPatch {
 
 /// The partial quota-routing patch accepted by workspace settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaRoutePolicyPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_eligible: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<u64>,
+}
+
+/// The partial quota-routing patch accepted by workspace settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct QuotaRoutingPatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_preference: Option<QualityPreference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unknown_usage_policy: Option<UnknownUsagePolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_auto_attempts_per_generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accounts: Option<BTreeMap<String, QuotaRoutePolicyPatch>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routes: Option<BTreeMap<String, QuotaRoutePolicyPatch>>,
 }
 
 /// The partial resource patch accepted by workspace settings.
@@ -215,13 +252,61 @@ pub struct WorkspaceResourcesPatch {
 pub struct ProviderUsageSnapshot {
     pub provider: QuotaProvider,
     pub profile_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_provider: Option<String>,
     pub health: ProviderUsageHealth,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<UsageConfidence>,
     pub fetched_at: String,
     pub source: String,
     pub stale: bool,
     pub windows: Vec<ProviderUsageWindow>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumption: Option<UsageAggregate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<ProviderUsageError>,
+    #[serde(flatten, default)]
+    pub extra: ExtraFields,
+}
+
+/// How much trust Coducktor should place in a usage observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UsageConfidence {
+    Authoritative,
+    Observed,
+    Inferred,
+    Unknown,
+}
+
+/// Scope of locally recorded usage. Costs are never inferred across scopes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageAggregateScope {
+    CoducktorOnly,
+    OpenCodeLocalHistory,
+    ProviderAccount,
+}
+
+/// Sanitized token and cost consumption for one route or account.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageAggregate {
+    pub scope: UsageAggregateScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period_start: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period_end: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_tokens: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
 }
 
 /// Provider quota health.
@@ -240,6 +325,8 @@ pub enum ProviderUsageHealth {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderUsageWindow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub kind: ProviderUsageWindowKind,
     pub used_percent: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -269,6 +356,31 @@ pub struct ProviderUsageError {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceUsageResponse {
     pub providers: Vec<ProviderUsageSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh: Option<WorkspaceUsageRefresh>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_health: Option<WorkspaceUsagePolicyHealth>,
+}
+
+/// Overall refresh status for the cached usage view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceUsageRefresh {
+    pub refreshing: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<String>,
+    pub stale: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Small, sanitized health summary shared by Settings and headless usage output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceUsagePolicyHealth {
+    pub ready_candidates: u64,
+    pub total_candidates: u64,
+    pub unknown_candidates: u64,
 }
 
 /// The appearance bag shared by both UI-state files.

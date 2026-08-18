@@ -59,6 +59,11 @@ pub fn workspace_config_path(env: &dyn EnvSource) -> PathBuf {
     coducktor_home_dir(env).join("config.json")
 }
 
+/// Sanitized provider usage and limit observations shared by routing and Settings.
+pub fn provider_usage_path(env: &dyn EnvSource) -> PathBuf {
+    coducktor_home_dir(env).join("provider-usage.json")
+}
+
 /// Global UI state — the workspace twin of the per-repo `.ai/coducktor/ui-state.json`.
 pub fn workspace_ui_state_path(env: &dyn EnvSource) -> PathBuf {
     coducktor_home_dir(env).join("ui-state.json")

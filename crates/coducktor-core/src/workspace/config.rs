@@ -11,6 +11,7 @@
 //!   loss. The corrupt file is left in place until the next successful merge-write
 //!   replaces it.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -18,7 +19,7 @@ use std::process;
 
 use serde_json::{Map, Value};
 
-use coducktor_contract::workspace::{QuotaProvider, UnknownUsagePolicy};
+use coducktor_contract::workspace::{QualityPreference, QuotaProvider, UnknownUsagePolicy};
 use coducktor_contract::{Runner, RunnerSelection};
 
 use crate::paths::EnvSource;
@@ -419,28 +420,41 @@ impl AgentDefaults {
 #[derive(Debug, Clone, PartialEq)]
 pub struct QuotaProviderPolicy {
     pub enabled: bool,
+    pub priority: u64,
     pub stop_new_work_at_percent: f64,
     pub long_window_stop_at_percent: f64,
     pub resume_below_percent: f64,
-    pub max_concurrent: u64,
+    pub max_concurrent_per_account: u64,
+    legacy_max_concurrent_key: bool,
     pub extra: Map<String, Value>,
 }
 
 const QUOTA_PROVIDER_POLICY_KEYS: &[&str] = &[
     "enabled",
+    "priority",
     "stopNewWorkAtPercent",
     "longWindowStopAtPercent",
     "resumeBelowPercent",
+    "maxConcurrentPerAccount",
+    // Read-only compatibility spelling used by the first quota scaffold.
     "maxConcurrent",
 ];
 
 impl QuotaProviderPolicy {
-    /// `long_window_default` is 95 for Claude and 90 for Codex — the one field whose default
-    /// differs by provider.
-    fn parse(value: Option<&Value>, long_window_default: f64) -> Self {
+    /// Provider-specific defaults keep the initial policy stable while allowing the config file
+    /// to override every routing preference explicitly.
+    fn parse(value: Option<&Value>, long_window_default: f64, priority_default: u64) -> Self {
         let object = zod::as_map(value);
+        let max_concurrent = zod::field(object, "maxConcurrentPerAccount")
+            .or_else(|| zod::field(object, "maxConcurrent"));
         Self {
             enabled: zod::bool_or(zod::field(object, "enabled"), true),
+            priority: zod::bounded_i64(
+                zod::field(object, "priority"),
+                0,
+                10_000,
+                priority_default as i64,
+            ) as u64,
             stop_new_work_at_percent: zod::bounded_f64(
                 zod::field(object, "stopNewWorkAtPercent"),
                 0.0,
@@ -459,7 +473,11 @@ impl QuotaProviderPolicy {
                 100.0,
                 80.0,
             ),
-            max_concurrent: zod::bounded_i64(zod::field(object, "maxConcurrent"), 1, 16, 1) as u64,
+            max_concurrent_per_account: zod::bounded_i64(max_concurrent, 1, 16, 1) as u64,
+            legacy_max_concurrent_key: object.is_some_and(|object| {
+                object.contains_key("maxConcurrent")
+                    && !object.contains_key("maxConcurrentPerAccount")
+            }),
             extra: object
                 .map(|o| zod::extra_fields(o, QUOTA_PROVIDER_POLICY_KEYS))
                 .unwrap_or_default(),
@@ -471,6 +489,7 @@ impl QuotaProviderPolicy {
             &self.extra,
             vec![
                 ("enabled", Value::from(self.enabled)),
+                ("priority", Value::from(self.priority)),
                 (
                     "stopNewWorkAtPercent",
                     Value::from(self.stop_new_work_at_percent),
@@ -480,10 +499,76 @@ impl QuotaProviderPolicy {
                     Value::from(self.long_window_stop_at_percent),
                 ),
                 ("resumeBelowPercent", Value::from(self.resume_below_percent)),
-                ("maxConcurrent", Value::from(self.max_concurrent)),
+                if self.legacy_max_concurrent_key {
+                    (
+                        "maxConcurrent",
+                        Value::from(self.max_concurrent_per_account),
+                    )
+                } else {
+                    (
+                        "maxConcurrentPerAccount",
+                        Value::from(self.max_concurrent_per_account),
+                    )
+                },
             ],
         )
     }
+}
+
+/// Per-account or per-route automatic eligibility. The key is a user-authored profile or route
+/// identity, so it is retained even when the corresponding installation is currently absent.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuotaRoutePolicy {
+    pub auto_eligible: bool,
+    pub priority: u64,
+    pub extra: Map<String, Value>,
+}
+
+const QUOTA_ROUTE_POLICY_KEYS: &[&str] = &["autoEligible", "priority"];
+
+impl QuotaRoutePolicy {
+    fn parse(value: &Value) -> Self {
+        let object = value.as_object();
+        Self {
+            auto_eligible: zod::bool_or(zod::field(object, "autoEligible"), false),
+            priority: zod::bounded_i64(zod::field(object, "priority"), 0, 10_000, 50) as u64,
+            extra: object
+                .map(|o| zod::extra_fields(o, QUOTA_ROUTE_POLICY_KEYS))
+                .unwrap_or_default(),
+        }
+    }
+
+    fn to_value(&self) -> Value {
+        zod::merge_extra(
+            &self.extra,
+            vec![
+                ("autoEligible", Value::from(self.auto_eligible)),
+                ("priority", Value::from(self.priority)),
+            ],
+        )
+    }
+}
+
+fn parse_quota_route_policies(value: Option<&Value>) -> BTreeMap<String, QuotaRoutePolicy> {
+    value
+        .and_then(Value::as_object)
+        .map(|object| {
+            object
+                .iter()
+                .filter(|(key, _)| key.chars().count() <= 256)
+                .map(|(key, value)| (key.clone(), QuotaRoutePolicy::parse(value)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn quota_route_policies_to_value(policies: &BTreeMap<String, QuotaRoutePolicy>) -> Value {
+    Value::Object(
+        policies
+            .iter()
+            .map(|(key, policy)| (key.clone(), policy.to_value()))
+            .collect(),
+    )
 }
 
 /// Opt-in policy for quota-aware `auto` selection; with `enabled: false` (the shipped default) it
@@ -491,19 +576,27 @@ impl QuotaProviderPolicy {
 #[derive(Debug, Clone, PartialEq)]
 pub struct QuotaRouting {
     pub enabled: bool,
-    pub provider_order: [QuotaProvider; 2],
+    pub provider_order: Vec<QuotaProvider>,
     pub refresh_interval_seconds: u64,
     pub cache_ttl_seconds: u64,
     pub request_timeout_seconds: u64,
+    pub quality_preference: QualityPreference,
     pub unknown_usage_policy: UnknownUsagePolicy,
+    pub max_auto_attempts_per_generation: u64,
     pub claude: QuotaProviderPolicy,
     pub codex: QuotaProviderPolicy,
+    pub opencode: QuotaProviderPolicy,
+    pub accounts: BTreeMap<String, QuotaRoutePolicy>,
+    pub routes: BTreeMap<String, QuotaRoutePolicy>,
     pub extra: Map<String, Value>,
     providers_extra: Map<String, Value>,
 }
 
-const DEFAULT_QUOTA_PROVIDER_ORDER: [QuotaProvider; 2] =
-    [QuotaProvider::Claude, QuotaProvider::Codex];
+const DEFAULT_QUOTA_PROVIDER_ORDER: &[QuotaProvider] = &[
+    QuotaProvider::Claude,
+    QuotaProvider::Codex,
+    QuotaProvider::OpenCode,
+];
 
 const QUOTA_ROUTING_KEYS: &[&str] = &[
     "enabled",
@@ -511,8 +604,12 @@ const QUOTA_ROUTING_KEYS: &[&str] = &[
     "refreshIntervalSeconds",
     "cacheTtlSeconds",
     "requestTimeoutSeconds",
+    "qualityPreference",
     "unknownUsagePolicy",
+    "maxAutoAttemptsPerGeneration",
     "providers",
+    "accounts",
+    "routes",
 ];
 
 impl Default for QuotaRouting {
@@ -527,14 +624,16 @@ impl QuotaRouting {
         let provider_order = zod::field(object, "providerOrder")
             .and_then(Value::as_array)
             .and_then(|entries| {
-                if entries.len() != 2 {
-                    return None;
+                let mut parsed = Vec::new();
+                for entry in entries {
+                    let provider = serde_json::from_value(entry.clone()).ok()?;
+                    if !parsed.contains(&provider) {
+                        parsed.push(provider);
+                    }
                 }
-                let a: QuotaProvider = serde_json::from_value(entries[0].clone()).ok()?;
-                let b: QuotaProvider = serde_json::from_value(entries[1].clone()).ok()?;
-                (a != b).then_some([a, b])
+                (!parsed.is_empty()).then_some(parsed)
             })
-            .unwrap_or(DEFAULT_QUOTA_PROVIDER_ORDER);
+            .unwrap_or_else(|| DEFAULT_QUOTA_PROVIDER_ORDER.to_vec());
         let providers = zod::as_map(zod::field(object, "providers"));
         Self {
             enabled: zod::bool_or(zod::field(object, "enabled"), false),
@@ -553,13 +652,29 @@ impl QuotaRouting {
                 60,
                 8,
             ) as u64,
+            quality_preference: zod::field(object, "qualityPreference")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or(QualityPreference::Balanced),
             unknown_usage_policy: zod::field(object, "unknownUsagePolicy")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
-                .unwrap_or(UnknownUsagePolicy::Allow),
-            claude: QuotaProviderPolicy::parse(providers.and_then(|p| p.get("claude")), 95.0),
-            codex: QuotaProviderPolicy::parse(providers.and_then(|p| p.get("codex")), 90.0),
+                .unwrap_or(UnknownUsagePolicy::AllowWithPenalty),
+            max_auto_attempts_per_generation: zod::bounded_i64(
+                zod::field(object, "maxAutoAttemptsPerGeneration"),
+                1,
+                16,
+                3,
+            ) as u64,
+            claude: QuotaProviderPolicy::parse(providers.and_then(|p| p.get("claude")), 95.0, 100),
+            codex: QuotaProviderPolicy::parse(providers.and_then(|p| p.get("codex")), 90.0, 95),
+            opencode: QuotaProviderPolicy::parse(
+                providers.and_then(|p| p.get("opencode")),
+                90.0,
+                80,
+            ),
+            accounts: parse_quota_route_policies(zod::field(object, "accounts")),
+            routes: parse_quota_route_policies(zod::field(object, "routes")),
             providers_extra: providers
-                .map(|p| zod::extra_fields(p, &["claude", "codex"]))
+                .map(|p| zod::extra_fields(p, &["claude", "codex", "opencode"]))
                 .unwrap_or_default(),
             extra: object
                 .map(|o| zod::extra_fields(o, QUOTA_ROUTING_KEYS))
@@ -573,6 +688,7 @@ impl QuotaRouting {
             vec![
                 ("claude", self.claude.to_value()),
                 ("codex", self.codex.to_value()),
+                ("opencode", self.opencode.to_value()),
             ],
         );
         zod::merge_extra(
@@ -600,11 +716,22 @@ impl QuotaRouting {
                     Value::from(self.request_timeout_seconds),
                 ),
                 (
+                    "qualityPreference",
+                    serde_json::to_value(self.quality_preference)
+                        .unwrap_or_else(|_| Value::String("balanced".to_owned())),
+                ),
+                (
                     "unknownUsagePolicy",
                     serde_json::to_value(self.unknown_usage_policy)
                         .expect("UnknownUsagePolicy always serializes"),
                 ),
+                (
+                    "maxAutoAttemptsPerGeneration",
+                    Value::from(self.max_auto_attempts_per_generation),
+                ),
                 ("providers", providers),
+                ("accounts", quota_route_policies_to_value(&self.accounts)),
+                ("routes", quota_route_policies_to_value(&self.routes)),
             ],
         )
     }
@@ -872,7 +999,11 @@ mod tests {
         assert_eq!(config.quota_routing.codex.long_window_stop_at_percent, 90.0);
         assert_eq!(
             config.quota_routing.provider_order,
-            [QuotaProvider::Claude, QuotaProvider::Codex]
+            vec![
+                QuotaProvider::Claude,
+                QuotaProvider::Codex,
+                QuotaProvider::OpenCode,
+            ]
         );
         assert!(config.projects.is_empty());
         assert!(config.disabled_providers.is_empty());
@@ -950,6 +1081,86 @@ mod tests {
         let once = WorkspaceConfig::parse(&raw, &env());
         let twice = WorkspaceConfig::parse(&once.to_value(), &env());
         assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn quota_routing_parses_opencode_policy_accounts_and_routes() {
+        let raw = serde_json::json!({
+            "quotaRouting": {
+                "enabled": true,
+                "qualityPreference": "best",
+                "unknownUsagePolicy": "allow_with_penalty",
+                "maxAutoAttemptsPerGeneration": 5,
+                "providerOrder": ["opencode", "codex", "opencode"],
+                "providers": {
+                    "opencode": {
+                        "enabled": true,
+                        "priority": 80,
+                        "maxConcurrentPerAccount": 2,
+                        "futureProviderKey": true
+                    }
+                },
+                "accounts": {
+                    "work-claude": {
+                        "autoEligible": false,
+                        "priority": 80,
+                        "futureAccountKey": "keep"
+                    }
+                },
+                "routes": {
+                    "opencode:default:anthropic/sonnet": {
+                        "autoEligible": true,
+                        "priority": 90
+                    }
+                }
+            }
+        });
+        let config = WorkspaceConfig::parse(&raw, &env());
+        assert!(config.quota_routing.enabled);
+        assert_eq!(
+            config.quota_routing.provider_order,
+            vec![QuotaProvider::OpenCode, QuotaProvider::Codex]
+        );
+        assert_eq!(
+            config.quota_routing.quality_preference,
+            QualityPreference::Best
+        );
+        assert_eq!(config.quota_routing.max_auto_attempts_per_generation, 5);
+        assert_eq!(config.quota_routing.opencode.priority, 80);
+        assert_eq!(config.quota_routing.opencode.max_concurrent_per_account, 2);
+        assert!(!config.quota_routing.accounts["work-claude"].auto_eligible);
+        assert!(config.quota_routing.routes["opencode:default:anthropic/sonnet"].auto_eligible);
+
+        let written = config.to_value();
+        assert_eq!(
+            written["quotaRouting"]["providers"]["opencode"]["futureProviderKey"],
+            true
+        );
+        assert_eq!(
+            written["quotaRouting"]["accounts"]["work-claude"]["futureAccountKey"],
+            "keep"
+        );
+    }
+
+    #[test]
+    fn legacy_max_concurrent_quota_key_round_trips_without_wire_drift() {
+        let raw = serde_json::json!({
+            "quotaRouting": {
+                "providers": {"claude": {"maxConcurrent": 3}}
+            }
+        });
+        let config = WorkspaceConfig::parse(&raw, &env());
+        assert_eq!(config.quota_routing.claude.max_concurrent_per_account, 3);
+        let written = config.to_value();
+        assert_eq!(
+            written["quotaRouting"]["providers"]["claude"]["maxConcurrent"],
+            3
+        );
+        assert!(
+            written["quotaRouting"]["providers"]["claude"]
+                .get("maxConcurrentPerAccount")
+                .is_none()
+        );
     }
 
     #[test]

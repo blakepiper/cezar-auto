@@ -982,6 +982,7 @@ fn toggle_or_ignore_resource(app: &mut App, row: usize) {
             let input = SetWorkspaceConfigInput {
                 quota_routing: Some(QuotaRoutingPatch {
                     enabled: Some(enabled),
+                    ..Default::default()
                 }),
                 ..Default::default()
             };
