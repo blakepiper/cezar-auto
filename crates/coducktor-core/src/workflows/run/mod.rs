@@ -779,6 +779,7 @@ struct RuntimeActive {
 /// A stateful, synchronous facade over the durable run files.
 pub struct RunManager {
     data_dir: PathBuf,
+    repo_root: Option<PathBuf>,
     runs: BTreeMap<String, RunRecord>,
     seqs: HashMap<String, f64>,
     queue: QueueState,
@@ -813,16 +814,24 @@ impl RunManager {
         Self::open(data_dir)
     }
 
-    pub fn for_repo(repo_root: &Path) -> Self {
-        Self::open(repo_root.join(".ai").join("coducktor"))
-    }
-
     pub fn with_session_factory(
         data_dir: impl Into<PathBuf>,
         session_factory: impl SessionFactory + 'static,
     ) -> Self {
         let mut manager = Self::open(data_dir);
         manager.session_factory = Some(Box::new(session_factory));
+        manager
+    }
+
+    /// Construct a manager whose durable state is outside its repository. The repository root
+    /// is retained explicitly instead of being inferred from the state-directory layout.
+    pub fn with_session_factory_for_repo(
+        repo_root: impl Into<PathBuf>,
+        data_dir: impl Into<PathBuf>,
+        session_factory: impl SessionFactory + 'static,
+    ) -> Self {
+        let mut manager = Self::with_session_factory(data_dir, session_factory);
+        manager.repo_root = Some(repo_root.into());
         manager
     }
 
@@ -836,6 +845,7 @@ impl RunManager {
             .collect();
         Self {
             data_dir,
+            repo_root: None,
             runs,
             seqs: HashMap::new(),
             queue: QueueState::default(),
@@ -865,16 +875,11 @@ impl RunManager {
         &self.data_dir
     }
 
-    /// The repo root a session should run in — `data_dir` minus the `.ai/coducktor` suffix
-    /// `for_repo` appended, so this only round-trips correctly for managers opened that way
-    /// (every production caller). A manager opened directly against an arbitrary `data_dir`
-    /// (most unit tests) gets a nonsensical answer back, but nothing in this crate reads it for
-    /// anything other than a `SessionRequest`'s `cwd`, which those tests' fakes never inspect.
+    /// Repository root a session should run in. Managers created by core-only tests can omit it;
+    /// production construction always provides it explicitly.
     fn repo_root(&self) -> PathBuf {
-        self.data_dir
-            .parent()
-            .and_then(Path::parent)
-            .map(Path::to_path_buf)
+        self.repo_root
+            .clone()
             .unwrap_or_else(|| self.data_dir.clone())
     }
 
@@ -4439,10 +4444,11 @@ mod tests {
     fn session_request_carries_cwd_tools_prompt_and_reasoning_for_the_factory() {
         let dir = tempdir().unwrap();
         let (factory, requests) = fake_factory(vec![completed_session("session-1")]);
-        // `for_repo` (not `with_session_factory`'s raw-`data_dir` shortcut) so `repo_root()`
-        // round-trips back to `dir.path()`, matching the production path.
-        let mut manager = RunManager::for_repo(dir.path());
-        manager.set_session_factory(factory);
+        let mut manager = RunManager::with_session_factory_for_repo(
+            dir.path(),
+            dir.path().join("state"),
+            factory,
+        );
         let mut step = agent_workflow_step("implement");
         step.allowed_tools = Some(vec!["Read".to_owned(), "Bash".to_owned()]);
         step.bash_allowlist = Some(vec!["npm test".to_owned()]);

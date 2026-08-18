@@ -1,4 +1,4 @@
-//! `.ai/coducktor/config.json` — the optional per-repo config. Zero-config rule: a missing file
+//! Per-user project settings. Zero-config rule: a missing file
 //! behaves exactly like
 //! the default below; an unreadable or invalid file degrades to the default too (never
 //! blocks startup).
@@ -22,10 +22,10 @@ use coducktor_contract::{Runner, RunnerModels, RunnerSelection};
 use crate::workspace::config::{AgentDefaultModels, AgentDefaults as WorkspaceAgentDefaults};
 use crate::zod;
 
-/// Last-resort retention when neither the repo nor the workspace says anything.
+/// Last-resort retention when neither the project nor the workspace says anything.
 pub const DEFAULT_WORKTREE_RETENTION: u64 = 10;
 
-/// Parsed shape of `.ai/coducktor/config.json`.
+/// Parsed shape of a project's local settings file.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RepoConfig {
     pub max_parallel: u64,
@@ -260,7 +260,7 @@ fn strict_trimmed_str_opt(value: Option<&Value>, lo: usize, hi: usize) -> Option
 }
 
 /// The in-memory default with the machine's agent defaults folded in — what a missing or
-/// unparseable `.ai/coducktor/config.json` behaves like.
+/// unparseable project settings file behaves like.
 fn default_with_machine(machine: &WorkspaceAgentDefaults) -> RepoConfig {
     try_parse(&with_machine_defaults(
         &Value::Object(Default::default()),
@@ -269,13 +269,11 @@ fn default_with_machine(machine: &WorkspaceAgentDefaults) -> RepoConfig {
     .expect("an all-default object always validates")
 }
 
-/// Read `.ai/coducktor/config.json` on demand — never cached, never throws. Also reads
-/// `~/.coducktor/config.json`'s `agentDefaults`, deliberately not cached for the same
-/// reason: it is shared by every coducktor process on the machine, so a snapshot is a
-/// staleness bug.
-pub fn load_config(repo_root: &std::path::Path, machine: &WorkspaceAgentDefaults) -> RepoConfig {
+/// Read a project's local Coducktor settings on demand — never cached, never throws.
+/// Runtime settings belong in the per-user project state, never in the repository.
+pub fn load_config(config_path: &std::path::Path, machine: &WorkspaceAgentDefaults) -> RepoConfig {
     let default = default_with_machine(machine);
-    let raw = match std::fs::read_to_string(repo_root.join(".ai/coducktor/config.json")) {
+    let raw = match std::fs::read_to_string(config_path) {
         Ok(raw) => raw,
         Err(_) => return default,
     };
@@ -288,8 +286,8 @@ pub fn load_config(repo_root: &std::path::Path, machine: &WorkspaceAgentDefaults
 /// The repo's OWN `worktreeRetention`, or `None` when it doesn't set one. `load_config`
 /// cannot answer this — `.catch(10)` materializes the key, so a parsed config can't tell
 /// "the user chose 10" from "the user said nothing" by probing the raw file instead.
-fn own_worktree_retention(repo_root: &std::path::Path) -> Option<u64> {
-    let raw = std::fs::read_to_string(repo_root.join(".ai/coducktor/config.json")).ok()?;
+fn own_worktree_retention(config_path: &std::path::Path) -> Option<u64> {
+    let raw = std::fs::read_to_string(config_path).ok()?;
     let parsed: Value = serde_json::from_str(&raw).ok()?;
     let value = parsed.as_object()?.get("worktreeRetention")?;
     let n = value.as_i64().or_else(|| {
@@ -305,10 +303,10 @@ fn own_worktree_retention(repo_root: &std::path::Path) -> Option<u64> {
 /// one; otherwise the workspace's `resources.worktreeRetentionDefault` seeds it; an
 /// absent/unreadable workspace config keeps the default 10.
 pub fn resolve_worktree_retention(
-    repo_root: &std::path::Path,
+    config_path: &std::path::Path,
     workspace_default: Option<u64>,
 ) -> u64 {
-    own_worktree_retention(repo_root)
+    own_worktree_retention(config_path)
         .unwrap_or_else(|| workspace_default.unwrap_or(DEFAULT_WORKTREE_RETENTION))
 }
 

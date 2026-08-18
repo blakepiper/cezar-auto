@@ -52,7 +52,7 @@ use coducktor_core::config::load_config;
 use coducktor_core::handoff::{append_handoff_heartbeat, handoff_progress_excerpt, read_handoff};
 use coducktor_core::paths::{
     ProcessEnv, agent_accounts_path, agent_home_paths, expand_tilde, is_absolute_config_dir,
-    real_home_dir,
+    project_state_dir, project_state_dir_in, real_home_dir,
 };
 use coducktor_core::skills::discover_skills;
 use coducktor_core::workflows::load::{WORKFLOWS_DIR, load_workflows};
@@ -89,6 +89,7 @@ use crate::{Scope, Topic};
 /// Version string this engine reports through `health()`, set once at construction.
 pub struct InProcessEngine {
     repo_root: PathBuf,
+    state_home: PathBuf,
     workspace_config_path: PathBuf,
     version: String,
     manager: Arc<Mutex<RunManager>>,
@@ -157,7 +158,7 @@ const MAX_OPENCODE_AUTH_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_OPENCODE_USAGE_BYTES: usize = 256 * 1024;
 
 fn data_dir(repo_root: &Path) -> PathBuf {
-    repo_root.join(".ai").join("coducktor")
+    project_state_dir(repo_root, &ProcessEnv)
 }
 
 fn lock_err() -> EngineError {
@@ -208,12 +209,17 @@ impl InProcessEngine {
     ) -> Self {
         let repo_root = repo_root.into();
         let workspace_config_path = workspace_config_path.into();
+        let state_home = workspace_config_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| project_state_dir(&repo_root, &ProcessEnv));
         let config = load_workspace_config(&workspace_config_path, &ProcessEnv);
         let boot_project_id = boot_project_id(&config, &repo_root);
         let session_factory: Arc<Mutex<Box<dyn SessionFactory>>> =
             Arc::new(Mutex::new(Box::new(session_factory)));
-        let mut manager = RunManager::with_session_factory(
-            data_dir(&repo_root),
+        let mut manager = RunManager::with_session_factory_for_repo(
+            repo_root.clone(),
+            project_state_dir_in(&state_home, &repo_root),
             SharedSessionFactory {
                 inner: session_factory.clone(),
             },
@@ -224,6 +230,7 @@ impl InProcessEngine {
         let managers = Arc::new(Mutex::new(BTreeMap::new()));
         let engine = Self {
             repo_root,
+            state_home,
             workspace_config_path,
             version: version.into(),
             manager: manager.clone(),
@@ -236,6 +243,10 @@ impl InProcessEngine {
         };
         engine.attach_manager(boot_project_id, manager, engine.repo_root.clone());
         engine
+    }
+
+    fn project_data_dir(&self, repo_root: &Path) -> PathBuf {
+        project_state_dir_in(&self.state_home, repo_root)
     }
 
     pub fn repo_root(&self) -> &Path {
@@ -332,8 +343,9 @@ impl InProcessEngine {
         {
             return Ok(entry.clone());
         }
-        let mut manager = RunManager::with_session_factory(
-            data_dir(&root),
+        let mut manager = RunManager::with_session_factory_for_repo(
+            root.clone(),
+            self.project_data_dir(&root),
             SharedSessionFactory {
                 inner: self.session_factory.clone(),
             },
@@ -358,6 +370,7 @@ impl InProcessEngine {
         let entry = self.project_manager(scope)?;
         Ok(Self {
             repo_root: entry.root,
+            state_home: self.state_home.clone(),
             workspace_config_path: self.workspace_config_path.clone(),
             version: self.version.clone(),
             manager: entry.manager,
@@ -466,9 +479,11 @@ impl InProcessEngine {
             }
         };
         let workspace = self.loaded_workspace_config();
-        let configured_runner =
-            coducktor_core::config::load_config(&self.repo_root, &workspace.agent_defaults)
-                .default_runner;
+        let configured_runner = coducktor_core::config::load_config(
+            &repo_config_path_at(&self.repo_root, &self.state_home),
+            &workspace.agent_defaults,
+        )
+        .default_runner;
         // The composer intentionally omits an untouched value that equals its configured
         // default. Resolve that omission here so a configured `auto` default does not silently
         // collapse to the core runtime's legacy Claude fallback.
@@ -801,12 +816,15 @@ impl InProcessEngine {
     // ---- ui-state --------------------------------------------------------------------------
 
     pub async fn ui_state(&self) -> Result<Value, EngineError> {
-        Ok(Value::Object(read_repo_ui_state(&self.repo_root)))
+        Ok(Value::Object(read_repo_ui_state(
+            &self.repo_root,
+            &self.state_home,
+        )))
     }
 
     pub async fn put_ui_state(&self, input: Value) -> Result<Value, EngineError> {
-        let path = repo_ui_state_path(&self.repo_root);
-        let mut current = read_repo_ui_state(&self.repo_root);
+        let path = repo_ui_state_path(&self.repo_root, &self.state_home);
+        let mut current = read_repo_ui_state(&self.repo_root, &self.state_home);
         let Value::Object(patch) = input else {
             return Err(EngineError::Conflict {
                 reason: "ui-state patch must be a JSON object".to_owned(),
@@ -1370,15 +1388,17 @@ impl InProcessEngine {
 
     pub async fn config(&self) -> Result<ConfigResponse, EngineError> {
         let repo_root = self.repo_root.clone();
-        tokio::task::spawn_blocking(move || config_response(&repo_root))
+        let state_home = self.state_home.clone();
+        tokio::task::spawn_blocking(move || config_response(&repo_root, &state_home))
             .await
             .map_err(|error| EngineError::Transport(error.to_string()))
     }
 
     pub async fn put_config(&self, input: &SetConfigInput) -> Result<ConfigResponse, EngineError> {
         let repo_root = self.repo_root.clone();
+        let state_home = self.state_home.clone();
         let input = input.clone();
-        tokio::task::spawn_blocking(move || update_repo_config(&repo_root, &input))
+        tokio::task::spawn_blocking(move || update_repo_config(&repo_root, &state_home, &input))
             .await
             .map_err(|error| EngineError::Transport(error.to_string()))?
     }
@@ -1600,7 +1620,7 @@ impl InProcessEngine {
     fn worktree_keep(&self) -> u64 {
         let workspace = self.loaded_workspace_config();
         coducktor_core::config::resolve_worktree_retention(
-            &self.repo_root,
+            &repo_config_path_at(&self.repo_root, &self.state_home),
             Some(workspace.resources.worktree_retention_default),
         )
     }
@@ -1728,7 +1748,7 @@ impl InProcessEngine {
         if runs.is_empty() {
             return Err(EngineError::NotFound);
         }
-        let data_dir = data_dir(&repo_root);
+        let data_dir = self.project_data_dir(&repo_root);
         let runs = runs
             .into_iter()
             .map(|run| {
@@ -1793,8 +1813,11 @@ impl InProcessEngine {
 
         let losers: Vec<_> = runs.into_iter().filter(|run| run.id != winner.id).collect();
         let repo_root = self.repo_root.clone();
-        let data_dir = data_dir(&repo_root);
-        let config = load_config(&repo_root, &self.loaded_workspace_config().agent_defaults);
+        let data_dir = self.project_data_dir(&repo_root);
+        let config = load_config(
+            &repo_config_path_at(&repo_root, &self.state_home),
+            &self.loaded_workspace_config().agent_defaults,
+        );
         let review_gate = review_gate_enabled(
             config.review_gate,
             std::env::var("DUCK_REVIEW_GATE").ok().as_deref(),
@@ -2006,7 +2029,10 @@ impl InProcessEngine {
 
     fn plan_provider_disabled(&self) -> Option<String> {
         let workspace = self.loaded_workspace_config();
-        let config = load_config(&self.repo_root, &workspace.agent_defaults);
+        let config = load_config(
+            &repo_config_path_at(&self.repo_root, &self.state_home),
+            &workspace.agent_defaults,
+        );
         let provider = match config.default_runner {
             RunnerSelection::Auto => return None,
             RunnerSelection::Claude => Runner::Claude,
@@ -2844,7 +2870,7 @@ impl InProcessEngine {
             });
         }
         let repo_root = self.repo_root.clone();
-        let handoff_text = read_handoff(&data_dir(&self.repo_root), run_id);
+        let handoff_text = read_handoff(&self.project_data_dir(&self.repo_root), run_id);
         let outcome = tokio::task::spawn_blocking(move || {
             Self::github_driver_blocking(&repo_root).map(|driver| {
                 driver.create_draft_pr(&DraftPrInput {
@@ -2977,7 +3003,7 @@ impl InProcessEngine {
     }
 
     fn run_events_path(&self, run_id: &str) -> PathBuf {
-        data_dir(&self.repo_root)
+        self.project_data_dir(&self.repo_root)
             .join("runs")
             .join(format!("{run_id}.ndjson"))
     }
@@ -5319,8 +5345,10 @@ fn repo_response(repo_root: &Path) -> RepoResponse {
         });
     };
     let workspace = workspace_config_for(repo_root);
-    let config =
-        coducktor_core::config::load_config(Path::new(&info.root), &workspace.agent_defaults);
+    let config = coducktor_core::config::load_config(
+        &repo_config_path(Path::new(&info.root)),
+        &workspace.agent_defaults,
+    );
     RepoResponse::Present(PresentRepoResponse {
         info: info.clone(),
         status: repo_status(Path::new(&info.root)),
@@ -6120,12 +6148,16 @@ fn ide_write_file(root: &Path, path: &str, content: &str) -> Result<IdeFileRespo
 // ---- per-repo config helpers --------------------------------------------------------------
 // parse_set_config_input/config_models_locked/read_repo_config functions -------------------
 
+fn repo_config_path_at(repo_root: &Path, state_home: &Path) -> PathBuf {
+    project_state_dir_in(state_home, repo_root).join("config.json")
+}
+
 fn repo_config_path(repo_root: &Path) -> PathBuf {
     data_dir(repo_root).join("config.json")
 }
 
-fn read_repo_config(repo_root: &Path) -> Map<String, Value> {
-    let Ok(raw) = std::fs::read_to_string(repo_config_path(repo_root)) else {
+fn read_repo_config(repo_root: &Path, state_home: &Path) -> Map<String, Value> {
+    let Ok(raw) = std::fs::read_to_string(repo_config_path_at(repo_root, state_home)) else {
         return Map::new();
     };
     serde_json::from_str::<Value>(&raw)
@@ -6148,9 +6180,12 @@ fn config_models_locked(repo_root: &Path, config: &coducktor_core::config::RepoC
         || config.models_locked == Some(true)
 }
 
-fn config_response(repo_root: &Path) -> ConfigResponse {
+fn config_response(repo_root: &Path, state_home: &Path) -> ConfigResponse {
     let workspace = workspace_config_for(repo_root);
-    let config = coducktor_core::config::load_config(repo_root, &workspace.agent_defaults);
+    let config = coducktor_core::config::load_config(
+        &repo_config_path_at(repo_root, state_home),
+        &workspace.agent_defaults,
+    );
     let models_locked = config_models_locked(repo_root, &config);
     let composer_defaults = (!config.composer_defaults.reasoning.is_none()
         || !config.composer_defaults.variants.is_none()
@@ -6308,11 +6343,15 @@ fn apply_project_composer_defaults(
 
 fn update_repo_config(
     repo_root: &Path,
+    state_home: &Path,
     input: &SetConfigInput,
 ) -> Result<ConfigResponse, EngineError> {
     validate_set_config_input(input)?;
     let workspace = workspace_config_for(repo_root);
-    let current = coducktor_core::config::load_config(repo_root, &workspace.agent_defaults);
+    let current = coducktor_core::config::load_config(
+        &repo_config_path_at(repo_root, state_home),
+        &workspace.agent_defaults,
+    );
     if config_models_locked(repo_root, &current) && input.default_models.is_some() {
         return Err(EngineError::Conflict {
             reason:
@@ -6321,7 +6360,7 @@ fn update_repo_config(
         });
     }
 
-    let mut raw = read_repo_config(repo_root);
+    let mut raw = read_repo_config(repo_root, state_home);
     if let Some(base_branch) = &input.base_branch {
         match base_branch {
             None => {
@@ -6427,11 +6466,11 @@ fn update_repo_config(
         apply_project_composer_defaults(&mut raw, composer_patch);
     }
     coducktor_core::workspace::config::atomic_write_json_sync(
-        &repo_config_path(repo_root),
+        &repo_config_path_at(repo_root, state_home),
         &Value::Object(raw),
     )
     .map_err(io_err)?;
-    Ok(config_response(repo_root))
+    Ok(config_response(repo_root, state_home))
 }
 
 // ---- workflow builder helpers -------------------------------------------------------------
@@ -7448,12 +7487,12 @@ fn project_entry(
     }
 }
 
-fn repo_ui_state_path(repo_root: &Path) -> PathBuf {
-    data_dir(repo_root).join("ui-state.json")
+fn repo_ui_state_path(repo_root: &Path, state_home: &Path) -> PathBuf {
+    project_state_dir_in(state_home, repo_root).join("ui-state.json")
 }
 
-fn read_repo_ui_state(repo_root: &Path) -> Map<String, Value> {
-    let Ok(raw) = std::fs::read_to_string(repo_ui_state_path(repo_root)) else {
+fn read_repo_ui_state(repo_root: &Path, state_home: &Path) -> Map<String, Value> {
+    let Ok(raw) = std::fs::read_to_string(repo_ui_state_path(repo_root, state_home)) else {
         return Map::new();
     };
     serde_json::from_str::<Value>(&raw)
@@ -7872,7 +7911,40 @@ mod tests {
     }
 
     fn engine(dir: &TempDir) -> InProcessEngine {
-        InProcessEngine::with_session_factory(dir.path(), "0.0.0-test", FakeFactory)
+        InProcessEngine::with_session_factory_at(
+            dir.path(),
+            "0.0.0-test",
+            FakeFactory,
+            dir.path().join(".coducktor/config.json"),
+        )
+    }
+
+    #[tokio::test]
+    async fn starting_a_run_keeps_the_repository_free_of_coducktor_runtime_state() {
+        let workspace = TempDir::new().unwrap();
+        let repo = TempDir::new().unwrap();
+        let engine = InProcessEngine::with_session_factory_at(
+            repo.path(),
+            "0.0.0-test",
+            FakeFactory,
+            workspace.path().join("config.json"),
+        );
+
+        let CreateRunResponse::Single(run) = engine
+            .start_run(steps_input("keep it clean"))
+            .await
+            .unwrap()
+        else {
+            panic!("expected a single run");
+        };
+
+        assert!(!repo.path().join(".ai").exists());
+        assert!(
+            project_state_dir_in(workspace.path(), repo.path())
+                .join("runs.json")
+                .exists()
+        );
+        assert!(!run.id.is_empty());
     }
 
     fn steps_input(task: &str) -> CreateRunInput {
@@ -8912,7 +8984,7 @@ mod tests {
     #[tokio::test]
     async fn ide_tree_lists_directories_before_files_alphabetically() {
         let dir = TempDir::new().unwrap();
-        let engine = engine(&dir); // creates `.ai/coducktor/**` as a side effect; `.git` is the only exclusion
+        let engine = engine(&dir); // runtime state is kept in the test workspace, not `.ai/`
         std::fs::create_dir(dir.path().join("src")).unwrap();
         std::fs::write(dir.path().join("README.md"), b"hi").unwrap();
         std::fs::write(dir.path().join("a.txt"), b"a").unwrap();
@@ -8920,7 +8992,7 @@ mod tests {
         let names: Vec<&str> = tree
             .entries
             .iter()
-            .filter(|e| e.name != ".ai")
+            .filter(|e| e.name != ".ai" && e.name != ".coducktor")
             .map(|e| e.name.as_str())
             .collect();
         assert_eq!(names, vec!["src", "README.md", "a.txt"]);
@@ -9084,14 +9156,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn put_config_rejects_a_default_models_change_when_locked_by_the_repo_config() {
+    async fn put_config_rejects_a_default_models_change_when_locked_by_project_settings() {
         let dir = TempDir::new().unwrap();
-        std::fs::create_dir_all(dir.path().join(".ai/coducktor")).unwrap();
-        std::fs::write(
-            dir.path().join(".ai/coducktor/config.json"),
-            r#"{"modelsLocked": true}"#,
-        )
-        .unwrap();
+        let state_dir = project_state_dir_in(&dir.path().join(".coducktor"), dir.path());
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(state_dir.join("config.json"), r#"{"modelsLocked": true}"#).unwrap();
         let engine = engine(&dir);
         let error = engine
             .put_config(&SetConfigInput {

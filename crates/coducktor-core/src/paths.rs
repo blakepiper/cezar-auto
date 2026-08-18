@@ -54,6 +54,29 @@ pub fn coducktor_home_dir(env: &dyn EnvSource) -> PathBuf {
     real_home_dir(env).join(".coducktor")
 }
 
+/// Runtime state for one locally opened project. This is deliberately outside the checkout:
+/// simply opening a repository must not change its Git status.
+///
+/// The key is a stable FNV-1a digest of the canonical project path. It is intentionally not a
+/// user-facing project id: a project can be opened before it is registered in the workspace.
+pub fn project_state_dir(repo_root: &Path, env: &dyn EnvSource) -> PathBuf {
+    project_state_dir_in(&coducktor_home_dir(env), repo_root)
+}
+
+/// Equivalent to [`project_state_dir`] with an explicit Coducktor home. This keeps embedded
+/// engines and tests isolated without changing the process environment.
+pub fn project_state_dir_in(coducktor_home: &Path, repo_root: &Path) -> PathBuf {
+    let root = repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf());
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in root.as_os_str().to_string_lossy().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    coducktor_home.join("projects").join(format!("{hash:016x}"))
+}
+
 /// Per-user workspace config: schema version, global defaults, and the project registry.
 pub fn workspace_config_path(env: &dyn EnvSource) -> PathBuf {
     coducktor_home_dir(env).join("config.json")
@@ -64,7 +87,7 @@ pub fn provider_usage_path(env: &dyn EnvSource) -> PathBuf {
     coducktor_home_dir(env).join("provider-usage.json")
 }
 
-/// Global UI state — the workspace twin of the per-repo `.ai/coducktor/ui-state.json`.
+/// Global UI state — shared preferences across the per-project local UI state files.
 pub fn workspace_ui_state_path(env: &dyn EnvSource) -> PathBuf {
     coducktor_home_dir(env).join("ui-state.json")
 }

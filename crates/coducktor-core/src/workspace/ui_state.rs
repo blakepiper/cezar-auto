@@ -1,5 +1,4 @@
-//! `~/.coducktor/ui-state.json` — global UI state, the workspace twin of the per-repo
-//! `.ai/coducktor/ui-state.json`. Cross-project preferences live here; per-project preferences
+//! `~/.coducktor/ui-state.json` — global UI state. Cross-project preferences live here; per-project preferences
 //! stay in each repository's own file.
 
 use std::fs;

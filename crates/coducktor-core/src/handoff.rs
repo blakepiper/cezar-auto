@@ -1,6 +1,6 @@
 //! Per-task handoff journal.
 //!
-//! `.ai/coducktor/runs/<runId>.handoff.md`, next to the run's NDJSON events and outside the
+//! `<project-state>/runs/<runId>.handoff.md`, next to the run's NDJSON events and outside the
 //! task worktree — it survives worktree removal. Coducktor seeds the skeleton and appends
 //! heartbeats; the agent (told via `DUCK_HANDOFF_FILE` and the system-prompt fragment below)
 //! keeps the "Progress log" and "Resume notes" sections up to date. Everything here is

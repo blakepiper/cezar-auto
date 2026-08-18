@@ -1,5 +1,4 @@
-//! Ordered workspace migrations for user and repository state. Migrations are deliberately
-//! small and config-files-only; run state (`runs.json`, NDJSON) remains readable in place.
+//! Ordered migrations for per-user workspace state.
 //! They are:
 //!
 //! - **idempotent** — every migration is safe to re-run after a crash mid-way;
@@ -13,16 +12,12 @@
 //! Every diagnostic comes back as a `String` in [`MigrationRunOutcome::messages`]. The caller
 //! decides whether it belongs on stderr, in a TUI notice, or in CLI output.
 
-use std::fs;
 use std::io;
 use std::path::Path;
-
-use serde_json::{Map, Value};
 
 use crate::paths::{self, EnvSource};
 
 use super::config::{WorkspaceConfig, merge_write_workspace_config};
-use super::ui_state::merge_write_workspace_ui_state;
 
 struct Migration {
     /// `schema_version` this migration produces.
@@ -33,7 +28,6 @@ struct Migration {
 }
 
 struct MigrationContext<'a> {
-    boot_repo_root: Option<&'a Path>,
     env: &'a dyn EnvSource,
 }
 
@@ -60,12 +54,6 @@ const WORKSPACE_MIGRATIONS: &[Migration] = &[
     },
 ];
 
-fn read_raw_object(path: &Path) -> Option<Map<String, Value>> {
-    let raw = fs::read_to_string(path).ok()?;
-    let value: Value = serde_json::from_str(&raw).ok()?;
-    value.as_object().cloned()
-}
-
 /// One on-disk state-dir rename. Idempotent and never destructive: old absent → nothing
 /// to do; both present → the new dir wins, the stray old one is reported but never
 /// deleted; old present/new absent → rename and report.
@@ -82,7 +70,7 @@ fn migrate_state_dir(old: &Path, new: &Path, label: &str) -> Option<String> {
             old.display(),
         ));
     }
-    match fs::rename(old, new) {
+    match std::fs::rename(old, new) {
         Ok(()) => Some(format!(
             "moved {label} state from {} to {}",
             old.display(),
@@ -96,10 +84,9 @@ fn migrate_state_dir(old: &Path, new: &Path, label: &str) -> Option<String> {
     }
 }
 
-/// The two state-dir renames migration 002 performs, also run unconditionally BEFORE the
-/// migration chain (see [`run_migrations`]) — on a pre-rename install, migration 001 must
-/// not create a fresh `.ai/coducktor` config while the real one is still under the legacy path.
-pub fn migrate_state_dirs(boot_repo_root: Option<&Path>, env: &dyn EnvSource) -> Vec<String> {
+/// The home state-dir rename migration 002 performs, also run unconditionally before the
+/// migration chain. Repository directories are deliberately never migration targets.
+pub fn migrate_state_dirs(_boot_repo_root: Option<&Path>, env: &dyn EnvSource) -> Vec<String> {
     let mut messages = Vec::new();
     // Only meaningful when neither home override is set — an explicit `DUCK_HOME` is the
     // location (tests/containers/an already-migrated install), so
@@ -114,104 +101,14 @@ pub fn migrate_state_dirs(boot_repo_root: Option<&Path>, env: &dyn EnvSource) ->
             messages.push(message);
         }
     }
-    if let Some(repo_root) = boot_repo_root
-        && let Some(message) = migrate_state_dir(
-            &repo_root.join(".ai").join(LEGACY_STATE_DIR),
-            &repo_root.join(".ai/coducktor"),
-            "repo",
-        )
-    {
-        messages.push(message);
-    }
     messages
 }
 
-#[derive(Default)]
-struct RepoResourceKeys {
-    max_parallel: Option<u64>,
-    memory_limit_mb: Option<u64>,
-}
-
-/// The boot repo's `.ai/coducktor/config.json` resource keys, read RAW so only values the
-/// user explicitly set are imported — a defaulted value must not masquerade as a
-/// preference.
-fn read_repo_resource_keys(repo_root: &Path) -> RepoResourceKeys {
-    let raw = read_raw_object(&repo_root.join(".ai/coducktor/config.json")).unwrap_or_default();
-    let bounded = |key: &str, lo: i64, hi: i64| {
-        raw.get(key).and_then(|v| {
-            let n = v.as_i64()?;
-            (n >= lo && n <= hi).then_some(n as u64)
-        })
-    };
-    RepoResourceKeys {
-        max_parallel: bounded("maxParallel", 1, 16),
-        memory_limit_mb: bounded("memoryLimitMb", 0, 1_048_576),
-    }
-}
-
 /// Migration 001 — `schemaVersion 0 → 1`: create `~/.coducktor/config.json` with
-/// defaults if absent; when booting inside a repo, import its `maxParallel`/
-/// `memoryLimitMb` into workspace `resources`, and its `appearance`/`notifications`
-/// ui-state keys into `~/.coducktor/ui-state.json`. Keys already set globally are NEVER
-/// overwritten — presence is checked against the RAW global file (before defaults are
-/// applied), which is what makes a crash-interrupted re-run safe. Every per-repo file is
-/// left untouched.
+/// defaults if absent. Project state is never read or written during startup.
 fn migration_001(ctx: &MigrationContext) -> io::Result<()> {
     let config_path = paths::workspace_config_path(ctx.env);
-    let raw_global = read_raw_object(&config_path);
-    let raw_resources = raw_global
-        .as_ref()
-        .and_then(|o| o.get("resources"))
-        .and_then(Value::as_object);
-    let imported = ctx
-        .boot_repo_root
-        .map(read_repo_resource_keys)
-        .unwrap_or_default();
-
-    merge_write_workspace_config(&config_path, ctx.env, |config| {
-        if let Some(max_parallel) = imported.max_parallel
-            && raw_resources.and_then(|r| r.get("maxParallel")).is_none()
-        {
-            config.resources.max_parallel = max_parallel;
-        }
-        if let Some(memory_limit_mb) = imported.memory_limit_mb
-            && raw_resources.and_then(|r| r.get("memoryLimitMb")).is_none()
-        {
-            config.resources.memory_limit_mb = Some(memory_limit_mb);
-        }
-    })?;
-
-    let Some(repo_root) = ctx.boot_repo_root else {
-        return Ok(());
-    };
-    let repo_ui_state =
-        read_raw_object(&repo_root.join(".ai/coducktor/ui-state.json")).unwrap_or_default();
-    // Validated with the DESTINATION's own field schemas — a hand-edited value that
-    // doesn't parse is simply not imported, never a failed boot.
-    let appearance = repo_ui_state.get("appearance").cloned().filter(|v| {
-        serde_json::from_value::<coducktor_contract::workspace::Appearance>(v.clone()).is_ok()
-    });
-    let notifications = repo_ui_state.get("notifications").cloned().filter(|v| {
-        serde_json::from_value::<coducktor_contract::workspace::NotificationsUiState>(v.clone())
-            .is_ok()
-    });
-    if appearance.is_none() && notifications.is_none() {
-        return Ok(()); // nothing to import — don't create the file
-    }
-
-    let ui_state_path = paths::workspace_ui_state_path(ctx.env);
-    merge_write_workspace_ui_state(&ui_state_path, |state| {
-        if state.appearance.is_none()
-            && let Some(value) = appearance
-        {
-            state.appearance = serde_json::from_value(value).ok();
-        }
-        if state.notifications.is_none()
-            && let Some(value) = notifications
-        {
-            state.notifications = serde_json::from_value(value).ok();
-        }
-    })?;
+    merge_write_workspace_config(&config_path, ctx.env, |_| {})?;
     Ok(())
 }
 
@@ -221,7 +118,7 @@ fn migration_001(ctx: &MigrationContext) -> io::Result<()> {
 /// unconditionally first) so the framework's record bumps `schema_version` to 2 and
 /// re-running it is the same idempotent no-op.
 fn migration_002(ctx: &MigrationContext) -> io::Result<()> {
-    migrate_state_dirs(ctx.boot_repo_root, ctx.env);
+    migrate_state_dirs(None, ctx.env);
     Ok(())
 }
 
@@ -259,10 +156,7 @@ pub fn run_migrations(boot_repo_root: Option<&Path>, env: &dyn EnvSource) -> Mig
     let mut messages = migrate_state_dirs(boot_repo_root, env);
     let config_path = paths::workspace_config_path(env);
     let mut current = super::config::load_workspace_config(&config_path, env).schema_version;
-    let ctx = MigrationContext {
-        boot_repo_root,
-        env,
-    };
+    let ctx = MigrationContext { env };
 
     for migration in WORKSPACE_MIGRATIONS {
         if migration.to <= current {
@@ -339,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn repo_resource_keys_import_only_when_the_global_key_is_unset() {
+    fn startup_migrations_never_read_or_write_the_repository() {
         let dir = tempfile::tempdir().unwrap();
         let env = env_for(dir.path());
         let repo = tempfile::tempdir().unwrap();
@@ -352,11 +246,12 @@ mod tests {
 
         run_migrations(Some(repo.path()), &env);
         let config = load_workspace_config(&dir.path().join("config.json"), &env);
-        assert_eq!(config.resources.max_parallel, 9);
+        assert_eq!(config.resources.max_parallel, 2);
+        assert!(repo.path().join(".ai/coducktor/config.json").exists());
     }
 
     #[test]
-    fn a_value_already_set_globally_is_never_overwritten_even_across_a_simulated_crash_rerun() {
+    fn repository_settings_are_never_imported_even_across_reruns() {
         let dir = tempfile::tempdir().unwrap();
         let env = env_for(dir.path());
         let repo = tempfile::tempdir().unwrap();
@@ -368,8 +263,7 @@ mod tests {
         .unwrap();
 
         run_migrations(Some(repo.path()), &env);
-        // Simulate the repo's own config changing between runs — schema_version already
-        // 3, but even a hypothetical re-import must not clobber the imported value.
+        // A repository-owned file remains entirely outside startup migration scope.
         fs::write(
             repo.path().join(".ai/coducktor/config.json"),
             r#"{"maxParallel": 3}"#,
@@ -377,7 +271,7 @@ mod tests {
         .unwrap();
         run_migrations(Some(repo.path()), &env);
         let config = load_workspace_config(&dir.path().join("config.json"), &env);
-        assert_eq!(config.resources.max_parallel, 9);
+        assert_eq!(config.resources.max_parallel, 2);
     }
 
     #[test]
@@ -403,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pre_rename_repo_and_home_are_both_migrated_on_boot() {
+    fn a_pre_rename_repository_directory_is_left_untouched_on_boot() {
         let real_home = tempfile::tempdir().unwrap();
         let repo = tempfile::tempdir().unwrap();
         let env = FixedEnv::new(&[("HOME", real_home.path().to_str().unwrap())]);
@@ -422,14 +316,10 @@ mod tests {
 
         assert_eq!(outcome.schema_version, 3);
         assert!(!old_home.exists());
-        assert!(!old_repo.exists());
+        assert!(old_repo.exists());
         assert_eq!(
             fs::read_to_string(real_home.path().join(".coducktor/ui-state.json")).unwrap(),
             r#"{"notifications":{"enabled":true}}"#
-        );
-        assert_eq!(
-            fs::read_to_string(repo.path().join(".ai/coducktor/runs.json")).unwrap(),
-            "[]"
         );
     }
 

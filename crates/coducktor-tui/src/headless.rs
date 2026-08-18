@@ -6,7 +6,7 @@ use std::process::Command as ShellCommand;
 
 use coducktor_client::InProcessEngine;
 use coducktor_contract::{BackendCheckName, RunStatus, RunnerSelection};
-use coducktor_core::paths::{ProcessEnv, workspace_config_path};
+use coducktor_core::paths::{ProcessEnv, project_state_dir, workspace_config_path};
 use coducktor_core::workflows::run::{RunManager, StartRunInput};
 use coducktor_core::workflows::{load::load_workflows, types::quick_task_workflow};
 use coducktor_core::workspace::config::ProjectSource;
@@ -96,8 +96,11 @@ fn run_command_with_factory(
         return 1;
     };
 
-    let mut manager = RunManager::for_repo(&repo_root);
-    manager.set_session_factory(factory);
+    let mut manager = RunManager::with_session_factory_for_repo(
+        &repo_root,
+        project_state_dir(&repo_root, &ProcessEnv),
+        factory,
+    );
     manager.subscribe_events(|notification| print_run_event(&notification.event));
 
     let input = StartRunInput {
@@ -213,38 +216,7 @@ pub fn init_command(repo_root: &Path) {
             println!("  + {}", path.display());
         }
     }
-    ensure_data_gitignore(repo_root);
     println!("\nDone. Start the cockpit with: coducktor");
-}
-
-/// Keep run data out of the user's repo history; workflows and skills stay committable.
-fn ensure_data_gitignore(repo_root: &Path) {
-    const WANTED: &[&str] = &["runs.json", "runs.json.tmp", "runs/", "worktrees/", "tmp/"];
-    let dir = repo_root.join(".ai/coducktor");
-    let path = dir.join(".gitignore");
-    if std::fs::create_dir_all(&dir).is_err() {
-        return;
-    }
-    let current = std::fs::read_to_string(&path).unwrap_or_default();
-    let lines: Vec<&str> = current.split('\n').collect();
-    let missing: Vec<&str> = WANTED
-        .iter()
-        .copied()
-        .filter(|wanted| !lines.contains(wanted))
-        .collect();
-    if missing.is_empty() {
-        return;
-    }
-    let glue = if !current.is_empty() && !current.ends_with('\n') {
-        "\n"
-    } else {
-        ""
-    };
-    let mut file = current;
-    file.push_str(glue);
-    file.push_str(&missing.join("\n"));
-    file.push('\n');
-    let _ = std::fs::write(&path, file);
 }
 
 // ---- usage ---------------------------------------------------------------------------------
@@ -564,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn init_command_scaffolds_the_example_workflow_skill_and_gitignore() {
+    fn init_command_scaffolds_shareable_workflow_and_skill_examples() {
         let repo = tempfile::tempdir().unwrap();
         init_command(repo.path());
 
@@ -581,12 +553,6 @@ mod tests {
                 .unwrap()
                 .contains("fix-and-verify")
         );
-
-        let gitignore =
-            std::fs::read_to_string(repo.path().join(".ai/coducktor/.gitignore")).unwrap();
-        for wanted in ["runs.json", "worktrees/"] {
-            assert!(gitignore.contains(wanted), "gitignore missing {wanted:?}");
-        }
 
         // Idempotent: a second run leaves the files alone rather than erroring or duplicating.
         let before = std::fs::read_to_string(&workflow).unwrap();

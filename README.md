@@ -116,7 +116,7 @@ git pull && ./install.sh
    concise plan without repository changes.
 
 In a Git repository, normal tasks run directly in the current checkout by default. Enable worktree
-mode to use an isolated task worktree under `.ai/coducktor/worktrees/` on a
+mode to use an isolated task worktree in Coducktor's per-user project state on a
 `duck/<run-id-prefix>` branch, leaving the original checkout alone while the agent works. The New
 Task screen shows whether a run will use a worktree or modify the checkout directly. Competing
 variants always use worktrees; without Git, the run executes in place.
@@ -213,8 +213,8 @@ duck doctor --json
 execution error. The headless default runner is Claude; a workflow step can request another runner.
 `init` is idempotent: it creates
 `.ai/coducktor/workflows/fix-and-verify.yaml`,
-`.ai/coducktor/skills/project-conventions.md`, and runtime Git ignore entries without overwriting
-existing example files.
+`.ai/coducktor/skills/project-conventions.md` without overwriting existing example files. This is
+an explicit, repository-owned setup intended to be reviewed and committed.
 
 The `usage` command is retained for command compatibility, but provider quota telemetry is not
 available in this build. It reports that limitation and exits nonzero. Per-run token and cost
@@ -315,10 +315,10 @@ automatically.
 
 ## Local state and optional capabilities
 
-Per-project data lives under `.ai/coducktor/`, including configuration, run records, normalized event
-history, UI state, workflows, skills, and managed worktrees. Runtime files are ignored
-by the `.ai/coducktor/.gitignore` created by `duck init`; workflows and skills can be committed to
-share them with a project.
+Per-project runtime data lives under `~/.coducktor/projects/<project-key>/`, including settings,
+run records, normalized event history, UI state, and managed worktrees. Opening a repository never
+creates or modifies `.ai/`. Run `duck init` only when you deliberately want to add the shareable
+workflows and skills under `.ai/coducktor/` to that repository.
 
 Workspace data lives under `~/.coducktor/`:
 

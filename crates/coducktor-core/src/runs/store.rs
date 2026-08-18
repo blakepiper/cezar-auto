@@ -1,4 +1,4 @@
-//! `<repo>/.ai/coducktor/runs.json` — the run index. This module loads, reconciles, and
+//! `<project-state>/runs.json` — the run index. This module loads, reconciles, and
 //! atomically saves the array of [`RunRecord`] values. Run orchestration, event fan-out, and
 //! redaction belong to the workflow manager.
 //!

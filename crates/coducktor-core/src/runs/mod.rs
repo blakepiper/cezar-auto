@@ -1,5 +1,5 @@
-//! The per-project run store's file layer: `.ai/coducktor/runs.json`, the per-run NDJSON event
-//! log under `.ai/coducktor/runs/`, and count-based retention.
+//! The per-project run store's file layer: `runs.json`, the per-run NDJSON event
+//! log under `runs/`, and count-based retention.
 
 pub mod ask;
 pub mod events;
