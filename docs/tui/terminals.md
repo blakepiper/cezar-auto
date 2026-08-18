@@ -31,6 +31,12 @@ records what is implemented and which terminal observations remain unverified.
   provider usage: the Resources section showed routing health, observation time, honest unknown
   states for Claude and OpenCode, and both live Codex weekly windows (16% and 0% used) with reset
   times; quitting again restored the alternate screen.
+- **Auto routing failover.** Manually exercised in a real `120x40` `script` pseudo-terminal on
+  2026-08-18 with the bundled Claude and Codex process mocks and the configured runner default
+  set to Auto. A `mock:limit` prompt first rendered `Auto routing · trying Claude · model provider
+  default`; Claude's limit result then rendered the warning `Claude hit a usage limit — trying
+  Codex`, followed by the Codex choice and Codex output for the unchanged prompt. The exhausted
+  Claude session received no autonomous nudges, and quitting restored the alternate screen.
 - **Tasks keyboard focus.** Manually exercised through the real TUI in an 80x24 pseudo-terminal
   on 2026-08-17: from the focused sidebar, `Ctrl+Right` moved control into the Tasks table,
   `Down` highlighted the first task row, and `Enter` opened that task's thread. Quitting restored

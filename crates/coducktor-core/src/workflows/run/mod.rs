@@ -388,6 +388,59 @@ fn runner_name(runner: Runner) -> &'static str {
     }
 }
 
+fn runner_label(runner: Runner) -> &'static str {
+    match runner {
+        Runner::Claude => "Claude",
+        Runner::Codex => "Codex",
+        Runner::OpenCode => "OpenCode",
+        Runner::Pi => "Pi",
+    }
+}
+
+fn is_auto_route_failure(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    [
+        "usage limit",
+        "weekly limit",
+        "rate limit",
+        "quota",
+        "capacity",
+        "overloaded",
+        "authentication",
+        "authenticate",
+        "oauth",
+        "unauthorized",
+        "401",
+        "not found on path",
+        "unavailable",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
+}
+
+fn auto_route_failure_reason(message: &str) -> &'static str {
+    let message = message.to_ascii_lowercase();
+    if ["usage limit", "weekly limit", "rate limit", "quota"]
+        .iter()
+        .any(|needle| message.contains(needle))
+    {
+        "hit a usage limit"
+    } else if [
+        "authentication",
+        "authenticate",
+        "oauth",
+        "unauthorized",
+        "401",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
+    {
+        "could not authenticate"
+    } else {
+        "was unavailable"
+    }
+}
+
 /// A scheduled automatic resume is allowed through an in-flight hold, but a fresh run is not.
 pub fn resume_in_flight(run: &RunRecord) -> bool {
     run.auto_resume_attempts.is_some()
@@ -447,6 +500,9 @@ pub struct StartRunInput {
     /// Concrete backend chosen for an authored `auto` request. The durable request remains
     /// `auto`, while execution and affinity use this provider.
     pub resolved_runner: Option<Runner>,
+    /// Ordered concrete fallbacks for an authored `auto` request. This is process-local routing
+    /// state: the durable record keeps the user's `auto` intent and the currently selected runner.
+    pub auto_runner_candidates: Vec<Runner>,
     pub agent_profile: Option<String>,
     pub system_prompt: Option<String>,
     pub autonomous: Option<bool>,
@@ -743,6 +799,7 @@ pub struct RunManager {
     repository_holds: BTreeSet<String>,
     plan_checkpoints: BTreeMap<String, context_refresh::PlanCheckpoint>,
     pending_context_prompts: BTreeMap<String, String>,
+    auto_routes: BTreeMap<String, Vec<Runner>>,
     intelligent_context_refresh: bool,
 }
 
@@ -799,6 +856,7 @@ impl RunManager {
             repository_holds: BTreeSet::new(),
             plan_checkpoints: BTreeMap::new(),
             pending_context_prompts: BTreeMap::new(),
+            auto_routes: BTreeMap::new(),
             intelligent_context_refresh: false,
         }
     }
@@ -1027,6 +1085,10 @@ impl RunManager {
         create.task_images = (!input.images.is_empty())
             .then(|| input.images.iter().map(PromptImage::data_url).collect());
         let run = self.create_run(create)?;
+        if input.runner == Some(RunnerSelection::Auto) {
+            self.auto_routes
+                .insert(run.id.clone(), input.auto_runner_candidates);
+        }
         self.jobs.insert(
             run.id.clone(),
             RuntimeJob::Workflow {
@@ -1087,6 +1149,10 @@ impl RunManager {
                     .collect()
             });
             let run = self.create_run(create)?;
+            if variant_input.runner == Some(RunnerSelection::Auto) {
+                self.auto_routes
+                    .insert(run.id.clone(), variant_input.auto_runner_candidates);
+            }
             ids.push(run.id.clone());
             self.jobs.insert(
                 run.id.clone(),
@@ -2169,6 +2235,7 @@ impl RunManager {
                 .and_then(|run| run.reasoning_effort)
                 .and_then(concrete_reasoning_effort);
             let cancellation = CancellationToken::default();
+            let retry_prompt = prompt.clone();
             let request = SessionRequest {
                 run_id: run_id.to_owned(),
                 step_id: step.id.clone(),
@@ -2213,6 +2280,10 @@ impl RunManager {
                 step_affinity = step_affinity.set("backend", backend);
             }
             self.update_step(run_id, &step.id, step_affinity)?;
+            let concrete = concrete_runner(runner).unwrap_or(Runner::Claude);
+            if requested_runner == RunnerSelection::Auto {
+                self.announce_auto_route(run_id, concrete, request.model.as_deref())?;
+            }
             let opened = match self.session_factory.as_mut() {
                 Some(factory) => factory.open(request),
                 None => Err("session factory unavailable".to_owned()),
@@ -2220,6 +2291,11 @@ impl RunManager {
             let mut session = match opened {
                 Ok(session) => session,
                 Err(error) => {
+                    if self.try_auto_failover(run_id, &step.id, concrete, &error, true)? {
+                        pending_context_prompt = Some(retry_prompt);
+                        initial_images_sent = false;
+                        continue;
+                    }
                     self.fail_run(run_id, Some(&step.id), error)?;
                     return Ok(());
                 }
@@ -2235,6 +2311,11 @@ impl RunManager {
                     SessionOutcome::Cancelled(SessionReport::default())
                 }
                 Err(error) => {
+                    if self.try_auto_failover(run_id, &step.id, concrete, &error, false)? {
+                        pending_context_prompt = Some(retry_prompt);
+                        initial_images_sent = false;
+                        continue;
+                    }
                     self.fail_run(run_id, Some(&step.id), error)?;
                     return Ok(());
                 }
@@ -2378,6 +2459,11 @@ impl RunManager {
                     return Ok(());
                 }
                 SessionOutcome::Failed { message, .. } => {
+                    if self.try_auto_failover(run_id, &step.id, concrete, &message, false)? {
+                        pending_context_prompt = Some(retry_prompt);
+                        initial_images_sent = false;
+                        continue;
+                    }
                     self.fail_run(run_id, Some(&step.id), message)?;
                     return Ok(());
                 }
@@ -2685,6 +2771,87 @@ impl RunManager {
         }
     }
 
+    fn announce_auto_route(
+        &mut self,
+        run_id: &str,
+        runner: Runner,
+        model: Option<&str>,
+    ) -> io::Result<()> {
+        if self.auto_routes.contains_key(run_id) {
+            let model = model.unwrap_or("provider default");
+            self.append_event(
+                run_id,
+                EventInput::new("note").field(
+                    "message",
+                    format!(
+                        "Auto routing · trying {} · model {model}",
+                        runner_label(runner)
+                    ),
+                ),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Retire a provider that rejected an Auto request before useful work could complete and
+    /// select the next engine-ranked candidate. Explicit runner requests never enter this path.
+    fn try_auto_failover(
+        &mut self,
+        run_id: &str,
+        step_id: &str,
+        failed_runner: Runner,
+        error: &str,
+        opening_failed: bool,
+    ) -> io::Result<bool> {
+        if self.get_run(run_id).and_then(|run| run.requested_runner) != Some(RunnerSelection::Auto)
+            || (!opening_failed && !is_auto_route_failure(error))
+        {
+            return Ok(false);
+        }
+        let next = self.auto_routes.get_mut(run_id).and_then(|candidates| {
+            candidates.retain(|candidate| *candidate != failed_runner);
+            candidates.first().copied()
+        });
+        let Some(next) = next else {
+            if self.auto_routes.contains_key(run_id) {
+                self.append_event(
+                    run_id,
+                    EventInput::new("note")
+                        .field("noteKind", "provider-switch")
+                        .field("message", "Auto routing · no eligible providers remain"),
+                )?;
+            }
+            return Ok(false);
+        };
+        self.update_run(run_id, RunPatch::new().set("runner", next).clear("model"))?;
+        self.update_step(
+            run_id,
+            step_id,
+            StepPatch::new()
+                .set("status", StepStatus::Pending)
+                .clear("backend")
+                .clear("sessionId")
+                .clear("error")
+                .clear("finishedAt"),
+        )?;
+        self.append_event(
+            run_id,
+            EventInput::new("note")
+                .step(step_id.to_owned())
+                .field("noteKind", "provider-switch")
+                .field(
+                    "message",
+                    format!(
+                        "Auto routing · {} {} — trying {}",
+                        runner_label(failed_runner),
+                        auto_route_failure_reason(error),
+                        runner_label(next)
+                    ),
+                ),
+        )?;
+        Ok(true)
+    }
+
     fn fail_run(&mut self, run_id: &str, step_id: Option<&str>, message: String) -> io::Result<()> {
         let finished_at = now_iso8601();
         if let Some(step_id) = step_id {
@@ -2744,6 +2911,7 @@ impl RunManager {
         self.usage.remove(run_id);
         self.plan_checkpoints.remove(run_id);
         self.pending_context_prompts.remove(run_id);
+        self.auto_routes.remove(run_id);
         self.release_workspace_hold(run_id);
         self.release_repository_hold(run_id);
     }
@@ -4130,6 +4298,13 @@ mod tests {
         SessionOutcome::Cancelled(SessionReport::default())
     }
 
+    fn failed_session(message: &str) -> SessionOutcome {
+        SessionOutcome::Failed {
+            message: message.to_owned(),
+            report: SessionReport::default(),
+        }
+    }
+
     fn workflow_with_steps(
         steps: Vec<coducktor_contract::workflows::WorkflowStepDef>,
     ) -> WorkflowDef {
@@ -4619,6 +4794,53 @@ mod tests {
                     .get("message")
                     .and_then(Value::as_str)
                     .is_some_and(|message| message.starts_with("autonomous pass"))
+        }));
+    }
+
+    #[test]
+    fn auto_retries_the_original_prompt_on_the_next_provider_after_a_usage_limit() {
+        let dir = tempdir().unwrap();
+        let (factory, requests) = fake_factory(vec![
+            failed_session("You've hit your weekly limit · resets tomorrow"),
+            completed_session("codex-success"),
+        ]);
+        let mut manager = RunManager::with_session_factory(dir.path(), factory);
+        let workflow = workflow_with_steps(vec![agent_workflow_step("work")]);
+        let mut input = start_input("route this successfully");
+        input.runner = Some(RunnerSelection::Auto);
+        input.resolved_runner = Some(Runner::Claude);
+        input.auto_runner_candidates = vec![Runner::Claude, Runner::Codex];
+        input.autonomous = Some(true);
+
+        let run = manager.start_run(&workflow, input).unwrap();
+
+        assert_eq!(run.status, RunStatus::Done);
+        assert_eq!(run.runner, Some(Runner::Codex));
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].runner, RunnerSelection::Claude);
+        assert_eq!(requests[1].runner, RunnerSelection::Codex);
+        assert_eq!(requests[0].prompt, requests[1].prompt);
+        let notes: Vec<_> = manager
+            .read_events(&run.id)
+            .into_iter()
+            .filter(|event| event.event_type == "note")
+            .filter_map(|event| event.extra.get("message").cloned())
+            .collect();
+        assert!(notes.iter().any(|message| {
+            message.as_str().is_some_and(|message| {
+                message == "Auto routing · trying Claude · model provider default"
+            })
+        }));
+        assert!(notes.iter().any(|message| {
+            message.as_str().is_some_and(|message| {
+                message == "Auto routing · Claude hit a usage limit — trying Codex"
+            })
+        }));
+        assert!(!notes.iter().any(|message| {
+            message
+                .as_str()
+                .is_some_and(|message| message.starts_with("autonomous pass"))
         }));
     }
 

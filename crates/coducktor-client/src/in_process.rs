@@ -462,23 +462,37 @@ impl InProcessEngine {
                     .ok_or(EngineError::NotFound)?
             }
         };
-        let requested_runner = input.runner;
-        let resolved_runner = if requested_runner == Some(RunnerSelection::Auto) {
+        let workspace = self.loaded_workspace_config();
+        let configured_runner =
+            coducktor_core::config::load_config(&self.repo_root, &workspace.agent_defaults)
+                .default_runner;
+        // The composer intentionally omits an untouched value that equals its configured
+        // default. Resolve that omission here so a configured `auto` default does not silently
+        // collapse to the core runtime's legacy Claude fallback.
+        let requested_runner = Some(effective_requested_runner(input.runner, configured_runner));
+        let auto_runner_candidates = if requested_runner == Some(RunnerSelection::Auto) {
             let status = provider_status_response();
-            let workspace = self.loaded_workspace_config();
             if workspace.quota_routing.enabled {
-                let usage = self.workspace_usage().await?;
-                Some(
-                    quota_aware_auto_runner(&status, &usage, &workspace.quota_routing).ok_or_else(
-                        || EngineError::Unavailable {
-                            reason: "no connected provider has eligible quota for Auto routing"
-                                .to_owned(),
-                        },
-                    )?,
-                )
+                self.fresh_cached_workspace_usage()
+                    .map(|usage| {
+                        quota_aware_auto_runners(&status, &usage, &workspace.quota_routing)
+                    })
+                    .filter(|candidates| !candidates.is_empty())
+                    .unwrap_or_else(|| auto_runners(&status))
             } else {
-                auto_runner(&status)
+                auto_runners(&status)
             }
+        } else {
+            Vec::new()
+        };
+        let resolved_runner = if requested_runner == Some(RunnerSelection::Auto) {
+            Some(
+                *auto_runner_candidates
+                    .first()
+                    .ok_or_else(|| EngineError::Unavailable {
+                        reason: "no connected provider is eligible for Auto routing".to_owned(),
+                    })?,
+            )
         } else {
             None
         };
@@ -495,6 +509,7 @@ impl InProcessEngine {
             reasoning_effort: input.reasoning_effort,
             runner: requested_runner,
             resolved_runner,
+            auto_runner_candidates,
             agent_profile: input.agent_profile,
             system_prompt: input.system_prompt,
             autonomous: input.autonomous,
@@ -903,16 +918,21 @@ impl InProcessEngine {
         self.workspace_usage_cached(true).await
     }
 
+    fn fresh_cached_workspace_usage(&self) -> Option<WorkspaceUsageResponse> {
+        self.usage_cache
+            .lock()
+            .ok()
+            .and_then(|cache| cache.as_ref().cloned())
+            .filter(|cached| cached.expires_at > Instant::now())
+            .map(|cached| cached.response)
+    }
+
     async fn workspace_usage_cached(
         &self,
         force_refresh: bool,
     ) -> Result<WorkspaceUsageResponse, EngineError> {
-        if !force_refresh
-            && let Ok(cache) = self.usage_cache.lock()
-            && let Some(cached) = cache.as_ref()
-            && cached.expires_at > Instant::now()
-        {
-            return Ok(cached.response.clone());
+        if !force_refresh && let Some(cached) = self.fresh_cached_workspace_usage() {
+            return Ok(cached);
         }
         let config = self.loaded_workspace_config();
         let response = collect_workspace_usage(&self.repo_root, &config).await;
@@ -6726,30 +6746,38 @@ fn provider_status_response() -> ProviderStatusResponse {
     ProviderStatusResponse { providers }
 }
 
-/// Pick the first connected, enabled general-purpose backend. The stable order makes `auto`
-/// predictable, while still degrading past missing CLIs and disabled providers.
-fn auto_runner(status: &ProviderStatusResponse) -> Option<Runner> {
+/// Build the stable connected-provider fallback order while degrading past missing CLIs and
+/// disabled providers.
+fn effective_requested_runner(
+    authored: Option<RunnerSelection>,
+    configured: RunnerSelection,
+) -> RunnerSelection {
+    authored.unwrap_or(configured)
+}
+
+fn auto_runners(status: &ProviderStatusResponse) -> Vec<Runner> {
     [Runner::Claude, Runner::Codex, Runner::OpenCode]
         .into_iter()
-        .find(|candidate| {
+        .filter(|candidate| {
             status.providers.iter().any(|provider| {
                 provider.provider == *candidate
                     && provider.enabled == Some(true)
                     && provider.status == ProviderConnectionState::Connected
             })
         })
+        .collect()
 }
 
 /// Quota-aware provider selection deliberately ranks trustworthy available capacity above an
 /// unknown account. This is the missing behavior that otherwise made the legacy Claude-first
 /// fallback win even while Codex had a fresh, unused weekly window.
-fn quota_aware_auto_runner(
+fn quota_aware_auto_runners(
     status: &ProviderStatusResponse,
     usage: &WorkspaceUsageResponse,
     policy: &coducktor_core::workspace::config::QuotaRouting,
-) -> Option<Runner> {
+) -> Vec<Runner> {
     let candidates = [Runner::Claude, Runner::Codex, Runner::OpenCode];
-    candidates
+    let mut scored: Vec<_> = candidates
         .into_iter()
         .filter(|runner| {
             status.providers.iter().any(|provider| {
@@ -6816,10 +6844,14 @@ fn quota_aware_auto_runner(
                 runner,
             ))
         })
-        .max_by_key(|(health, headroom, priority, order, _)| {
-            (*health, *headroom, *priority, *order)
-        })
+        .collect();
+    scored.sort_by_key(|(health, headroom, priority, order, _)| {
+        std::cmp::Reverse((*health, *headroom, *priority, *order))
+    });
+    scored
+        .into_iter()
         .map(|(_, _, _, _, runner)| runner)
+        .collect()
 }
 
 fn provider_models_locked() -> bool {
@@ -7435,7 +7467,7 @@ mod tests {
                 provider(Runner::Pi, ProviderConnectionState::Connected, true),
             ],
         };
-        assert_eq!(auto_runner(&status), Some(Runner::OpenCode));
+        assert_eq!(auto_runners(&status), vec![Runner::OpenCode]);
     }
 
     #[test]
@@ -7491,12 +7523,24 @@ mod tests {
             policy_health: None,
         };
         assert_eq!(
-            quota_aware_auto_runner(
+            quota_aware_auto_runners(
                 &status,
                 &usage,
                 &coducktor_core::workspace::config::QuotaRouting::default()
             ),
-            Some(Runner::Codex)
+            vec![Runner::Codex, Runner::Claude]
+        );
+    }
+
+    #[test]
+    fn an_omitted_runner_preserves_the_configured_auto_default() {
+        assert_eq!(
+            effective_requested_runner(None, RunnerSelection::Auto),
+            RunnerSelection::Auto
+        );
+        assert_eq!(
+            effective_requested_runner(Some(RunnerSelection::Codex), RunnerSelection::Auto),
+            RunnerSelection::Codex
         );
     }
 

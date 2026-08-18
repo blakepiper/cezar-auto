@@ -144,7 +144,10 @@ The first quota-aware slice is now connected:
   Claude and OpenCode limits as unknown rather than zero;
 - `duck usage`, `duck usage --json`, and Settings → Resources render that shared sanitized view; and
 - when `quotaRouting.enabled` is true, Auto ranks known available headroom above unknown capacity
-  instead of always allowing the legacy Claude-first order to win.
+  instead of always allowing the legacy Claude-first order to win; and
+- runner Auto retains the ranked connected-provider list, emits its choices into the run event
+  stream, and retries the unchanged opening prompt on the next provider after a classified quota,
+  authentication, capacity, or startup failure.
 
 The broader coordinator work remains incomplete:
 
@@ -153,8 +156,8 @@ The broader coordinator work remains incomplete:
 - the TUI renders runner Auto through Claude's model picker;
 - current recovery retries the same persisted runner/account;
 - live Claude session observations and OpenCode consumption have not yet been harvested; and
-- reservations, concurrency caps, route-specific model policy, and automatic failover still need
-  the shared coordinator described below.
+- reservations, concurrency caps, route-specific model policy, step/Continue re-routing, and
+  durable cross-restart failover still need the shared coordinator described below.
 
 Repository history contains a prior TypeScript quota service, policy router, coordinator,
 provider-failure classifier, sanitized snapshot store, blocked queue, and settings UI. The Rust

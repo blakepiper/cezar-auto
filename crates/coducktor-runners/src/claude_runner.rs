@@ -205,6 +205,7 @@ pub fn open_claude_session(
 struct ClaudeMessageResult {
     events: Vec<EventInput>,
     usage_delta: f64,
+    error: Option<String>,
 }
 
 fn parse_raw_usage(value: Option<&Value>) -> Option<RawUsage> {
@@ -268,6 +269,7 @@ fn handle_claude_message(msg: &Value, text_chunks: &mut Vec<String>) -> ClaudeMe
             ClaudeMessageResult {
                 events,
                 usage_delta: 0.0,
+                error: None,
             }
         }
         Some("user") => {
@@ -306,16 +308,19 @@ fn handle_claude_message(msg: &Value, text_chunks: &mut Vec<String>) -> ClaudeMe
             ClaudeMessageResult {
                 events,
                 usage_delta: 0.0,
+                error: None,
             }
         }
         Some("result") => {
+            let is_error = msg.get("is_error").and_then(Value::as_bool) == Some(true);
             if let Some(result_text) = msg.get("result").and_then(Value::as_str)
                 && text_chunks.is_empty()
+                && !is_error
             {
                 text_chunks.push(result_text.to_owned());
                 events.push(EventInput::new("text").field("text", result_text));
             }
-            if msg.get("is_error").and_then(Value::as_bool) == Some(true) {
+            let error = if is_error {
                 let message = msg
                     .get("result")
                     .and_then(Value::as_str)
@@ -326,19 +331,24 @@ fn handle_claude_message(msg: &Value, text_chunks: &mut Vec<String>) -> ClaudeMe
                         Some(subtype) => format!("claude reported result error ({subtype})"),
                         None => "claude reported result error".to_owned(),
                     });
-                events.push(EventInput::new("error").field("message", message));
-            }
+                events.push(EventInput::new("error").field("message", message.clone()));
+                Some(message)
+            } else {
+                None
+            };
             let usage_delta =
                 usage::cost_weighted_tokens(parse_raw_usage(msg.get("usage")).as_ref());
             ClaudeMessageResult {
                 events,
                 usage_delta,
+                error,
             }
         }
         // system/init and anything else: nothing actionable.
         _ => ClaudeMessageResult {
             events,
             usage_delta: 0.0,
+            error: None,
         },
     }
 }
@@ -388,6 +398,7 @@ impl ClaudeSession {
         tokens_used: f64,
         last_usage: Option<RawUsage>,
         cost_usd: Option<f64>,
+        error: Option<String>,
     ) -> Result<SessionOutcome, String> {
         let turn_text = text_chunks.join("\n").trim().to_owned();
         let valid_ask = coducktor_core::runs::ask::parse_ask_marker(&turn_text).is_some();
@@ -402,7 +413,9 @@ impl ClaudeSession {
             decision: Some(decision),
             plan_entries: None,
         };
-        Ok(if decision == TurnMarkerDecision::Done {
+        Ok(if let Some(message) = error {
+            SessionOutcome::Failed { message, report }
+        } else if decision == TurnMarkerDecision::Done {
             SessionOutcome::Completed(report)
         } else {
             SessionOutcome::Waiting(report)
@@ -481,7 +494,13 @@ impl ClaudeSession {
                     )
                     .map_err(|error| error.to_string())?;
                 }
-                return self.finalize_turn(text_chunks, tokens_used, last_usage, cost_usd);
+                return self.finalize_turn(
+                    text_chunks,
+                    tokens_used,
+                    last_usage,
+                    cost_usd,
+                    mapped.error,
+                );
             }
         }
 
@@ -509,7 +528,7 @@ impl ClaudeSession {
             )
             .map_err(|error| error.to_string())?;
         }
-        self.finalize_turn(text_chunks, tokens_used, last_usage, cost_usd)
+        self.finalize_turn(text_chunks, tokens_used, last_usage, cost_usd, None)
     }
 }
 
@@ -746,6 +765,24 @@ mod tests {
             }
             other => panic!("expected Completed, got {other:?}"),
         }
+        session.finish(&mut |_| Ok(())).unwrap();
+    }
+
+    #[test]
+    fn a_usage_limit_result_is_a_failed_turn_not_a_waiting_question() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = node_config(mock_script("mock-claude.mjs"));
+        let run_spec = spec_for(dir.path(), "test quota handling mock:limit");
+        let mut session = open_claude_session(&config, &run_spec, &BTreeMap::new()).unwrap();
+        let (outcome, events) = run_turn(&mut session);
+
+        match outcome.unwrap() {
+            SessionOutcome::Failed { message, .. } => {
+                assert!(message.starts_with("Claude AI usage limit reached|"));
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(events.iter().any(|event| event.event_type == "error"));
         session.finish(&mut |_| Ok(())).unwrap();
     }
 
