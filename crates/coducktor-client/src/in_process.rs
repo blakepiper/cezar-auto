@@ -152,6 +152,9 @@ const MODEL_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 const CODEX_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_MODEL_OUTPUT_BYTES: usize = 512 * 1024;
 const MAX_DISCOVERED_MODELS: usize = 500;
+const OPENCODE_GO_USAGE_URL: &str = "https://opencode.ai/zen/go/v1/usage";
+const MAX_OPENCODE_AUTH_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_OPENCODE_USAGE_BYTES: usize = 256 * 1024;
 
 fn data_dir(repo_root: &Path) -> PathBuf {
     repo_root.join(".ai").join("coducktor")
@@ -4146,6 +4149,154 @@ fn parse_codex_usage_snapshot(
     })
 }
 
+fn opencode_go_api_key(auth_path: &Path) -> Option<String> {
+    if std::fs::metadata(auth_path).ok()?.len() > MAX_OPENCODE_AUTH_BYTES {
+        return None;
+    }
+    let document: Value = serde_json::from_slice(&std::fs::read(auth_path).ok()?).ok()?;
+    let key = document.get("opencode-go")?.get("key")?.as_str()?.trim();
+    (!key.is_empty() && key.len() <= 16 * 1024).then(|| key.to_owned())
+}
+
+fn opencode_go_unavailable_snapshot(
+    profile: &ResolvedAgentProfile,
+    fetched_at: &str,
+) -> ProviderUsageSnapshot {
+    ProviderUsageSnapshot {
+        provider: QuotaProvider::OpenCode,
+        profile_id: profile.id.clone(),
+        upstream_provider: Some("opencode-go".to_owned()),
+        health: ProviderUsageHealth::Unknown,
+        confidence: Some(UsageConfidence::Unknown),
+        fetched_at: fetched_at.to_owned(),
+        source: "opencode_go_usage_api".to_owned(),
+        stale: false,
+        windows: Vec::new(),
+        consumption: None,
+        error: Some(ProviderUsageError {
+            code: "limits_unavailable".to_owned(),
+            message: "OpenCode Go live limits could not be refreshed".to_owned(),
+        }),
+        extra: Default::default(),
+    }
+}
+
+fn opencode_go_window(
+    usage: &Value,
+    name: &str,
+    kind: ProviderUsageWindowKind,
+) -> Option<ProviderUsageWindow> {
+    let window = usage.get(name)?.as_object()?;
+    let used_percent = window
+        .get("percent")
+        .and_then(Value::as_f64)
+        .filter(|percent| percent.is_finite())
+        .map(|percent| percent.clamp(0.0, 100.0));
+    let resets_at = window
+        .get("resetsAt")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|reset| !reset.is_empty())
+        .map(ToOwned::to_owned);
+    if used_percent.is_none() && resets_at.is_none() {
+        return None;
+    }
+    Some(ProviderUsageWindow {
+        id: Some(format!("opencode-go:{name}")),
+        kind,
+        used_percent,
+        resets_at,
+        hard_limit_reached: used_percent.map(|used| used >= 100.0),
+    })
+}
+
+fn parse_opencode_go_usage_snapshot(
+    profile: &ResolvedAgentProfile,
+    payload: &Value,
+    policy: &coducktor_core::workspace::config::QuotaProviderPolicy,
+    fetched_at: &str,
+) -> Option<ProviderUsageSnapshot> {
+    let usage = payload.get("usage")?;
+    let windows = [
+        ("rolling", ProviderUsageWindowKind::Short),
+        ("weekly", ProviderUsageWindowKind::Long),
+        ("monthly", ProviderUsageWindowKind::Long),
+    ]
+    .into_iter()
+    .filter_map(|(name, kind)| opencode_go_window(usage, name, kind))
+    .collect::<Vec<_>>();
+    if windows.is_empty() {
+        return None;
+    }
+    let exhausted = windows
+        .iter()
+        .any(|window| window.hard_limit_reached == Some(true));
+    let reserved = windows.iter().any(|window| {
+        window.used_percent.is_some_and(|used| {
+            let stop = if window.kind == ProviderUsageWindowKind::Long {
+                policy.long_window_stop_at_percent
+            } else {
+                policy.stop_new_work_at_percent
+            };
+            used >= stop
+        })
+    });
+    Some(ProviderUsageSnapshot {
+        provider: QuotaProvider::OpenCode,
+        profile_id: profile.id.clone(),
+        upstream_provider: Some("opencode-go".to_owned()),
+        health: if exhausted {
+            ProviderUsageHealth::HardExhausted
+        } else if reserved {
+            ProviderUsageHealth::SoftExhausted
+        } else {
+            ProviderUsageHealth::Available
+        },
+        confidence: Some(UsageConfidence::Authoritative),
+        fetched_at: fetched_at.to_owned(),
+        source: "opencode_go_usage_api".to_owned(),
+        stale: false,
+        windows,
+        consumption: None,
+        error: None,
+        extra: Default::default(),
+    })
+}
+
+async fn probe_opencode_go_usage(
+    profile: &ResolvedAgentProfile,
+    api_key: &str,
+    policy: &coducktor_core::workspace::config::QuotaProviderPolicy,
+    timeout: Duration,
+    fetched_at: &str,
+) -> Option<ProviderUsageSnapshot> {
+    let client = reqwest::Client::builder().timeout(timeout).build().ok()?;
+    let response = client
+        .get(OPENCODE_GO_USAGE_URL)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .header(
+            reqwest::header::USER_AGENT,
+            concat!("coducktor/", env!("CARGO_PKG_VERSION")),
+        )
+        .bearer_auth(api_key)
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success()
+        || response
+            .content_length()
+            .is_some_and(|length| length > MAX_OPENCODE_USAGE_BYTES as u64)
+    {
+        return None;
+    }
+    let body = response.bytes().await.ok()?;
+    if body.len() > MAX_OPENCODE_USAGE_BYTES {
+        return None;
+    }
+    let payload = serde_json::from_slice::<Value>(&body).ok()?;
+    parse_opencode_go_usage_snapshot(profile, &payload, policy, fetched_at)
+}
+
 async fn probe_codex_usage(
     repo_root: &Path,
     profile: &ResolvedAgentProfile,
@@ -4228,6 +4379,24 @@ async fn collect_workspace_usage(
         {
             providers.push(snapshot);
             continue;
+        }
+        if profile.provider == Runner::OpenCode && status == ProviderConnectionState::Connected {
+            let auth_path = agent_home_paths(&ProcessEnv)
+                .opencode_data
+                .join("auth.json");
+            if let Some(api_key) = opencode_go_api_key(&auth_path) {
+                let snapshot = probe_opencode_go_usage(
+                    &profile,
+                    &api_key,
+                    &config.quota_routing.opencode,
+                    Duration::from_secs(config.quota_routing.request_timeout_seconds),
+                    &fetched_at,
+                )
+                .await
+                .unwrap_or_else(|| opencode_go_unavailable_snapshot(&profile, &fetched_at));
+                providers.push(snapshot);
+                continue;
+            }
         }
         providers.push(unknown_usage_snapshot(&profile, status, &fetched_at));
     }
@@ -7568,6 +7737,45 @@ mod tests {
             snapshot.windows[1].resets_at.as_deref(),
             Some("1970-01-02T00:00:00.000Z")
         );
+    }
+
+    #[test]
+    fn opencode_go_usage_payload_normalizes_all_three_authoritative_windows() {
+        let profile = default_agent_profile(Runner::OpenCode);
+        let payload = json!({
+            "usage": {
+                "rolling": { "percent": 0.0, "resetsAt": "2030-01-02T03:04:05Z" },
+                "weekly": { "percent": 80.0, "resetsAt": "2030-01-08T00:00:00Z" },
+                "monthly": { "percent": 101.0, "resetsAt": "2030-02-01T00:00:00Z" }
+            }
+        });
+        let snapshot = parse_opencode_go_usage_snapshot(
+            &profile,
+            &payload,
+            &coducktor_core::workspace::config::QuotaRouting::default().opencode,
+            "2026-08-18T00:00:00.000Z",
+        )
+        .unwrap();
+        assert_eq!(snapshot.upstream_provider.as_deref(), Some("opencode-go"));
+        assert_eq!(snapshot.confidence, Some(UsageConfidence::Authoritative));
+        assert_eq!(snapshot.health, ProviderUsageHealth::HardExhausted);
+        assert_eq!(snapshot.windows.len(), 3);
+        assert_eq!(snapshot.windows[0].kind, ProviderUsageWindowKind::Short);
+        assert_eq!(snapshot.windows[1].kind, ProviderUsageWindowKind::Long);
+        assert_eq!(snapshot.windows[2].used_percent, Some(100.0));
+        assert_eq!(snapshot.windows[2].hard_limit_reached, Some(true));
+    }
+
+    #[test]
+    fn opencode_go_api_key_reads_only_the_expected_bounded_credential() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = dir.path().join("auth.json");
+        std::fs::write(
+            &auth,
+            r#"{"anthropic":{"key":"wrong"},"opencode-go":{"type":"api","key":"  go-key  "}}"#,
+        )
+        .unwrap();
+        assert_eq!(opencode_go_api_key(&auth).as_deref(), Some("go-key"));
     }
     use coducktor_contract::WorkflowStepDef;
     use coducktor_core::workflows::run::{

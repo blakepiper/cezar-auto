@@ -92,11 +92,13 @@ pub struct AgentHomePaths {
     pub claude: PathBuf,
     pub codex: PathBuf,
     pub opencode_config: PathBuf,
+    pub opencode_data: PathBuf,
 }
 
 /// Honors the env vars the vendors document: `$CLAUDE_CONFIG_DIR` relocates Claude
 /// Code's home; `$CODEX_HOME` relocates Codex's; `$XDG_CONFIG_HOME` relocates OpenCode's
-/// config dir (falling back to `~/.config`). These are the DEFAULT profile's dirs — a
+/// config dir (falling back to `~/.config`). `$XDG_DATA_HOME` relocates OpenCode's
+/// credentials and local state (falling back to `~/.local/share`). These are the DEFAULT profile's dirs — a
 /// second login of the same CLI is an agent account and resolves through
 /// `workspace::agent_accounts` instead.
 pub fn agent_home_paths(env: &dyn EnvSource) -> AgentHomePaths {
@@ -110,6 +112,9 @@ pub fn agent_home_paths(env: &dyn EnvSource) -> AgentHomePaths {
     let xdg_config = non_empty(env.get("XDG_CONFIG_HOME"))
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".config"));
+    let xdg_data = non_empty(env.get("XDG_DATA_HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".local").join("share"));
     AgentHomePaths {
         claude: non_empty(env.get("CLAUDE_CONFIG_DIR"))
             .map(PathBuf::from)
@@ -118,6 +123,7 @@ pub fn agent_home_paths(env: &dyn EnvSource) -> AgentHomePaths {
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".codex")),
         opencode_config: xdg_config.join("opencode"),
+        opencode_data: xdg_data.join("opencode"),
     }
 }
 
@@ -228,6 +234,7 @@ mod tests {
             ("HOME", "/home/pat"),
             ("CLAUDE_CONFIG_DIR", "/opt/claude"),
             ("CODEX_HOME", "/opt/codex"),
+            ("XDG_DATA_HOME", "/opt/data"),
         ]);
         let paths = agent_home_paths(&env);
         assert_eq!(paths.claude, PathBuf::from("/opt/claude"));
@@ -236,6 +243,7 @@ mod tests {
             paths.opencode_config,
             PathBuf::from("/home/pat/.config/opencode")
         );
+        assert_eq!(paths.opencode_data, PathBuf::from("/opt/data/opencode"));
     }
 
     #[test]
@@ -247,6 +255,10 @@ mod tests {
         assert_eq!(
             paths.opencode_config,
             PathBuf::from("/home/pat/.config/opencode")
+        );
+        assert_eq!(
+            paths.opencode_data,
+            PathBuf::from("/home/pat/.local/share/opencode")
         );
     }
 

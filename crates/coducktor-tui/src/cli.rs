@@ -47,7 +47,7 @@ pub enum Command {
     },
     /// Scaffold `.ai/coducktor/` (an example workflow + skill) in the target repo.
     Init,
-    /// Show sanitized Claude/Codex quota telemetry.
+    /// Show sanitized Claude, Codex, and supported OpenCode quota telemetry.
     Usage {
         /// Emit stable JSON for scripts.
         #[arg(long)]

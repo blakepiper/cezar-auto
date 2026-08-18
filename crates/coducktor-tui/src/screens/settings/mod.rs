@@ -659,16 +659,26 @@ fn rows_resources(app: &App) -> Vec<Row> {
                 coducktor_contract::QuotaProvider::OpenCode => "OpenCode",
             };
             let health = format!("{:?}", provider.health).to_lowercase();
+            let upstream = provider
+                .upstream_provider
+                .as_deref()
+                .map(|upstream| format!(" · {upstream}"))
+                .unwrap_or_default();
             rows.push(row(
-                format!("{provider_name} · {}", provider.profile_id),
+                format!("{provider_name}{upstream} · {}", provider.profile_id),
                 format!("{health} · {} · {}", provider.source, provider.fetched_at),
             ));
             for window in &provider.windows {
-                let name = match window.kind {
-                    coducktor_contract::ProviderUsageWindowKind::Short => "Short window",
-                    coducktor_contract::ProviderUsageWindowKind::Long => "Weekly window",
-                    coducktor_contract::ProviderUsageWindowKind::Model => "Model window",
-                    coducktor_contract::ProviderUsageWindowKind::Unknown => "Usage window",
+                let name = match window.id.as_deref() {
+                    Some(id) if id.ends_with(":rolling") => "Session window",
+                    Some(id) if id.ends_with(":weekly") => "Weekly window",
+                    Some(id) if id.ends_with(":monthly") => "Monthly window",
+                    _ => match window.kind {
+                        coducktor_contract::ProviderUsageWindowKind::Short => "Short window",
+                        coducktor_contract::ProviderUsageWindowKind::Long => "Weekly window",
+                        coducktor_contract::ProviderUsageWindowKind::Model => "Model window",
+                        coducktor_contract::ProviderUsageWindowKind::Unknown => "Usage window",
+                    },
                 };
                 let used = window
                     .used_percent

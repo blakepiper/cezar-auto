@@ -37,6 +37,12 @@ records what is implemented and which terminal observations remain unverified.
   default`; Claude's limit result then rendered the warning `Claude hit a usage limit — trying
   Codex`, followed by the Codex choice and Codex output for the unchanged prompt. The exhausted
   Claude session received no autonomous nudges, and quitting restored the alternate screen.
+- **OpenCode Go usage.** `duck usage --refresh` was manually exercised on 2026-08-18 against the
+  signed-in OpenCode Go account used by the BLARCHY top-bar widget. It reported the same live
+  session, weekly, and monthly windows with reset timestamps, without opening an interactive
+  OpenCode session or issuing a model prompt. The Resources screen was then exercised in a real
+  `140x50` terminal and showed OpenCode Go as available with distinct Session, Weekly, and Monthly
+  rows (0%, 80%, and 80%) and the same reset timestamps; quitting restored the alternate screen.
 - **Tasks keyboard focus.** Manually exercised through the real TUI in an 80x24 pseudo-terminal
   on 2026-08-17: from the focused sidebar, `Ctrl+Right` moved control into the Tasks table,
   `Down` highlighted the first task row, and `Enter` opened that task's thread. Quitting restored

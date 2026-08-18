@@ -281,19 +281,20 @@ pub async fn usage_command(repo_root: PathBuf, json: bool, refresh: bool) -> i32
         );
     }
     for provider in response.providers {
+        let upstream = provider
+            .upstream_provider
+            .as_deref()
+            .map(|upstream| format!(" · {upstream}"))
+            .unwrap_or_default();
         println!(
-            "{} · {} · {:?}",
+            "{}{} · {} · {:?}",
             usage_provider_label(provider.provider),
+            upstream,
             provider.profile_id,
             provider.health
         );
         for window in &provider.windows {
-            let kind = match window.kind {
-                coducktor_contract::ProviderUsageWindowKind::Short => "short",
-                coducktor_contract::ProviderUsageWindowKind::Long => "weekly",
-                coducktor_contract::ProviderUsageWindowKind::Model => "model",
-                coducktor_contract::ProviderUsageWindowKind::Unknown => "window",
-            };
+            let kind = usage_window_label(window);
             let used = window
                 .used_percent
                 .map(|used| format!("{used:.0}% used"))
@@ -312,6 +313,20 @@ pub async fn usage_command(repo_root: PathBuf, json: bool, refresh: bool) -> i32
         }
     }
     0
+}
+
+fn usage_window_label(window: &coducktor_contract::ProviderUsageWindow) -> &'static str {
+    match window.id.as_deref() {
+        Some(id) if id.ends_with(":rolling") => "session",
+        Some(id) if id.ends_with(":weekly") => "weekly",
+        Some(id) if id.ends_with(":monthly") => "monthly",
+        _ => match window.kind {
+            coducktor_contract::ProviderUsageWindowKind::Short => "short",
+            coducktor_contract::ProviderUsageWindowKind::Long => "weekly",
+            coducktor_contract::ProviderUsageWindowKind::Model => "model",
+            coducktor_contract::ProviderUsageWindowKind::Unknown => "window",
+        },
+    }
 }
 
 fn usage_provider_label(provider: coducktor_contract::QuotaProvider) -> &'static str {
@@ -624,6 +639,14 @@ mod tests {
             usage_provider_label(coducktor_contract::QuotaProvider::Codex),
             "Codex"
         );
+        let monthly = coducktor_contract::ProviderUsageWindow {
+            id: Some("opencode-go:monthly".to_owned()),
+            kind: coducktor_contract::ProviderUsageWindowKind::Long,
+            used_percent: Some(80.0),
+            resets_at: None,
+            hard_limit_reached: Some(false),
+        };
+        assert_eq!(usage_window_label(&monthly), "monthly");
     }
 
     /// A fake "repo" carrying just enough of the real tree's shape

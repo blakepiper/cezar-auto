@@ -140,8 +140,9 @@ The current Rust application already has useful pieces:
 
 The first quota-aware slice is now connected:
 
-- `workspace_usage` probes Codex's local app-server through a bounded cached request and represents
-  Claude and OpenCode limits as unknown rather than zero;
+- `workspace_usage` probes Codex's local app-server and OpenCode Go's authenticated usage endpoint
+  through bounded cached requests; Claude and OpenCode upstreams without a supported quota
+  interface remain unknown rather than zero;
 - `duck usage`, `duck usage --json`, and Settings → Resources render that shared sanitized view; and
 - when `quotaRouting.enabled` is true, Auto ranks known available headroom above unknown capacity
   instead of always allowing the legacy Claude-first order to win; and
@@ -155,7 +156,7 @@ The broader coordinator work remains incomplete:
 - model Auto and reasoning Auto omit overrides and delegate to the runner;
 - the TUI renders runner Auto through Claude's model picker;
 - current recovery retries the same persisted runner/account;
-- live Claude session observations and OpenCode consumption have not yet been harvested; and
+- live Claude session observations and OpenCode local consumption have not yet been harvested; and
 - reservations, concurrency caps, route-specific model policy, step/Continue re-routing, and
   durable cross-restart failover still need the shared coordinator described below.
 
@@ -204,6 +205,12 @@ provided telemetry, the account limit is `unknown`. `/usage` is interactive and 
 OpenCode is both a runner and a multiprovider client. Its local server exposes configured and
 connected providers and models. `opencode stats` exposes historical local token/cost consumption,
 but neither interface provides a universal quota-window API for every possible upstream provider.
+
+OpenCode Go is the concrete exception: when the existing `opencode-go` credential is present in
+OpenCode's XDG data directory, Coducktor calls its authenticated usage endpoint with an eight-second
+default bound and normalizes the returned rolling, weekly, and monthly percentages and reset times.
+The credential and raw response never enter the usage contract or durable state. Failed auth,
+network, oversized, or malformed responses degrade to unknown rather than zero.
 
 For the first release:
 
