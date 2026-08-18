@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use crossterm::event::{Event, KeyCode, KeyEventKind};
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::Style;
@@ -34,8 +34,8 @@ impl WelcomeAnimation {
         self.skipped = true;
     }
 
-    /// Consume startup input while the splash is visible. The quit key is forwarded so the
-    /// existing application-level quit behavior remains available during the animation.
+    /// Consume startup input while the splash is visible. Quit and focus-navigation keys are
+    /// forwarded so the corresponding application-level behavior remains available immediately.
     pub fn handle_event(&mut self, event: &Event) -> bool {
         if !self.is_active() {
             return true;
@@ -44,7 +44,9 @@ impl WelcomeAnimation {
             && key.kind == KeyEventKind::Press
         {
             self.skip();
-            return matches!(key.code, KeyCode::Char(character) if character.eq_ignore_ascii_case(&'q'));
+            return matches!(key.code, KeyCode::Char(character) if character.eq_ignore_ascii_case(&'q'))
+                || (key.modifiers.contains(KeyModifiers::CONTROL)
+                    && matches!(key.code, KeyCode::Left | KeyCode::Right));
         }
         false
     }
@@ -132,7 +134,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_keys_skip_the_splash_but_only_q_is_forwarded() {
+    fn startup_keys_skip_the_splash_and_forward_quit_or_focus_navigation() {
         let mut animation = WelcomeAnimation::new();
         assert!(!animation.handle_event(&Event::Key(KeyEvent::new(
             KeyCode::Char('n'),
@@ -144,6 +146,13 @@ mod tests {
         assert!(animation.handle_event(&Event::Key(KeyEvent::new(
             KeyCode::Char('q'),
             crossterm::event::KeyModifiers::NONE,
+        ))));
+        assert!(!animation.is_active());
+
+        let mut animation = WelcomeAnimation::new();
+        assert!(animation.handle_event(&Event::Key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::CONTROL,
         ))));
         assert!(!animation.is_active());
     }
