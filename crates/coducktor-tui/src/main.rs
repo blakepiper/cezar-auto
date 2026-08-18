@@ -1641,7 +1641,16 @@ fn drain_background_results(
                 }
             }
             BackgroundResult::RefreshModels { runner, result } => match result {
-                Ok(catalog) => screens::new_task::apply_model_catalog(app, catalog),
+                Ok(catalog) => {
+                    if matches!(app.route(), app::Route::NewTask { .. }) {
+                        screens::new_task::apply_model_catalog(app, catalog);
+                    } else if matches!(
+                        app.route(),
+                        app::Route::Settings { .. } | app::Route::GlobalSettings
+                    ) {
+                        screens::settings::apply_model_catalog(app, catalog);
+                    }
+                }
                 Err(error) => {
                     app.notice = Some(format!("{runner:?} model catalog failed: {error}"))
                 }

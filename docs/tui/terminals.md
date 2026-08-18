@@ -30,7 +30,12 @@ records what is implemented and which terminal observations remain unverified.
   and quitting restored the alternate screen. Repeated at `120x40` on 2026-08-18 after adding
   provider usage: the Resources section showed routing health, observation time, honest unknown
   states for Claude and OpenCode, and both live Codex weekly windows (16% and 0% used) with reset
-  times; quitting again restored the alternate screen.
+  times; quitting again restored the alternate screen. Repeated in an isolated real `80x24` PTY on
+  2026-08-18 after restoring global agent defaults: `:open /settings` opened directly on `Agents`
+  and showed runner, per-provider model, reasoning, variants, worktree, and task-mode defaults. The
+  Codex model row opened a picker that refreshed from `auto` to the live model catalog; selecting
+  `gpt-5.6-terra` persisted it and immediately rendered that value in the row. `q` restored the
+  alternate screen.
 - **Auto routing failover.** Manually exercised in a real `120x40` `script` pseudo-terminal on
   2026-08-18 with the bundled Claude and Codex process mocks and the configured runner default
   set to Auto. A `mock:limit` prompt first rendered `Auto routing · trying Claude · model provider

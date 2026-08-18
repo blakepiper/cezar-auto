@@ -2753,6 +2753,8 @@ impl App {
             HitAction::PickerRow(index) => {
                 if matches!(self.route(), Route::NewTask { .. }) {
                     crate::screens::new_task::pick_index(self, index);
+                } else if matches!(self.route(), Route::Settings { .. } | Route::GlobalSettings) {
+                    crate::screens::settings::pick_model_index(self, index);
                 }
             }
             HitAction::ComposerRemoveAttachment(index) => {

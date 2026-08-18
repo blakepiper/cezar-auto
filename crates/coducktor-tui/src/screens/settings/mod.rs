@@ -1,5 +1,5 @@
 //! The Settings screens. The project route exposes all nine sections; the global route exposes
-//! the five workspace sections (Projects, Appearance, Accounts, Notifications, Resources).
+//! the six workspace sections (Agents, Projects, Appearance, Accounts, Notifications, Resources).
 //! Writes go through the in-process engine and durable workspace files.
 //!
 //! The screen contains only the sections listed above. Terminal-only concerns such as
@@ -14,10 +14,10 @@
 use coducktor_contract::{
     AgentConfigFileContent, AgentConfigListing, AgentDefaultsPatch, AgentProfilesResponse,
     Appearance, ComposerDefaultsPatch, ConfigResponse, NotificationsUiState,
-    ProjectComposerDefaults, PromptTemplate, ReasoningEffort, Runner, RunnerModelsPatch,
-    SelectAgentProfileInput, SetConfigInput, SetWorkspaceConfigInput, TaskSource, UiState,
-    UpdateAgentProfileInput, UpdateProjectInput, WorkspaceConfigResponse, WorkspaceUiState,
-    WorkspaceUsageResponse, WorktreesResponse,
+    ProjectComposerDefaults, PromptTemplate, ReasoningEffort, Runner, RunnerModelCatalogResponse,
+    RunnerModelsPatch, SelectAgentProfileInput, SetConfigInput, SetWorkspaceConfigInput,
+    TaskSource, UiState, UpdateAgentProfileInput, UpdateProjectInput, WorkspaceConfigResponse,
+    WorkspaceUiState, WorkspaceUsageResponse, WorktreesResponse, runner_discovers_models,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
@@ -30,6 +30,7 @@ use crate::app::{App, ConfirmRequest, PendingAction, Route};
 use crate::diff::Highlighter;
 use crate::theme::{Theme, ThemeName};
 use crate::widgets::editor::Editor;
+use crate::widgets::picker::{Picker, PickerEvent, PickerItem};
 
 const RUNNERS: [Runner; 4] = [Runner::Claude, Runner::Codex, Runner::OpenCode, Runner::Pi];
 const THEMES: [ThemeName; 3] = [ThemeName::Light, ThemeName::Dark, ThemeName::LazyVim];
@@ -68,7 +69,8 @@ const SECTIONS: [SettingsSection; 9] = [
     SettingsSection::Projects,
 ];
 
-const GLOBAL_SECTIONS: [SettingsSection; 5] = [
+const GLOBAL_SECTIONS: [SettingsSection; 6] = [
+    SettingsSection::Agents,
     SettingsSection::Projects,
     SettingsSection::Appearance,
     SettingsSection::Accounts,
@@ -104,6 +106,19 @@ impl SettingsSection {
 pub struct SettingsEdit {
     pub buffer: String,
     pub target: EditTarget,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelScope {
+    Project,
+    Global,
+}
+
+#[derive(Debug, Clone)]
+pub struct SettingsModelPicker {
+    pub scope: ModelScope,
+    pub runner: Runner,
+    pub picker: Picker,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -143,6 +158,8 @@ pub struct SettingsUi {
     pub row: usize,
     pub edit: Option<SettingsEdit>,
     pub notice: Option<String>,
+    pub model_picker: Option<SettingsModelPicker>,
+    pub model_catalog: Option<RunnerModelCatalogResponse>,
 
     pub config: Option<ConfigResponse>,
     pub workspace_config: Option<WorkspaceConfigResponse>,
@@ -172,6 +189,8 @@ impl Default for SettingsUi {
             row: 0,
             edit: None,
             notice: None,
+            model_picker: None,
+            model_catalog: None,
             config: None,
             workspace_config: None,
             workspace_ui_state: None,
@@ -279,6 +298,9 @@ fn rows_for(app: &App, section: SettingsSection) -> Vec<Row> {
 }
 
 fn rows_agents(app: &App) -> Vec<Row> {
+    if matches!(app.route(), Route::GlobalSettings) {
+        return rows_global_agents(app);
+    }
     let Some(config) = &app.settings_ui.config else {
         return vec![row("Loading…", "")];
     };
@@ -309,7 +331,7 @@ fn rows_agents(app: &App) -> Vec<Row> {
             })
         })
         .unwrap_or(true);
-    let mut rows = vec![
+    let rows = vec![
         row("Base branch", opt_str(&config.base_branch)),
         row(
             "Project runner",
@@ -338,19 +360,6 @@ fn rows_agents(app: &App) -> Vec<Row> {
             bool_label(config.review_gate.unwrap_or(true)),
         ),
         row("Default task source", source),
-        row("Default reasoning", reasoning.clone()),
-        row("Default variants", variants.to_string()),
-        row("Default worktree", bool_label(worktree)),
-        row(
-            "Default task mode",
-            if autonomous {
-                "autonomous"
-            } else {
-                "manual approval"
-            },
-        ),
-    ];
-    rows.extend([
         row(
             "Project reasoning",
             project_composer
@@ -396,50 +405,78 @@ fn rows_agents(app: &App) -> Vec<Row> {
                     )
                 }),
         ),
-    ]);
-    let agent = workspace.map(|config| &config.agent_defaults);
-    rows.extend([
-        row(
-            "Global runner",
-            agent
-                .and_then(|a| a.runner)
-                .map(runner_selection_label)
-                .unwrap_or("inherit"),
-        ),
-        row(
-            "Global model — claude",
-            opt_str(
-                &agent
-                    .and_then(|a| a.models.as_ref())
-                    .and_then(|m| m.claude.clone()),
-            ),
-        ),
-        row(
-            "Global model — codex",
-            opt_str(
-                &agent
-                    .and_then(|a| a.models.as_ref())
-                    .and_then(|m| m.codex.clone()),
-            ),
-        ),
-        row(
-            "Global model — opencode",
-            opt_str(
-                &agent
-                    .and_then(|a| a.models.as_ref())
-                    .and_then(|m| m.opencode.clone()),
-            ),
-        ),
-        row(
-            "Global model — pi",
-            opt_str(
-                &agent
-                    .and_then(|a| a.models.as_ref())
-                    .and_then(|m| m.pi.clone()),
-            ),
-        ),
-    ]);
+    ];
     rows
+}
+
+fn rows_global_agents(app: &App) -> Vec<Row> {
+    let Some(workspace) = app.settings_ui.workspace_config.as_ref() else {
+        return vec![row("Loading…", "")];
+    };
+    let agent = &workspace.agent_defaults;
+    let composer = &workspace.composer_defaults;
+    let worktree = composer.worktree.unwrap_or(composer.inherited_worktree);
+    let autonomous = composer
+        .autonomous
+        .or(match composer.inherited_autonomous {
+            coducktor_contract::InheritedAutonomous::Value(value) => Some(value),
+            coducktor_contract::InheritedAutonomous::SourceDependent => None,
+        })
+        .unwrap_or(true);
+    vec![
+        row(
+            "Default runner",
+            agent.runner.map(runner_selection_label).unwrap_or("—"),
+        ),
+        row(
+            "Default model — claude",
+            opt_str(
+                &agent
+                    .models
+                    .as_ref()
+                    .and_then(|models| models.claude.clone()),
+            ),
+        ),
+        row(
+            "Default model — codex",
+            opt_str(
+                &agent
+                    .models
+                    .as_ref()
+                    .and_then(|models| models.codex.clone()),
+            ),
+        ),
+        row(
+            "Default model — opencode",
+            opt_str(
+                &agent
+                    .models
+                    .as_ref()
+                    .and_then(|models| models.opencode.clone()),
+            ),
+        ),
+        row(
+            "Default model — pi",
+            opt_str(&agent.models.as_ref().and_then(|models| models.pi.clone())),
+        ),
+        row(
+            "Default reasoning",
+            composer.reasoning.map(reasoning_label).unwrap_or("auto"),
+        ),
+        row(
+            "Default variants",
+            composer.variants.unwrap_or(1).to_string(),
+        ),
+        row("Default worktree", bool_label(worktree)),
+        row(
+            "Default task mode",
+            if autonomous {
+                "autonomous"
+            } else {
+                "manual approval"
+            },
+        ),
+    ]
 }
 
 fn runner_selection_label(selection: coducktor_contract::RunnerSelection) -> &'static str {
@@ -782,6 +819,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         .split(area);
     render_nav(frame, columns[0], app);
     render_body(frame, columns[1], app);
+    if let Some(model_picker) = app.settings_ui.model_picker.as_ref() {
+        let theme = app.theme;
+        model_picker
+            .picker
+            .render(frame, area, theme, &mut app.hitmap);
+    }
 }
 
 fn render_nav(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
@@ -803,8 +846,13 @@ fn render_nav(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut current_scope = "";
     for (index, section) in visible_sections(app).iter().enumerate() {
-        if section.scope_label() != current_scope {
-            current_scope = section.scope_label();
+        let scope = if matches!(app.route(), Route::GlobalSettings) {
+            "global"
+        } else {
+            section.scope_label()
+        };
+        if scope != current_scope {
+            current_scope = scope;
             lines.push(Line::from(Span::styled(
                 current_scope.to_uppercase(),
                 Style::default().fg(app.theme.palette.soft_fg),
@@ -940,6 +988,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     if let Some(edit) = app.settings_ui.edit.clone() {
         return handle_edit_key(app, edit, key);
     }
+    if app.settings_ui.model_picker.is_some() {
+        return handle_model_picker_key(app, key);
+    }
     match key.code {
         KeyCode::Tab => {
             let sections = visible_sections(app);
@@ -1062,6 +1113,10 @@ fn handle_file_editor_key(app: &mut App, key: KeyEvent) -> bool {
 fn cycle(app: &mut App, backward: bool) {
     let section = current_section(app);
     let row = app.settings_ui.row;
+    if section == SettingsSection::Agents && matches!(app.route(), Route::GlobalSettings) {
+        cycle_global_agents(app, row, backward);
+        return;
+    }
     match (section, row) {
         (SettingsSection::Agents, 1) => {
             let Some(config) = app.settings_ui.config.clone() else {
@@ -1085,16 +1140,22 @@ fn cycle(app: &mut App, backward: bool) {
                 (app.settings_ui.add_account_provider + 1) % len
             };
         }
-        (SettingsSection::Agents, 10) => cycle_default_reasoning(app, backward),
-        (SettingsSection::Agents, 12) => cycle_default_worktree(app),
-        (SettingsSection::Agents, 13) => cycle_default_autonomous(app),
-        (SettingsSection::Agents, 14) => cycle_project_reasoning(app, backward),
-        (SettingsSection::Agents, 16) => cycle_project_worktree(app, backward),
-        (SettingsSection::Agents, 17) => cycle_project_autonomous(app, backward),
-        (SettingsSection::Agents, 18) => cycle_global_runner(app, backward),
+        (SettingsSection::Agents, 10) => cycle_project_reasoning(app, backward),
+        (SettingsSection::Agents, 12) => cycle_project_worktree(app, backward),
+        (SettingsSection::Agents, 13) => cycle_project_autonomous(app, backward),
         (SettingsSection::Appearance, index) => cycle_appearance(app, index, backward),
         (SettingsSection::Notifications, 0) => toggle_notifications(app),
         (SettingsSection::Resources, index) => toggle_or_ignore_resource(app, index),
+        _ => {}
+    }
+}
+
+fn cycle_global_agents(app: &mut App, row: usize, backward: bool) {
+    match row {
+        0 => cycle_global_runner(app, backward),
+        5 => cycle_default_reasoning(app, backward),
+        7 => cycle_default_worktree(app),
+        8 => cycle_default_autonomous(app),
         _ => {}
     }
 }
@@ -1431,7 +1492,165 @@ fn start_edit(app: &mut App, target: EditTarget, initial: impl Into<String>) {
     });
 }
 
+const CUSTOM_MODEL: &str = "__custom_model__";
+
+fn model_value(app: &App, scope: ModelScope, runner: Runner) -> Option<String> {
+    let models = match scope {
+        ModelScope::Project => app
+            .settings_ui
+            .config
+            .as_ref()
+            .map(|config| &config.default_models),
+        ModelScope::Global => app
+            .settings_ui
+            .workspace_config
+            .as_ref()
+            .and_then(|config| config.agent_defaults.models.as_ref()),
+    }?;
+    match runner {
+        Runner::Claude => models.claude.clone(),
+        Runner::Codex => models.codex.clone(),
+        Runner::OpenCode => models.opencode.clone(),
+        Runner::Pi => models.pi.clone(),
+    }
+}
+
+fn model_picker_items(app: &App, scope: ModelScope, runner: Runner) -> Vec<PickerItem> {
+    let current = model_value(app, scope, runner);
+    let catalog = app
+        .settings_ui
+        .model_catalog
+        .as_ref()
+        .filter(|catalog| catalog.runner == runner);
+    let mut items = crate::new_task_form::models_for_runner(runner, catalog, &[current.as_deref()])
+        .into_iter()
+        .map(|model| {
+            PickerItem::simple(
+                model.id,
+                model.label,
+                (!model.desc.is_empty()).then_some(model.desc),
+            )
+        })
+        .collect::<Vec<_>>();
+    items.push(PickerItem::simple(
+        CUSTOM_MODEL,
+        "Custom model…",
+        Some("Enter a runner-native model id".to_owned()),
+    ));
+    items
+}
+
+fn open_model_picker(app: &mut App, scope: ModelScope, runner: Runner) {
+    let mut picker = Picker::new(format!("{} MODEL", runner_label(runner).to_uppercase()));
+    picker.searchable = false;
+    let items = model_picker_items(app, scope, runner);
+    let current = model_value(app, scope, runner).unwrap_or_default();
+    picker.set_items(items);
+    picker.selected = picker
+        .items
+        .iter()
+        .position(|item| item.value == current)
+        .unwrap_or(0);
+    app.settings_ui.model_picker = Some(SettingsModelPicker {
+        scope,
+        runner,
+        picker,
+    });
+    if runner_discovers_models(runner) {
+        app.pending.push(PendingAction::RefreshModels { runner });
+    }
+}
+
+pub fn apply_model_catalog(app: &mut App, catalog: RunnerModelCatalogResponse) {
+    let Some(open) = app.settings_ui.model_picker.as_ref() else {
+        return;
+    };
+    if open.runner != catalog.runner {
+        return;
+    }
+    let scope = open.scope;
+    let runner = open.runner;
+    app.settings_ui.model_catalog = Some(catalog);
+    let items = model_picker_items(app, scope, runner);
+    if let Some(open) = app.settings_ui.model_picker.as_mut() {
+        open.picker.set_items(items);
+    }
+}
+
+fn handle_model_picker_key(app: &mut App, key: KeyEvent) -> bool {
+    let event = app
+        .settings_ui
+        .model_picker
+        .as_mut()
+        .map(|open| open.picker.handle_key(key))
+        .unwrap_or(PickerEvent::Close);
+    match event {
+        PickerEvent::Select(index) => pick_model_index(app, index),
+        PickerEvent::Close => app.settings_ui.model_picker = None,
+        PickerEvent::Query(_) | PickerEvent::Noop => {}
+    }
+    true
+}
+
+pub fn pick_model_index(app: &mut App, index: usize) {
+    let Some(open) = app.settings_ui.model_picker.as_ref() else {
+        return;
+    };
+    let Some(item) = open.picker.items.get(index) else {
+        return;
+    };
+    let scope = open.scope;
+    let runner = open.runner;
+    let value = item.value.clone();
+    app.settings_ui.model_picker = None;
+    if value == CUSTOM_MODEL {
+        let target = match scope {
+            ModelScope::Project => EditTarget::Model(runner),
+            ModelScope::Global => EditTarget::GlobalModel(runner),
+        };
+        start_edit(
+            app,
+            target,
+            model_value(app, scope, runner).unwrap_or_default(),
+        );
+        return;
+    }
+    queue_model_update(app, scope, runner, (!value.is_empty()).then_some(value));
+}
+
+fn queue_model_update(app: &mut App, scope: ModelScope, runner: Runner, value: Option<String>) {
+    let mut models = RunnerModelsPatch::default();
+    match runner {
+        Runner::Claude => models.claude = Some(value),
+        Runner::Codex => models.codex = Some(value),
+        Runner::OpenCode => models.opencode = Some(value),
+        Runner::Pi => models.pi = Some(value),
+    }
+    match scope {
+        ModelScope::Project => app.pending.push(PendingAction::SettingsPutConfig {
+            project: app.settings_ui.project.clone(),
+            input: SetConfigInput {
+                default_models: Some(models),
+                ..Default::default()
+            },
+        }),
+        ModelScope::Global => app.pending.push(PendingAction::SettingsPutWorkspaceConfig {
+            input: SetWorkspaceConfigInput {
+                agent_defaults: Some(AgentDefaultsPatch {
+                    models: Some(models),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        }),
+    }
+}
+
 fn activate_agents(app: &mut App, row: usize) {
+    if matches!(app.route(), Route::GlobalSettings) {
+        activate_global_agents(app, row);
+        return;
+    }
     let Some(config) = app.settings_ui.config.clone() else {
         return;
     };
@@ -1442,26 +1661,10 @@ fn activate_agents(app: &mut App, row: usize) {
             config.base_branch.unwrap_or_default(),
         ),
         1 => cycle(app, false),
-        2 => start_edit(
-            app,
-            EditTarget::Model(Runner::Claude),
-            config.default_models.claude.unwrap_or_default(),
-        ),
-        3 => start_edit(
-            app,
-            EditTarget::Model(Runner::Codex),
-            config.default_models.codex.unwrap_or_default(),
-        ),
-        4 => start_edit(
-            app,
-            EditTarget::Model(Runner::OpenCode),
-            config.default_models.opencode.unwrap_or_default(),
-        ),
-        5 => start_edit(
-            app,
-            EditTarget::Model(Runner::Pi),
-            config.default_models.pi.unwrap_or_default(),
-        ),
+        2 => open_model_picker(app, ModelScope::Project, Runner::Claude),
+        3 => open_model_picker(app, ModelScope::Project, Runner::Codex),
+        4 => open_model_picker(app, ModelScope::Project, Runner::OpenCode),
+        5 => open_model_picker(app, ModelScope::Project, Runner::Pi),
         6 => start_edit(
             app,
             EditTarget::SystemPrompt,
@@ -1497,20 +1700,8 @@ fn activate_agents(app: &mut App, row: usize) {
                 .map(task_source_label)
                 .unwrap_or_else(|| "execution".to_owned()),
         ),
-        10 => cycle_default_reasoning(app, false),
+        10 => cycle_project_reasoning(app, false),
         11 => start_edit(
-            app,
-            EditTarget::ComposerVariants,
-            app.settings_ui
-                .workspace_config
-                .as_ref()
-                .and_then(|config| config.composer_defaults.variants)
-                .unwrap_or(1)
-                .to_string(),
-        ),
-        12 | 13 => cycle(app, false),
-        14 => cycle_project_reasoning(app, false),
-        15 => start_edit(
             app,
             EditTarget::ProjectComposerVariants,
             app.settings_ui
@@ -1521,48 +1712,27 @@ fn activate_agents(app: &mut App, row: usize) {
                 .map(|variants| variants.to_string())
                 .unwrap_or_default(),
         ),
-        16 => cycle_project_worktree(app, false),
-        17 => cycle_project_autonomous(app, false),
-        18 => cycle_global_runner(app, false),
-        19 => start_edit(
+        12 | 13 => cycle(app, false),
+        _ => {}
+    }
+}
+
+fn activate_global_agents(app: &mut App, row: usize) {
+    match row {
+        0 | 5 | 7 | 8 => cycle_global_agents(app, row, false),
+        1 => open_model_picker(app, ModelScope::Global, Runner::Claude),
+        2 => open_model_picker(app, ModelScope::Global, Runner::Codex),
+        3 => open_model_picker(app, ModelScope::Global, Runner::OpenCode),
+        4 => open_model_picker(app, ModelScope::Global, Runner::Pi),
+        6 => start_edit(
             app,
-            EditTarget::GlobalModel(Runner::Claude),
+            EditTarget::ComposerVariants,
             app.settings_ui
                 .workspace_config
                 .as_ref()
-                .and_then(|c| c.agent_defaults.models.as_ref())
-                .and_then(|m| m.claude.clone())
-                .unwrap_or_default(),
-        ),
-        20 => start_edit(
-            app,
-            EditTarget::GlobalModel(Runner::Codex),
-            app.settings_ui
-                .workspace_config
-                .as_ref()
-                .and_then(|c| c.agent_defaults.models.as_ref())
-                .and_then(|m| m.codex.clone())
-                .unwrap_or_default(),
-        ),
-        21 => start_edit(
-            app,
-            EditTarget::GlobalModel(Runner::OpenCode),
-            app.settings_ui
-                .workspace_config
-                .as_ref()
-                .and_then(|c| c.agent_defaults.models.as_ref())
-                .and_then(|m| m.opencode.clone())
-                .unwrap_or_default(),
-        ),
-        22 => start_edit(
-            app,
-            EditTarget::GlobalModel(Runner::Pi),
-            app.settings_ui
-                .workspace_config
-                .as_ref()
-                .and_then(|c| c.agent_defaults.models.as_ref())
-                .and_then(|m| m.pi.clone())
-                .unwrap_or_default(),
+                .and_then(|config| config.composer_defaults.variants)
+                .unwrap_or(1)
+                .to_string(),
         ),
         _ => {}
     }
@@ -2110,20 +2280,22 @@ mod tests {
     }
 
     #[test]
-    fn global_settings_starts_with_projects_and_renders_workspace_sections() {
+    fn global_settings_starts_with_agents_and_renders_workspace_sections() {
         let mut app = app_with_global_settings();
         let content = render_text(&mut app, 120, 40);
-        assert_eq!(current_section(&app), SettingsSection::Projects);
+        assert_eq!(current_section(&app), SettingsSection::Agents);
         assert!(content.contains("Global settings"));
+        assert!(content.contains("Default runner"));
+        assert!(content.contains("Default model — codex"));
+        assert!(content.contains("Default reasoning"));
         assert!(content.contains("Projects"));
-        assert!(content.contains("+ Add repository"));
         assert!(content.contains("Appearance"));
     }
 
     #[test]
     fn resources_renders_provider_usage_and_unknown_limits_honestly() {
         let mut app = app_with_global_settings();
-        app.settings_ui.section = 4;
+        app.settings_ui.section = 5;
         app.settings_ui.workspace_usage = Some(WorkspaceUsageResponse {
             providers: vec![coducktor_contract::ProviderUsageSnapshot {
                 provider: coducktor_contract::QuotaProvider::Codex,
@@ -2169,6 +2341,7 @@ mod tests {
     fn global_settings_theme_control_persists_the_theme() {
         let mut app = app_with_global_settings();
         handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(current_section(&app), SettingsSection::Appearance);
         handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         assert_eq!(app.theme.name, ThemeName::Light);
@@ -2184,6 +2357,7 @@ mod tests {
     fn appearance_menu_uses_theme_without_an_accent_control() {
         let mut app = app_with_global_settings();
         handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         let content = render_text(&mut app, 120, 40);
         assert!(content.contains("Theme"));
         assert!(content.contains("Density"));
@@ -2194,6 +2368,7 @@ mod tests {
     #[test]
     fn global_projects_add_row_queues_registration() {
         let mut app = app_with_global_settings();
+        handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         for character in "/tmp/another-repo".chars() {
             handle_key(
@@ -2242,10 +2417,114 @@ mod tests {
     }
 
     #[test]
-    fn composer_defaults_are_editable_from_agents_settings() {
+    fn project_model_picker_uses_matching_discovered_catalog_and_persists_selection() {
         let mut app = app_with_settings();
+        app.settings_ui.row = 3;
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            app.settings_ui.model_picker.as_ref(),
+            Some(open) if open.runner == Runner::Codex
+        ));
+        assert!(app.pending.iter().any(|action| matches!(
+            action,
+            PendingAction::RefreshModels {
+                runner: Runner::Codex
+            }
+        )));
+
+        apply_model_catalog(
+            &mut app,
+            RunnerModelCatalogResponse {
+                runner: Runner::OpenCode,
+                models: vec![coducktor_contract::RunnerModelOption {
+                    id: "wrong/model".to_owned(),
+                    label: "wrong".to_owned(),
+                    description: String::new(),
+                    reasoning_efforts: None,
+                }],
+                source: coducktor_contract::ModelCatalogSource::Live,
+                stale: false,
+                reason: None,
+            },
+        );
+        assert!(
+            !app.settings_ui
+                .model_picker
+                .as_ref()
+                .unwrap()
+                .picker
+                .items
+                .iter()
+                .any(|item| item.value == "wrong/model")
+        );
+
+        apply_model_catalog(
+            &mut app,
+            RunnerModelCatalogResponse {
+                runner: Runner::Codex,
+                models: vec![coducktor_contract::RunnerModelOption {
+                    id: "gpt-5.6-codex".to_owned(),
+                    label: "GPT-5.6 Codex".to_owned(),
+                    description: "Current Codex model".to_owned(),
+                    reasoning_efforts: None,
+                }],
+                source: coducktor_contract::ModelCatalogSource::Live,
+                stale: false,
+                reason: None,
+            },
+        );
+        let index = app
+            .settings_ui
+            .model_picker
+            .as_ref()
+            .unwrap()
+            .picker
+            .items
+            .iter()
+            .position(|item| item.value == "gpt-5.6-codex")
+            .unwrap();
         app.pending.clear();
-        app.settings_ui.row = 10;
+        pick_model_index(&mut app, index);
+        assert!(app.pending.iter().any(|action| matches!(
+            action,
+            PendingAction::SettingsPutConfig { input, .. }
+                if input.default_models.as_ref().and_then(|models| models.codex.as_ref())
+                    == Some(&Some("gpt-5.6-codex".to_owned()))
+        )));
+    }
+
+    #[test]
+    fn global_model_picker_writes_workspace_agent_defaults() {
+        let mut app = app_with_global_settings();
+        app.settings_ui.row = 1;
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let opus = app
+            .settings_ui
+            .model_picker
+            .as_ref()
+            .unwrap()
+            .picker
+            .items
+            .iter()
+            .position(|item| item.value == "opus")
+            .unwrap();
+        app.pending.clear();
+        pick_model_index(&mut app, opus);
+        assert!(app.pending.iter().any(|action| matches!(
+            action,
+            PendingAction::SettingsPutWorkspaceConfig { input }
+                if input.agent_defaults.as_ref()
+                    .and_then(|defaults| defaults.models.as_ref())
+                    .and_then(|models| models.claude.as_ref())
+                    == Some(&Some("opus".to_owned()))
+        )));
+    }
+
+    #[test]
+    fn composer_defaults_are_editable_from_agents_settings() {
+        let mut app = app_with_global_settings();
+        app.pending.clear();
+        app.settings_ui.row = 5;
         handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         assert!(app.pending.iter().any(|action| matches!(
             action,
@@ -2255,7 +2534,7 @@ mod tests {
         )));
 
         app.pending.clear();
-        app.settings_ui.row = 11;
+        app.settings_ui.row = 6;
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         handle_key(
             &mut app,
@@ -2278,7 +2557,7 @@ mod tests {
     fn project_composer_defaults_are_editable_and_can_inherit() {
         let mut app = app_with_settings();
         app.pending.clear();
-        app.settings_ui.row = 14;
+        app.settings_ui.row = 10;
         handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         assert!(app.pending.iter().any(|action| matches!(
             action,
@@ -2288,7 +2567,7 @@ mod tests {
         )));
 
         app.pending.clear();
-        app.settings_ui.row = 15;
+        app.settings_ui.row = 11;
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         handle_key(
             &mut app,
@@ -2310,7 +2589,7 @@ mod tests {
             ..sample_config()
         });
         app.pending.clear();
-        app.settings_ui.row = 14;
+        app.settings_ui.row = 10;
         handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
         assert!(app.pending.iter().any(|action| matches!(
             action,
@@ -2331,5 +2610,13 @@ mod tests {
                 terminal.backend().buffer()
             );
         }
+    }
+
+    #[test]
+    fn snapshot_global_agents_settings() {
+        let mut app = app_with_global_settings();
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        insta::assert_debug_snapshot!("global_agents_settings", terminal.backend().buffer());
     }
 }

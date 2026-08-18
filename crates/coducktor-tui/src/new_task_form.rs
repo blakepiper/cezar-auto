@@ -150,7 +150,12 @@ pub fn models_for_runner(
     let mut seen: std::collections::HashSet<String> =
         base.iter().map(|model| model.id.clone()).collect();
     if runner_discovers_models(runner) {
-        for model in catalog.map(|catalog| &catalog.models).into_iter().flatten() {
+        for model in catalog
+            .filter(|catalog| catalog.runner == runner)
+            .map(|catalog| &catalog.models)
+            .into_iter()
+            .flatten()
+        {
             if model.id.is_empty() || seen.contains(&model.id) {
                 continue;
             }
@@ -720,6 +725,27 @@ mod tests {
                 .map(|model| model.id)
                 .collect();
         assert_eq!(ids, ["", "gpt-future", "legacy-id"]);
+    }
+
+    #[test]
+    fn model_catalog_is_never_reused_for_another_runner() {
+        let catalog = RunnerModelCatalogResponse {
+            runner: Runner::Codex,
+            models: vec![coducktor_contract::RunnerModelOption {
+                id: "gpt-codex-only".to_owned(),
+                label: "Codex only".to_owned(),
+                description: String::new(),
+                reasoning_efforts: None,
+            }],
+            source: coducktor_contract::ModelCatalogSource::Live,
+            stale: false,
+            reason: None,
+        };
+        let ids = models_for_runner(Runner::OpenCode, Some(&catalog), &[])
+            .into_iter()
+            .map(|model| model.id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, [""]);
     }
 
     #[test]
