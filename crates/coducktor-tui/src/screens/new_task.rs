@@ -4,7 +4,7 @@
 //! "What should the agent work on?", the shared composer card (auto-growing text
 //! area, pasted-image row — no Dictation, per decision 2), a pill row —
 //! `skill/workflow ▾` · `runner ▾` · `model ▾` · `reasoning ▾` · `×N variants ▾` ·
-//! `branch: <branch> ▾` · `worktree: on ▾` · `mode: autonomous ▾` — then the send hint.
+//! `branch: <branch> ▾` · `worktree: off ▾` · `mode: autonomous ▾` — then the send hint.
 
 use coducktor_contract::{
     ProviderStatusResponse, ReasoningEffort, RepoInfo, Runner, RunnerModelCatalogResponse,
@@ -251,7 +251,7 @@ pub fn effective_values(draft: &NewTaskDraft, data: &NewTaskData) -> Effective {
     }));
     let configured_worktree = workspace_defaults
         .map(|defaults| defaults.worktree.unwrap_or(defaults.inherited_worktree))
-        .unwrap_or(true);
+        .unwrap_or(false);
     let (autonomous_on, worktree_on) = new_task_form::resolve_composer_run_mode(
         has_git,
         variants,
@@ -1539,6 +1539,7 @@ mod tests {
             serde_json::json!({
                 "task": "ship the shell",
                 "steps": [{ "id": "task", "name": "execution", "prompt": "{{task}}" }],
+                "worktree": false,
                 "autonomous": true,
             })
         );
@@ -1615,6 +1616,7 @@ mod tests {
             serde_json::json!({
                 "task": "fix the flake",
                 "steps": [{ "id": "task", "name": "om-fix", "skill": "om-fix", "prompt": "{{task}}" }],
+                "worktree": false,
                 "autonomous": true,
             })
         );
@@ -1736,8 +1738,8 @@ mod tests {
             "autonomous is the zero-config default"
         );
         assert!(
-            effective.worktree_on,
-            "worktrees are the zero-config default"
+            !effective.worktree_on,
+            "in-place is the zero-config default"
         );
         assert_eq!(effective.base_branch, "main");
     }

@@ -3374,7 +3374,7 @@ fn workspace_config_response(
             autonomous: config.composer_defaults.autonomous,
             worktree: config.composer_defaults.worktree,
             inherited_autonomous: coducktor_contract::InheritedAutonomous::Value(true),
-            inherited_worktree: true,
+            inherited_worktree: false,
         },
         resources: coducktor_contract::WorkspaceResources {
             max_parallel: config.resources.max_parallel,
