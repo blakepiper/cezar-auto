@@ -3781,9 +3781,37 @@ async fn read_codex_response(
     Err(())
 }
 
+fn parse_codex_reasoning_efforts(value: Option<&Value>) -> Result<Option<Vec<String>>, ()> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    value
+        .as_array()
+        .ok_or(())?
+        .iter()
+        .map(|entry| {
+            entry
+                .as_str()
+                .or_else(|| entry.get("reasoningEffort").and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|effort| !effort.is_empty())
+                .map(str::to_owned)
+                .ok_or(())
+        })
+        .collect::<Result<Vec<_>, ()>>()
+        .map(Some)
+}
+
 async fn discover_codex_models(repo_root: &Path) -> Result<Vec<RunnerModelOption>, ()> {
-    use tokio::io::{AsyncBufReadExt, BufReader};
     let executable = provider_executable(Runner::Codex);
+    discover_codex_models_with(&executable, repo_root).await
+}
+
+async fn discover_codex_models_with(
+    executable: &str,
+    repo_root: &Path,
+) -> Result<Vec<RunnerModelOption>, ()> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
     let mut child = tokio::process::Command::new(executable)
         .arg("app-server")
         .current_dir(repo_root)
@@ -3846,23 +3874,8 @@ async fn discover_codex_models(repo_root: &Path) -> Result<Vec<RunnerModelOption
                 if models.len() >= MAX_DISCOVERED_MODELS {
                     return Err(());
                 }
-                let reasoning_efforts = object
-                    .get("supportedReasoningEfforts")
-                    .map(|value| {
-                        value
-                            .as_array()
-                            .ok_or(())?
-                            .iter()
-                            .map(|value| {
-                                value
-                                    .as_str()
-                                    .filter(|value| !value.is_empty())
-                                    .map(str::to_owned)
-                                    .ok_or(())
-                            })
-                            .collect::<Result<Vec<_>, ()>>()
-                    })
-                    .transpose()?;
+                let reasoning_efforts =
+                    parse_codex_reasoning_efforts(object.get("supportedReasoningEfforts"))?;
                 models.push(RunnerModelOption {
                     label: object
                         .get("displayName")
@@ -8757,6 +8770,26 @@ mod tests {
         assert!(parse_opencode_models("warning: no models\n").is_err());
     }
 
+    #[test]
+    fn codex_reasoning_efforts_accept_current_objects_and_legacy_strings() {
+        let current = json!([
+            {"reasoningEffort": "low", "description": "Fast"},
+            {"reasoningEffort": "xhigh", "description": "Deep"}
+        ]);
+        let legacy = json!(["medium", "high"]);
+
+        assert_eq!(
+            parse_codex_reasoning_efforts(Some(&current)).unwrap(),
+            Some(vec!["low".to_owned(), "xhigh".to_owned()])
+        );
+        assert_eq!(
+            parse_codex_reasoning_efforts(Some(&legacy)).unwrap(),
+            Some(vec!["medium".to_owned(), "high".to_owned()])
+        );
+        assert_eq!(parse_codex_reasoning_efforts(None).unwrap(), None);
+        assert!(parse_codex_reasoning_efforts(Some(&json!([{}]))).is_err());
+    }
+
     #[tokio::test]
     async fn models_rejects_a_runner_with_no_discovery_path() {
         let dir = TempDir::new().unwrap();
@@ -8773,19 +8806,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn models_falls_back_to_unavailable_when_the_cli_cannot_be_spawned() {
-        // No `codex`/`opencode` binary is installed in this sandbox (same assumption this
-        // repo's other backend tests already document) — live
-        // discovery fails to spawn, and with no prior cache entry the result is `Unavailable`
-        // with a reason, never an `Err` (a missing CLI degrades gracefully, matching the
-        // model catalog behavior).
+    async fn codex_model_discovery_fails_cleanly_when_the_cli_cannot_be_spawned() {
         let dir = TempDir::new().unwrap();
-        let engine = engine(&dir);
-        let response = engine.models(Runner::Codex).await.unwrap();
-        assert_eq!(response.runner, Runner::Codex);
-        assert!(response.models.is_empty());
-        assert_eq!(response.source, ModelCatalogSource::Unavailable);
-        assert!(response.reason.is_some());
+        assert!(
+            discover_codex_models_with("/definitely/missing/coducktor-test-codex", dir.path())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -8828,9 +8855,9 @@ mod tests {
             });
         }
         let response = engine.models(Runner::Codex).await.unwrap();
-        // Re-probed (the sandbox has no `codex` binary), so this is a fresh `Unavailable`
-        // result, not the stale expired cache entry served as-is.
-        assert_eq!(response.source, ModelCatalogSource::Unavailable);
+        // Re-probed rather than serving the expired cache. The result may be Live on a developer
+        // machine with Codex installed or Unavailable in an isolated test environment.
+        assert_ne!(response.source, ModelCatalogSource::Cache);
     }
 
     // ---- plan ---------------------------------------------------------------------------
