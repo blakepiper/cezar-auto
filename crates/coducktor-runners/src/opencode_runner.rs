@@ -180,6 +180,7 @@ pub fn open_opencode_session(
         host_env,
     )
     .map_err(|error| wrap_spawn_error(&error, &config.program))?;
+    process.set_cancellation(spec.cancellation.clone());
 
     let base_url = wait_for_server_url(&mut process, port);
     // stdout is only ever used for that one startup line — keep draining it in the background
@@ -371,6 +372,12 @@ impl OpencodeSession {
         });
 
         loop {
+            if self.spec.cancellation.is_requested() {
+                self.open = false;
+                self.process.signal_term();
+                let _ = post_handle.join();
+                return Err("opencode run cancelled".to_owned());
+            }
             if let Some(dl) = deadline
                 && Instant::now() >= dl
             {

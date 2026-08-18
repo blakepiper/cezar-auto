@@ -105,6 +105,7 @@ pub struct ThreadUi {
     pub pending_prompt: Option<String>,
     pending_composer: Option<crate::widgets::composer::Composer>,
     pub delivery_error: bool,
+    pub cancel_pending: bool,
     pub project_root: Option<PathBuf>,
 }
 
@@ -125,6 +126,7 @@ impl Default for ThreadUi {
             pending_prompt: None,
             pending_composer: None,
             delivery_error: false,
+            cancel_pending: false,
             project_root: None,
         }
     }
@@ -164,6 +166,7 @@ impl ThreadUi {
             self.pending_prompt = None;
             self.pending_composer = None;
         }
+        self.cancel_pending = false;
         self.rebuild();
     }
 
@@ -660,9 +663,22 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         );
     }
 
+    const THROBBER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
+    let active = matches!(record.status, RunStatus::Queued | RunStatus::Running);
+    let throbber = THROBBER[(app.animation_tick as usize / 3) % THROBBER.len()];
+    let status = if app.thread_ui.cancel_pending {
+        format!("{throbber} Stopping…")
+    } else if active {
+        format!(
+            "{throbber} {}",
+            app.thread_ui.data.view_model.current_status
+        )
+    } else {
+        app.thread_ui.data.view_model.current_status.clone()
+    };
     let transcript_title = format!(
         " Session  ·  {}{} ",
-        app.thread_ui.data.view_model.current_status,
+        status,
         if app.thread_ui.transcript.unseen_count() > 0 {
             format!("  ·  {} new", app.thread_ui.transcript.unseen_count())
         } else {
@@ -720,9 +736,11 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     }
     if hint_height > 0 {
         let text = match record.status {
+            RunStatus::Queued if app.thread_ui.cancel_pending => "Stopping the agent…",
             RunStatus::Queued => widgets::queue_hint(true),
             RunStatus::Waiting => "Waiting for your reply.",
-            RunStatus::Running => "Enter sends guidance to the active turn.",
+            RunStatus::Running if app.thread_ui.cancel_pending => "Stopping the agent…",
+            RunStatus::Running => "Agent is working · Enter sends guidance to the active turn.",
             RunStatus::Done | RunStatus::Failed | RunStatus::Cancelled => {
                 "Enter starts a follow-up turn."
             }

@@ -120,6 +120,13 @@ impl SessionFactory for SharedSessionFactory {
             .map_err(|_| "session factory unavailable".to_owned())?
             .open(request)
     }
+
+    fn request_cancel(&mut self, run_id: &str) -> bool {
+        self.inner
+            .lock()
+            .map(|mut factory| factory.request_cancel(run_id))
+            .unwrap_or(false)
+    }
 }
 
 /// A 5-minute TTL cache so a slow or failing model probe does not re-run on every picker update.
@@ -594,7 +601,23 @@ impl InProcessEngine {
     }
 
     pub async fn cancel_run(&self, run_id: &str) -> Result<CancelResponse, EngineError> {
-        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        let signalled = self
+            .session_factory
+            .lock()
+            .map(|mut factory| factory.request_cancel(run_id))
+            .unwrap_or(false);
+        let mut manager = match self.manager.try_lock() {
+            Ok(manager) => manager,
+            Err(std::sync::TryLockError::WouldBlock) if signalled => {
+                return Ok(CancelResponse { cancelled: true });
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(EngineError::Unavailable {
+                    reason: "run is busy and could not be interrupted".to_owned(),
+                });
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => return Err(lock_err()),
+        };
         if manager.get_run(run_id).is_none() {
             return Err(EngineError::NotFound);
         }
@@ -6855,7 +6878,7 @@ mod tests {
     }
     use coducktor_contract::WorkflowStepDef;
     use coducktor_core::workflows::run::{
-        AgentSession, EventInput, SessionFactory, SessionRequest,
+        AgentSession, CancellationToken, EventInput, SessionFactory, SessionRequest,
     };
     use std::io;
     use tempfile::TempDir;
@@ -6917,6 +6940,49 @@ mod tests {
         }
     }
 
+    struct BlockingFactory {
+        tokens: Arc<Mutex<BTreeMap<String, CancellationToken>>>,
+    }
+
+    struct BlockingSession {
+        cancellation: CancellationToken,
+    }
+
+    impl AgentSession for BlockingSession {
+        fn turn(
+            &mut self,
+            _on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
+        ) -> Result<coducktor_core::workflows::run::SessionOutcome, String> {
+            while !self.cancellation.is_requested() {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err("interrupted".to_owned())
+        }
+    }
+
+    impl SessionFactory for BlockingFactory {
+        fn open(
+            &mut self,
+            request: SessionRequest,
+        ) -> Result<Box<dyn AgentSession + Send>, String> {
+            self.tokens
+                .lock()
+                .unwrap()
+                .insert(request.run_id, request.cancellation.clone());
+            Ok(Box::new(BlockingSession {
+                cancellation: request.cancellation,
+            }))
+        }
+
+        fn request_cancel(&mut self, run_id: &str) -> bool {
+            self.tokens
+                .lock()
+                .unwrap()
+                .get(run_id)
+                .is_some_and(CancellationToken::request)
+        }
+    }
+
     fn engine(dir: &TempDir) -> InProcessEngine {
         InProcessEngine::with_session_factory(dir.path(), "0.0.0-test", FakeFactory)
     }
@@ -6957,6 +7023,63 @@ mod tests {
         assert_eq!(health.version, "0.0.0-test");
         assert_eq!(health.repo_root, dir.path().to_string_lossy());
         assert!(!health.checks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancel_interrupts_a_turn_while_the_manager_is_busy() {
+        let dir = TempDir::new().unwrap();
+        let tokens = Arc::new(Mutex::new(BTreeMap::new()));
+        let engine = InProcessEngine::with_session_factory(
+            dir.path(),
+            "0.0.0-test",
+            BlockingFactory {
+                tokens: tokens.clone(),
+            },
+        );
+        let scope = Scope::Project("default".to_owned());
+        let CreateRunResponse::Single(run) = <InProcessEngine as crate::Engine>::start_run(
+            &engine,
+            &scope,
+            steps_input("block until cancelled"),
+        )
+        .await
+        .unwrap() else {
+            panic!("expected one run");
+        };
+        <InProcessEngine as crate::Engine>::activate_runs(&engine, &scope)
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if tokens.lock().unwrap().contains_key(&run.id) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let started = Instant::now();
+        let response = <InProcessEngine as crate::Engine>::cancel_run(&engine, &scope, &run.id)
+            .await
+            .unwrap();
+        assert!(response.cancelled);
+        assert!(started.elapsed() < std::time::Duration::from_millis(100));
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                let current = <InProcessEngine as crate::Engine>::get_run(&engine, &scope, &run.id)
+                    .await
+                    .unwrap();
+                if current.record.status == coducktor_contract::RunStatus::Cancelled {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

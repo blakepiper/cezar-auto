@@ -112,7 +112,7 @@ pub fn open_pi_session(
 ) -> Result<PiSession, String> {
     let mut args = config.prefix_args.clone();
     args.extend(build_pi_args(spec));
-    let process = ChildProcess::spawn(
+    let mut process = ChildProcess::spawn(
         &SpawnConfig {
             program: config.program.clone(),
             args,
@@ -126,6 +126,7 @@ pub fn open_pi_session(
         host_env,
     )
     .map_err(|error| wrap_spawn_error(&error, &config.program))?;
+    process.set_cancellation(spec.cancellation.clone());
 
     let timeout_ms = spec.timeout_ms.unwrap_or(DEFAULT_RUN_TIMEOUT_MS);
 

@@ -65,6 +65,16 @@ records what is implemented and which terminal observations remain unverified.
 
 ## Task experience smoke test
 
+- **80×24 pseudo-terminal, 2026-08-18 (live activity pass).** Built and launched the real
+  `coducktor` binary with `DUCK_DRY_RUN=1`, submitted `verify throbber and finish once`, and
+  observed the Session screen immediately. The activity glyph advanced through the braille
+  frames while the status moved from `Queued` to `Thinking…` and tool activity streamed below.
+  The deliberately marker-less dry-run backend stopped at the new `autonomous continuation
+  (4/4)` ceiling and parked for input instead of repeating forty times. `q` restored the
+  alternate screen. Responsive in-flight process cancellation is covered by the manager-lock
+  integration test because this mock completed each individual turn too quickly for a reliable
+  manual key race.
+
 - **120×40 pseudo-terminal, 2026-08-18.** Built and launched the real `duck` binary against a
   temporary Git repository with `DUCK_DRY_RUN=1`, opened New task, and submitted `Show the prompt
   and stream agent activity`. Submission immediately replaced the composer with the run's Session

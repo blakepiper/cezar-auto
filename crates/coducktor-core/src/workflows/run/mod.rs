@@ -30,7 +30,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use coducktor_contract::events::RunEvent;
 use coducktor_contract::runs::{
@@ -505,6 +506,46 @@ impl ContinueResult {
     }
 }
 
+/// A backend-neutral stop signal that can be set without borrowing the active session.
+#[derive(Debug, Clone, Default)]
+pub struct CancellationToken(Arc<AtomicU8>);
+
+impl CancellationToken {
+    pub fn request(&self) -> bool {
+        loop {
+            match self.0.load(Ordering::Acquire) {
+                0 => {
+                    if self
+                        .0
+                        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        return true;
+                    }
+                }
+                1 => return true,
+                _ => return false,
+            }
+        }
+    }
+
+    pub fn is_requested(&self) -> bool {
+        self.0.load(Ordering::Acquire) == 1
+    }
+
+    pub fn deactivate(&self) {
+        self.0.store(2, Ordering::Release);
+    }
+}
+
+impl PartialEq for CancellationToken {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for CancellationToken {}
+
 /// All information a backend-neutral session needs to open one turn.
 ///
 /// This intentionally stays thin (run/step identity, prompt, backend routing) rather than
@@ -539,6 +580,7 @@ pub struct SessionRequest {
     /// concrete one a backend spawn actually takes (`Auto` becomes `None`, letting the backend
     /// use its own default).
     pub reasoning_effort: Option<ConcreteReasoningEffort>,
+    pub cancellation: CancellationToken,
 }
 
 /// Usage and marker information a fake or a future backend mapper can report without leaking its
@@ -610,6 +652,10 @@ pub trait AgentSession: Send {
 /// deterministic test fake; no backend-specific runner type crosses this boundary.
 pub trait SessionFactory: Send {
     fn open(&mut self, request: SessionRequest) -> Result<Box<dyn AgentSession + Send>, String>;
+
+    fn request_cancel(&mut self, _run_id: &str) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2120,6 +2166,7 @@ impl RunManager {
             let reasoning_effort = run_record
                 .and_then(|run| run.reasoning_effort)
                 .and_then(concrete_reasoning_effort);
+            let cancellation = CancellationToken::default();
             let request = SessionRequest {
                 run_id: run_id.to_owned(),
                 step_id: step.id.clone(),
@@ -2143,6 +2190,7 @@ impl RunManager {
                 bash_allowlist,
                 system_prompt,
                 reasoning_effort,
+                cancellation: cancellation.clone(),
             };
             let mut run_affinity = RunPatch::new();
             if let Some(backend) = concrete_runner(runner) {
@@ -2177,7 +2225,13 @@ impl RunManager {
             let fallback_session_id = session.session_id();
             let turn_result = session.turn(&mut self.event_sink(run_id, &step.id));
             let mut outcome = match turn_result {
+                Ok(_) if cancellation.is_requested() => {
+                    SessionOutcome::Cancelled(SessionReport::default())
+                }
                 Ok(outcome) => outcome,
+                Err(_) if cancellation.is_requested() => {
+                    SessionOutcome::Cancelled(SessionReport::default())
+                }
                 Err(error) => {
                     self.fail_run(run_id, Some(&step.id), error)?;
                     return Ok(());
@@ -2269,7 +2323,13 @@ impl RunManager {
                     &[],
                     &mut self.event_sink(run_id, &step.id),
                 ) {
+                    Ok(_) if cancellation.is_requested() => {
+                        SessionOutcome::Cancelled(SessionReport::default())
+                    }
                     Ok(outcome) => outcome,
+                    Err(_) if cancellation.is_requested() => {
+                        SessionOutcome::Cancelled(SessionReport::default())
+                    }
                     Err(error) => SessionOutcome::Failed {
                         message: error,
                         report: SessionReport::default(),

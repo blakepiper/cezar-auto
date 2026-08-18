@@ -15,6 +15,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use coducktor_contract::Runner;
+use coducktor_core::workflows::run::CancellationToken;
 
 use crate::agent_env::{self, BuildChildEnvOptions};
 
@@ -40,6 +41,7 @@ pub struct ChildProcess {
     eof_term_grace: Duration,
     eof_kill_grace: Duration,
     kill_grace: Duration,
+    cancellation: Option<CancellationToken>,
 }
 
 pub enum NextLine {
@@ -110,7 +112,18 @@ impl ChildProcess {
             eof_term_grace: config.eof_term_grace,
             eof_kill_grace: config.eof_kill_grace,
             kill_grace: config.kill_grace,
+            cancellation: None,
         })
+    }
+
+    pub fn set_cancellation(&mut self, cancellation: CancellationToken) {
+        self.cancellation = Some(cancellation);
+    }
+
+    fn cancellation_requested(&self) -> bool {
+        self.cancellation
+            .as_ref()
+            .is_some_and(CancellationToken::is_requested)
     }
 
     pub fn write_line(&mut self, line: &str) -> Result<(), String> {
@@ -145,24 +158,32 @@ impl ChildProcess {
     /// means the process's stdout has closed (it exited or crashed) — not a timeout.
     pub fn next_line(&mut self, deadline: Option<Instant>) -> Result<NextLine, TimedOut> {
         loop {
+            if self.cancellation_requested() {
+                if !self.has_exited() {
+                    self.signal_term();
+                }
+                return Ok(NextLine::Closed);
+            }
             match deadline {
                 Some(dl) => {
                     let now = Instant::now();
                     if now >= dl {
                         return Err(TimedOut);
                     }
-                    match self.stdout_rx.recv_timeout(dl - now) {
+                    match self
+                        .stdout_rx
+                        .recv_timeout((dl - now).min(Duration::from_millis(50)))
+                    {
                         Ok(line) => return Ok(NextLine::Line(line)),
                         Err(RecvTimeoutError::Timeout) => continue,
                         Err(RecvTimeoutError::Disconnected) => return Ok(NextLine::Closed),
                     }
                 }
-                None => {
-                    return Ok(match self.stdout_rx.recv() {
-                        Ok(line) => NextLine::Line(line),
-                        Err(_) => NextLine::Closed,
-                    });
-                }
+                None => match self.stdout_rx.recv_timeout(Duration::from_millis(50)) {
+                    Ok(line) => return Ok(NextLine::Line(line)),
+                    Err(RecvTimeoutError::Timeout) => continue,
+                    Err(RecvTimeoutError::Disconnected) => return Ok(NextLine::Closed),
+                },
             }
         }
     }
@@ -268,6 +289,9 @@ impl Drop for ChildProcess {
     /// teardown call being the main way that happens — request a hard kill so the process doesn't
     /// outlive the session that owned it. Never blocks waiting for it to actually exit.
     fn drop(&mut self) {
+        if let Some(cancellation) = &self.cancellation {
+            cancellation.deactivate();
+        }
         if !self.has_exited() {
             self.signal_kill();
         }
@@ -330,6 +354,35 @@ mod tests {
         .unwrap();
         let deadline = Instant::now() + Duration::from_millis(50);
         assert!(proc.next_line(Some(deadline)).is_err());
+        proc.signal_kill();
+        proc.wait_for_exit();
+    }
+
+    #[test]
+    fn cancellation_wakes_an_unbounded_read_and_signals_the_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = SpawnConfig {
+            program: "node".to_owned(),
+            args: vec!["-e".to_owned(), "setInterval(() => {}, 60000)".to_owned()],
+            eof_term_grace: Duration::from_millis(50),
+            eof_kill_grace: Duration::from_millis(50),
+            kill_grace: Duration::from_millis(50),
+        };
+        let mut proc = ChildProcess::spawn(
+            &config,
+            Runner::Codex,
+            dir.path(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let cancellation = CancellationToken::default();
+        proc.set_cancellation(cancellation.clone());
+        cancellation.request();
+
+        let started = Instant::now();
+        assert!(matches!(proc.next_line(None), Ok(NextLine::Closed)));
+        assert!(started.elapsed() < Duration::from_millis(250));
         proc.signal_kill();
         proc.wait_for_exit();
     }

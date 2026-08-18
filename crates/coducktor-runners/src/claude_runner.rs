@@ -168,7 +168,7 @@ pub fn open_claude_session(
 ) -> Result<ClaudeSession, String> {
     let mut args = config.prefix_args.clone();
     args.extend(build_claude_args(spec, host_env));
-    let process = ChildProcess::spawn(
+    let mut process = ChildProcess::spawn(
         &SpawnConfig {
             program: config.program.clone(),
             args,
@@ -182,6 +182,7 @@ pub fn open_claude_session(
         host_env,
     )
     .map_err(|error| wrap_spawn_error(&error, &config.program))?;
+    process.set_cancellation(spec.cancellation.clone());
 
     let timeout_ms = spec.timeout_ms.unwrap_or(DEFAULT_RUN_TIMEOUT_MS);
 

@@ -5,12 +5,14 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use coducktor_contract::ConcreteReasoningEffort;
-use coducktor_core::workflows::run::PromptImage;
+use coducktor_core::workflows::run::{CancellationToken, PromptImage};
 use serde::{Deserialize, Serialize};
 
 /// Everything one agent-CLI backend needs to spawn and drive a session.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AgentRunSpec {
+    /// Set by the engine's out-of-band cancellation path while a manager-owned turn is blocked.
+    pub cancellation: CancellationToken,
     /// Appended to the CLI's default system prompt (`--append-system-prompt` for claude;
     /// prepended to the opening message via [`prepend_system_prompt`] for backends with no
     /// dedicated channel).

@@ -1687,6 +1687,12 @@ fn drain_background_results(
                         }
                     }
                     Err(error) => {
+                        if matches!(action, SessionMutation::Cancel)
+                            && app.thread_ui.data.project == project
+                            && app.thread_ui.data.run_id == id
+                        {
+                            app.thread_ui.cancel_pending = false;
+                        }
                         if matches!(action, SessionMutation::Send | SessionMutation::Continue) {
                             app.thread_ui.restore_pending_prompt(&project, &id);
                         }
@@ -1926,6 +1932,7 @@ async fn run(
     while !app.should_quit() {
         let frame_started = Instant::now();
         app.now_epoch = current_epoch_seconds();
+        app.animation_tick = app.animation_tick.wrapping_add(1);
         if let Some((_, receiver)) = bootstrap.as_mut()
             && !bootstrap_applied
         {

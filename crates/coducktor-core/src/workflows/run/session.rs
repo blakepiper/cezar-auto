@@ -16,11 +16,21 @@ pub enum TurnMarkerDecision {
     AutonomousContinue,
 }
 
-pub const MAX_AUTONOMOUS_CONTINUES: u32 = 40;
+/// Enough retries to recover from a premature turn boundary without letting a malformed
+/// backend churn through dozens of paid turns.
+pub const MAX_AUTONOMOUS_CONTINUES: u32 = 4;
+
+fn is_standalone_legacy_done(text: &str) -> bool {
+    matches!(
+        text.trim_end().lines().next_back().map(str::trim),
+        Some("DONE" | "[DONE]")
+    )
+}
 
 fn trailing_marker(text: &str, marker: &str) -> bool {
     let canonical = canonicalize_markers(text);
     canonical.trim_end().ends_with(&format!("DUCK:{marker}"))
+        || (marker == "DONE" && is_standalone_legacy_done(&canonical))
 }
 
 pub fn append_turn_text(current: &str, next: &str) -> String {
@@ -44,6 +54,11 @@ pub fn strip_turn_marker(text: &str) -> String {
         if let Some(without_marker) = trimmed.strip_suffix(&suffix) {
             return without_marker.trim_end().to_owned();
         }
+    }
+    if is_standalone_legacy_done(&canonical) {
+        let mut lines = canonical.trim_end().lines().collect::<Vec<_>>();
+        lines.pop();
+        return lines.join("\n").trim_end().to_owned();
     }
     canonical
 }
@@ -142,5 +157,18 @@ mod tests {
         );
         let legacy = format!("still working {}:MONITORING", concat!("C", "E", "Z"));
         assert_eq!(strip_turn_marker(&legacy), "still working");
+        assert_eq!(
+            strip_turn_marker("all checks pass\nDONE\n"),
+            "all checks pass"
+        );
+        assert_eq!(strip_turn_marker("DONE"), "");
+        assert_eq!(
+            strip_turn_marker("this is DONE in prose"),
+            "this is DONE in prose"
+        );
+        assert_eq!(
+            decide_turn_marker("work complete\nDONE", true, false),
+            TurnMarkerDecision::Done
+        );
     }
 }

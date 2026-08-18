@@ -959,6 +959,7 @@ pub struct App {
     pub boot_root: Option<PathBuf>,
     pub live_usage: BTreeMap<String, ProcessUsage>,
     pub now_epoch: i64,
+    pub animation_tick: u64,
     pub tasks_ui: crate::screens::tasks::TasksUi,
     pub global_ui: crate::screens::global_tasks::GlobalUi,
     pub new_task_ui: crate::screens::new_task::NewTaskUi,
@@ -1046,6 +1047,7 @@ impl App {
             boot_root: None,
             live_usage: BTreeMap::new(),
             now_epoch: 0,
+            animation_tick: 0,
             tasks_ui: crate::screens::tasks::TasksUi::default(),
             global_ui: crate::screens::global_tasks::GlobalUi::default(),
             new_task_ui: crate::screens::new_task::NewTaskUi::default(),
@@ -2423,6 +2425,12 @@ impl App {
             KeyCode::Char('y') | KeyCode::Enter => {
                 let action = confirm.action.clone();
                 self.confirm = None;
+                if let PendingAction::CancelRun { project, id } = &action
+                    && self.thread_ui.data.project == *project
+                    && self.thread_ui.data.run_id == *id
+                {
+                    self.thread_ui.cancel_pending = true;
+                }
                 match action {
                     // Quit and the IDE-discard resolutions are app-local state changes,
                     // resolved here; everything else waits for main's engine.
@@ -3938,6 +3946,33 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         }));
         assert!(app.should_quit());
+    }
+
+    #[test]
+    fn confirming_cancel_closes_the_dialog_and_shows_immediate_feedback() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.thread_ui.data.project = "main".to_owned();
+        app.thread_ui.data.run_id = "run-1".to_owned();
+        app.confirm = Some(ConfirmRequest {
+            text: "Stop this run?".to_owned(),
+            action: PendingAction::CancelRun {
+                project: "main".to_owned(),
+                id: "run-1".to_owned(),
+            },
+        });
+
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('y'),
+            KeyModifiers::NONE,
+        )));
+
+        assert!(app.confirm.is_none());
+        assert!(app.thread_ui.cancel_pending);
+        assert!(matches!(
+            app.pending.as_slice(),
+            [PendingAction::CancelRun { project, id }]
+                if project == "main" && id == "run-1"
+        ));
     }
 
     #[test]
