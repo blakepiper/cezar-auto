@@ -640,18 +640,6 @@ async fn execute_pending(
                     move |result| BackgroundResult::RefreshModels { runner, result },
                 );
             }
-            PendingAction::PlanTask { project, task } => {
-                let scope = Scope::Project(project.clone());
-                match engine.plan(&scope, &task).await {
-                    Ok(plan) => {
-                        app.new_task_ui.plan = Some(plan);
-                    }
-                    Err(error) => {
-                        app.notice = Some(format!("plan failed: {error}"));
-                        app.new_task_ui.plan_visible = false;
-                    }
-                }
-            }
             PendingAction::PutUiState { project, state } => {
                 let scope = Scope::Project(project.clone());
                 match engine.put_ui_state(&scope, &state).await {

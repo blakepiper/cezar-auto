@@ -41,6 +41,7 @@ impl Default for SkillsUi {
 /// global layer, "team" for a team repo.
 pub fn source_badge(source: SkillSource) -> &'static str {
     match source {
+        SkillSource::BuiltIn => "built-in",
         SkillSource::Ai | SkillSource::Legacy | SkillSource::Agents => "project",
         SkillSource::Global => "global",
         SkillSource::Team => "team",
@@ -366,6 +367,7 @@ mod tests {
 
     #[test]
     fn source_badge_maps_every_source() {
+        assert_eq!(source_badge(SkillSource::BuiltIn), "built-in");
         assert_eq!(source_badge(SkillSource::Ai), "project");
         assert_eq!(source_badge(SkillSource::Legacy), "project");
         assert_eq!(source_badge(SkillSource::Agents), "project");

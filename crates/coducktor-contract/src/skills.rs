@@ -6,6 +6,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// Skill source, without introducing the legacy product spelling into new Rust identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillSource {
+    BuiltIn,
     Ai,
     Legacy,
     Agents,
@@ -19,6 +20,7 @@ impl Serialize for SkillSource {
         S: Serializer,
     {
         serializer.serialize_str(match self {
+            Self::BuiltIn => "builtin",
             Self::Ai => "ai",
             Self::Legacy => concat!("ce", "zar"),
             Self::Agents => "agents",
@@ -47,6 +49,7 @@ impl<'de> Deserialize<'de> for SkillSource {
                 E: Error,
             {
                 match value {
+                    "builtin" => Ok(SkillSource::BuiltIn),
                     "ai" => Ok(SkillSource::Ai),
                     concat!("ce", "zar") => Ok(SkillSource::Legacy),
                     "agents" => Ok(SkillSource::Agents),

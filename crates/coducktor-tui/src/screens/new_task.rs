@@ -4,11 +4,10 @@
 //! "What should the agent work on?", the shared composer card (auto-growing text
 //! area, attachment row — no Dictation, per decision 2), a pill row —
 //! `skill/workflow ▾` · `runner ▾` · `model ▾` · `reasoning ▾` · `×N variants ▾` ·
-//! `branch: <branch> ▾` · `worktree: on ▾` · `mode: autonomous ▾` — then `Start` /
-//! `Plan first` and the send button.
+//! `branch: <branch> ▾` · `worktree: on ▾` · `mode: autonomous ▾` — then the send hint.
 
 use coducktor_contract::{
-    ImageInput, PlanResponse, ProviderStatusResponse, ReasoningEffort, RepoInfo, Runner,
+    ImageInput, ProviderStatusResponse, ReasoningEffort, RepoInfo, Runner,
     RunnerModelCatalogResponse, RunnerSelection, Skill, TaskSource, UiState, WorkflowDef,
     WorkspaceConfigResponse,
 };
@@ -17,7 +16,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::app::{App, PendingAction};
 use crate::input::hitmap::{HitAction, NewTaskAction};
@@ -124,7 +123,7 @@ pub struct NewTaskData {
 }
 
 /// Screen-local state: the per-project draft, the shared composer, focus, and the
-/// open overlay (pill picker / plan).
+/// open pill-picker overlay.
 #[derive(Debug, Clone, Default)]
 pub struct NewTaskUi {
     pub draft: NewTaskDraft,
@@ -133,8 +132,6 @@ pub struct NewTaskUi {
     pub composer_focused: bool,
     pub pill_focus: Option<PillId>,
     pub picker: Option<PickerKind>,
-    pub plan: Option<PlanResponse>,
-    pub plan_visible: bool,
     pub data: NewTaskData,
 }
 
@@ -345,8 +342,6 @@ pub fn apply_hit(app: &mut App, action: NewTaskAction) {
         NewTaskAction::BasePill => open_pill(app, PillId::Base),
         NewTaskAction::WorktreePill => open_pill(app, PillId::Worktree),
         NewTaskAction::AutonomousPill => open_pill(app, PillId::Autonomous),
-        NewTaskAction::Start => request_start(app),
-        NewTaskAction::Plan => request_plan(app),
         NewTaskAction::Compose => {
             app.new_task_ui.composer_focused = true;
             app.new_task_ui.composer.focus();
@@ -421,9 +416,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     if app.new_task_ui.picker.is_some() {
         return handle_picker_key(app, key);
     }
-    if app.new_task_ui.plan_visible {
-        return handle_plan_key(app, key);
-    }
     if app.new_task_ui.composer_focused {
         return handle_composer_key(app, key);
     }
@@ -481,20 +473,13 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             request_start(app);
             true
         }
-        KeyCode::Char('p') => {
-            request_plan(app);
-            true
-        }
         _ => false,
     }
 }
 
 /// Deliver a bracketed-paste chunk to the focused composer.
 pub fn handle_paste(app: &mut App, text: &str) -> bool {
-    if !app.new_task_ui.composer_focused
-        || app.new_task_ui.picker.is_some()
-        || app.new_task_ui.plan_visible
-    {
+    if !app.new_task_ui.composer_focused || app.new_task_ui.picker.is_some() {
         return false;
     }
     let ctx = composer_context(app);
@@ -595,68 +580,6 @@ fn handle_picker_key(app: &mut App, key: KeyEvent) -> bool {
     }
 }
 
-fn handle_plan_key(app: &mut App, key: KeyEvent) -> bool {
-    match key.code {
-        KeyCode::Char('y') | KeyCode::Enter => {
-            let steps = app.new_task_ui.plan.as_ref().map(|plan| plan.steps.clone());
-            app.new_task_ui.plan_visible = false;
-            if let Some(steps) = steps {
-                start_with_steps(app, steps);
-            }
-            true
-        }
-        KeyCode::Char('n') | KeyCode::Esc => {
-            app.new_task_ui.plan_visible = false;
-            true
-        }
-        _ => true,
-    }
-}
-
-fn start_with_steps(app: &mut App, steps: Vec<coducktor_contract::WorkflowStepDef>) {
-    let effective = effective_values(&app.new_task_ui.draft, &app.new_task_ui.data);
-    if !effective.providers_ready {
-        app.notice = Some("connect an agent provider before starting a task".to_owned());
-        return;
-    }
-    let text = app.new_task_ui.composer.text.trim().to_owned();
-    if text.is_empty() {
-        app.notice = Some("describe a task first".to_owned());
-        return;
-    }
-    let project = app.current_project().to_owned();
-    let input = coducktor_contract::CreateRunInputBase {
-        workflow: None,
-        steps: Some(steps),
-        task: text,
-        model: None,
-        reasoning_effort: None,
-        runner: None,
-        agent_profile: None,
-        variants: None,
-        worktree: None,
-        autonomous: Some(effective.autonomous_on),
-        system_prompt: None,
-        images: None,
-    };
-    app.new_task_ui.plan = None;
-    finish_submit(app, project, input, &effective);
-}
-
-fn request_plan(app: &mut App) {
-    let text = app.new_task_ui.composer.text.trim().to_owned();
-    if text.is_empty() {
-        app.notice = Some("describe a task first".to_owned());
-        return;
-    }
-    let project = app.current_project().to_owned();
-    app.new_task_ui.plan_visible = true;
-    app.pending.push(PendingAction::PlanTask {
-        project,
-        task: text,
-    });
-}
-
 fn toggle_autonomous(app: &mut App) {
     let draft = &mut app.new_task_ui.draft;
     let effective = effective_values(draft, &app.new_task_ui.data);
@@ -748,15 +671,33 @@ fn source_picker_items(
     usage: Option<&std::collections::BTreeMap<String, f64>>,
 ) -> Vec<PickerItem> {
     let mut items: Vec<PickerItem> = Vec::new();
-    let matched = crate::skills::search_skills(&data.skills, query, usage);
+    let matched = crate::skills::search_skills(&data.skills, query, usage)
+        .into_iter()
+        .filter(|skill| skill.name != coducktor_core::skills::BUILT_IN_PLANNING_SKILL_NAME)
+        .collect::<Vec<_>>();
     let tiers =
         crate::skills::partition_skill_refs(&matched, usage, crate::skills::MOST_USED_LIMIT);
-    let baseline_matches = "baseline no skill plain task".contains(&query.trim().to_lowercase());
+    let query = query.trim().to_lowercase();
+    let baseline_matches = "baseline no skill plain task".contains(&query);
     if baseline_matches {
         items.push(PickerItem {
             value: "baseline".to_owned(),
             label: "Baseline".to_owned(),
             description: Some("Run the task as written, without a skill or workflow".to_owned()),
+            group: Some("Task mode".to_owned()),
+            emphasized: false,
+        });
+    }
+    if "planning plan".contains(&query) {
+        items.push(PickerItem {
+            value: format!(
+                "skill:{}",
+                coducktor_core::skills::BUILT_IN_PLANNING_SKILL_NAME
+            ),
+            label: coducktor_core::skills::BUILT_IN_PLANNING_SKILL_NAME.to_owned(),
+            description: Some(
+                coducktor_core::skills::BUILT_IN_PLANNING_SKILL_DESCRIPTION.to_owned(),
+            ),
             group: Some("Task mode".to_owned()),
             emphasized: false,
         });
@@ -775,7 +716,7 @@ fn source_picker_items(
             });
         }
     }
-    let workflows = crate::skills::search_workflows(&data.workflows, query);
+    let workflows = crate::skills::search_workflows(&data.workflows, &query);
     for workflow in workflows {
         items.push(PickerItem {
             value: format!("workflow:{}", workflow.name),
@@ -1271,14 +1212,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     // Pill row.
     render_pills(frame, rows[2], app, &effective);
 
-    // Start / Plan first.
-    render_actions(frame, rows[3], app, &effective);
+    // Submission hint.
+    render_actions(frame, rows[3], app);
 
-    // Overlays: open picker, then the plan.
+    // Overlay: open picker.
     if app.new_task_ui.picker.is_some() {
         render_picker_overlay(frame, area, app);
-    } else if app.new_task_ui.plan_visible {
-        render_plan_overlay(frame, area, app);
     }
 }
 
@@ -1398,7 +1337,7 @@ fn pill_row_height(width: u16, effective: &Effective) -> u16 {
 }
 
 fn action_row_height(width: u16) -> u16 {
-    let content = " [Start] [Plan first]    Enter or Ctrl+Enter sends · Esc leaves the composer";
+    let content = " Enter or Ctrl+Enter sends · Esc leaves the composer";
     wrapped_height(content, width)
 }
 
@@ -1407,40 +1346,17 @@ fn wrapped_height(content: &str, width: u16) -> u16 {
     content.chars().count().div_ceil(width).max(1) as u16
 }
 
-fn render_actions(frame: &mut Frame<'_>, area: Rect, app: &mut App, effective: &Effective) {
+fn render_actions(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
-    let providers_ready = effective.providers_ready;
-    let start_style = if providers_ready {
-        Style::default()
-            .fg(theme.palette.accent)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(theme.palette.soft_fg)
-    };
-    let plan_style = Style::default().fg(theme.palette.soft_fg);
-    let line = Line::from(vec![
-        Span::styled(" [Start]", start_style),
-        Span::styled(" [Plan first]", plan_style),
-        Span::styled(
-            "    Enter or Ctrl+Enter sends · Esc leaves the composer",
-            theme_soft(theme),
-        ),
-    ]);
+    let line = Line::from(Span::styled(
+        " Enter or Ctrl+Enter sends · Esc leaves the composer",
+        theme_soft(theme),
+    ));
     frame.render_widget(
         Paragraph::new(line)
             .wrap(Wrap { trim: false })
             .style(Style::default().bg(theme.palette.bg)),
         area,
-    );
-    app.hitmap.register(
-        Rect::new(area.x, area.y, 8, area.height),
-        6,
-        HitAction::NewTaskScreen(NewTaskAction::Start),
-    );
-    app.hitmap.register(
-        Rect::new(area.x + 8, area.y, 13, area.height),
-        6,
-        HitAction::NewTaskScreen(NewTaskAction::Plan),
     );
 }
 
@@ -1476,65 +1392,6 @@ fn render_picker_overlay(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let theme = app.theme;
     let hitmap = &mut app.hitmap;
     picker.render(frame, area, theme, hitmap);
-}
-
-fn render_plan_overlay(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
-    let theme = app.theme;
-    let Some(plan) = app.new_task_ui.plan.as_ref() else {
-        return;
-    };
-    let mut lines: Vec<Line<'static>> = vec![Line::from(Span::styled(
-        format!(
-            " {} — {}",
-            plan.name.as_deref().unwrap_or("PLAN"),
-            plan.rationale
-        ),
-        Style::default().fg(theme.palette.soft_fg),
-    ))];
-    lines.push(Line::from(""));
-    for (index, step) in plan.steps.iter().enumerate() {
-        let name = step.name.as_deref().unwrap_or(&step.id);
-        lines.push(Line::from(Span::styled(
-            format!(
-                "  {}. {} {}",
-                index + 1,
-                name,
-                step.skill.as_deref().unwrap_or("")
-            ),
-            Style::default().fg(theme.palette.fg),
-        )));
-    }
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  [y] start with this plan    [n] dismiss",
-        Style::default().fg(theme.palette.accent),
-    )));
-    let height = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
-    let width = area.width.min(60);
-    let rect = centered_rect(area, width, height);
-    frame.render_widget(Clear, rect);
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title("PLAN FIRST"))
-            .style(
-                Style::default()
-                    .fg(theme.palette.fg)
-                    .bg(theme.palette.surface),
-            )
-            .wrap(Wrap { trim: false }),
-        rect,
-    );
-}
-
-fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
-    let width = width.min(area.width);
-    let height = height.min(area.height);
-    Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    )
 }
 
 #[cfg(test)]
@@ -1789,9 +1646,12 @@ mod tests {
                 .and_then(|state| state.skill_usage.as_ref()),
         );
         let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
-        // Baseline leads for an empty query, then Most used across localities, then project,
+        // Task modes lead for an empty query, then Most used across localities, then project,
         // workflows, and global entries.
-        assert_eq!(labels, ["Baseline", "om-open-pr", "om-fix", "quick-task"]);
+        assert_eq!(
+            labels,
+            ["Baseline", "planning", "om-open-pr", "om-fix", "quick-task"]
+        );
 
         let tiers: Vec<&str> = items
             .iter()
@@ -1799,7 +1659,13 @@ mod tests {
             .collect();
         assert_eq!(
             tiers,
-            ["Task mode", "Most used", "Project skills", "Workflows"]
+            [
+                "Task mode",
+                "Task mode",
+                "Most used",
+                "Project skills",
+                "Workflows"
+            ]
         );
 
         // A typed query narrows and re-ranks: an exact name match beats the rest.
@@ -2026,9 +1892,9 @@ mod tests {
             .as_mut()
             .unwrap()
             .picker_mut()
-            .selected = 1;
+            .selected = 2;
         let kind = app.new_task_ui.picker.clone().unwrap();
-        let value = kind.picker().items[1].value.clone();
+        let value = kind.picker().items[2].value.clone();
         apply_pick(&mut app, PillId::Source, &value);
         assert_eq!(
             app.new_task_ui.draft.source,

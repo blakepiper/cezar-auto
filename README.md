@@ -112,7 +112,8 @@ git pull && ./install.sh
    effort, branch, worktree mode, and task mode as needed.
 5. Leave autonomous mode enabled to let the run continue through its workflow without waiting for
    confirmation, or toggle it off when you want a more interactive handoff.
-6. Choose **Start**, or choose **Plan first** and accept the plan preview.
+6. Press Enter to send the task. Choose `planning` in the task-mode picker when you want a
+   concise plan without repository changes.
 
 In a Git repository, the default run mode for normal tasks uses a task worktree under
 `.ai/coducktor/worktrees/` on a `duck/<run-id-prefix>` branch. The original checkout is left alone while
@@ -225,6 +226,9 @@ fields are still shown when a backend supplies them.
 The built-in `quick-task` workflow is always available. Custom workflows are loaded from
 `.ai/coducktor/workflows/*.yaml` and `.yml`. A workflow may contain agent steps, shell check steps,
 per-step skills, runner or model overrides, and bounded retry links to earlier steps.
+
+The New Task picker also includes the built-in `planning` task mode. It returns a concise,
+ordered plan and does not modify the repository.
 
 ```yaml
 name: implement-and-verify

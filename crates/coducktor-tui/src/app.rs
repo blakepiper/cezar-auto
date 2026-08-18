@@ -608,11 +608,6 @@ pub enum PendingAction {
     RefreshModels {
         runner: coducktor_contract::Runner,
     },
-    /// Run the planner over a draft and show the resulting chain.
-    PlanTask {
-        project: String,
-        task: String,
-    },
     /// Persist the (bumped) ui-state map.
     PutUiState {
         project: String,

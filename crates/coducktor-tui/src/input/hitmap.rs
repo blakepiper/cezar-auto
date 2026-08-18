@@ -72,8 +72,6 @@ pub enum NewTaskAction {
     BasePill,
     WorktreePill,
     AutonomousPill,
-    Start,
-    Plan,
     Compose,
 }
 

@@ -363,7 +363,10 @@ fn reasoning_effort_id(effort: ReasoningEffort) -> &'static str {
 pub fn source_exists(source: &TaskSource, skills: &[Skill], workflows: &[WorkflowDef]) -> bool {
     match source {
         TaskSource::Baseline => true,
-        TaskSource::Skill { reference } => skills.iter().any(|skill| skill.name == *reference),
+        TaskSource::Skill { reference } => {
+            reference == coducktor_core::skills::BUILT_IN_PLANNING_SKILL_NAME
+                || skills.iter().any(|skill| skill.name == *reference)
+        }
         TaskSource::Workflow { reference } => {
             workflows.iter().any(|workflow| workflow.name == *reference)
         }
@@ -452,7 +455,14 @@ pub fn build_create_run_body(opts: &CreateRunBodyOpts) -> CreateRunInput {
             _ => None,
         },
         autonomous: opts.autonomous.then_some(true),
-        system_prompt: None,
+        system_prompt: match &opts.source {
+            TaskSource::Skill { reference }
+                if reference == coducktor_core::skills::BUILT_IN_PLANNING_SKILL_NAME =>
+            {
+                Some(coducktor_core::skills::BUILT_IN_PLANNING_SKILL_BODY.to_owned())
+            }
+            _ => None,
+        },
         images: if opts.images.is_empty() {
             None
         } else {
@@ -817,6 +827,14 @@ mod tests {
             &workflows
         ));
         assert!(source_exists(&TaskSource::Baseline, &[], &[]));
+        assert!(source_exists(
+            &source(
+                "skill",
+                coducktor_core::skills::BUILT_IN_PLANNING_SKILL_NAME
+            ),
+            &[],
+            &[]
+        ));
     }
 
     fn base_opts() -> CreateRunBodyOpts {
@@ -846,6 +864,30 @@ mod tests {
                 "task": "do the thing",
                 "steps": [{ "id": "task", "name": "Baseline", "prompt": "{{task}}" }],
             })
+        );
+    }
+
+    #[test]
+    fn built_in_planning_source_sends_its_planning_instructions() {
+        let mut opts = base_opts();
+        opts.source = source(
+            "skill",
+            coducktor_core::skills::BUILT_IN_PLANNING_SKILL_NAME,
+        );
+        let body = build_create_run_body(&opts);
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(
+            json["steps"],
+            serde_json::json!([{
+                "id": "task",
+                "name": "planning",
+                "skill": "planning",
+                "prompt": "{{task}}"
+            }])
+        );
+        assert_eq!(
+            json["systemPrompt"],
+            coducktor_core::skills::BUILT_IN_PLANNING_SKILL_BODY
         );
     }
 

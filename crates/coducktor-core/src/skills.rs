@@ -28,6 +28,19 @@ pub const SKILL_DIRS: &[(&str, SkillSource)] = &[
     (".opencode/skills", SkillSource::Agents),
 ];
 
+/// The application-provided planning mode exposed by the New Task source picker.
+pub const BUILT_IN_PLANNING_SKILL_NAME: &str = "planning";
+pub const BUILT_IN_PLANNING_SKILL_DESCRIPTION: &str =
+    "Think through the task and return a concise plan without making changes";
+pub const BUILT_IN_PLANNING_SKILL_BODY: &str = r#"You are in planning mode.
+
+Analyze the user's task and the repository before proposing a solution. Return a concise,
+ordered implementation plan that names the important files or areas, explains key decisions and
+tradeoffs, and includes the verification steps that should be run.
+
+Do not edit files, create files, delete files, commit changes, or run commands that modify the
+repository. End after presenting the plan."#;
+
 /// Deliberately the plain home dir ([`crate::paths::real_home_dir`]) and not an
 /// agent-profile-aware path: a skill is CONTENT — a playbook — not identity, and a second
 /// Claude login is not a second skill library.
@@ -54,6 +67,20 @@ pub fn discover_skills(repo_root: &Path, env: &dyn EnvSource) -> Vec<Skill> {
             }
             merged.push(skill);
         }
+    }
+    if !merged
+        .iter()
+        .any(|skill| skill.name == BUILT_IN_PLANNING_SKILL_NAME)
+    {
+        merged.push(Skill {
+            name: BUILT_IN_PLANNING_SKILL_NAME.to_owned(),
+            description: Some(BUILT_IN_PLANNING_SKILL_DESCRIPTION.to_owned()),
+            interactive: None,
+            body: BUILT_IN_PLANNING_SKILL_BODY.to_owned(),
+            path: "builtin:planning".to_owned(),
+            source: SkillSource::BuiltIn,
+            team: None,
+        });
     }
     merged.sort_by(|a, b| a.name.cmp(&b.name));
     merged
@@ -308,6 +335,23 @@ mod tests {
     use super::*;
     use crate::paths::test_env::FixedEnv;
     use std::os::unix::fs::symlink;
+
+    #[test]
+    fn includes_the_built_in_planning_skill() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = FixedEnv::new(&[("HOME", dir.path().to_str().unwrap())]);
+        let skills = discover_skills(dir.path(), &env);
+        let planning = skills
+            .iter()
+            .find(|skill| skill.name == BUILT_IN_PLANNING_SKILL_NAME)
+            .unwrap();
+        assert_eq!(planning.source, SkillSource::BuiltIn);
+        assert_eq!(planning.body, BUILT_IN_PLANNING_SKILL_BODY);
+        assert_eq!(
+            planning.description.as_deref(),
+            Some(BUILT_IN_PLANNING_SKILL_DESCRIPTION)
+        );
+    }
 
     #[test]
     fn recognizes_only_scalar_true_as_the_interactive_composer_hint() {

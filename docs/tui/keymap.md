@@ -109,9 +109,6 @@ re-documented per row.
 | `Space` | Toggle Autonomous (when that pill is focused) |
 | `i` / `Enter` | Focus the composer |
 | `n` / `s` | Start the task |
-| `p` | Request a plan |
-| `y` / `Enter` | Accept the plan preview |
-| `n` / `Esc` | Dismiss the plan preview |
 
 ### Scratchpad (`screens/scratchpad.rs`)
 
