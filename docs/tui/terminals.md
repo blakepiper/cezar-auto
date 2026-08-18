@@ -65,6 +65,13 @@ records what is implemented and which terminal observations remain unverified.
 
 ## Task experience smoke test
 
+- **80×24 pseudo-terminal, 2026-08-18 (parked transcript pass).** Built and launched the real
+  `coducktor` binary, opened the stored waiting task from the Tasks screen, and verified the
+  Session header and dock both said it was waiting for an answer while no stale `Working…` row
+  remained in the transcript. The stored autonomous history was also exercised by reducer tests
+  that assert every orchestration pass is placed immediately before the response it triggered.
+  `q` restored the alternate screen.
+
 - **80×24 pseudo-terminal, 2026-08-18 (live activity pass).** Built and launched the real
   `coducktor` binary with `DUCK_DRY_RUN=1`, submitted `verify throbber and finish once`, and
   observed the Session screen immediately. The activity glyph advanced through the braille

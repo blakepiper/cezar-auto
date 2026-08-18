@@ -523,7 +523,8 @@ fn outcome_for(
         };
     }
     match run_status {
-        RunStatus::Queued | RunStatus::Running | RunStatus::Waiting => TurnOutcome::Running,
+        RunStatus::Queued | RunStatus::Running => TurnOutcome::Running,
+        RunStatus::Waiting => TurnOutcome::Unknown,
         RunStatus::Cancelled => TurnOutcome::Interrupted,
         RunStatus::Failed => TurnOutcome::Failed {
             reason: None,
@@ -582,7 +583,9 @@ fn accumulate_summary(node: &ActivityNode, summary: &mut ReviewSummary) {
 
 fn derive_status(status: RunStatus, turn: Option<&TurnViewModel>) -> String {
     if let Some(turn) = turn {
-        if let Some(node) = running_node(&turn.activity) {
+        if matches!(status, RunStatus::Queued | RunStatus::Running)
+            && let Some(node) = running_node(&turn.activity)
+        {
             return node.presentation.title.clone();
         }
         if turn.activity.iter().any(|node| {
@@ -656,6 +659,18 @@ mod tests {
         assert_eq!(view.turns.len(), 2);
         assert_eq!(view.turns[0].prompt.text, "initial  exact");
         assert_eq!(view.turns[1].prompt.text, "follow\nup");
+    }
+
+    #[test]
+    fn a_parked_turn_is_not_projected_as_working() {
+        let state = super::super::reducer::reduce_thread(
+            &[event(1.0, "text", json!({"text": "Waiting for input."}))],
+            Default::default(),
+        );
+        let view = project_thread(&run("initial", RunStatus::Waiting), &state);
+
+        assert_eq!(view.current_status, "Waiting for your answer");
+        assert!(matches!(view.turns[0].outcome, TurnOutcome::Unknown));
     }
 
     #[test]

@@ -515,6 +515,20 @@ pub fn reduce_thread(events: &[RunEvent], options: ThreadReduceOptions) -> Threa
                 if text.is_empty() {
                     continue;
                 }
+                // An autonomous nudge starts a backend turn without a user message. Give it a
+                // transcript turn of its own so the orchestration note stays immediately above
+                // the response it triggered instead of being pushed below one coalesced legacy
+                // assistant message.
+                if is_autonomous_continuation(&text)
+                    && turns.last().is_some_and(|turn| {
+                        turn.user_message.is_some()
+                            || !turn.items.is_empty()
+                            || turn.plan_entries.is_some()
+                            || turn.completed.is_some()
+                    })
+                {
+                    new_turn(&mut turns, &mut turn_seq, Some(event.seq));
+                }
                 let tone = if str_field(extra, "noteKind").as_deref() == Some("provider-switch") {
                     NoteTone::Warning
                 } else {
@@ -653,6 +667,10 @@ pub fn reduce_thread(events: &[RunEvent], options: ThreadReduceOptions) -> Threa
         turns,
         session_ended,
     }
+}
+
+fn is_autonomous_continuation(text: &str) -> bool {
+    text.starts_with("autonomous continuation (") || text.starts_with("autonomous pass ")
 }
 
 fn current_turn(turns: &mut Vec<ThreadTurn>, turn_seq: &mut u64) -> usize {
@@ -871,6 +889,25 @@ mod tests {
                         && tool.output.as_deref() == Some("contents")
             )
         }));
+    }
+
+    #[test]
+    fn autonomous_orchestration_precedes_the_response_it_triggers() {
+        let events = vec![
+            event(1.0, "text", json!({"text": "first response"})),
+            event(2.0, "note", json!({"message": "autonomous pass 1 of 4"})),
+            event(3.0, "text", json!({"text": "second response"})),
+        ];
+
+        let state = reduce_thread(&events, ThreadReduceOptions::default());
+
+        assert_eq!(state.turns.len(), 2);
+        assert!(matches!(
+            &state.turns[1].items[..],
+            [ThreadEntry::Note(note), ThreadEntry::Item(UiItem::Message(message))]
+                if note.text == "autonomous pass 1 of 4"
+                    && message.text == "second response"
+        ));
     }
 
     #[test]

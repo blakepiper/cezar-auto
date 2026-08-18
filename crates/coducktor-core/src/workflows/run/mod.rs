@@ -2313,9 +2313,7 @@ impl RunManager {
                     run_id,
                     EventInput::new("note").field(
                         "message",
-                        format!(
-                            "autonomous continuation ({auto_continues}/{MAX_AUTONOMOUS_CONTINUES})"
-                        ),
+                        format!("autonomous pass {auto_continues} of {MAX_AUTONOMOUS_CONTINUES}"),
                     ),
                 )?;
                 outcome = match session.send_message(
@@ -2623,7 +2621,7 @@ impl RunManager {
                 EventInput::new("note").field(
                     "message",
                     format!(
-                        "autonomous continuation ({}/{})",
+                        "autonomous pass {} of {}",
                         active.auto_continues, MAX_AUTONOMOUS_CONTINUES
                     ),
                 ),
@@ -4602,7 +4600,7 @@ mod tests {
                     .extra
                     .get("message")
                     .and_then(Value::as_str)
-                    .is_some_and(|message| message.starts_with("autonomous continuation"))
+                    .is_some_and(|message| message.starts_with("autonomous pass"))
         }));
     }
 

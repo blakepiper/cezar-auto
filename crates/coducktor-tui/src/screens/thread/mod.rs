@@ -103,6 +103,7 @@ pub struct ThreadUi {
     pub steps_collapsed: bool,
     pub focus: ThreadFocus,
     pub pending_prompt: Option<String>,
+    pending_prompt_after_seq: f64,
     pending_composer: Option<crate::widgets::composer::Composer>,
     pub delivery_error: bool,
     pub cancel_pending: bool,
@@ -124,6 +125,7 @@ impl Default for ThreadUi {
             steps_collapsed: true,
             focus: ThreadFocus::Transcript,
             pending_prompt: None,
+            pending_prompt_after_seq: -1.0,
             pending_composer: None,
             delivery_error: false,
             cancel_pending: false,
@@ -164,6 +166,7 @@ impl ThreadUi {
         self.focus = ThreadFocus::Transcript;
         if !same_thread {
             self.pending_prompt = None;
+            self.pending_prompt_after_seq = -1.0;
             self.pending_composer = None;
         }
         self.cancel_pending = false;
@@ -172,6 +175,7 @@ impl ThreadUi {
 
     pub fn set_pending_prompt(&mut self, text: String) {
         self.pending_prompt = Some(text);
+        self.pending_prompt_after_seq = self.data.as_of_seq;
         self.pending_composer = None;
         self.delivery_error = false;
         self.rebuild();
@@ -179,6 +183,7 @@ impl ThreadUi {
 
     fn set_pending_composer(&mut self, text: String) {
         self.pending_prompt = Some(text);
+        self.pending_prompt_after_seq = self.data.as_of_seq;
         self.pending_composer = Some(self.composer.clone());
         self.delivery_error = false;
         self.rebuild();
@@ -192,6 +197,7 @@ impl ThreadUi {
     pub fn resolve_pending_prompt(&mut self, project: &str, run_id: &str) {
         if self.data.project == project && self.data.run_id == run_id {
             self.pending_prompt = None;
+            self.pending_prompt_after_seq = -1.0;
             self.pending_composer = None;
             self.delivery_error = false;
             self.rebuild();
@@ -212,6 +218,7 @@ impl ThreadUi {
             self.focus = ThreadFocus::Composer;
         }
         self.pending_prompt = None;
+        self.pending_prompt_after_seq = -1.0;
         self.delivery_error = true;
         self.rebuild();
     }
@@ -237,6 +244,7 @@ impl ThreadUi {
         self.data.older_error = None;
         self.transcript = Transcript::new();
         self.pending_prompt = None;
+        self.pending_prompt_after_seq = -1.0;
         self.pending_composer = None;
         self.delivery_error = false;
     }
@@ -301,7 +309,14 @@ impl ThreadUi {
             self.data.older_cursor.is_some(),
             self.data.older_loading,
             self.data.older_error.as_deref(),
-            self.pending_prompt.as_deref(),
+            self.pending_prompt.as_deref().filter(|prompt| {
+                !self.data.events.iter().any(|event| {
+                    event.seq > self.pending_prompt_after_seq
+                        && event.event_type == "user-message"
+                        && event.extra.get("text").and_then(serde_json::Value::as_str)
+                            == Some(*prompt)
+                })
+            }),
         ));
         // A resolved ask, or a fresh one under a different id, clears any stale in-progress
         // selections — a leftover partial answer must never attach to the NEXT question.
@@ -449,8 +464,10 @@ fn build_transcript_items(
                 TranscriptNoteTone::Dim,
             )));
         }
-        if let Some(projected) = projected {
-            items.push(outcome_item(projected));
+        if let Some(projected) = projected
+            && let Some(outcome) = outcome_item(projected)
+        {
+            items.push(outcome);
         }
     }
     if let Some(prompt) = pending_prompt {
@@ -468,9 +485,9 @@ fn build_transcript_items(
     items
 }
 
-fn outcome_item(turn: &projection::TurnViewModel) -> TranscriptItem {
+fn outcome_item(turn: &projection::TurnViewModel) -> Option<TranscriptItem> {
     let (text, tone) = match &turn.outcome {
-        projection::TurnOutcome::Running => ("Working…".to_owned(), TranscriptNoteTone::Dim),
+        projection::TurnOutcome::Running | projection::TurnOutcome::Unknown => return None,
         projection::TurnOutcome::Completed { verification, .. } => (
             format!(
                 "Completed · verification {}",
@@ -495,11 +512,12 @@ fn outcome_item(turn: &projection::TurnViewModel) -> TranscriptItem {
         projection::TurnOutcome::Interrupted => {
             ("Interrupted".to_owned(), TranscriptNoteTone::Warning)
         }
-        projection::TurnOutcome::Unknown => {
-            ("Outcome not observed".to_owned(), TranscriptNoteTone::Dim)
-        }
     };
-    TranscriptItem::Note(NoteItem::new(format!("outcome:{}", turn.id), text, tone))
+    Some(TranscriptItem::Note(NoteItem::new(
+        format!("outcome:{}", turn.id),
+        text,
+        tone,
+    )))
 }
 
 /// The single AskUser card that can still be answered — only the LATEST `ask.requested`
@@ -1631,6 +1649,41 @@ mod tests {
         assert_eq!(app.thread_ui.composer.text, "keep going");
         assert!(app.thread_ui.delivery_error);
         assert!(app.thread_ui.pending_prompt.is_none());
+    }
+
+    #[test]
+    fn durable_follow_up_replaces_the_optimistic_copy_during_generation() {
+        let mut app = app_with_run(RunStatus::Running);
+        app.thread_ui.push_event(
+            1.0,
+            event(1.0, "user-message", json!({"text": "follow up"})),
+        );
+        app.thread_ui.set_pending_prompt("follow up".to_owned());
+        let optimistic = render_to_string(&mut app);
+        assert_eq!(optimistic.matches("follow up").count(), 2);
+        assert!(optimistic.contains("Sending…"));
+
+        app.thread_ui.push_event(
+            2.0,
+            event(2.0, "user-message", json!({"text": "follow up"})),
+        );
+
+        let content = render_to_string(&mut app);
+        assert_eq!(content.matches("follow up").count(), 2);
+        assert!(!content.contains("Sending…"));
+    }
+
+    #[test]
+    fn waiting_session_does_not_leave_a_working_outcome_row() {
+        let mut app = app_with_run(RunStatus::Waiting);
+        app.thread_ui.push_event(
+            1.0,
+            event(1.0, "text", json!({"text": "What should I do next?"})),
+        );
+
+        let content = render_to_string(&mut app);
+        assert!(content.contains("Waiting for your reply."));
+        assert!(!content.contains("Working…"));
     }
 
     #[test]
