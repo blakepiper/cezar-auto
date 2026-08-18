@@ -869,6 +869,7 @@ impl RunManager {
     /// Create and durably persist a queued record.
     pub fn create_run(&mut self, input: CreateRunInput) -> io::Result<RunRecord> {
         let id = new_run_id();
+        let created_at = now_iso8601();
         let run = RunRecord {
             id: id.clone(),
             title: input.title,
@@ -886,7 +887,8 @@ impl RunManager {
             group_id: input.group_id,
             variant: input.variant,
             status: RunStatus::Queued,
-            created_at: now_iso8601(),
+            created_at: created_at.clone(),
+            updated_at: Some(created_at),
             tokens_used: 0.0,
             archived: false,
             steps: input.steps.into_iter().map(step_from_seed).collect(),
@@ -991,7 +993,8 @@ impl RunManager {
         let Some(previous) = self.runs.get(run_id).cloned() else {
             return Ok(None);
         };
-        let next = apply_run_patch(&previous, patch.fields())?;
+        let mut next = apply_run_patch(&previous, patch.fields())?;
+        next.updated_at = Some(now_iso8601());
         self.replace_record(run_id, previous, next).map(Some)
     }
 
@@ -1016,6 +1019,7 @@ impl RunManager {
         };
         let mut next = previous.clone();
         edit(&mut next);
+        next.updated_at = Some(now_iso8601());
         self.replace_record(run_id, previous, next).map(Some)
     }
 
@@ -1033,6 +1037,7 @@ impl RunManager {
         }
         let mut next = previous.clone();
         next.steps.push(step_from_seed(step));
+        next.updated_at = Some(now_iso8601());
         self.replace_record(run_id, previous, next)?;
         Ok(true)
     }
@@ -1207,7 +1212,21 @@ impl RunManager {
             extra: input.extra,
         };
         events::append_event(&path, &event)?;
+        // Event append is meaningful activity. Keep read/unread and archive mutations on their
+        // separate timestamps by stamping here instead of in the generic record replacement.
+        let updated_run = if let Some(run) = self.runs.get_mut(run_id) {
+            run.updated_at = Some(event.ts.clone());
+            Some(run.clone())
+        } else {
+            None
+        };
+        if updated_run.is_some() {
+            self.persist()?;
+        }
         self.seqs.insert(run_id.to_owned(), seq);
+        if let Some(run) = &updated_run {
+            self.notify_run(run);
+        }
         let notification = RunEventNotification {
             run_id: run_id.to_owned(),
             event: event.clone(),
@@ -3543,6 +3562,7 @@ mod tests {
                     .set("finishedAt", "2020-01-01T00:00:00.000Z"),
             )
             .unwrap();
+        let done_activity = manager.get_run(&done.id).unwrap().updated_at.clone();
         let scheduled = manager.create_run(create_input()).unwrap();
         manager
             .update_run(
@@ -3555,12 +3575,14 @@ mod tests {
             .unwrap();
         assert_eq!(manager.mark_all_read().unwrap(), 1);
         assert!(manager.get_run(&done.id).unwrap().seen_at.is_some());
+        assert_eq!(manager.get_run(&done.id).unwrap().updated_at, done_activity);
         assert!(manager.get_run(&scheduled.id).unwrap().seen_at.is_none());
         manager.set_unread(&done.id).unwrap();
         assert_eq!(manager.mark_all_read().unwrap(), 1);
         manager.set_archived(&scheduled.id, true).unwrap();
         let archived = manager.get_run(&scheduled.id).unwrap();
         assert!(archived.archived);
+        assert!(archived.archived_at.is_some());
         assert!(archived.auto_resume_at.is_none());
     }
 

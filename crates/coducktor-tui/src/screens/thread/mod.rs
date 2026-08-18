@@ -19,8 +19,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::{App, PendingAction};
 use crate::widgets::transcript::{
@@ -36,7 +35,7 @@ use reducer::{NoteTone, ThreadAsk, ThreadEntry, ThreadReduceOptions, ThreadState
 /// button. Routed by `apply_hit` and mirrored by keyboard shortcuts in `handle_key`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ThreadAction {
-    ToggleThreadView,
+    ToggleTimelineItem(usize),
     Finish,
     Continue,
     Terminal,
@@ -76,13 +75,6 @@ pub enum ThreadFocus {
     Ask,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ThreadView {
-    #[default]
-    Conversation,
-    Activity,
-}
-
 /// Engine-fetched state for the currently open thread.
 #[derive(Default)]
 pub struct ThreadData {
@@ -91,6 +83,9 @@ pub struct ThreadData {
     pub run: Option<ApiRun>,
     pub events: Vec<RunEvent>,
     pub as_of_seq: f64,
+    pub older_cursor: Option<String>,
+    pub older_loading: bool,
+    pub older_error: Option<String>,
     pub state: ThreadState,
     pub view_model: ThreadViewModel,
 }
@@ -107,8 +102,8 @@ pub struct ThreadUi {
     pub plan_collapsed: bool,
     pub steps_collapsed: bool,
     pub focus: ThreadFocus,
-    pub view: ThreadView,
     pub pending_prompt: Option<String>,
+    pub delivery_error: bool,
     pub project_root: Option<PathBuf>,
 }
 
@@ -126,8 +121,8 @@ impl Default for ThreadUi {
             plan_collapsed: false,
             steps_collapsed: true,
             focus: ThreadFocus::Transcript,
-            view: ThreadView::Conversation,
             pending_prompt: None,
+            delivery_error: false,
             project_root: None,
         }
     }
@@ -142,6 +137,7 @@ impl ThreadUi {
         run: ApiRun,
         events: Vec<RunEvent>,
         as_of_seq: f64,
+        older_cursor: Option<String>,
     ) {
         let same_thread = self.data.project == project && self.data.run_id == run_id;
         self.data = ThreadData {
@@ -150,6 +146,9 @@ impl ThreadUi {
             run: Some(run),
             events,
             as_of_seq,
+            older_cursor,
+            older_loading: false,
+            older_error: None,
             state: ThreadState::default(),
             view_model: ThreadViewModel::default(),
         };
@@ -159,7 +158,6 @@ impl ThreadUi {
         self.ask_focus = (0, 0);
         self.subagent_sheet = None;
         self.focus = ThreadFocus::Transcript;
-        self.view = ThreadView::Conversation;
         if !same_thread {
             self.pending_prompt = None;
         }
@@ -168,6 +166,8 @@ impl ThreadUi {
 
     pub fn set_pending_prompt(&mut self, text: String) {
         self.pending_prompt = Some(text);
+        self.delivery_error = false;
+        self.rebuild();
     }
 
     pub fn set_project_root(&mut self, root: Option<PathBuf>) {
@@ -178,6 +178,8 @@ impl ThreadUi {
     pub fn resolve_pending_prompt(&mut self, project: &str, run_id: &str) {
         if self.data.project == project && self.data.run_id == run_id {
             self.pending_prompt = None;
+            self.delivery_error = false;
+            self.rebuild();
         }
     }
 
@@ -190,6 +192,9 @@ impl ThreadUi {
             self.composer.focus();
             self.focus = ThreadFocus::Composer;
         }
+        self.pending_prompt = None;
+        self.delivery_error = true;
+        self.rebuild();
     }
 
     /// Replace the loaded run record (a fresh engine read or a workspace run event
@@ -208,8 +213,12 @@ impl ThreadUi {
         self.data.state = ThreadState::default();
         self.data.view_model = ThreadViewModel::default();
         self.data.as_of_seq = 0.0;
+        self.data.older_cursor = None;
+        self.data.older_loading = false;
+        self.data.older_error = None;
         self.transcript = Transcript::new();
         self.pending_prompt = None;
+        self.delivery_error = false;
     }
 
     /// Append one live run event and re-fold.
@@ -220,6 +229,34 @@ impl ThreadUi {
         self.data.as_of_seq = seq;
         self.data.events.push(event);
         self.rebuild();
+    }
+
+    pub fn begin_load_earlier(&mut self) -> Option<String> {
+        if self.data.older_loading {
+            return None;
+        }
+        let cursor = self.data.older_cursor.clone()?;
+        self.data.older_loading = true;
+        self.data.older_error = None;
+        Some(cursor)
+    }
+
+    pub fn merge_earlier(&mut self, events: Vec<RunEvent>, older_cursor: Option<String>) {
+        let old_len = self.data.events.len();
+        self.data.events.extend(events);
+        self.data.events.sort_by(|a, b| a.seq.total_cmp(&b.seq));
+        self.data.events.dedup_by(|a, b| a.seq == b.seq);
+        let added = self.data.events.len().saturating_sub(old_len);
+        self.data.older_cursor = older_cursor;
+        self.data.older_loading = false;
+        self.data.older_error = None;
+        self.rebuild();
+        self.transcript.preserve_after_prepend(added);
+    }
+
+    pub fn fail_load_earlier(&mut self, error: String) {
+        self.data.older_loading = false;
+        self.data.older_error = Some(error);
     }
 
     fn rebuild(&mut self) {
@@ -237,8 +274,15 @@ impl ThreadUi {
             &self.data.state,
             self.project_root.as_deref(),
         );
-        self.transcript
-            .reconcile(build_transcript_items(run, &self.data.state));
+        self.transcript.reconcile(build_transcript_items(
+            run,
+            &self.data.state,
+            &self.data.view_model,
+            self.data.older_cursor.is_some(),
+            self.data.older_loading,
+            self.data.older_error.as_deref(),
+            self.pending_prompt.as_deref(),
+        ));
         // A resolved ask, or a fresh one under a different id, clears any stale in-progress
         // selections — a leftover partial answer must never attach to the NEXT question.
         if pending_ask(&self.data.state).is_none() {
@@ -255,8 +299,35 @@ fn map_tone(tone: NoteTone) -> TranscriptNoteTone {
     }
 }
 
-fn build_transcript_items(run: &ApiRun, state: &ThreadState) -> Vec<TranscriptItem> {
+fn build_transcript_items(
+    run: &ApiRun,
+    state: &ThreadState,
+    view_model: &ThreadViewModel,
+    has_older: bool,
+    older_loading: bool,
+    older_error: Option<&str>,
+    pending_prompt: Option<&str>,
+) -> Vec<TranscriptItem> {
     let mut items = Vec::new();
+    if older_loading {
+        items.push(TranscriptItem::Note(NoteItem::new(
+            "history-loading",
+            "Loading earlier history…",
+            TranscriptNoteTone::Dim,
+        )));
+    } else if let Some(error) = older_error {
+        items.push(TranscriptItem::Note(NoteItem::new(
+            "history-error",
+            format!("Earlier history failed: {error} — press R to retry"),
+            TranscriptNoteTone::Danger,
+        )));
+    } else if has_older {
+        items.push(TranscriptItem::Note(NoteItem::new(
+            "history-earlier",
+            "Earlier history available — scroll to the top or press R to load",
+            TranscriptNoteTone::Dim,
+        )));
+    }
     if !run.record.task.trim().is_empty() {
         items.push(TranscriptItem::Message(MessageItem::new(
             "task",
@@ -264,7 +335,16 @@ fn build_transcript_items(run: &ApiRun, state: &ThreadState) -> Vec<TranscriptIt
             run.record.task.clone(),
         )));
     }
-    for turn in &state.turns {
+    for (turn_index, turn) in state.turns.iter().enumerate() {
+        let projected = view_model
+            .turns
+            .iter()
+            .find(|item| item.id == turn.id)
+            .or_else(|| {
+                (turn_index == 0 && turn.user_message.is_none())
+                    .then(|| view_model.turns.first())
+                    .flatten()
+            });
         if let Some(user_message) = &turn.user_message {
             items.push(TranscriptItem::Message(MessageItem::new(
                 format!("um:{}", turn.id),
@@ -275,11 +355,22 @@ fn build_transcript_items(run: &ApiRun, state: &ThreadState) -> Vec<TranscriptIt
         for entry in &turn.items {
             match entry {
                 ThreadEntry::Item(UiItem::Message(message)) => {
-                    items.push(TranscriptItem::Message(MessageItem::new(
-                        message.id.clone(),
-                        message.role,
-                        message.text.clone(),
-                    )));
+                    let is_final = projected
+                        .and_then(|turn| turn.response.as_ref())
+                        .is_some_and(|response| response.id == message.id);
+                    if message.role == coducktor_protocol::MessageRole::Assistant && !is_final {
+                        items.push(TranscriptItem::Note(NoteItem::new(
+                            message.id.clone(),
+                            message.text.clone(),
+                            TranscriptNoteTone::Dim,
+                        )));
+                    } else {
+                        items.push(TranscriptItem::Message(MessageItem::new(
+                            message.id.clone(),
+                            message.role,
+                            message.text.clone(),
+                        )));
+                    }
                 }
                 ThreadEntry::Item(UiItem::Reasoning(reasoning)) => {
                     items.push(TranscriptItem::Reasoning(ReasoningItem::new(
@@ -327,8 +418,68 @@ fn build_transcript_items(run: &ApiRun, state: &ThreadState) -> Vec<TranscriptIt
                 ThreadEntry::Ask(_) => {}
             }
         }
+        if let Some(plan) = &turn.plan_entries {
+            let completed = plan
+                .iter()
+                .filter(|entry| entry.status == coducktor_protocol::PlanStatus::Completed)
+                .count();
+            items.push(TranscriptItem::Note(NoteItem::new(
+                format!("plan:{}", turn.id),
+                format!("Plan {completed}/{} complete", plan.len()),
+                TranscriptNoteTone::Dim,
+            )));
+        }
+        if let Some(projected) = projected {
+            items.push(outcome_item(projected));
+        }
+    }
+    if let Some(prompt) = pending_prompt {
+        items.push(TranscriptItem::Message(MessageItem::new(
+            "pending-prompt",
+            coducktor_protocol::MessageRole::User,
+            prompt,
+        )));
+        items.push(TranscriptItem::Note(NoteItem::new(
+            "pending-prompt-state",
+            "Sending…",
+            TranscriptNoteTone::Dim,
+        )));
     }
     items
+}
+
+fn outcome_item(turn: &projection::TurnViewModel) -> TranscriptItem {
+    let (text, tone) = match &turn.outcome {
+        projection::TurnOutcome::Running => ("Working…".to_owned(), TranscriptNoteTone::Dim),
+        projection::TurnOutcome::Completed { verification, .. } => (
+            format!(
+                "Completed · verification {}",
+                verification_label(*verification)
+            ),
+            TranscriptNoteTone::Dim,
+        ),
+        projection::TurnOutcome::Failed {
+            reason,
+            verification,
+        } => (
+            format!(
+                "Failed{} · verification {}",
+                reason
+                    .as_deref()
+                    .map(|value| format!(": {value}"))
+                    .unwrap_or_default(),
+                verification_label(*verification)
+            ),
+            TranscriptNoteTone::Danger,
+        ),
+        projection::TurnOutcome::Interrupted => {
+            ("Interrupted".to_owned(), TranscriptNoteTone::Warning)
+        }
+        projection::TurnOutcome::Unknown => {
+            ("Outcome not observed".to_owned(), TranscriptNoteTone::Dim)
+        }
+    };
+    TranscriptItem::Note(NoteItem::new(format!("outcome:{}", turn.id), text, tone))
 }
 
 /// The single AskUser card that can still be answered — only the LATEST `ask.requested`
@@ -368,6 +519,17 @@ pub fn open(app: &mut App, project: &str, id: &str) {
     });
 }
 
+fn request_earlier(app: &mut App) {
+    let Some(cursor) = app.thread_ui.begin_load_earlier() else {
+        return;
+    };
+    app.pending.push(PendingAction::LoadEarlierThread {
+        project: app.thread_ui.data.project.clone(),
+        id: app.thread_ui.data.run_id.clone(),
+        cursor,
+    });
+}
+
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let Some(run) = app.thread_ui.data.run.clone() else {
         frame.render_widget(
@@ -400,23 +562,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     } else {
         0
     };
-    let subagents_present = !record.steps.is_empty() && has_subagents(&app.thread_ui.data.state);
-    let agents_height = if !subagents_present {
-        0
-    } else if app.thread_ui.agents_collapsed {
-        1
-    } else {
-        6
-    };
-    let plan_present = reducer::latest_plan_entries(&app.thread_ui.data.state)
-        .is_some_and(|entries| !entries.is_empty());
-    let plan_height = if !plan_present {
-        0
-    } else if app.thread_ui.plan_collapsed {
-        1
-    } else {
-        6
-    };
     let auto_resume_height = if record.auto_resume_at.is_some() {
         1
     } else {
@@ -424,13 +569,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     };
     let hint_height = 1;
     let composer_height = app.thread_ui.composer.height() + 2;
-    let dock_height = ask_height
-        + review_height
-        + agents_height
-        + plan_height
-        + auto_resume_height
-        + hint_height
-        + composer_height;
+    let dock_height =
+        ask_height + review_height + auto_resume_height + hint_height + composer_height;
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -454,16 +594,15 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         );
     }
 
-    let transcript_title = match app.thread_ui.view {
-        ThreadView::Conversation => format!(
-            " Conversation  ·  {}  ·  Tab: Activity ",
-            app.thread_ui.data.view_model.current_status
-        ),
-        ThreadView::Activity => format!(
-            " Activity  ·  {}  ·  Tab: Conversation ",
-            app.thread_ui.data.view_model.current_status
-        ),
-    };
+    let transcript_title = format!(
+        " Session  ·  {}{} ",
+        app.thread_ui.data.view_model.current_status,
+        if app.thread_ui.transcript.unseen_count() > 0 {
+            format!("  ·  {} new", app.thread_ui.transcript.unseen_count())
+        } else {
+            String::new()
+        }
+    );
     let transcript_block = Block::default()
         .title(transcript_title)
         .borders(Borders::TOP)
@@ -471,7 +610,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let transcript_area = transcript_block.inner(rows[2]);
     frame.render_widget(transcript_block, rows[2]);
     if transcript_area.height > 0 {
-        render_thread_view(frame, transcript_area, app, &theme);
+        app.thread_ui.transcript.render_interactive(
+            frame.buffer_mut(),
+            transcript_area,
+            &theme,
+            &mut app.hitmap,
+        );
     }
 
     let dock_rows = Layout::default()
@@ -479,8 +623,6 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         .constraints([
             Constraint::Length(ask_height),
             Constraint::Length(review_height),
-            Constraint::Length(agents_height),
-            Constraint::Length(plan_height),
             Constraint::Length(auto_resume_height),
             Constraint::Length(hint_height),
             Constraint::Length(composer_height),
@@ -507,28 +649,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             .collect();
         widgets::render_review_panel(frame, dock_rows[1], &run, &preview, &theme, &mut app.hitmap);
     }
-    if agents_height > 0 {
-        widgets::render_agents_dock(
-            frame,
-            dock_rows[2],
-            &app.thread_ui.data.state,
-            app.thread_ui.agents_collapsed,
-            &theme,
-            &mut app.hitmap,
-        );
-    }
-    if plan_height > 0 {
-        widgets::render_plan_dock(
-            frame,
-            dock_rows[3],
-            &app.thread_ui.data.state,
-            app.thread_ui.plan_collapsed,
-            &theme,
-            &mut app.hitmap,
-        );
-    }
     if auto_resume_height > 0 {
-        widgets::render_auto_resume_hint(frame, dock_rows[4], &run, &theme, &mut app.hitmap);
+        widgets::render_auto_resume_hint(frame, dock_rows[2], &run, &theme, &mut app.hitmap);
     }
     if hint_height > 0 {
         let text = match record.status {
@@ -540,12 +662,14 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             }
             RunStatus::Review => "Enter starts a follow-up; review actions are above.",
         };
-        widgets::render_status_hint(frame, dock_rows[5], text, &theme);
+        widgets::render_status_hint(frame, dock_rows[3], text, &theme);
     }
     app.thread_ui
         .composer
         .set_title(if app.thread_ui.pending_prompt.is_some() {
             "SENDING"
+        } else if app.thread_ui.delivery_error {
+            "SEND FAILED · RETRY"
         } else {
             match record.status {
                 RunStatus::Queued => "QUEUED",
@@ -562,7 +686,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         });
     app.thread_ui
         .composer
-        .render(frame, dock_rows[6], theme, &mut app.hitmap, 4);
+        .render(frame, dock_rows[4], theme, &mut app.hitmap, 4);
 
     if let Some(agent_id) = app.thread_ui.subagent_sheet.clone()
         && let Some(agent) = find_subagent(&app.thread_ui.data.state, &agent_id)
@@ -584,242 +708,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     }
 }
 
-fn render_thread_view(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    app: &mut App,
-    theme: &crate::theme::Theme,
-) {
-    let view_model = app.thread_ui.data.view_model.clone();
-    let lines = projection_lines(
-        &view_model,
-        app.thread_ui.view,
-        app.thread_ui.pending_prompt.as_deref(),
-        theme,
-    );
-    let offset = app
-        .thread_ui
-        .transcript
-        .projection_scroll(lines.len(), area.height);
-    frame.render_widget(
-        Paragraph::new(lines)
-            .scroll((offset, 0))
-            .wrap(Wrap { trim: false })
-            .style(Style::default().fg(theme.palette.fg)),
-        area,
-    );
-}
-
-fn projection_lines(
-    view_model: &ThreadViewModel,
-    view: ThreadView,
-    pending_prompt: Option<&str>,
-    theme: &crate::theme::Theme,
-) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    for (index, turn) in view_model.turns.iter().enumerate() {
-        if index > 0 {
-            lines.push(Line::from(Span::raw("")));
-        }
-        push_text_lines(
-            &mut lines,
-            "You  ",
-            &turn.prompt.text,
-            Style::default()
-                .fg(theme.palette.accent)
-                .add_modifier(ratatui::style::Modifier::BOLD),
-        );
-        if matches!(view, ThreadView::Conversation) && !turn.activity.is_empty() {
-            let (count, changed, added, removed) = activity_totals(&turn.activity);
-            let detail = if changed > 0 {
-                format!("{count} activities · {changed} files · +{added} -{removed}")
-            } else {
-                format!("{count} activities")
-            };
-            lines.push(Line::from(Span::styled(
-                format!("  · {detail}  (Tab for details)"),
-                Style::default().fg(theme.palette.soft_fg),
-            )));
-            if let Some(commentary) = latest_commentary(&turn.activity) {
-                push_text_lines(
-                    &mut lines,
-                    "    ",
-                    commentary,
-                    Style::default().fg(theme.palette.soft_fg),
-                );
-            }
-        } else {
-            for node in &turn.activity {
-                push_activity_lines(&mut lines, node, 1, theme);
-            }
-        }
-        if let Some(response) = &turn.response {
-            push_text_lines(
-                &mut lines,
-                "Agent  ",
-                &response.text,
-                Style::default().fg(theme.palette.fg),
-            );
-        }
-        lines.push(Line::from(Span::styled(
-            format!("  {}", outcome_label(&turn.outcome)),
-            Style::default().fg(theme.palette.soft_fg),
-        )));
-    }
-    if let Some(prompt) = pending_prompt {
-        if !lines.is_empty() {
-            lines.push(Line::from(Span::raw("")));
-        }
-        push_text_lines(
-            &mut lines,
-            "You  ",
-            prompt,
-            Style::default()
-                .fg(theme.palette.accent)
-                .add_modifier(ratatui::style::Modifier::BOLD),
-        );
-        lines.push(Line::from(Span::styled(
-            "  · sending…",
-            Style::default().fg(theme.palette.soft_fg),
-        )));
-    }
-    if lines.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "Waiting for the first turn…",
-            Style::default().fg(theme.palette.soft_fg),
-        )));
-    }
-    lines
-}
-
-fn latest_commentary(nodes: &[projection::ActivityNode]) -> Option<&str> {
-    nodes.iter().rev().find_map(|node| {
-        if node.presentation.kind == projection::ActivityKind::Commentary {
-            node.presentation.preview.as_deref()
-        } else {
-            latest_commentary(&node.children)
-        }
-    })
-}
-
-fn push_text_lines(lines: &mut Vec<Line<'static>>, prefix: &str, text: &str, style: Style) {
-    let mut saw_line = false;
-    for value in text.split('\n') {
-        saw_line = true;
-        lines.push(Line::from(vec![
-            Span::styled(prefix.to_owned(), style),
-            Span::styled(value.to_owned(), style),
-        ]));
-    }
-    if !saw_line {
-        lines.push(Line::from(Span::styled(prefix.to_owned(), style)));
-    }
-}
-
-fn push_activity_lines(
-    lines: &mut Vec<Line<'static>>,
-    node: &projection::ActivityNode,
-    depth: usize,
-    theme: &crate::theme::Theme,
-) {
-    let indent = "  ".repeat(depth.min(6));
-    let glyph = match node.presentation.status {
-        projection::ActivityStatus::Pending => "○",
-        projection::ActivityStatus::Running => "●",
-        projection::ActivityStatus::Succeeded => "✓",
-        projection::ActivityStatus::Failed => "✗",
-        projection::ActivityStatus::Declined => "!",
-        projection::ActivityStatus::Cancelled => "×",
-        projection::ActivityStatus::Interrupted => "↯",
-        projection::ActivityStatus::Informational => "·",
-    };
-    let subject = node
-        .presentation
-        .subject
-        .as_deref()
-        .map(|subject| format!(" · {subject}"))
-        .unwrap_or_default();
-    lines.push(Line::from(Span::styled(
-        format!("{indent}{glyph} {}{subject}", node.presentation.title),
-        activity_style(node.presentation.status, theme),
-    )));
-    if let Some(preview) = &node.presentation.preview {
-        push_text_lines(
-            lines,
-            &format!("{indent}  "),
-            preview,
-            Style::default().fg(theme.palette.soft_fg),
-        );
-    }
-    for child in &node.children {
-        push_activity_lines(lines, child, depth + 1, theme);
-    }
-}
-
-fn activity_style(status: projection::ActivityStatus, theme: &crate::theme::Theme) -> Style {
-    match status {
-        projection::ActivityStatus::Failed | projection::ActivityStatus::Declined => {
-            Style::default().fg(theme.palette.failed)
-        }
-        projection::ActivityStatus::Running | projection::ActivityStatus::Pending => {
-            Style::default().fg(theme.palette.running)
-        }
-        projection::ActivityStatus::Succeeded => Style::default().fg(theme.palette.done),
-        _ => Style::default().fg(theme.palette.soft_fg),
-    }
-}
-
-fn activity_totals(nodes: &[projection::ActivityNode]) -> (usize, usize, usize, usize) {
-    nodes.iter().fold((0, 0, 0, 0), |total, node| {
-        let child = activity_totals(&node.children);
-        (
-            total.0 + 1 + child.0,
-            total.1 + node.presentation.changed_files + child.1,
-            total.2 + node.presentation.added_lines + child.2,
-            total.3 + node.presentation.removed_lines + child.3,
-        )
-    })
-}
-
-fn outcome_label(outcome: &projection::TurnOutcome) -> String {
-    match outcome {
-        projection::TurnOutcome::Running => "● Running".to_owned(),
-        projection::TurnOutcome::Completed { verification, .. } => {
-            format!(
-                "✓ Completed · verification {}",
-                verification_label(*verification)
-            )
-        }
-        projection::TurnOutcome::Failed {
-            reason,
-            verification,
-        } => format!(
-            "✗ Failed{} · verification {}",
-            reason
-                .as_deref()
-                .map(|reason| format!(": {reason}"))
-                .unwrap_or_default(),
-            verification_label(*verification)
-        ),
-        projection::TurnOutcome::Interrupted => "↯ Interrupted".to_owned(),
-        projection::TurnOutcome::Unknown => "· Outcome not observed".to_owned(),
-    }
-}
-
 fn verification_label(status: projection::VerificationStatus) -> &'static str {
     match status {
         projection::VerificationStatus::Passed => "passed",
         projection::VerificationStatus::Failed => "failed",
         projection::VerificationStatus::NotObserved => "not observed",
     }
-}
-
-fn has_subagents(state: &ThreadState) -> bool {
-    state.turns.iter().any(|turn| {
-        turn.items.iter().any(|entry| {
-            matches!(entry, ThreadEntry::Item(UiItem::Tool(tool)) if tool.tool_kind == coducktor_protocol::ToolKind::Task && tool.parent_item_id.is_none())
-        })
-    })
 }
 
 fn find_subagent(state: &ThreadState, id: &str) -> Option<coducktor_protocol::UiToolItem> {
@@ -855,6 +749,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         KeyCode::Char('k') | KeyCode::Up => {
+            if app.thread_ui.transcript.at_top() {
+                request_earlier(app);
+            }
             app.thread_ui.transcript.scroll_by(-1);
             true
         }
@@ -863,10 +760,19 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         KeyCode::Tab => {
-            app.thread_ui.view = match app.thread_ui.view {
-                ThreadView::Conversation => ThreadView::Activity,
-                ThreadView::Activity => ThreadView::Conversation,
-            };
+            app.thread_ui.transcript.select_next_expandable(1);
+            true
+        }
+        KeyCode::BackTab => {
+            app.thread_ui.transcript.select_next_expandable(-1);
+            true
+        }
+        KeyCode::Enter => {
+            app.thread_ui.transcript.toggle_selected();
+            true
+        }
+        KeyCode::Char('R') => {
+            request_earlier(app);
             true
         }
         KeyCode::Char('f') => {
@@ -1112,11 +1018,9 @@ pub fn apply_hit(app: &mut App, action: ThreadAction) {
                 send_ask_answer(app, &ask);
             }
         }
-        ThreadAction::ToggleThreadView => {
-            app.thread_ui.view = match app.thread_ui.view {
-                ThreadView::Conversation => ThreadView::Activity,
-                ThreadView::Activity => ThreadView::Conversation,
-            };
+        ThreadAction::ToggleTimelineItem(index) => {
+            app.thread_ui.transcript.select(index);
+            app.thread_ui.transcript.toggle_selected();
         }
         ThreadAction::OpenSubagent(id) => app.thread_ui.subagent_sheet = Some(id),
         ThreadAction::CloseSubagentSheet => app.thread_ui.subagent_sheet = None,
@@ -1212,7 +1116,7 @@ fn apply_action(app: &mut App, action: ThreadAction) {
         }
         ThreadAction::AskOption { .. }
         | ThreadAction::AskSend
-        | ThreadAction::ToggleThreadView
+        | ThreadAction::ToggleTimelineItem(_)
         | ThreadAction::OpenSubagent(_)
         | ThreadAction::CloseSubagentSheet
         | ThreadAction::ToggleStepRail
@@ -1292,6 +1196,7 @@ mod tests {
             run(status, "Ship the shell"),
             Vec::new(),
             -1.0,
+            None,
         );
         app.navigate_route(crate::app::Route::Thread {
             project: "main".to_owned(),
@@ -1510,5 +1415,56 @@ mod tests {
                 terminal.backend().buffer()
             );
         }
+    }
+
+    #[test]
+    fn earlier_history_merges_by_sequence_without_duplicates_and_retains_cursor_state() {
+        let mut app = app_with_run(RunStatus::Done);
+        app.thread_ui.data.events = (101..=150)
+            .map(|seq| {
+                event(
+                    f64::from(seq),
+                    "note",
+                    json!({"message": format!("event {seq}")}),
+                )
+            })
+            .collect();
+        app.thread_ui.data.older_cursor = Some("page-2".to_owned());
+        assert_eq!(
+            app.thread_ui.begin_load_earlier().as_deref(),
+            Some("page-2")
+        );
+        app.thread_ui.merge_earlier(
+            (1..=101)
+                .map(|seq| {
+                    event(
+                        f64::from(seq),
+                        "note",
+                        json!({"message": format!("event {seq}")}),
+                    )
+                })
+                .collect(),
+            Some("page-3".to_owned()),
+        );
+        assert_eq!(app.thread_ui.data.events.len(), 150);
+        assert!(
+            app.thread_ui
+                .data
+                .events
+                .windows(2)
+                .all(|pair| pair[0].seq < pair[1].seq)
+        );
+        assert_eq!(app.thread_ui.data.older_cursor.as_deref(), Some("page-3"));
+        assert!(!app.thread_ui.data.older_loading);
+    }
+
+    #[test]
+    fn send_failure_restores_the_draft_and_exposes_retry_mode() {
+        let mut app = app_with_run(RunStatus::Running);
+        app.thread_ui.set_pending_prompt("keep going".to_owned());
+        app.thread_ui.restore_pending_prompt("main", "run-1");
+        assert_eq!(app.thread_ui.composer.text, "keep going");
+        assert!(app.thread_ui.delivery_error);
+        assert!(app.thread_ui.pending_prompt.is_none());
     }
 }

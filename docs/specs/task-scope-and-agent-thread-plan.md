@@ -1,4 +1,7 @@
-# Implementation plan: project task scope and polished agent threads
+# Implementation plan: project task scope and polished agent threads (superseded)
+
+> Superseded by the implemented [Task experience](task-experience.md). Retained only as a record
+> of the earlier table and Conversation/Activity proposal.
 
 Companion specification: [Project-scoped tasks and agent thread UX](task-scope-and-agent-thread-ux.md)
 

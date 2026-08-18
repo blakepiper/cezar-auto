@@ -19,7 +19,9 @@ use serde_json::Value;
 use coducktor_protocol::{MessageRole, ToolKind, ToolStatus, tool_display};
 
 use crate::image::{self, DecodedImage, ImageSupport};
+use crate::input::hitmap::{HitAction, HitMap};
 use crate::markdown::RenderCache;
+use crate::screens::thread::ThreadAction;
 use crate::theme::Theme;
 
 /// Finished tool output beyond this many lines clamps with a "+N more" note (mirrors
@@ -499,6 +501,10 @@ pub struct Transcript {
     /// stick-to-bottom / preserve-anchor behavior.
     sticky_bottom: bool,
     height_cache: HeightCache,
+    selected: Option<usize>,
+    unseen: usize,
+    top_anchor: Option<(String, u16)>,
+    restore_anchor: bool,
 }
 
 impl Default for Transcript {
@@ -514,6 +520,10 @@ impl Transcript {
             scroll_offset: 0,
             sticky_bottom: true,
             height_cache: HeightCache::default(),
+            selected: None,
+            unseen: 0,
+            top_anchor: None,
+            restore_anchor: false,
         }
     }
 
@@ -530,6 +540,12 @@ impl Transcript {
     /// expand state; everything else is the new list verbatim. The height cache is dropped
     /// wholesale since ids can be reordered or removed between rebuilds.
     pub fn reconcile(&mut self, mut next: Vec<TranscriptItem>) {
+        let old_ids: std::collections::BTreeSet<String> =
+            self.items.iter().map(|item| item.id().to_owned()).collect();
+        let selected_id = self
+            .selected
+            .and_then(|index| self.items.get(index))
+            .map(|item| item.id().to_owned());
         for item in &mut next {
             let Some(existing) = self.items.iter().find(|old| old.id() == item.id()) else {
                 continue;
@@ -545,6 +561,16 @@ impl Transcript {
             }
         }
         self.items = next;
+        if !self.sticky_bottom {
+            self.unseen += self
+                .items
+                .iter()
+                .filter(|item| !old_ids.contains(item.id()))
+                .count();
+            self.restore_anchor = self.top_anchor.is_some();
+        }
+        self.selected =
+            selected_id.and_then(|id| self.items.iter().position(|item| item.id() == id));
         self.height_cache = HeightCache::default();
     }
 
@@ -580,6 +606,66 @@ impl Transcript {
 
     pub fn jump_to_bottom(&mut self) {
         self.sticky_bottom = true;
+        self.unseen = 0;
+    }
+
+    pub fn at_top(&self) -> bool {
+        self.scroll_offset == 0
+    }
+
+    pub fn unseen_count(&self) -> usize {
+        self.unseen
+    }
+
+    pub fn preserve_after_prepend(&mut self, _added: usize) {
+        if !self.sticky_bottom {
+            self.restore_anchor = self.top_anchor.is_some();
+        }
+    }
+
+    pub fn select(&mut self, index: usize) {
+        if index < self.items.len() {
+            self.selected = Some(index);
+        }
+    }
+
+    pub fn select_next_expandable(&mut self, delta: isize) {
+        let expandable: Vec<usize> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                matches!(item, TranscriptItem::Reasoning(_) | TranscriptItem::Tool(_))
+                    .then_some(index)
+            })
+            .collect();
+        if expandable.is_empty() {
+            self.selected = None;
+            return;
+        }
+        let position = self
+            .selected
+            .and_then(|selected| expandable.iter().position(|index| *index == selected));
+        let next = match position {
+            Some(position) => {
+                (position as isize + delta).rem_euclid(expandable.len() as isize) as usize
+            }
+            None if delta < 0 => expandable.len() - 1,
+            None => 0,
+        };
+        self.selected = Some(expandable[next]);
+    }
+
+    pub fn toggle_selected(&mut self) {
+        let Some(index) = self.selected else {
+            return;
+        };
+        match self.items.get_mut(index) {
+            Some(TranscriptItem::Reasoning(item)) => item.expanded = !item.expanded,
+            Some(TranscriptItem::Tool(item)) => item.user_expanded = Some(!item.open()),
+            _ => {}
+        }
+        self.height_cache = HeightCache::default();
     }
 
     /// Scroll position shared with the compact thread projection. The full transcript keeps
@@ -608,6 +694,26 @@ impl Transcript {
     /// are copied into `buf` — the mechanism that lets an item straddling the top or
     /// bottom edge render at exact row granularity instead of only whole-item steps.
     pub fn render(&mut self, buf: &mut Buffer, area: Rect, theme: &Theme) {
+        self.render_inner(buf, area, theme, None);
+    }
+
+    pub fn render_interactive(
+        &mut self,
+        buf: &mut Buffer,
+        area: Rect,
+        theme: &Theme,
+        hitmap: &mut HitMap,
+    ) {
+        self.render_inner(buf, area, theme, Some(hitmap));
+    }
+
+    fn render_inner(
+        &mut self,
+        buf: &mut Buffer,
+        area: Rect,
+        theme: &Theme,
+        mut hitmap: Option<&mut HitMap>,
+    ) {
         if area.width == 0 || area.height == 0 || self.items.is_empty() {
             return;
         }
@@ -617,6 +723,16 @@ impl Transcript {
         let max_scroll = total.saturating_sub(viewport);
         if self.sticky_bottom {
             self.scroll_offset = max_scroll;
+            self.unseen = 0;
+        } else if self.restore_anchor
+            && let Some((id, offset)) = &self.top_anchor
+            && let Some(anchor_index) = self.items.iter().position(|item| item.id() == id)
+        {
+            let before: u32 = (0..anchor_index)
+                .map(|index| self.height_cache.get(index, &mut self.items, width) as u32)
+                .sum();
+            self.scroll_offset = before.saturating_add(u32::from(*offset)).min(max_scroll);
+            self.restore_anchor = false;
         } else {
             self.scroll_offset = self.scroll_offset.min(max_scroll);
         }
@@ -642,6 +758,28 @@ impl Transcript {
                     available,
                 };
                 paint_clipped(&mut self.items[index], buf, area, clip, theme);
+                if self.selected == Some(index)
+                    && let Some(cell) = buf.cell_mut((area.x, screen_y))
+                {
+                    cell.set_symbol("›");
+                    cell.set_style(Style::default().fg(theme.palette.accent));
+                }
+                if let Some(hitmap) = hitmap.as_deref_mut()
+                    && matches!(
+                        self.items[index],
+                        TranscriptItem::Reasoning(_) | TranscriptItem::Tool(_)
+                    )
+                {
+                    hitmap.register(
+                        Rect::new(area.x, screen_y, area.width, available),
+                        2,
+                        HitAction::ThreadScreen(ThreadAction::ToggleTimelineItem(index)),
+                    );
+                }
+                if item_top <= top && top < item_bottom {
+                    self.top_anchor =
+                        Some((self.items[index].id().to_owned(), (top - item_top) as u16));
+                }
                 screen_y += available;
             }
             item_top = item_bottom;

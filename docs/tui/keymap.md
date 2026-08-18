@@ -40,8 +40,8 @@ them), so `Ctrl+Left` from a file in the IDE lands on the file tree and `Ctrl+Ri
 from the sidebar lands back on it, never skipping a section. The selector starts on
 the current project row and follows every navigation, so the highlighted row always
 matches the screen you are on. `Enter` opens the highlighted row (a project row
-switches to that project, a nav row opens its screen, and the Active/Archived rows
-switch the task filter). `Esc` (or `Right`) returns focus to the screen. The
+switches to that project and a nav row opens its screen). Task filtering lives in the Tasks and
+All Tasks headers. `Esc` (or `Right`) returns focus to the screen. The
 command palette (`Ctrl+K`) and `:open <route>` remain available too.
 
 Clicking a non-active project row switches the sidebar context to that registered project and
@@ -72,10 +72,7 @@ re-documented per row.
 | Key | Action |
 |---|---|
 | `j` / `k` | Move selection |
-| `t` | Toggle Active/Archived view |
-| `s` | Open the sort picker |
-| `x` | Toggle the hovered column's fold |
-| `[` / `]` | Scroll table columns |
+| `t` | Toggle Current/Archived view |
 | `/` | Filter |
 | `a` | Archive selected |
 | `r` | Toggle read/unread |
@@ -83,17 +80,14 @@ re-documented per row.
 | `p` | Open the task's PR |
 | `Enter` | Open the task thread |
 
-Sort picker: `j`/`k`/`Down`/`Up` to move, `Enter` to apply, `Esc` to cancel.
-
 ### Global tasks (`screens/global_tasks.rs`)
 
 | Key | Action |
 |---|---|
 | `j` / `k` | Move selection |
-| `t` | Toggle Active/Archived view |
+| `t` | Toggle Current/Archived view |
 | `/` | Filter |
 | `f` | Open the project-filter picker |
-| `[` / `]` | Scroll table columns |
 | `g` | Toggle grouping by tag |
 | `a` | Archive selected |
 | `r` | Toggle read/unread |
@@ -120,6 +114,9 @@ Sort picker: `j`/`k`/`Down`/`Up` to move, `Enter` to apply, `Esc` to cancel.
 | `i` | Focus the composer |
 | `j`/`Down`, `k`/`Up` | Scroll the transcript |
 | `G` | Jump to bottom (re-enables sticky-bottom) |
+| `Tab` / `Shift+Tab` | Select the next/previous expandable tool or reasoning item |
+| `Enter` | Toggle the selected timeline item |
+| `R` | Retry/load the previous history page |
 | `f` | Finish the run |
 | `a` | Archive |
 | `[` / `]` | Step-rail / hit-map navigation |

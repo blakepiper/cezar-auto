@@ -17,6 +17,7 @@ use crate::screens::runs_util::{
 };
 use crate::theme::Theme;
 use crate::widgets::table::{ColumnId, Table, TableCell, TableRow};
+use crate::widgets::task_cards::{self, CardGroup, TaskCard};
 
 /// The column set for the cross-project table (§8.2). `Tag` is a leading
 /// column used only while grouping by tag.
@@ -132,6 +133,165 @@ pub fn build_rows(
             }
         })
         .collect()
+}
+
+fn build_cards(
+    index: &RunsIndexResponse,
+    registry: &[ProjectListEntry],
+    view: TaskView,
+    query: &str,
+    tag: Option<&str>,
+    group_by_tag: bool,
+    now: i64,
+) -> Vec<TaskCard> {
+    let needle = query.trim().to_ascii_lowercase();
+    let mut entries: Vec<&RunIndexEntry> = index
+        .runs
+        .iter()
+        .filter(|entry| entry.archived == (view == TaskView::Archived))
+        .filter(|entry| tag.is_none_or(|tag| project_has_tag(registry, entry, tag)))
+        .filter(|entry| {
+            if needle.is_empty() {
+                return true;
+            }
+            let project = project_name(registry, &entry.project_id);
+            let references = format!(
+                "{} {} {} {}",
+                entry.pull_request_url.as_deref().unwrap_or_default(),
+                entry
+                    .referenced_pull_request_url
+                    .as_deref()
+                    .unwrap_or_default(),
+                entry.referenced_issue_url.as_deref().unwrap_or_default(),
+                entry.branch.as_deref().unwrap_or_default()
+            );
+            [
+                run_title_entry(entry).as_str(),
+                entry.prompt_preview.as_deref().unwrap_or_default(),
+                project.as_str(),
+                entry.workflow.as_str(),
+                references.as_str(),
+            ]
+            .iter()
+            .any(|value| value.to_ascii_lowercase().contains(&needle))
+        })
+        .collect();
+    entries.sort_by(|a, b| {
+        entry_group(a, view)
+            .cmp(&entry_group(b, view))
+            .then_with(|| entry_activity(b, view).cmp(entry_activity(a, view)))
+            .then_with(|| a.project_id.cmp(&b.project_id))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    entries
+        .into_iter()
+        .map(|entry| {
+            let mut metadata = Vec::new();
+            if let Some(runner) = entry.runner {
+                let mut value = format!("{runner:?}").to_ascii_lowercase();
+                if let Some(model) = entry.model.as_deref() {
+                    value.push('/');
+                    value.push_str(model);
+                }
+                metadata.push(value);
+            } else if let Some(model) = entry.model.as_deref() {
+                metadata.push(model.to_owned());
+            }
+            if !entry.workflow.is_empty() {
+                metadata.push(entry.workflow.clone());
+            }
+            if group_by_tag {
+                metadata.push(entry_tag(registry, entry));
+            }
+            if let Some(branch) = entry.branch.as_deref().filter(|value| !value.is_empty()) {
+                metadata.push(format!("branch {branch}"));
+            }
+            if let Some(number) = entry
+                .pr_number
+                .or(entry.marker_refs.as_ref().and_then(|m| m.pr))
+            {
+                metadata.push(format!("PR #{}", number as u64));
+            } else if let Some(number) = entry.issue_number {
+                metadata.push(format!("issue #{}", number as u64));
+            }
+            TaskCard {
+                key: format!("{}/{}", entry.project_id, entry.id),
+                group: entry_group(entry, view),
+                glyph: entry_status_glyph(entry.status),
+                status: entry_status_label(entry.status),
+                title: run_title_entry(entry),
+                prompt: entry.prompt_preview.clone().unwrap_or_default(),
+                activity: short_age(entry_activity(entry, view), now),
+                project: Some(project_name(registry, &entry.project_id)),
+                metadata,
+                unread: is_unread_entry(entry),
+            }
+        })
+        .collect()
+}
+
+fn project_name(registry: &[ProjectListEntry], project_id: &str) -> String {
+    registry
+        .iter()
+        .find(|project| project.id == project_id)
+        .map(|project| project.name.clone())
+        .unwrap_or_else(|| project_id.to_owned())
+}
+
+fn entry_group(entry: &RunIndexEntry, view: TaskView) -> CardGroup {
+    if view == TaskView::Archived {
+        CardGroup::Archived
+    } else if matches!(
+        entry.status,
+        coducktor_contract::RunStatus::Waiting | coducktor_contract::RunStatus::Review
+    ) || is_unread_entry(entry)
+    {
+        CardGroup::NeedsYou
+    } else if matches!(
+        entry.status,
+        coducktor_contract::RunStatus::Queued | coducktor_contract::RunStatus::Running
+    ) {
+        CardGroup::Working
+    } else {
+        CardGroup::Recent
+    }
+}
+
+fn entry_activity(entry: &RunIndexEntry, view: TaskView) -> &str {
+    if view == TaskView::Archived {
+        entry.archived_at.as_deref().unwrap_or(&entry.created_at)
+    } else {
+        entry
+            .updated_at
+            .as_deref()
+            .or(entry.finished_at.as_deref())
+            .or(entry.started_at.as_deref())
+            .unwrap_or(&entry.created_at)
+    }
+}
+
+fn entry_status_glyph(status: coducktor_contract::RunStatus) -> &'static str {
+    match status {
+        coducktor_contract::RunStatus::Waiting => "?",
+        coducktor_contract::RunStatus::Review => "!",
+        coducktor_contract::RunStatus::Queued => "○",
+        coducktor_contract::RunStatus::Running => "●",
+        coducktor_contract::RunStatus::Done => "✓",
+        coducktor_contract::RunStatus::Failed => "✗",
+        coducktor_contract::RunStatus::Cancelled => "×",
+    }
+}
+
+fn entry_status_label(status: coducktor_contract::RunStatus) -> &'static str {
+    match status {
+        coducktor_contract::RunStatus::Waiting => "waiting",
+        coducktor_contract::RunStatus::Review => "needs review",
+        coducktor_contract::RunStatus::Queued => "queued",
+        coducktor_contract::RunStatus::Running => "running",
+        coducktor_contract::RunStatus::Done => "done",
+        coducktor_contract::RunStatus::Failed => "failed",
+        coducktor_contract::RunStatus::Cancelled => "cancelled",
+    }
 }
 
 /// The tag a project carries in the registry, or UNTAGGED.
@@ -461,10 +621,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         return;
     };
     let registry = &app.project_registry;
-    let scroll_y = app.global_ui.table.scroll_y;
     let selected = app.global_ui.table.selected;
-    app.global_ui.table.hover = hover_row(app.hover, layout[2], scroll_y);
-    app.global_ui.table.rows = build_rows(
+    let cards = build_cards(
         index,
         registry,
         view,
@@ -472,12 +630,23 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         app.global_ui.tag.as_deref(),
         app.global_ui.group_by_tag,
         now,
-        &theme,
     );
-    app.global_ui.table.select(selected);
-    app.global_ui.table.render(
+    app.global_ui.table.rows = cards
+        .iter()
+        .map(|card| TableRow {
+            key: card.key.clone(),
+            cells: Vec::new(),
+        })
+        .collect();
+    app.global_ui
+        .table
+        .select(selected.or((!cards.is_empty()).then_some(0)));
+    task_cards::render(
         frame,
         layout[2],
+        &cards,
+        app.global_ui.table.selected,
+        &mut app.global_ui.table.scroll_y,
         &mut app.hitmap,
         "ALL TASKS",
         if app.global_ui.query.trim().is_empty() {
@@ -485,6 +654,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         } else {
             "No tasks match your search."
         },
+        &theme,
     );
     render_tag_picker(frame, app);
 }
@@ -540,7 +710,7 @@ fn render_title_row(frame: &mut Frame<'_>, area: Rect, app: &mut App, view: Task
             .add_modifier(Modifier::BOLD),
     ));
     spans.push(Span::styled(
-        format!(" Active {active}"),
+        format!(" Current {active}"),
         if view == TaskView::Active {
             Style::default()
                 .fg(theme.palette.accent)
@@ -575,7 +745,7 @@ fn render_title_row(frame: &mut Frame<'_>, area: Rect, app: &mut App, view: Task
                 },
                 app.global_ui.tag.as_deref().unwrap_or("-"),
                 if view == TaskView::Active {
-                    "active"
+                    "current"
                 } else {
                     "archived"
                 },
@@ -588,7 +758,7 @@ fn render_title_row(frame: &mut Frame<'_>, area: Rect, app: &mut App, view: Task
             format!(
                 "  filter:{}",
                 if view == TaskView::Active {
-                    "active"
+                    "current"
                 } else {
                     "archived"
                 }
@@ -943,17 +1113,6 @@ pub fn open_row_menu(app: &mut App) {
     });
 }
 
-fn hover_row(hover: Option<(u16, u16)>, area: Rect, scroll_y: usize) -> Option<usize> {
-    let (column, row) = hover?;
-    if column < area.x || column >= area.x.saturating_add(area.width) {
-        return None;
-    }
-    if row < area.y.saturating_add(2) {
-        return None;
-    }
-    Some(scroll_y + usize::from(row - (area.y + 2)))
-}
-
 fn centered_rect(total_width: u16, width: u16, height: u16) -> Rect {
     let width = width.min(total_width);
     Rect::new(total_width.saturating_sub(width) / 2, 0, width, height)
@@ -979,6 +1138,9 @@ mod tests {
             status,
             created_at: "2026-08-15T00:00:00Z".to_owned(),
             started_at: Some("2026-08-15T00:00:00Z".to_owned()),
+            prompt_preview: Some(format!(
+                "Implement global task {id} exactly — café 🦆 — and preserve project-scoped behavior across long wrapped prompts."
+            )),
             seen_at: None,
             archived: false,
             workflow: "quick-task".to_owned(),
@@ -1040,7 +1202,7 @@ mod tests {
         assert!(content.contains("shop"));
         assert!(content.contains("blog"));
         assert!(content.contains("running"));
-        assert!(content.contains("needs you"));
+        assert!(content.contains("NEEDS YOU"));
     }
 
     #[test]

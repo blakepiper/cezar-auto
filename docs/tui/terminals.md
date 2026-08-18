@@ -48,6 +48,19 @@ records what is implemented and which terminal observations remain unverified.
   `Ctrl+Left` to reach the sidebar, navigated to Git, and quit with the alternate screen restored.
   Mouse-wheel scrollback and bracketed paste remain unverified in a live terminal.
 
+## Task experience smoke test
+
+- **80×24 pseudo-terminal, 2026-08-17.** Launched the real `duck` binary against the coducktor
+  repository. The project Tasks screen rendered `Current`, a bordered `Needs You` card with a
+  visible `▶` selection marker, exact prompt text, relative time, runner, and workflow metadata.
+  The sidebar contained project navigation plus workspace All Tasks/Settings and no task-filter
+  dashboard or snippets. `Ctrl+Right` moved focus into Tasks and `Enter` opened the selected task.
+  The loaded Session showed one integrated prompt/commentary/tool/outcome timeline, a collapsed
+  expandable `git status` tool row, an inline running subagent row, explicit cancellation, and a
+  persistent follow-up composer. `q` exited and restored the alternate screen. Pagination could
+  not be exercised because this stored task fit on one history page; multi-page behavior is
+  covered by reducer/state tests.
+
 ## Known gaps — not yet wired, not a detection failure
 
 - **Bracketed paste outside the Terminal tab.** `EnableBracketedPaste` is sent while the

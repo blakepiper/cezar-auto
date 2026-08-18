@@ -1,4 +1,8 @@
-# Project-scoped tasks and agent thread UX
+# Project-scoped tasks and agent thread UX (superseded)
+
+> Superseded by [Task experience](task-experience.md). This document remains as historical
+> context for project scoping and event normalization; its task tables and separate
+> Conversation/Activity presentation are no longer the product contract.
 
 Status: Proposed
 

@@ -308,6 +308,7 @@ pub fn render_step_rail(
 }
 
 /// The `plan.updated` checklist strip — the latest snapshot across the whole thread.
+#[allow(dead_code)]
 pub fn render_plan_dock(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -398,6 +399,7 @@ pub fn render_plan_dock(
 }
 
 /// The sub-agent fan-out strip. Defaults collapsed, unlike the plan dock.
+#[allow(dead_code)]
 pub fn render_agents_dock(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -472,6 +474,7 @@ pub fn render_agents_dock(
 /// root task items, simplified: this view
 /// scans every turn rather than bounding to the most recent unsettled fan-out, which only
 /// matters for very long-running multi-turn subagent chains).
+#[allow(dead_code)]
 fn collect_subagents(state: &ThreadState) -> Vec<coducktor_protocol::UiToolItem> {
     let mut out = Vec::new();
     for turn in &state.turns {

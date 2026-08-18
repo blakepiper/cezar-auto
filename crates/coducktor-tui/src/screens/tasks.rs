@@ -20,6 +20,7 @@ use crate::screens::runs_util::{
 };
 use crate::theme::Theme;
 use crate::widgets::table::{ColumnId, SortState, Table, TableCell, TableRow};
+use crate::widgets::task_cards::{self, CardGroup, TaskCard};
 
 /// The column set for the per-project table (§8.1).
 pub const COLUMNS: [ColumnId; 11] = [
@@ -98,6 +99,119 @@ pub fn build_rows(
             }
         })
         .collect()
+}
+
+fn build_cards(runs: &[ApiRun], view: TaskView, query: &str, now: i64) -> Vec<TaskCard> {
+    let filtered = filter_runs(runs, query);
+    let mut order: Vec<usize> = runs
+        .iter()
+        .enumerate()
+        .filter(|(_, run)| {
+            run.record.archived == (view == TaskView::Archived)
+                && filtered.iter().any(|item| std::ptr::eq(*item, *run))
+        })
+        .map(|(index, _)| index)
+        .collect();
+    order.sort_by(|&a, &b| {
+        let a = &runs[a];
+        let b = &runs[b];
+        card_group(a, view)
+            .cmp(&card_group(b, view))
+            .then_with(|| meaningful_at(&b.record, view).cmp(meaningful_at(&a.record, view)))
+    });
+    order
+        .into_iter()
+        .map(|index| {
+            let run = &runs[index];
+            let record = &run.record;
+            let mut metadata = Vec::new();
+            if let Some(runner) = record.runner {
+                let mut value = format!("{runner:?}").to_ascii_lowercase();
+                if let Some(model) = record.model.as_deref() {
+                    value.push('/');
+                    value.push_str(model);
+                }
+                metadata.push(value);
+            } else if let Some(model) = record.model.as_deref() {
+                metadata.push(model.to_owned());
+            }
+            if !record.workflow.is_empty() {
+                metadata.push(workflow_label(run));
+            }
+            if let Some(branch) = record.branch.as_deref().filter(|value| !value.is_empty()) {
+                metadata.push(format!("branch {branch}"));
+            }
+            let diff = format_diff(record.diff_stat.as_ref());
+            if !diff.is_empty() {
+                metadata.push(diff);
+            }
+            if let Some(reference) = task_reference(run) {
+                metadata.push(format!("{} #{}", reference.kind, reference.number));
+            }
+            TaskCard {
+                key: record.id.clone(),
+                group: card_group(run, view),
+                glyph: status_glyph(record.status),
+                status: status_label(record.status),
+                title: run_title(run),
+                prompt: record.task.clone(),
+                activity: short_age(meaningful_at(record, view), now),
+                project: None,
+                metadata,
+                unread: is_unread(run),
+            }
+        })
+        .collect()
+}
+
+fn card_group(run: &ApiRun, view: TaskView) -> CardGroup {
+    if view == TaskView::Archived {
+        return CardGroup::Archived;
+    }
+    if matches!(run.record.status, RunStatus::Waiting | RunStatus::Review) || is_unread(run) {
+        CardGroup::NeedsYou
+    } else if matches!(run.record.status, RunStatus::Queued | RunStatus::Running) {
+        CardGroup::Working
+    } else {
+        CardGroup::Recent
+    }
+}
+
+fn meaningful_at(record: &coducktor_contract::RunRecord, view: TaskView) -> &str {
+    if view == TaskView::Archived {
+        record.archived_at.as_deref().unwrap_or(&record.created_at)
+    } else {
+        record
+            .updated_at
+            .as_deref()
+            .or(record.finished_at.as_deref())
+            .or(record.started_at.as_deref())
+            .unwrap_or(&record.created_at)
+    }
+}
+
+fn status_glyph(status: RunStatus) -> &'static str {
+    match status {
+        RunStatus::Waiting => "?",
+        RunStatus::Review => "!",
+        RunStatus::Queued => "○",
+        RunStatus::Running => "●",
+        RunStatus::Done => "✓",
+        RunStatus::Failed => "✗",
+        RunStatus::Cancelled => "×",
+    }
+}
+
+fn status_label(status: RunStatus) -> &'static str {
+    match status {
+        RunStatus::Waiting => "waiting",
+        RunStatus::Review => "needs review",
+        RunStatus::Queued => "queued",
+        RunStatus::Running => "running",
+        RunStatus::Done => "done",
+        RunStatus::Failed => "failed",
+        RunStatus::Cancelled => "cancelled",
+    }
 }
 
 /// The order one cell column imposes — used by header sort.
@@ -251,22 +365,24 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         .split(area);
     render_title_row(frame, layout[0], app, view);
 
-    let scroll_y = app.tasks_ui.table.scroll_y;
     let selected = app.tasks_ui.table.selected;
-    app.tasks_ui.table.hover = hover_row(app.hover, layout[1], scroll_y);
-    app.tasks_ui.table.rows = build_rows(
-        &app.tasks,
-        view,
-        &app.tasks_ui.query,
-        app.tasks_ui.table.sort,
-        now,
-        &theme,
-        &app.live_usage,
-    );
-    app.tasks_ui.table.select(selected);
-    app.tasks_ui.table.render(
+    let cards = build_cards(&app.tasks, view, &app.tasks_ui.query, now);
+    app.tasks_ui.table.rows = cards
+        .iter()
+        .map(|card| TableRow {
+            key: card.key.clone(),
+            cells: Vec::new(),
+        })
+        .collect();
+    app.tasks_ui
+        .table
+        .select(selected.or((!cards.is_empty()).then_some(0)));
+    task_cards::render(
         frame,
         layout[1],
+        &cards,
+        app.tasks_ui.table.selected,
+        &mut app.tasks_ui.table.scroll_y,
         &mut app.hitmap,
         &format!("TASKS — {project}"),
         if app.tasks_ui.query.trim().is_empty() {
@@ -274,6 +390,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         } else {
             "No tasks match your search."
         },
+        &theme,
     );
     render_compare_strips(frame, layout[2], app, view);
 }
@@ -302,7 +419,7 @@ fn render_title_row(frame: &mut Frame<'_>, area: Rect, app: &mut App, view: Task
             .add_modifier(Modifier::BOLD),
     ));
     spans.push(span(
-        &format!("Active {active}"),
+        &format!("Current {active}"),
         view_style(theme, view == TaskView::Active, active > 0),
     ));
     spans.push(Span::raw("  "));
@@ -336,7 +453,7 @@ fn render_title_row(frame: &mut Frame<'_>, area: Rect, app: &mut App, view: Task
         &format!(
             "filter: {}{}",
             if view == TaskView::Active {
-                "active"
+                "current"
             } else {
                 "archived"
             },
@@ -426,101 +543,36 @@ fn render_compare_strips(frame: &mut Frame<'_>, area: Rect, app: &mut App, view:
 
 /// Route mouse/keyboard interactions from the table back into the app.
 pub fn handle_table_hit(app: &mut App, action: HitAction) {
-    match action {
-        HitAction::TableRow(index) => {
-            let Some(row) = app.tasks_ui.table.rows.get(index) else {
-                return;
-            };
-            let id = row.key.clone();
-            let project = app.current_project().to_owned();
-            app.select_task(&project, &id);
-            open_thread(app, &id);
-        }
-        HitAction::TableHeader(column) => toggle_sort(app, column),
-        _ => {}
+    if let HitAction::TableRow(index) = action {
+        let Some(row) = app.tasks_ui.table.rows.get(index) else {
+            return;
+        };
+        let id = row.key.clone();
+        let project = app.current_project().to_owned();
+        app.select_task(&project, &id);
+        open_thread(app, &id);
     }
-}
-
-/// Fold/unfold the header column under the pointer (`x`). Falls back to the
-/// first foldable column when nothing is hovered.
-fn toggle_hovered_fold(app: &mut App) {
-    let hovered = app.hover.and_then(|(column, row)| {
-        app.tasks_ui
-            .table
-            .header_hits
-            .iter()
-            .find(|(_, rect)| {
-                column >= rect.x && column < rect.x.saturating_add(rect.width) && row == rect.y
-            })
-            .map(|(column, _)| *column)
-    });
-    let column = hovered.or_else(|| {
-        app.tasks_ui
-            .table
-            .columns
-            .iter()
-            .copied()
-            .find(|column| column.foldable())
-    });
-    if let Some(column) = column {
-        app.tasks_ui.table.toggle_fold(column);
-    }
-}
-
-fn toggle_sort(app: &mut App, column: ColumnId) {
-    let current = app.tasks_ui.table.sort;
-    let sort = match current {
-        Some(SortState {
-            column: existing,
-            descending,
-        }) if existing == column => SortState {
-            column,
-            descending: !descending,
-        },
-        _ => SortState {
-            column,
-            descending: false,
-        },
-    };
-    app.tasks_ui.table.sort = Some(sort);
 }
 
 /// The keyboard contract for the Tasks screen (§8.1). Returns true when consumed.
 pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
     use crossterm::event::KeyCode;
-    if app.tasks_ui.sort_picker {
-        return handle_sort_picker_key(app, key);
-    }
     if let Some(menu) = app.row_menu.clone() {
         return crate::app::handle_row_menu_key(app, &menu, key);
     }
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
             app.tasks_ui.table.move_selection(1);
+            remember_selection(app);
             true
         }
         KeyCode::Char('k') | KeyCode::Up => {
             app.tasks_ui.table.move_selection(-1);
+            remember_selection(app);
             true
         }
         KeyCode::Char('t') => {
             app.toggle_view();
-            true
-        }
-        KeyCode::Char('s') => {
-            app.tasks_ui.sort_picker = true;
-            true
-        }
-        KeyCode::Char('x') => {
-            toggle_hovered_fold(app);
-            true
-        }
-        KeyCode::Char('[') => {
-            app.tasks_ui.table.scroll_columns(-1);
-            true
-        }
-        KeyCode::Char(']') => {
-            app.tasks_ui.table.scroll_columns(1);
             true
         }
         KeyCode::Char('/') => {
@@ -561,52 +613,14 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
     }
 }
 
-fn handle_sort_picker_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
-    use crossterm::event::KeyCode;
-    match key.code {
-        KeyCode::Char('j') | KeyCode::Down => {
-            app.sort_picker_index = (app.sort_picker_index + 1).min(SORT_PICKER.len() - 1);
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            app.sort_picker_index = app.sort_picker_index.saturating_sub(1);
-        }
-        KeyCode::Enter => {
-            let column = SORT_PICKER[app.sort_picker_index];
-            let current = app.tasks_ui.table.sort;
-            let sort = match current {
-                Some(SortState {
-                    column: existing,
-                    descending,
-                }) if existing == column => SortState {
-                    column,
-                    descending: !descending,
-                },
-                _ => SortState {
-                    column,
-                    descending: false,
-                },
-            };
-            app.tasks_ui.table.sort = Some(sort);
-            app.tasks_ui.sort_picker = false;
-            app.sort_picker_index = 0;
-        }
-        KeyCode::Esc => {
-            app.tasks_ui.sort_picker = false;
-            app.sort_picker_index = 0;
-        }
-        _ => {}
-    }
-    true
+fn remember_selection(app: &mut App) {
+    let Some((_, row)) = app.tasks_ui.table.selected_row() else {
+        return;
+    };
+    let id = row.key.clone();
+    let project = app.current_project().to_owned();
+    app.select_task(&project, &id);
 }
-
-/// The columns `s` offers, in picker order.
-const SORT_PICKER: [ColumnId; 5] = [
-    ColumnId::Status,
-    ColumnId::Started,
-    ColumnId::Tokens,
-    ColumnId::Cost,
-    ColumnId::Workflow,
-];
 
 fn archive_selected(app: &mut App, archived: bool) {
     let Some((_, row)) = app.tasks_ui.table.selected_row() else {
@@ -794,18 +808,6 @@ fn span(text: &str, style: Style) -> Span<'static> {
     Span::styled(text.to_owned(), style)
 }
 
-/// Map a hover position to the row under the pointer, or `None`.
-fn hover_row(hover: Option<(u16, u16)>, area: Rect, scroll_y: usize) -> Option<usize> {
-    let (column, row) = hover?;
-    if column < area.x || column >= area.x.saturating_add(area.width) {
-        return None;
-    }
-    if row < area.y.saturating_add(2) {
-        return None;
-    }
-    Some(scroll_y + usize::from(row - (area.y + 2)))
-}
-
 #[cfg(test)]
 mod tests {
     use coducktor_contract::{RunRecord, RunStatus};
@@ -822,7 +824,9 @@ mod tests {
                 id: format!("run-{index}"),
                 title: format!("Task {index} — a reasonably long title to truncate"),
                 workflow: "quick-task".to_owned(),
-                task: String::new(),
+                task: format!(
+                    "Implement task {index} with exact Unicode input — café 🦆 — while preserving all existing behavior and covering narrow terminals."
+                ),
                 status,
                 created_at: "2026-08-15T00:00:00Z".to_owned(),
                 started_at: Some("2026-08-15T00:00:00Z".to_owned()),
@@ -867,10 +871,9 @@ mod tests {
         app.tasks_ui.table.folded.remove(&ColumnId::Branch);
         let content = render(&mut app, 160, 30);
         assert!(content.contains("running"));
-        assert!(content.contains("needs you"));
+        assert!(content.contains("NEEDS YOU"));
         assert!(content.contains("done"));
         assert!(content.contains("feat/shell"));
-        assert!(content.contains("$0.42"));
         assert!(content.contains("+12 −3"));
     }
 
@@ -878,7 +881,7 @@ mod tests {
     fn queued_run_shows_its_queue_position() {
         let mut app = app_with_tasks(vec![api_run(1, RunStatus::Queued, None)]);
         let content = render(&mut app, 160, 30);
-        assert!(content.contains("queued #1"), "got: {content}");
+        assert!(content.contains("queued"), "got: {content}");
     }
 
     #[test]

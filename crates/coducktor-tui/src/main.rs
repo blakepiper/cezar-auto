@@ -175,6 +175,11 @@ enum BackgroundResult {
         run: Result<coducktor_contract::ApiRun, coducktor_client::EngineError>,
         history: Result<coducktor_contract::RunHistoryPage, coducktor_client::EngineError>,
     },
+    LoadEarlierThread {
+        project: String,
+        id: String,
+        history: Result<coducktor_contract::RunHistoryPage, coducktor_client::EngineError>,
+    },
     RefreshTasks {
         project: String,
         generation: u64,
@@ -644,6 +649,29 @@ async fn execute_pending(
                         project,
                         id,
                         run,
+                        history,
+                    },
+                );
+            }
+            PendingAction::LoadEarlierThread {
+                project,
+                id,
+                cursor,
+            } => {
+                let scope = Scope::Project(project.clone());
+                let engine_for_task = engine.clone();
+                let id_for_task = id.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move {
+                        engine_for_task
+                            .run_history(&scope, &id_for_task, Some(&cursor))
+                            .await
+                    },
+                    move |history| BackgroundResult::LoadEarlierThread {
+                        project,
+                        id,
                         history,
                     },
                 );
@@ -1512,12 +1540,38 @@ fn drain_background_results(
                             .into_iter()
                             .map(thread_history_event)
                             .collect();
-                        app.thread_ui
-                            .load(project, id, run, events, history.as_of_seq as f64);
+                        app.thread_ui.load(
+                            project,
+                            id,
+                            run,
+                            events,
+                            history.as_of_seq as f64,
+                            history.older_cursor,
+                        );
                     }
                     (Err(error), _) | (_, Err(error)) => {
                         app.notice = Some(format!("load task failed: {error}"));
                     }
+                }
+            }
+            BackgroundResult::LoadEarlierThread {
+                project,
+                id,
+                history,
+            } => {
+                if app.thread_ui.data.project != project || app.thread_ui.data.run_id != id {
+                    continue;
+                }
+                match history {
+                    Ok(history) => {
+                        let events = history
+                            .events
+                            .into_iter()
+                            .map(thread_history_event)
+                            .collect();
+                        app.thread_ui.merge_earlier(events, history.older_cursor);
+                    }
+                    Err(error) => app.thread_ui.fail_load_earlier(error.to_string()),
                 }
             }
             BackgroundResult::RefreshTasks {

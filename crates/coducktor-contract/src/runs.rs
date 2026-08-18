@@ -203,6 +203,9 @@ pub struct RunRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_reason: Option<ProviderQuotaBlockedReason>,
     pub created_at: String,
+    /// Most recent meaningful task activity. Read/unread changes do not advance it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -326,10 +329,17 @@ pub struct RunIndexEntry {
     pub activity: Option<RunActivity>,
     pub created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seen_at: Option<String>,
     pub archived: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
+    /// A bounded, whitespace-collapsed preview of the exact initial request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_preview: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_resume_at: Option<String>,
     pub workflow: String,

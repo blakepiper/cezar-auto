@@ -6416,9 +6416,12 @@ fn run_index_entry(project_id: &str, run: coducktor_contract::RunRecord) -> RunI
         status: run.status,
         activity: run.activity,
         created_at: run.created_at,
+        updated_at: run.updated_at,
         finished_at: run.finished_at,
         seen_at: run.seen_at,
         archived: run.archived,
+        archived_at: run.archived_at,
+        prompt_preview: prompt_preview(&run.task),
         auto_resume_at: run.auto_resume_at,
         workflow: run.workflow,
         branch: run.branch,
@@ -6439,6 +6442,22 @@ fn run_index_entry(project_id: &str, run: coducktor_contract::RunRecord) -> RunI
         model_identity: run.model_identity,
         reasoning_effort: None,
     }
+}
+
+/// Keep the workspace index useful without copying an unbounded task body into it.
+/// Character iteration makes the bound safe for UTF-8 and the source text remains in RunRecord.
+fn prompt_preview(task: &str) -> Option<String> {
+    const MAX_CHARS: usize = 240;
+    let collapsed = task.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    let mut chars = collapsed.chars();
+    let mut preview: String = chars.by_ref().take(MAX_CHARS).collect();
+    if chars.next().is_some() {
+        preview.push('…');
+    }
+    Some(preview)
 }
 
 fn boot_project_id(
@@ -9109,6 +9128,19 @@ mod tests {
             folded_task_length("first", &messages),
             "first\n\nsecond".len()
         );
+    }
+
+    #[test]
+    fn prompt_preview_collapses_whitespace_and_truncates_on_character_boundaries() {
+        assert_eq!(
+            prompt_preview("  ship\n\tthis  "),
+            Some("ship this".to_owned())
+        );
+        let source = "🦆".repeat(241);
+        let preview = prompt_preview(&source).unwrap();
+        assert_eq!(preview.chars().count(), 241);
+        assert!(preview.ends_with('…'));
+        assert_eq!(preview.chars().filter(|value| *value == '🦆').count(), 240);
     }
 
     #[test]

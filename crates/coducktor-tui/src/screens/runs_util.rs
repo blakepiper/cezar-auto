@@ -416,8 +416,7 @@ pub fn unread_done_count(runs: &[ApiRun]) -> usize {
         .count()
 }
 
-/// The header search: case-insensitive substring over what the table actually
-/// shows — displayed title, branch, and workflow (raw and label).
+/// Card search covers the exact prompt plus every compact reference field shown on a card.
 pub fn filter_runs<'a>(runs: &'a [ApiRun], query: &str) -> Vec<&'a ApiRun> {
     let needle = query.trim().to_ascii_lowercase();
     if needle.is_empty() {
@@ -427,6 +426,7 @@ pub fn filter_runs<'a>(runs: &'a [ApiRun], query: &str) -> Vec<&'a ApiRun> {
         .filter(|run| {
             [
                 run_title(run).to_ascii_lowercase(),
+                run.record.task.to_ascii_lowercase(),
                 run.record
                     .branch
                     .clone()
@@ -434,6 +434,21 @@ pub fn filter_runs<'a>(runs: &'a [ApiRun], query: &str) -> Vec<&'a ApiRun> {
                     .to_ascii_lowercase(),
                 run.record.workflow.to_ascii_lowercase(),
                 workflow_label(run).to_ascii_lowercase(),
+                run.record
+                    .pull_request_url
+                    .clone()
+                    .unwrap_or_default()
+                    .to_ascii_lowercase(),
+                run.record
+                    .referenced_pull_request_url
+                    .clone()
+                    .unwrap_or_default()
+                    .to_ascii_lowercase(),
+                run.record
+                    .referenced_issue_url
+                    .clone()
+                    .unwrap_or_default()
+                    .to_ascii_lowercase(),
             ]
             .iter()
             .any(|text| text.contains(&needle))

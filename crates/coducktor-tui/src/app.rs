@@ -432,6 +432,7 @@ pub struct ProjectTasksState {
     pub error: Option<String>,
     pub request_generation: u64,
     pub selection: Option<TaskKey>,
+    pub scroll_y: usize,
     pub filter: TaskFilter,
     pub live_usage: BTreeMap<String, ProcessUsage>,
 }
@@ -444,6 +445,7 @@ impl Default for ProjectTasksState {
             error: None,
             request_generation: 0,
             selection: None,
+            scroll_y: 0,
             filter: TaskFilter::Active,
             live_usage: BTreeMap::new(),
         }
@@ -607,6 +609,11 @@ pub enum PendingAction {
     LoadThread {
         project: String,
         id: String,
+    },
+    LoadEarlierThread {
+        project: String,
+        id: String,
+        cursor: String,
     },
     /// Deliver a message into the run's open session (or fold it into a queued prompt).
     SendMessage {
@@ -1113,8 +1120,6 @@ impl App {
         }
         rows.push(SidebarRow::GlobalTasks);
         rows.push(SidebarRow::GlobalSettings);
-        rows.push(SidebarRow::Filter(TaskFilter::Active));
-        rows.push(SidebarRow::Filter(TaskFilter::Archived));
         rows
     }
 
@@ -1223,18 +1228,20 @@ impl App {
 
     fn sync_active_project_tasks(&mut self) {
         let project = self.current_project().to_owned();
-        let (runs, usage, filter, selection) = {
+        let (runs, usage, filter, selection, scroll_y) = {
             let state = self.project_tasks.entry(project.clone()).or_default();
             (
                 state.runs.clone(),
                 state.live_usage.clone(),
                 state.filter,
                 state.selection.clone(),
+                state.scroll_y,
             )
         };
         self.tasks = runs;
         self.live_usage = usage;
         self.task_filter = filter;
+        self.tasks_ui.table.scroll_y = scroll_y;
         if let Some(selection) = selection {
             self.tasks_ui.table.selected = self
                 .tasks
@@ -1247,6 +1254,16 @@ impl App {
     pub fn select_task(&mut self, project: &str, run_id: &str) {
         let state = self.project_tasks.entry(project.to_owned()).or_default();
         state.selection = Some(TaskKey::new(project, run_id));
+    }
+
+    fn persist_active_task_ui(&mut self) {
+        let project = self.current_project().to_owned();
+        if let Some(state) = self.project_tasks.get_mut(&project) {
+            state.scroll_y = self.tasks_ui.table.scroll_y;
+            if let Some((_, row)) = self.tasks_ui.table.selected_row() {
+                state.selection = Some(TaskKey::new(project, row.key.clone()));
+            }
+        }
     }
 
     pub fn task_state(&self, project: &str) -> Option<&ProjectTasksState> {
@@ -1323,6 +1340,7 @@ impl App {
     /// deferred discard-confirms), so the project sync and the root listing
     /// queue live with the navigation, not with one caller.
     pub(crate) fn navigate_route(&mut self, route: Route) {
+        self.persist_active_task_ui();
         if let Route::Ide { project } = &route
             && self.ide_ui.project != *project
         {
@@ -1362,6 +1380,7 @@ impl App {
     }
 
     fn go_back(&mut self) {
+        self.persist_active_task_ui();
         if self.history.back() {
             self.sidebar_focus = false;
             self.screen_focus = 0;
@@ -1383,6 +1402,7 @@ impl App {
     }
 
     fn go_forward(&mut self) {
+        self.persist_active_task_ui();
         if self.history.forward() {
             self.sidebar_focus = false;
             self.screen_focus = 0;
@@ -1435,17 +1455,6 @@ impl App {
         match filter {
             TaskFilter::Active => TaskView::Active,
             TaskFilter::Archived => TaskView::Archived,
-        }
-    }
-
-    fn task_view_filter(&self) -> TaskFilter {
-        if matches!(self.route(), Route::GlobalTasks) {
-            self.global_filter
-        } else {
-            self.project_tasks
-                .get(self.current_project())
-                .map(|state| state.filter)
-                .unwrap_or(self.task_filter)
         }
     }
 
@@ -1632,9 +1641,12 @@ impl App {
                 status: record.status,
                 activity: record.activity,
                 created_at: record.created_at.clone(),
+                updated_at: record.updated_at.clone(),
                 finished_at: record.finished_at.clone(),
                 seen_at: record.seen_at.clone(),
                 archived: record.archived,
+                archived_at: record.archived_at.clone(),
+                prompt_preview: local_prompt_preview(&record.task),
                 auto_resume_at: record.auto_resume_at.clone(),
                 workflow: record.workflow.clone(),
                 branch: record.branch.clone(),
@@ -1662,9 +1674,12 @@ impl App {
         entry.title_origin = record.title_origin;
         entry.status = record.status;
         entry.activity = record.activity;
+        entry.updated_at = record.updated_at.clone();
         entry.finished_at = record.finished_at.clone();
         entry.seen_at = record.seen_at.clone();
         entry.archived = record.archived;
+        entry.archived_at = record.archived_at.clone();
+        entry.prompt_preview = local_prompt_preview(&record.task);
         entry.auto_resume_at = record.auto_resume_at.clone();
         entry.workflow = record.workflow.clone();
         entry.branch = record.branch.clone();
@@ -1886,51 +1901,6 @@ impl App {
             ),
             Some(HitAction::GlobalSettings),
         ));
-        rows.push((sidebar_line("", self.soft_style()), None));
-        rows.push((sidebar_line("  TASKS", self.soft_style()), None));
-        let sidebar_filter = self.task_view_filter();
-        rows.push((
-            sidebar_nav_line(
-                "Active",
-                None,
-                sidebar_filter == TaskFilter::Active,
-                selected == Some(SidebarRow::Filter(TaskFilter::Active)),
-                self.nav_style(sidebar_filter == TaskFilter::Active),
-            ),
-            Some(HitAction::ActiveTasks),
-        ));
-        rows.push((
-            sidebar_nav_line(
-                "Archived",
-                None,
-                sidebar_filter == TaskFilter::Archived,
-                selected == Some(SidebarRow::Filter(TaskFilter::Archived)),
-                self.nav_style(sidebar_filter == TaskFilter::Archived),
-            ),
-            Some(HitAction::ArchivedTasks),
-        ));
-        for group in [TaskGroup::NeedsYou, TaskGroup::Working, TaskGroup::Recent] {
-            rows.push((sidebar_line(group.label(), self.soft_style()), None));
-            for (displayed, task) in self
-                .quick_tasks
-                .iter()
-                .filter(|task| {
-                    self.quick_task_is_visible(task)
-                        && task.archived == (sidebar_filter == TaskFilter::Archived)
-                        && task.group() == group
-                })
-                .enumerate()
-            {
-                if displayed == 2 {
-                    break;
-                }
-                rows.push((
-                    task_line(task, self.theme.palette_for_status(task.status)),
-                    Some(HitAction::Tasks),
-                ));
-            }
-        }
-
         let lines: Vec<Line<'static>> = rows.iter().map(|(line, _)| line.clone()).collect();
         frame.render_widget(
             Paragraph::new(Text::from(lines))
@@ -2756,6 +2726,7 @@ impl App {
     }
 
     fn apply_project_switch(&mut self, project: String) {
+        self.persist_active_task_ui();
         self.default_project = project.clone();
         // The switch is the resolution of the IDE-dirty guard, so navigate
         // directly here and keep the selector on the new project's row.
@@ -3236,14 +3207,6 @@ fn sidebar_nav_line(
     Line::from(spans)
 }
 
-fn task_line(task: &QuickTask, style: Style) -> Line<'static> {
-    let title = truncate(&task.title, 21);
-    Line::from(vec![
-        Span::styled("    + ", style),
-        Span::styled(title, style),
-    ])
-}
-
 fn truncate(value: &str, max: usize) -> String {
     let mut chars = value.chars();
     let mut result: String = chars.by_ref().take(max).collect();
@@ -3252,6 +3215,19 @@ fn truncate(value: &str, max: usize) -> String {
         result.push('~');
     }
     result
+}
+
+fn local_prompt_preview(task: &str) -> Option<String> {
+    let collapsed = task.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    let mut chars = collapsed.chars();
+    let mut preview: String = chars.by_ref().take(240).collect();
+    if chars.next().is_some() {
+        preview.push('…');
+    }
+    Some(preview)
 }
 
 fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
@@ -3263,25 +3239,6 @@ fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
         width,
         height,
     )
-}
-
-trait ThemeStatusPalette {
-    fn palette_for_status(&self, status: RunStatus) -> Style;
-}
-
-impl ThemeStatusPalette for Theme {
-    fn palette_for_status(&self, status: RunStatus) -> Style {
-        let color = match status {
-            RunStatus::Queued => self.palette.queued,
-            RunStatus::Running => self.palette.running,
-            RunStatus::Waiting => self.palette.waiting,
-            RunStatus::Review => self.palette.review,
-            RunStatus::Done => self.palette.done,
-            RunStatus::Failed => self.palette.failed,
-            RunStatus::Cancelled => self.palette.cancelled,
-        };
-        Style::default().fg(color)
-    }
 }
 
 trait UppercaseTitle {
@@ -3300,20 +3257,6 @@ impl UppercaseTitle for NavItem {
             Self::Skills => "SKILLS",
             Self::Workflows => "WORKFLOWS",
             Self::Settings => "SETTINGS",
-        }
-    }
-}
-
-trait TaskGroupLabel {
-    fn label(self) -> &'static str;
-}
-
-impl TaskGroupLabel for TaskGroup {
-    fn label(self) -> &'static str {
-        match self {
-            Self::NeedsYou => "  NEEDS YOU",
-            Self::Working => "  WORKING",
-            Self::Recent => "  RECENT",
         }
     }
 }
@@ -3682,7 +3625,7 @@ mod tests {
         terminal.draw(|frame| app.render(frame)).unwrap();
 
         assert!(app.sidebar_focus);
-        assert_eq!(app.tasks_ui.table.selected, None);
+        assert_eq!(app.tasks_ui.table.selected, Some(0));
         app.handle_event(Event::Key(KeyEvent::new(
             KeyCode::Right,
             KeyModifiers::CONTROL,
@@ -3690,7 +3633,7 @@ mod tests {
         assert!(!app.sidebar_focus);
 
         app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
-        assert_eq!(app.tasks_ui.table.selected, Some(0));
+        assert_eq!(app.tasks_ui.table.selected, Some(1));
         app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
         assert_eq!(app.tasks_ui.table.selected, Some(1));
         app.handle_event(Event::Key(KeyEvent::new(
@@ -3938,19 +3881,19 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_arrow_cycle_reaches_the_task_filter_rows() {
+    fn sidebar_arrow_cycle_ends_at_workspace_settings() {
         let mut app = App::new("main", Theme::detect(), Keymap::default());
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
         terminal.draw(|frame| app.render(frame)).unwrap();
 
-        // 14 rows: current project + 9 navs + All tasks + Settings + Active + Archived.
+        // 12 rows: current project + 9 navs + All tasks + Settings.
         app.handle_event(Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)));
-        assert_eq!(app.sidebar_selected, 13);
+        assert_eq!(app.sidebar_selected, 11);
         app.handle_event(Event::Key(KeyEvent::new(
             KeyCode::Enter,
             KeyModifiers::NONE,
         )));
-        assert_eq!(app.task_filter, TaskFilter::Archived);
+        assert!(matches!(app.route(), Route::GlobalSettings));
     }
 
     #[test]
