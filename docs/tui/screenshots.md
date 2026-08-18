@@ -33,7 +33,7 @@ Regenerate these excerpts after any UI change with `cargo insta test`.
     Settings                │                                                                                          │
   NEEDS YOU                 │                                                                                          │
   WORKING                   │                                                                                          │
-  RECENT                    │                                                                                          │
+  DONE                      │                                                                                          │
                             │                                                                                          │
                             │                                                                                          │
                             │                                                                                          │

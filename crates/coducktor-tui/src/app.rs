@@ -537,7 +537,7 @@ impl Default for ProjectTasksState {
 enum TaskGroup {
     NeedsYou,
     Working,
-    Recent,
+    Done,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -576,13 +576,7 @@ impl QuickTask {
         match self.status {
             RunStatus::Queued | RunStatus::Running => TaskGroup::Working,
             RunStatus::Waiting | RunStatus::Review => TaskGroup::NeedsYou,
-            RunStatus::Done | RunStatus::Failed | RunStatus::Cancelled => {
-                if self.unread {
-                    TaskGroup::NeedsYou
-                } else {
-                    TaskGroup::Recent
-                }
-            }
+            RunStatus::Done | RunStatus::Failed | RunStatus::Cancelled => TaskGroup::Done,
         }
     }
 }
@@ -4492,7 +4486,7 @@ mod tests {
             app.pending,
             vec![PendingAction::Archive {
                 project: "main".to_owned(),
-                id: "run-2".to_owned(),
+                id: "run-1".to_owned(),
                 archived: true,
             }]
         );

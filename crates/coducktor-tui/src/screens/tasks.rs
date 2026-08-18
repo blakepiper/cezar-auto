@@ -167,12 +167,12 @@ fn card_group(run: &ApiRun, view: TaskView) -> CardGroup {
     if view == TaskView::Archived {
         return CardGroup::Archived;
     }
-    if matches!(run.record.status, RunStatus::Waiting | RunStatus::Review) || is_unread(run) {
+    if matches!(run.record.status, RunStatus::Waiting | RunStatus::Review) {
         CardGroup::NeedsYou
     } else if matches!(run.record.status, RunStatus::Queued | RunStatus::Running) {
         CardGroup::Working
     } else {
-        CardGroup::Recent
+        CardGroup::Done
     }
 }
 
@@ -820,6 +820,15 @@ mod tests {
         assert!(content.contains("done"));
         assert!(content.contains("feat/shell"));
         assert!(content.contains("+12 −3"));
+    }
+
+    #[test]
+    fn terminal_tasks_stay_in_done_even_when_unread() {
+        for status in [RunStatus::Done, RunStatus::Failed, RunStatus::Cancelled] {
+            let run = api_run(1, status, None);
+            assert_eq!(card_group(&run, TaskView::Active), CardGroup::Done);
+            assert!(is_unread(&run));
+        }
     }
 
     #[test]

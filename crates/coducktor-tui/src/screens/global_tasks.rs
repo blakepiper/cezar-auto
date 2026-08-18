@@ -244,8 +244,7 @@ fn entry_group(entry: &RunIndexEntry, view: TaskView) -> CardGroup {
     } else if matches!(
         entry.status,
         coducktor_contract::RunStatus::Waiting | coducktor_contract::RunStatus::Review
-    ) || is_unread_entry(entry)
-    {
+    ) {
         CardGroup::NeedsYou
     } else if matches!(
         entry.status,
@@ -253,7 +252,7 @@ fn entry_group(entry: &RunIndexEntry, view: TaskView) -> CardGroup {
     ) {
         CardGroup::Working
     } else {
-        CardGroup::Recent
+        CardGroup::Done
     }
 }
 
@@ -1203,6 +1202,19 @@ mod tests {
         assert!(content.contains("blog"));
         assert!(content.contains("running"));
         assert!(content.contains("NEEDS YOU"));
+    }
+
+    #[test]
+    fn terminal_tasks_stay_in_done_even_when_unread() {
+        for status in [
+            coducktor_contract::RunStatus::Done,
+            coducktor_contract::RunStatus::Failed,
+            coducktor_contract::RunStatus::Cancelled,
+        ] {
+            let entry = entry("shop", "1", status);
+            assert_eq!(entry_group(&entry, TaskView::Active), CardGroup::Done);
+            assert!(is_unread_entry(&entry));
+        }
     }
 
     #[test]

@@ -13,7 +13,7 @@ use crate::theme::Theme;
 pub enum CardGroup {
     NeedsYou,
     Working,
-    Recent,
+    Done,
     Archived,
 }
 
@@ -22,7 +22,7 @@ impl CardGroup {
         match self {
             Self::NeedsYou => "NEEDS YOU",
             Self::Working => "WORKING",
-            Self::Recent => "RECENT",
+            Self::Done => "DONE",
             Self::Archived => "ARCHIVED",
         }
     }
