@@ -411,6 +411,71 @@ enum InputMode {
     Command,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandId {
+    Open,
+    Back,
+    Forward,
+    Theme,
+    New,
+    Help,
+    Sidebar,
+    Quit,
+}
+
+impl CommandId {
+    const ALL: [Self; 8] = [
+        Self::Open,
+        Self::Back,
+        Self::Forward,
+        Self::Theme,
+        Self::New,
+        Self::Help,
+        Self::Sidebar,
+        Self::Quit,
+    ];
+
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "open" => Some(Self::Open),
+            "back" => Some(Self::Back),
+            "forward" => Some(Self::Forward),
+            "theme" => Some(Self::Theme),
+            "new" => Some(Self::New),
+            "help" => Some(Self::Help),
+            "sidebar" => Some(Self::Sidebar),
+            "quit" => Some(Self::Quit),
+            _ => None,
+        }
+    }
+
+    fn usage(self) -> &'static str {
+        match self {
+            Self::Open => ":open <route>",
+            Self::Back => ":back",
+            Self::Forward => ":forward",
+            Self::Theme => ":theme <light|dark|lazyvim>",
+            Self::New => ":new",
+            Self::Help => ":help",
+            Self::Sidebar => ":sidebar",
+            Self::Quit => ":quit",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Open => "navigate to a route",
+            Self::Back => "go back",
+            Self::Forward => "go forward",
+            Self::Theme => "switch theme",
+            Self::New => "new task",
+            Self::Help => "open this help",
+            Self::Sidebar => "toggle sidebar",
+            Self::Quit => "quit",
+        }
+    }
+}
+
 /// The Active/Archived filter shared by the shell and the Tasks screens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskFilter {
@@ -2139,7 +2204,23 @@ impl App {
             Line::from("  Mouse capture: F12 toggles it; hold Shift for terminal selection."),
             Line::from("  y copies the focused item; Esc closes this help."),
             Line::from(""),
+            Line::from(Span::styled(
+                "COMMANDS (type : to enter)",
+                Style::default().fg(self.theme.palette.accent),
+            )),
         ];
+        for command in CommandId::ALL {
+            lines.push(Line::from(format!(
+                "  {:<28} {}",
+                command.usage(),
+                command.description()
+            )));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "KEYS",
+            Style::default().fg(self.theme.palette.accent),
+        )));
         for (key, action) in self.keymap.help_bindings(KeyMode::Normal) {
             lines.push(Line::from(format!("  {key:<12} {action:?}")));
         }
@@ -2504,8 +2585,15 @@ impl App {
 
     pub(crate) fn execute_command(&mut self, command: &str) {
         let mut parts = command.split_whitespace();
-        match parts.next() {
-            Some("open") => {
+        let Some(name) = parts.next() else {
+            return;
+        };
+        let Some(command) = CommandId::parse(name) else {
+            self.notice = Some(format!("unknown command: {name}"));
+            return;
+        };
+        match command {
+            CommandId::Open => {
                 if let Some(path) = parts.next() {
                     match Route::parse(path, self.default_project.as_str()) {
                         Some(route) => self.request_navigate(route),
@@ -2515,13 +2603,13 @@ impl App {
                     self.notice = Some("usage: :open <route>".to_owned());
                 }
             }
-            Some("back") => {
+            CommandId::Back => {
                 self.request_back();
             }
-            Some("forward") => {
+            CommandId::Forward => {
                 self.request_forward();
             }
-            Some("theme") => {
+            CommandId::Theme => {
                 if let Some(name) = parts.next().and_then(ThemeName::parse) {
                     self.theme = Theme::new(name, self.theme.capability);
                     let mut appearance = self
@@ -2546,12 +2634,10 @@ impl App {
                     self.notice = Some("theme must be light, dark, or lazyvim".to_owned());
                 }
             }
-            Some("new") => self.navigate(NavItem::NewTask),
-            Some("help") => self.help_open = true,
-            Some("sidebar") => self.toggle_sidebar(),
-            Some("quit") => self.request_quit(),
-            Some(unknown) => self.notice = Some(format!("unknown command: {unknown}")),
-            None => {}
+            CommandId::New => self.navigate(NavItem::NewTask),
+            CommandId::Help => self.help_open = true,
+            CommandId::Sidebar => self.toggle_sidebar(),
+            CommandId::Quit => self.request_quit(),
         }
     }
 
@@ -4242,6 +4328,32 @@ mod tests {
             insta::assert_debug_snapshot!(
                 format!("tasks_{width}x{height}"),
                 terminal.backend().buffer()
+            );
+        }
+    }
+
+    #[test]
+    fn help_overlay_lists_colon_commands_on_small_terminals() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('?'),
+            KeyModifiers::NONE,
+        )));
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        for command in CommandId::ALL {
+            assert!(
+                content.contains(command.usage()),
+                "help is missing {}",
+                command.usage()
             );
         }
     }
