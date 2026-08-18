@@ -435,6 +435,24 @@ pub fn clear_draft(app: &mut App) {
     write_draft(app);
 }
 
+/// Restore the exact draft captured when a scoped start was submitted. Navigation may have
+/// changed the active project by the time the engine reports an error, so the per-project store
+/// is updated first and the visible composer is refreshed only when it is still that project.
+pub fn restore_start_draft(app: &mut App, project: &str) {
+    let Some(draft) = app.pending_start_drafts.remove(project) else {
+        return;
+    };
+    app.new_task_drafts
+        .insert(project.to_owned(), draft.clone());
+    if app.current_project() == project {
+        app.new_task_ui.draft = draft.clone();
+        app.new_task_ui.draft_project = Some(project.to_owned());
+        app.new_task_ui.composer.set_text(&draft.text);
+        app.new_task_ui.composer_focused = true;
+        app.new_task_ui.composer.focus();
+    }
+}
+
 /// The keyboard contract for the New Task screen. Returns true when consumed.
 pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     if app.new_task_ui.picker.is_some() {
@@ -1047,6 +1065,8 @@ fn finish_submit(
         project: project.clone(),
         input,
     });
+    app.pending_start_drafts
+        .insert(project.clone(), app.new_task_ui.draft.clone());
     // The task now belongs to the background engine operation. Return keyboard focus to the
     // shell immediately so `q` remains a quit key instead of becoming the first character of a
     // second prompt while the agent is starting.
@@ -1132,7 +1152,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let pill_height = pill_row_height(column_width, &effective);
     let action_height = action_row_height(column_width);
     let suggestion_height = suggestion_row_height(column_width);
-    let header = 2;
+    let header = 3;
     let constraints = [
         Constraint::Length(header),
         Constraint::Length(composer_height),
@@ -1146,10 +1166,27 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         .constraints(constraints)
         .split(column);
 
-    // Hero title + run-mode note.
+    // Project context + hero title + run-mode note. This is deliberately non-editable: the
+    // pending StartRun already captured the same project id.
     let note = new_task_form::composer_run_mode_note(effective.worktree_on, effective.has_git);
+    let project = app.current_project().to_owned();
+    let root = app
+        .project_registry
+        .iter()
+        .find(|entry| entry.id == project)
+        .map(|entry| entry.root.clone())
+        .or_else(|| {
+            app.boot_root
+                .as_ref()
+                .map(|root| root.display().to_string())
+        })
+        .unwrap_or_else(|| "root unavailable".to_owned());
     frame.render_widget(
         Paragraph::new(Text::from(vec![
+            Line::from(Span::styled(
+                format!("New task in {project} · {root}"),
+                Style::default().fg(theme.palette.accent),
+            )),
             Line::from(Span::styled(
                 "What should the agent work on?",
                 Style::default()

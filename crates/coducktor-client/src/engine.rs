@@ -38,7 +38,7 @@ pub type StartRunInput = CreateRunInput;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Topic {
     Health,
-    Run { id: String },
+    Run { project: String, id: String },
     Named(String),
 }
 
@@ -396,68 +396,68 @@ impl Engine for InProcessEngine {
         InProcessEngine::health(self).await
     }
 
-    async fn list_runs(&self, _scope: &Scope) -> Result<Vec<ApiRun>, EngineError> {
-        InProcessEngine::list_runs(self).await
+    async fn list_runs(&self, scope: &Scope) -> Result<Vec<ApiRun>, EngineError> {
+        self.scoped(scope)?.list_runs().await
     }
 
     async fn start_run(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         input: StartRunInput,
     ) -> Result<CreateRunResponse, EngineError> {
-        InProcessEngine::start_run(self, input).await
+        self.scoped(scope)?.start_run(input).await
     }
 
-    async fn get_run(&self, _scope: &Scope, run_id: &str) -> Result<ApiRun, EngineError> {
-        InProcessEngine::get_run(self, run_id).await
+    async fn get_run(&self, scope: &Scope, run_id: &str) -> Result<ApiRun, EngineError> {
+        self.scoped(scope)?.get_run(run_id).await
     }
 
     async fn archive_run(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         run_id: &str,
         archived: bool,
     ) -> Result<ApiRun, EngineError> {
-        InProcessEngine::archive_run(self, run_id, archived).await
+        self.scoped(scope)?.archive_run(run_id, archived).await
     }
 
     async fn delete_run(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         run_id: &str,
     ) -> Result<DeleteRunResponse, EngineError> {
-        InProcessEngine::delete_run(self, run_id).await
+        self.scoped(scope)?.delete_run(run_id).await
     }
 
-    async fn read_run(&self, _scope: &Scope, run_id: &str) -> Result<ApiRun, EngineError> {
-        InProcessEngine::read_run(self, run_id).await
+    async fn read_run(&self, scope: &Scope, run_id: &str) -> Result<ApiRun, EngineError> {
+        self.scoped(scope)?.read_run(run_id).await
     }
 
-    async fn unread_run(&self, _scope: &Scope, run_id: &str) -> Result<ApiRun, EngineError> {
-        InProcessEngine::unread_run(self, run_id).await
+    async fn unread_run(&self, scope: &Scope, run_id: &str) -> Result<ApiRun, EngineError> {
+        self.scoped(scope)?.unread_run(run_id).await
     }
 
     async fn archive_finished(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
     ) -> Result<ArchiveFinishedResponse, EngineError> {
-        InProcessEngine::archive_finished(self).await
+        self.scoped(scope)?.archive_finished().await
     }
 
-    async fn mark_all_read(&self, _scope: &Scope) -> Result<MarkAllReadResponse, EngineError> {
-        InProcessEngine::mark_all_read(self).await
+    async fn mark_all_read(&self, scope: &Scope) -> Result<MarkAllReadResponse, EngineError> {
+        self.scoped(scope)?.mark_all_read().await
     }
 
     async fn runs_index(&self) -> Result<RunsIndexResponse, EngineError> {
         InProcessEngine::runs_index(self).await
     }
 
-    async fn workflows(&self, _scope: &Scope) -> Result<WorkflowsResponse, EngineError> {
-        InProcessEngine::workflows(self).await
+    async fn workflows(&self, scope: &Scope) -> Result<WorkflowsResponse, EngineError> {
+        self.scoped(scope)?.workflows().await
     }
 
-    async fn skills(&self, _scope: &Scope) -> Result<Vec<Skill>, EngineError> {
-        InProcessEngine::skills(self).await
+    async fn skills(&self, scope: &Scope) -> Result<Vec<Skill>, EngineError> {
+        self.scoped(scope)?.skills().await
     }
 
     async fn projects(&self) -> Result<ProjectsResponse, EngineError> {
@@ -479,16 +479,16 @@ impl Engine for InProcessEngine {
         InProcessEngine::workspace_usage(self).await
     }
 
-    async fn config(&self, _scope: &Scope) -> Result<ConfigResponse, EngineError> {
-        InProcessEngine::config(self).await
+    async fn config(&self, scope: &Scope) -> Result<ConfigResponse, EngineError> {
+        self.scoped(scope)?.config().await
     }
 
     async fn put_config(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         input: &SetConfigInput,
     ) -> Result<ConfigResponse, EngineError> {
-        InProcessEngine::put_config(self, input).await
+        self.scoped(scope)?.put_config(input).await
     }
 
     async fn provider_status(&self) -> Result<ProviderStatusResponse, EngineError> {
@@ -500,8 +500,7 @@ impl Engine for InProcessEngine {
     }
 
     async fn github(&self, scope: &Scope) -> Result<GithubData, EngineError> {
-        let root = self.root_for_scope(scope)?;
-        InProcessEngine::github_at(root).await
+        self.scoped(scope)?.github().await
     }
 
     async fn github_checks(
@@ -509,8 +508,7 @@ impl Engine for InProcessEngine {
         scope: &Scope,
         prs: &[String],
     ) -> Result<GithubChecksData, EngineError> {
-        let root = self.root_for_scope(scope)?;
-        InProcessEngine::github_checks_at(root, prs).await
+        self.scoped(scope)?.github_checks(prs).await
     }
 
     async fn github_ref_status(
@@ -519,8 +517,7 @@ impl Engine for InProcessEngine {
         prs: &[String],
         issues: &[String],
     ) -> Result<GithubRefStatusData, EngineError> {
-        let root = self.root_for_scope(scope)?;
-        InProcessEngine::github_ref_status_at(root, prs, issues).await
+        self.scoped(scope)?.github_ref_status(prs, issues).await
     }
 
     async fn github_comments(
@@ -529,8 +526,7 @@ impl Engine for InProcessEngine {
         kind: &str,
         number: u64,
     ) -> Result<GithubCommentsData, EngineError> {
-        let root = self.root_for_scope(scope)?;
-        InProcessEngine::github_comments_at(root, kind, number).await
+        self.scoped(scope)?.github_comments(kind, number).await
     }
 
     async fn github_pr_merge_state(
@@ -538,8 +534,7 @@ impl Engine for InProcessEngine {
         scope: &Scope,
         number: u64,
     ) -> Result<GithubPrMergeStateResponse, EngineError> {
-        let root = self.root_for_scope(scope)?;
-        InProcessEngine::github_pr_merge_state_at(root, number).await
+        self.scoped(scope)?.github_pr_merge_state(number).await
     }
 
     async fn github_merge_pr(
@@ -548,8 +543,7 @@ impl Engine for InProcessEngine {
         number: u64,
         input: &GithubMergeInput,
     ) -> Result<GithubMergeResponse, EngineError> {
-        let root = self.root_for_scope(scope)?;
-        InProcessEngine::github_merge_pr_at(root, number, input).await
+        self.scoped(scope)?.github_merge_pr(number, input).await
     }
 
     async fn github_pr_changes(
@@ -557,225 +551,218 @@ impl Engine for InProcessEngine {
         scope: &Scope,
         number: u64,
     ) -> Result<GithubPrChangesData, EngineError> {
-        let root = self.root_for_scope(scope)?;
-        InProcessEngine::github_pr_changes_at(root, number).await
+        self.scoped(scope)?.github_pr_changes(number).await
     }
 
     async fn save_workflow(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         input: &SaveWorkflowInput,
     ) -> Result<SaveWorkflowResponse, EngineError> {
-        InProcessEngine::save_workflow(self, input).await
+        self.scoped(scope)?.save_workflow(input).await
     }
 
     async fn delete_workflow(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         name: &str,
     ) -> Result<DeleteWorkflowResponse, EngineError> {
-        InProcessEngine::delete_workflow(self, name).await
+        self.scoped(scope)?.delete_workflow(name).await
     }
 
     async fn parse_workflow(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         yaml: &str,
     ) -> Result<ParsedWorkflow, EngineError> {
-        InProcessEngine::parse_workflow(self, yaml).await
+        self.scoped(scope)?.parse_workflow(yaml).await
     }
 
     async fn agent_profiles(&self) -> Result<AgentProfilesResponse, EngineError> {
         InProcessEngine::agent_profiles(self).await
     }
 
-    async fn ui_state(&self, _scope: &Scope) -> Result<UiState, EngineError> {
-        decode_in_process_ui_state(InProcessEngine::ui_state(self).await?)
+    async fn ui_state(&self, scope: &Scope) -> Result<UiState, EngineError> {
+        decode_in_process_ui_state(self.scoped(scope)?.ui_state().await?)
     }
 
-    async fn put_ui_state(&self, _scope: &Scope, state: &UiState) -> Result<UiState, EngineError> {
+    async fn put_ui_state(&self, scope: &Scope, state: &UiState) -> Result<UiState, EngineError> {
         let value = serde_json::to_value(state).map_err(|error| {
             EngineError::Transport(format!("could not encode ui state: {error}"))
         })?;
-        decode_in_process_ui_state(InProcessEngine::put_ui_state(self, value).await?)
+        decode_in_process_ui_state(self.scoped(scope)?.put_ui_state(value).await?)
     }
 
-    async fn plan(&self, _scope: &Scope, task: &str) -> Result<PlanResponse, EngineError> {
-        InProcessEngine::plan(self, task).await
+    async fn plan(&self, scope: &Scope, task: &str) -> Result<PlanResponse, EngineError> {
+        self.scoped(scope)?.plan(task).await
     }
 
     async fn run_history(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         run_id: &str,
         cursor: Option<&str>,
     ) -> Result<RunHistoryPage, EngineError> {
-        InProcessEngine::run_history(self, run_id, cursor).await
+        self.scoped(scope)?.run_history(run_id, cursor).await
     }
 
     async fn run_history_context(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         run_id: &str,
     ) -> Result<RunHistoryContext, EngineError> {
-        InProcessEngine::run_history_context(self, run_id).await
+        self.scoped(scope)?.run_history_context(run_id).await
     }
 
     async fn patch_run(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         run_id: &str,
         input: PatchRunInput,
     ) -> Result<ApiRun, EngineError> {
-        InProcessEngine::patch_run(self, run_id, input).await
+        self.scoped(scope)?.patch_run(run_id, input).await
     }
 
-    async fn cancel_run(
-        &self,
-        _scope: &Scope,
-        run_id: &str,
-    ) -> Result<CancelResponse, EngineError> {
-        InProcessEngine::cancel_run(self, run_id).await
+    async fn cancel_run(&self, scope: &Scope, run_id: &str) -> Result<CancelResponse, EngineError> {
+        self.scoped(scope)?.cancel_run(run_id).await
     }
 
     async fn send_message(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         run_id: &str,
         input: MessageInput,
     ) -> Result<MessageResponse, EngineError> {
-        InProcessEngine::send_message(self, run_id, input).await
+        self.scoped(scope)?.send_message(run_id, input).await
     }
 
     async fn edit_queued_message(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         run_id: &str,
         message_id: &str,
         input: QueuedMessagePatchInput,
     ) -> Result<EditQueuedMessageResponse, EngineError> {
-        InProcessEngine::edit_queued_message(self, run_id, message_id, input).await
+        self.scoped(scope)?
+            .edit_queued_message(run_id, message_id, input)
+            .await
     }
 
     async fn remove_queued_message(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         run_id: &str,
         message_id: &str,
     ) -> Result<RemoveQueuedMessageResponse, EngineError> {
-        InProcessEngine::remove_queued_message(self, run_id, message_id).await
+        self.scoped(scope)?
+            .remove_queued_message(run_id, message_id)
+            .await
     }
 
-    async fn finish_run(
-        &self,
-        _scope: &Scope,
-        run_id: &str,
-    ) -> Result<FinishResponse, EngineError> {
-        InProcessEngine::finish_run(self, run_id).await
+    async fn finish_run(&self, scope: &Scope, run_id: &str) -> Result<FinishResponse, EngineError> {
+        self.scoped(scope)?.finish_run(run_id).await
     }
 
     async fn continue_run(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         run_id: &str,
         input: ContinueInput,
     ) -> Result<ContinueResponse, EngineError> {
-        InProcessEngine::continue_run(self, run_id, input).await
+        self.scoped(scope)?.continue_run(run_id, input).await
     }
 
     async fn open_in_cli(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         run_id: &str,
     ) -> Result<OpenInCliResponse, EngineError> {
-        InProcessEngine::open_in_cli(self, run_id).await
+        self.scoped(scope)?.open_in_cli(run_id).await
     }
 
     async fn open_in(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         run_id: &str,
         input: OpenInInput,
     ) -> Result<Value, EngineError> {
-        InProcessEngine::open_in(self, run_id, input).await
+        self.scoped(scope)?.open_in(run_id, input).await
     }
 
     async fn git_commit(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         run_id: &str,
         input: GitCommitInput,
     ) -> Result<GitCommitResponse, EngineError> {
-        InProcessEngine::git_commit(self, run_id, input).await
+        self.scoped(scope)?.git_commit(run_id, input).await
     }
 
-    async fn git_push(&self, _scope: &Scope, run_id: &str) -> Result<GitPushResponse, EngineError> {
-        InProcessEngine::git_push(self, run_id).await
+    async fn git_push(&self, scope: &Scope, run_id: &str) -> Result<GitPushResponse, EngineError> {
+        self.scoped(scope)?.git_push(run_id).await
     }
 
     async fn run_commits(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         run_id: &str,
     ) -> Result<RunCommitsResponse, EngineError> {
-        InProcessEngine::run_commits(self, run_id).await
+        self.scoped(scope)?.run_commits(run_id).await
     }
 
     async fn create_pr(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         run_id: &str,
     ) -> Result<CreatePrResponse, EngineError> {
-        InProcessEngine::create_pr(self, run_id).await
+        self.scoped(scope)?.create_pr(run_id).await
     }
 
-    async fn run_diff_text(&self, _scope: &Scope, run_id: &str) -> Result<String, EngineError> {
-        InProcessEngine::run_diff_text(self, run_id).await
+    async fn run_diff_text(&self, scope: &Scope, run_id: &str) -> Result<String, EngineError> {
+        self.scoped(scope)?.run_diff_text(run_id).await
     }
 
     async fn run_changes(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         run_id: &str,
     ) -> Result<ChangesPayload, EngineError> {
-        InProcessEngine::run_changes(self, run_id).await
+        self.scoped(scope)?.run_changes(run_id).await
     }
 
     async fn run_commit(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         run_id: &str,
         sha: &str,
     ) -> Result<RepoCommitPayload, EngineError> {
-        InProcessEngine::run_commit(self, run_id, sha).await
+        self.scoped(scope)?.run_commit(run_id, sha).await
     }
 
     async fn run_files(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         run_id: &str,
         path: Option<&str>,
     ) -> Result<WorktreeEntry, EngineError> {
-        InProcessEngine::run_files(self, run_id, path).await
+        self.scoped(scope)?.run_files(run_id, path).await
     }
 
     async fn run_file_raw(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         run_id: &str,
         path: &str,
     ) -> Result<Vec<u8>, EngineError> {
-        InProcessEngine::run_file_raw(self, run_id, path).await
+        self.scoped(scope)?.run_file_raw(run_id, path).await
     }
 
     async fn repo(&self, scope: &Scope) -> Result<RepoResponse, EngineError> {
-        let root = self.root_for_scope(scope)?;
-        InProcessEngine::repo_at(root).await
+        self.scoped(scope)?.repo().await
     }
 
     async fn repo_changes(&self, scope: &Scope) -> Result<ChangesPayload, EngineError> {
-        let root = self.root_for_scope(scope)?;
-        InProcessEngine::repo_changes_at(root).await
+        self.scoped(scope)?.repo_changes().await
     }
 
     async fn repo_commit(
@@ -783,8 +770,7 @@ impl Engine for InProcessEngine {
         scope: &Scope,
         sha: &str,
     ) -> Result<RepoCommitPayload, EngineError> {
-        let root = self.root_for_scope(scope)?;
-        InProcessEngine::repo_commit_at(root, sha).await
+        self.scoped(scope)?.repo_commit(sha).await
     }
 
     async fn repo_branch(
@@ -792,21 +778,20 @@ impl Engine for InProcessEngine {
         scope: &Scope,
         input: &RepoBranchRequest,
     ) -> Result<RepoBranchResponse, EngineError> {
-        let root = self.root_for_scope(scope)?;
-        InProcessEngine::repo_branch_at(root, input).await
+        self.scoped(scope)?.repo_branch(input).await
     }
 
-    async fn group(&self, _scope: &Scope, group_id: &str) -> Result<GroupResponse, EngineError> {
-        InProcessEngine::group(self, group_id).await
+    async fn group(&self, scope: &Scope, group_id: &str) -> Result<GroupResponse, EngineError> {
+        self.scoped(scope)?.group(group_id).await
     }
 
     async fn pick_variant(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         group_id: &str,
         input: &PickVariantRequest,
     ) -> Result<PickVariantResponse, EngineError> {
-        InProcessEngine::pick_variant(self, group_id, input).await
+        self.scoped(scope)?.pick_variant(group_id, input).await
     }
 
     async fn ide_tree(
@@ -814,8 +799,7 @@ impl Engine for InProcessEngine {
         scope: &Scope,
         path: Option<&str>,
     ) -> Result<IdeDirectoryResponse, EngineError> {
-        let root = self.root_for_scope(scope)?;
-        InProcessEngine::ide_tree_at(root, path).await
+        self.scoped(scope)?.ide_tree(path).await
     }
 
     fn project_root(&self, scope: &Scope) -> Result<String, EngineError> {
@@ -824,8 +808,7 @@ impl Engine for InProcessEngine {
     }
 
     async fn ide_file(&self, scope: &Scope, path: &str) -> Result<IdeFileResponse, EngineError> {
-        let root = self.root_for_scope(scope)?;
-        InProcessEngine::ide_file_at(root, path).await
+        self.scoped(scope)?.ide_file(path).await
     }
 
     async fn ide_save(
@@ -834,16 +817,15 @@ impl Engine for InProcessEngine {
         path: &str,
         content: &str,
     ) -> Result<IdeFileResponse, EngineError> {
-        let root = self.root_for_scope(scope)?;
-        InProcessEngine::ide_save_at(root, path, content).await
+        self.scoped(scope)?.ide_save(path, content).await
     }
 
     async fn cancel_auto_resume(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         run_id: &str,
     ) -> Result<CancelAutoResumeResponse, EngineError> {
-        InProcessEngine::cancel_auto_resume(self, run_id).await
+        self.scoped(scope)?.cancel_auto_resume(run_id).await
     }
 
     async fn put_workspace_config(
@@ -864,25 +846,25 @@ impl Engine for InProcessEngine {
         InProcessEngine::put_workspace_ui_state(self, input).await
     }
 
-    async fn agent_config(&self, _scope: &Scope) -> Result<AgentConfigListing, EngineError> {
-        InProcessEngine::agent_config(self).await
+    async fn agent_config(&self, scope: &Scope) -> Result<AgentConfigListing, EngineError> {
+        self.scoped(scope)?.agent_config().await
     }
 
     async fn agent_config_file(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         id: &str,
     ) -> Result<AgentConfigFileContent, EngineError> {
-        InProcessEngine::agent_config_file(self, id).await
+        self.scoped(scope)?.agent_config_file(id).await
     }
 
     async fn put_agent_config_file(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         id: &str,
         input: &SetAgentConfigInput,
     ) -> Result<AgentConfigFileContent, EngineError> {
-        InProcessEngine::put_agent_config_file(self, id, input).await
+        self.scoped(scope)?.put_agent_config_file(id, input).await
     }
 
     async fn create_agent_profile(
@@ -949,27 +931,27 @@ impl Engine for InProcessEngine {
         InProcessEngine::update_project(self, project_id, input).await
     }
 
-    async fn worktrees(&self, _scope: &Scope) -> Result<WorktreesResponse, EngineError> {
-        InProcessEngine::worktrees(self).await
+    async fn worktrees(&self, scope: &Scope) -> Result<WorktreesResponse, EngineError> {
+        self.scoped(scope)?.worktrees().await
     }
 
     async fn reclaim_worktrees(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
     ) -> Result<ReclaimWorktreesResponse, EngineError> {
-        InProcessEngine::reclaim_worktrees(self).await
+        self.scoped(scope)?.reclaim_worktrees().await
     }
 
     async fn remove_run_worktree(
         &self,
-        _scope: &Scope,
+        scope: &Scope,
         run_id: &str,
     ) -> Result<RemoveWorktreeResponse, EngineError> {
-        InProcessEngine::remove_run_worktree(self, run_id).await
+        self.scoped(scope)?.remove_run_worktree(run_id).await
     }
 
-    async fn open_targets(&self, _scope: &Scope) -> Result<OpenTargetsResponse, EngineError> {
-        InProcessEngine::open_targets(self).await
+    async fn open_targets(&self, scope: &Scope) -> Result<OpenTargetsResponse, EngineError> {
+        self.scoped(scope)?.open_targets().await
     }
 
     async fn open_project_in(

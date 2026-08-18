@@ -120,6 +120,8 @@ pub struct Composer {
     /// Byte index of the caret.
     pub caret: usize,
     pub focused: bool,
+    /// Host-provided semantic label, such as `GUIDANCE` or `FOLLOW UP`.
+    pub title: String,
     /// A path being typed in the attach prompt (`None` when no prompt is open).
     pub attaching: Option<String>,
     pub attachments: Vec<Attachment>,
@@ -134,6 +136,7 @@ impl Default for Composer {
             text: String::new(),
             caret: 0,
             focused: false,
+            title: "COMPOSER".to_owned(),
             attaching: None,
             attachments: Vec::new(),
             menu: None,
@@ -146,6 +149,10 @@ impl Composer {
     pub fn set_text(&mut self, text: &str) {
         self.text = text.to_owned();
         self.caret = self.text.len();
+    }
+
+    pub fn set_title(&mut self, title: impl Into<String>) {
+        self.title = title.into();
     }
 
     pub fn focus(&mut self) {
@@ -518,9 +525,9 @@ impl Composer {
         let mut block = Block::default()
             .borders(Borders::ALL)
             .title(if self.focused {
-                " COMPOSER "
+                format!(" {} ", self.title)
             } else {
-                " COMPOSER (i to type) "
+                format!(" {} (i to type) ", self.title)
             })
             .border_style(Style::default().fg(theme.palette.border));
         if self.focused {

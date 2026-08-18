@@ -449,8 +449,14 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             frame,
             layout[2],
             &mut app.hitmap,
-            "GLOBAL TASKS",
-            "Loading…",
+            "ALL TASKS",
+            app.global_error
+                .as_deref()
+                .unwrap_or(if app.global_loading {
+                    "Loading…"
+                } else {
+                    "No tasks across projects yet."
+                }),
         );
         return;
     };
@@ -473,7 +479,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         frame,
         layout[2],
         &mut app.hitmap,
-        "GLOBAL TASKS",
+        "ALL TASKS",
         if app.global_ui.query.trim().is_empty() {
             "No tasks across projects yet."
         } else {
@@ -486,12 +492,53 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 fn render_title_row(frame: &mut Frame<'_>, area: Rect, app: &mut App, view: TaskView) {
     let theme = app.theme;
     let Some(index) = &app.global_index else {
-        frame.render_widget(Paragraph::new(Line::from(Span::raw(" Global tasks"))), area);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                " ALL TASKS",
+                Style::default().add_modifier(Modifier::BOLD),
+            ))),
+            area,
+        );
         return;
     };
     let active = index.runs.iter().filter(|entry| !entry.archived).count();
     let archived = index.runs.iter().filter(|entry| entry.archived).count();
+    let needs_you = index
+        .runs
+        .iter()
+        .filter(|entry| {
+            !entry.archived
+                && matches!(
+                    entry.status,
+                    coducktor_contract::RunStatus::Waiting | coducktor_contract::RunStatus::Review
+                )
+        })
+        .count();
+    let finished = index
+        .runs
+        .iter()
+        .filter(|entry| {
+            matches!(
+                entry.status,
+                coducktor_contract::RunStatus::Done
+                    | coducktor_contract::RunStatus::Failed
+                    | coducktor_contract::RunStatus::Cancelled
+            )
+        })
+        .count();
+    let projects = index
+        .runs
+        .iter()
+        .map(|entry| entry.project_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
     let mut spans: Vec<Span<'static>> = Vec::new();
+    spans.push(Span::styled(
+        format!(" ALL TASKS  {projects} projects  "),
+        Style::default()
+            .fg(theme.palette.fg)
+            .add_modifier(Modifier::BOLD),
+    ));
     spans.push(Span::styled(
         format!(" Active {active}"),
         if view == TaskView::Active {
@@ -503,7 +550,11 @@ fn render_title_row(frame: &mut Frame<'_>, area: Rect, app: &mut App, view: Task
         },
     ));
     spans.push(Span::styled(
-        format!(" Archived {archived}"),
+        format!("  Needs you {needs_you}  Finished {finished}"),
+        Style::default().fg(theme.palette.soft_fg),
+    ));
+    spans.push(Span::styled(
+        format!("  Archived {archived}"),
         if view == TaskView::Archived {
             Style::default()
                 .fg(theme.palette.accent)
@@ -513,31 +564,50 @@ fn render_title_row(frame: &mut Frame<'_>, area: Rect, app: &mut App, view: Task
         },
     ));
     spans.push(Span::raw("  "));
-    spans.push(Span::styled(
-        format!(
-            "group:{}  tag:{}  / {}",
-            if app.global_ui.group_by_tag {
-                "tag"
-            } else {
-                "none"
-            },
-            app.global_ui.tag.as_deref().unwrap_or("-"),
-            app.global_ui.query
-        ),
-        Style::default().fg(theme.palette.soft_fg),
-    ));
+    if area.width >= 100 {
+        spans.push(Span::styled(
+            format!(
+                "  group:{}  tag:{}  filter:{}  / {}",
+                if app.global_ui.group_by_tag {
+                    "tag"
+                } else {
+                    "none"
+                },
+                app.global_ui.tag.as_deref().unwrap_or("-"),
+                if view == TaskView::Active {
+                    "active"
+                } else {
+                    "archived"
+                },
+                app.global_ui.query
+            ),
+            Style::default().fg(theme.palette.soft_fg),
+        ));
+    } else {
+        spans.push(Span::styled(
+            format!(
+                "  filter:{}",
+                if view == TaskView::Active {
+                    "active"
+                } else {
+                    "archived"
+                }
+            ),
+            Style::default().fg(theme.palette.soft_fg),
+        ));
+    }
     frame.render_widget(
         Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.palette.surface)),
         area,
     );
     let hitmap = &mut app.hitmap;
     hitmap.register(
-        Rect::new(area.x, area.y, 10, area.height),
+        Rect::new(area.x, area.y, 20, area.height),
         3,
         HitAction::ActiveTasks,
     );
     hitmap.register(
-        Rect::new(area.x + 10, area.y, 13, area.height),
+        Rect::new(area.x + 20, area.y, 13, area.height),
         3,
         HitAction::ArchivedTasks,
     );
@@ -799,6 +869,7 @@ pub fn open_thread(app: &mut App, key: &str) {
     let Some((project, id)) = split_key(key) else {
         return;
     };
+    app.select_task(&project, &id);
     crate::screens::thread::open(app, &project, &id);
 }
 

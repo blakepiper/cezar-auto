@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use coducktor_contract::{ApiRun, ProcessUsage, ProjectListEntry, RunStatus, RunsIndexResponse};
+use coducktor_contract::{
+    ApiRun, ProcessUsage, ProjectListEntry, RunIndexEntry, RunStatus, RunsIndexResponse,
+};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -403,6 +405,49 @@ enum InputMode {
 pub enum TaskFilter {
     Active,
     Archived,
+}
+
+/// Workspace-qualified task identity. A run id is only unique inside its project.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TaskKey {
+    pub project_id: String,
+    pub run_id: String,
+}
+
+impl TaskKey {
+    pub fn new(project_id: impl Into<String>, run_id: impl Into<String>) -> Self {
+        Self {
+            project_id: project_id.into(),
+            run_id: run_id.into(),
+        }
+    }
+}
+
+/// Cached task data for one registered project. The generation makes an A → B → A response
+/// distinguishable even when the final active project is A again.
+#[derive(Debug, Clone)]
+pub struct ProjectTasksState {
+    pub runs: Vec<ApiRun>,
+    pub loading: bool,
+    pub error: Option<String>,
+    pub request_generation: u64,
+    pub selection: Option<TaskKey>,
+    pub filter: TaskFilter,
+    pub live_usage: BTreeMap<String, ProcessUsage>,
+}
+
+impl Default for ProjectTasksState {
+    fn default() -> Self {
+        Self {
+            runs: Vec::new(),
+            loading: false,
+            error: None,
+            request_generation: 0,
+            selection: None,
+            filter: TaskFilter::Active,
+            live_usage: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -881,7 +926,14 @@ pub struct App {
     pub last_width: u16,
     providers: Vec<ProviderBadge>,
     pub tasks: Vec<ApiRun>,
+    /// Project-keyed task cache. `tasks` remains a compatibility view of the active project's
+    /// entry for existing screens and embedders while migration proceeds.
+    pub project_tasks: BTreeMap<String, ProjectTasksState>,
     pub global_index: Option<RunsIndexResponse>,
+    pub global_filter: TaskFilter,
+    pub global_loading: bool,
+    pub global_error: Option<String>,
+    pub global_request_generation: u64,
     pub project_registry: Vec<ProjectListEntry>,
     /// The launch directory (`--repo` or the working directory), used by the
     /// embedded terminal tab as the boot project's root before the registry loads.
@@ -894,6 +946,8 @@ pub struct App {
     /// Per-project New Task drafts, keyed by project id. Survives navigation and
     /// project switching for the lifetime of the cockpit (a TUI has no reload).
     pub new_task_drafts: BTreeMap<String, crate::new_task_form::NewTaskDraft>,
+    /// Drafts captured at submit time, restored if the scoped start fails after navigation.
+    pub pending_start_drafts: BTreeMap<String, crate::new_task_form::NewTaskDraft>,
     pub thread_ui: crate::screens::thread::ThreadUi,
     pub task_git_ui: crate::screens::task_git::TaskGitUi,
     pub repo_git_ui: crate::screens::repo_git::RepoGitUi,
@@ -958,7 +1012,12 @@ impl App {
             last_width: 0,
             providers: Vec::new(),
             tasks: Vec::new(),
+            project_tasks: BTreeMap::new(),
             global_index: None,
+            global_filter: TaskFilter::Active,
+            global_loading: false,
+            global_error: None,
+            global_request_generation: 0,
             project_registry: Vec::new(),
             boot_root: None,
             live_usage: BTreeMap::new(),
@@ -967,6 +1026,7 @@ impl App {
             global_ui: crate::screens::global_tasks::GlobalUi::default(),
             new_task_ui: crate::screens::new_task::NewTaskUi::default(),
             new_task_drafts: BTreeMap::new(),
+            pending_start_drafts: BTreeMap::new(),
             thread_ui: crate::screens::thread::ThreadUi::default(),
             task_git_ui: crate::screens::task_git::TaskGitUi::default(),
             repo_git_ui: crate::screens::repo_git::RepoGitUi::default(),
@@ -1107,12 +1167,121 @@ impl App {
 
     /// Replace the current project's run list.
     pub fn set_tasks(&mut self, runs: Vec<ApiRun>) {
-        self.tasks = runs;
+        let project = self.current_project().to_owned();
+        self.set_tasks_for_project(project, runs);
+    }
+
+    /// Replace one project's cached list without allowing a background response for another
+    /// project to overwrite the active compatibility view.
+    pub fn set_tasks_for_project(&mut self, project: String, runs: Vec<ApiRun>) {
+        let state = self.project_tasks.entry(project.clone()).or_default();
+        state.runs = runs;
+        state.loading = false;
+        state.error = None;
+        if self.current_project() == project {
+            self.sync_active_project_tasks();
+        }
         self.tasks_ui.table.select(self.tasks_ui.table.selected);
+    }
+
+    pub fn begin_task_request(&mut self, project: &str) -> u64 {
+        let state = self.project_tasks.entry(project.to_owned()).or_default();
+        state.request_generation = state.request_generation.wrapping_add(1);
+        state.loading = true;
+        state.error = None;
+        state.request_generation
+    }
+
+    pub fn apply_task_response(
+        &mut self,
+        project: &str,
+        generation: u64,
+        result: Result<Vec<ApiRun>, String>,
+    ) -> bool {
+        if self
+            .project_tasks
+            .entry(project.to_owned())
+            .or_default()
+            .request_generation
+            != generation
+        {
+            return false;
+        }
+        match result {
+            Ok(runs) => self.set_tasks_for_project(project.to_owned(), runs),
+            Err(error) => {
+                let state = self.project_tasks.entry(project.to_owned()).or_default();
+                state.loading = false;
+                state.error = Some(error);
+                if self.current_project() == project {
+                    self.sync_active_project_tasks();
+                }
+            }
+        }
+        true
+    }
+
+    fn sync_active_project_tasks(&mut self) {
+        let project = self.current_project().to_owned();
+        let (runs, usage, filter, selection) = {
+            let state = self.project_tasks.entry(project.clone()).or_default();
+            (
+                state.runs.clone(),
+                state.live_usage.clone(),
+                state.filter,
+                state.selection.clone(),
+            )
+        };
+        self.tasks = runs;
+        self.live_usage = usage;
+        self.task_filter = filter;
+        if let Some(selection) = selection {
+            self.tasks_ui.table.selected = self
+                .tasks
+                .iter()
+                .position(|run| run.record.id == selection.run_id);
+        }
+        self.tasks_ui.table.select(self.tasks_ui.table.selected);
+    }
+
+    pub fn select_task(&mut self, project: &str, run_id: &str) {
+        let state = self.project_tasks.entry(project.to_owned()).or_default();
+        state.selection = Some(TaskKey::new(project, run_id));
+    }
+
+    pub fn task_state(&self, project: &str) -> Option<&ProjectTasksState> {
+        self.project_tasks.get(project)
     }
 
     pub fn set_global_index(&mut self, index: RunsIndexResponse) {
         self.global_index = Some(index);
+        self.global_loading = false;
+        self.global_error = None;
+    }
+
+    pub fn begin_global_index_request(&mut self) -> u64 {
+        self.global_request_generation = self.global_request_generation.wrapping_add(1);
+        self.global_loading = true;
+        self.global_error = None;
+        self.global_request_generation
+    }
+
+    pub fn apply_global_index_response(
+        &mut self,
+        generation: u64,
+        result: Result<RunsIndexResponse, String>,
+    ) -> bool {
+        if self.global_request_generation != generation {
+            return false;
+        }
+        match result {
+            Ok(index) => self.set_global_index(index),
+            Err(error) => {
+                self.global_loading = false;
+                self.global_error = Some(error);
+            }
+        }
+        true
     }
 
     pub fn set_project_registry(&mut self, projects: Vec<ProjectListEntry>) {
@@ -1165,6 +1334,7 @@ impl App {
         self.history.navigate(route);
         self.sidebar_focus = false;
         self.screen_focus = 0;
+        self.sync_active_project_tasks();
         if let Route::Ide { project } = self.route() {
             let path = if self.ide_ui.directory_path.is_empty() {
                 None
@@ -1195,6 +1365,7 @@ impl App {
         if self.history.back() {
             self.sidebar_focus = false;
             self.screen_focus = 0;
+            self.sync_active_project_tasks();
             self.anchor_sidebar_selection();
         }
     }
@@ -1215,6 +1386,7 @@ impl App {
         if self.history.forward() {
             self.sidebar_focus = false;
             self.screen_focus = 0;
+            self.sync_active_project_tasks();
             self.anchor_sidebar_selection();
         }
     }
@@ -1252,17 +1424,53 @@ impl App {
     }
 
     pub fn task_view(&self) -> TaskView {
-        match self.task_filter {
+        let filter = if matches!(self.route(), Route::GlobalTasks) {
+            self.global_filter
+        } else {
+            self.project_tasks
+                .get(self.current_project())
+                .map(|state| state.filter)
+                .unwrap_or(self.task_filter)
+        };
+        match filter {
             TaskFilter::Active => TaskView::Active,
             TaskFilter::Archived => TaskView::Archived,
         }
     }
 
+    fn task_view_filter(&self) -> TaskFilter {
+        if matches!(self.route(), Route::GlobalTasks) {
+            self.global_filter
+        } else {
+            self.project_tasks
+                .get(self.current_project())
+                .map(|state| state.filter)
+                .unwrap_or(self.task_filter)
+        }
+    }
+
     pub fn toggle_view(&mut self) {
-        self.task_filter = match self.task_filter {
-            TaskFilter::Active => TaskFilter::Archived,
-            TaskFilter::Archived => TaskFilter::Active,
+        let next = match self.task_view() {
+            TaskView::Active => TaskFilter::Archived,
+            TaskView::Archived => TaskFilter::Active,
         };
+        if matches!(self.route(), Route::GlobalTasks) {
+            self.global_filter = next;
+        } else {
+            let project = self.current_project().to_owned();
+            self.project_tasks.entry(project).or_default().filter = next;
+            self.task_filter = next;
+        }
+    }
+
+    pub fn set_task_filter(&mut self, filter: TaskFilter) {
+        if matches!(self.route(), Route::GlobalTasks) {
+            self.global_filter = filter;
+        } else {
+            let project = self.current_project().to_owned();
+            self.project_tasks.entry(project).or_default().filter = filter;
+            self.task_filter = filter;
+        }
     }
 
     /// The honest "capped" note the global screen renders when the index was
@@ -1305,18 +1513,25 @@ impl App {
     pub fn apply_workspace_event(&mut self, event: WorkspaceEvent) {
         match event {
             WorkspaceEvent::Run { project, run } => {
-                if project == self.current_project() {
-                    if let Some(existing) = self
-                        .tasks
-                        .iter_mut()
-                        .find(|existing| existing.record.id == run.record.id)
-                    {
-                        *existing = run.clone();
-                    } else {
-                        self.tasks.push(run.clone());
-                    }
+                let state = self.project_tasks.entry(project.clone()).or_default();
+                if let Some(existing) = state
+                    .runs
+                    .iter_mut()
+                    .find(|existing| existing.record.id == run.record.id)
+                {
+                    *existing = run.clone();
+                } else {
+                    state.runs.push(run.clone());
                 }
-                let task = QuickTask::from_api(project, run);
+                if project == self.current_project() {
+                    self.sync_active_project_tasks();
+                }
+                if self.thread_ui.data.project == project
+                    && self.thread_ui.data.run_id == run.record.id
+                {
+                    self.thread_ui.set_run(run.clone());
+                }
+                let task = QuickTask::from_api(project.clone(), run.clone());
                 if let Some(existing) = self
                     .quick_tasks
                     .iter_mut()
@@ -1330,16 +1545,51 @@ impl App {
                 } else {
                     self.quick_tasks.push(task);
                 }
+                self.update_global_index_for_run(&project, &run);
             }
             WorkspaceEvent::RunDeleted { project, id } => {
                 self.quick_tasks
                     .retain(|task| task.project != project || task.id != id);
-                self.tasks.retain(|run| run.record.id != id);
+                if let Some(state) = self.project_tasks.get_mut(&project) {
+                    state.runs.retain(|run| run.record.id != id);
+                    if state
+                        .selection
+                        .as_ref()
+                        .is_some_and(|key| key.run_id == id && key.project_id == project)
+                    {
+                        state.selection = None;
+                    }
+                }
+                if project == self.current_project() {
+                    self.sync_active_project_tasks();
+                }
+                if self.thread_ui.data.project == project && self.thread_ui.data.run_id == id {
+                    self.thread_ui.clear_if_matches(&project, &id);
+                    self.navigate_route(Route::Tasks {
+                        project: project.clone(),
+                    });
+                }
+                if let Some(index) = &mut self.global_index {
+                    index
+                        .runs
+                        .retain(|entry| entry.project_id != project || entry.id != id);
+                }
             }
             WorkspaceEvent::Usage { project, usage } => {
+                let state = self.project_tasks.entry(project.clone()).or_default();
+                state.live_usage.extend(usage.clone());
                 if project == self.current_project() {
-                    for (id, sample) in usage {
-                        self.live_usage.insert(id, sample);
+                    self.sync_active_project_tasks();
+                }
+                if let Some(index) = &mut self.global_index {
+                    for (run_id, process_usage) in usage {
+                        if let Some(entry) = index
+                            .runs
+                            .iter_mut()
+                            .find(|entry| entry.project_id == project && entry.id == run_id)
+                        {
+                            entry.usage = Some(process_usage);
+                        }
                     }
                 }
             }
@@ -1363,9 +1613,81 @@ impl App {
         }
     }
 
+    fn update_global_index_for_run(&mut self, project: &str, run: &ApiRun) {
+        let Some(index) = &mut self.global_index else {
+            return;
+        };
+        let record = &run.record;
+        let Some(entry) = index
+            .runs
+            .iter_mut()
+            .find(|entry| entry.project_id == project && entry.id == record.id)
+        else {
+            index.runs.push(RunIndexEntry {
+                project_id: project.to_owned(),
+                id: record.id.clone(),
+                title: record.title.clone(),
+                title_summary: record.title_summary.clone(),
+                title_origin: record.title_origin,
+                status: record.status,
+                activity: record.activity,
+                created_at: record.created_at.clone(),
+                finished_at: record.finished_at.clone(),
+                seen_at: record.seen_at.clone(),
+                archived: record.archived,
+                auto_resume_at: record.auto_resume_at.clone(),
+                workflow: record.workflow.clone(),
+                branch: record.branch.clone(),
+                started_at: record.started_at.clone(),
+                pull_request_url: record.pull_request_url.clone(),
+                referenced_pull_request_url: record.referenced_pull_request_url.clone(),
+                pr_number: record.pr_number,
+                issue_number: record.issue_number,
+                referenced_issue_url: record.referenced_issue_url.clone(),
+                marker_refs: record.marker_refs.clone(),
+                cost_usd: record.cost_usd,
+                peak_rss_bytes: record.peak_rss_bytes,
+                peak_proc_count: record.peak_proc_count,
+                usage: run.usage.clone(),
+                runner: record.runner,
+                model: record.model.clone(),
+                model_usage: None,
+                model_identity: record.model_identity.clone(),
+                reasoning_effort: None,
+            });
+            return;
+        };
+        entry.title = record.title.clone();
+        entry.title_summary = record.title_summary.clone();
+        entry.title_origin = record.title_origin;
+        entry.status = record.status;
+        entry.activity = record.activity;
+        entry.finished_at = record.finished_at.clone();
+        entry.seen_at = record.seen_at.clone();
+        entry.archived = record.archived;
+        entry.auto_resume_at = record.auto_resume_at.clone();
+        entry.workflow = record.workflow.clone();
+        entry.branch = record.branch.clone();
+        entry.started_at = record.started_at.clone();
+        entry.pull_request_url = record.pull_request_url.clone();
+        entry.referenced_pull_request_url = record.referenced_pull_request_url.clone();
+        entry.pr_number = record.pr_number;
+        entry.issue_number = record.issue_number;
+        entry.referenced_issue_url = record.referenced_issue_url.clone();
+        entry.marker_refs = record.marker_refs.clone();
+        entry.cost_usd = record.cost_usd;
+        entry.peak_rss_bytes = record.peak_rss_bytes;
+        entry.peak_proc_count = record.peak_proc_count;
+        entry.usage = run.usage.clone();
+        entry.runner = record.runner;
+        entry.model = record.model.clone();
+        entry.model_identity = record.model_identity.clone();
+    }
+
     pub fn running_count(&self) -> usize {
         self.quick_tasks
             .iter()
+            .filter(|task| self.quick_task_is_visible(task))
             .filter(|task| {
                 !task.archived && matches!(task.status, RunStatus::Queued | RunStatus::Running)
             })
@@ -1375,8 +1697,13 @@ impl App {
     pub fn needs_you_count(&self) -> usize {
         self.quick_tasks
             .iter()
+            .filter(|task| self.quick_task_is_visible(task))
             .filter(|task| !task.archived && task.group() == TaskGroup::NeedsYou)
             .count()
+    }
+
+    fn quick_task_is_visible(&self, task: &QuickTask) -> bool {
+        matches!(self.route(), Route::GlobalTasks) || task.project == self.current_project()
     }
 
     pub fn sidebar_width(&self) -> u16 {
@@ -1561,13 +1888,14 @@ impl App {
         ));
         rows.push((sidebar_line("", self.soft_style()), None));
         rows.push((sidebar_line("  TASKS", self.soft_style()), None));
+        let sidebar_filter = self.task_view_filter();
         rows.push((
             sidebar_nav_line(
                 "Active",
                 None,
-                self.task_filter == TaskFilter::Active,
+                sidebar_filter == TaskFilter::Active,
                 selected == Some(SidebarRow::Filter(TaskFilter::Active)),
-                self.nav_style(self.task_filter == TaskFilter::Active),
+                self.nav_style(sidebar_filter == TaskFilter::Active),
             ),
             Some(HitAction::ActiveTasks),
         ));
@@ -1575,9 +1903,9 @@ impl App {
             sidebar_nav_line(
                 "Archived",
                 None,
-                self.task_filter == TaskFilter::Archived,
+                sidebar_filter == TaskFilter::Archived,
                 selected == Some(SidebarRow::Filter(TaskFilter::Archived)),
-                self.nav_style(self.task_filter == TaskFilter::Archived),
+                self.nav_style(sidebar_filter == TaskFilter::Archived),
             ),
             Some(HitAction::ArchivedTasks),
         ));
@@ -1587,7 +1915,8 @@ impl App {
                 .quick_tasks
                 .iter()
                 .filter(|task| {
-                    task.archived == (self.task_filter == TaskFilter::Archived)
+                    self.quick_task_is_visible(task)
+                        && task.archived == (sidebar_filter == TaskFilter::Archived)
                         && task.group() == group
                 })
                 .enumerate()
@@ -2236,8 +2565,8 @@ impl App {
             HitAction::Skills => self.navigate(NavItem::Skills),
             HitAction::Workflows => self.navigate(NavItem::Workflows),
             HitAction::Settings => self.navigate(NavItem::Settings),
-            HitAction::ActiveTasks => self.task_filter = TaskFilter::Active,
-            HitAction::ArchivedTasks => self.task_filter = TaskFilter::Archived,
+            HitAction::ActiveTasks => self.set_task_filter(TaskFilter::Active),
+            HitAction::ArchivedTasks => self.set_task_filter(TaskFilter::Archived),
             HitAction::ToggleSidebar => self.toggle_sidebar(),
             HitAction::Help => self.help_open = true,
             HitAction::ProjectToggle(project) => self.select_project(project),
@@ -2433,6 +2762,7 @@ impl App {
         self.history.navigate(Route::Tasks {
             project: project.clone(),
         });
+        self.sync_active_project_tasks();
         self.screen_focus = 0;
         if let Some(index) = self.projects.iter().position(|entry| entry.id == project) {
             self.sidebar_selected = index;
@@ -2644,7 +2974,7 @@ impl App {
                         self.pending.push(PendingAction::RefreshIndex);
                     }
                     SidebarRow::GlobalSettings => crate::screens::settings::open_global(self),
-                    SidebarRow::Filter(filter) => self.task_filter = filter,
+                    SidebarRow::Filter(filter) => self.set_task_filter(filter),
                 }
                 true
             }
@@ -2990,7 +3320,7 @@ impl TaskGroupLabel for TaskGroup {
 
 #[cfg(test)]
 mod tests {
-    use coducktor_contract::RunRecord;
+    use coducktor_contract::{RunIndexEntry, RunRecord};
     use crossterm::event::{Event, KeyEvent, KeyModifiers, MouseEvent};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -3118,6 +3448,153 @@ mod tests {
                 usage: None,
             },
         }
+    }
+
+    fn run_from_event(event: WorkspaceEvent) -> ApiRun {
+        let WorkspaceEvent::Run { run, .. } = event else {
+            panic!("expected a run event");
+        };
+        run
+    }
+
+    #[test]
+    fn stale_project_refreshes_are_rejected_per_generation() {
+        let mut app = App::new("a", Theme::detect(), Keymap::default());
+        let first_a = app.begin_task_request("a");
+        let _ = app.begin_task_request("b");
+        let second_a = app.begin_task_request("a");
+
+        assert!(!app.apply_task_response(
+            "a",
+            first_a,
+            Ok(vec![run_from_event(run_event(
+                "a",
+                "old-a",
+                "old",
+                RunStatus::Done,
+                None,
+            ))]),
+        ));
+        assert!(app.apply_task_response(
+            "a",
+            second_a,
+            Ok(vec![run_from_event(run_event(
+                "a",
+                "new-a",
+                "new",
+                RunStatus::Done,
+                None,
+            ))]),
+        ));
+        assert_eq!(
+            app.task_state("a").unwrap().runs.first().unwrap().record.id,
+            "new-a"
+        );
+    }
+
+    #[test]
+    fn deletion_is_qualified_when_projects_reuse_a_run_id() {
+        let mut app = App::new("a", Theme::detect(), Keymap::default());
+        app.set_tasks_for_project(
+            "a".to_owned(),
+            vec![run_from_event(run_event(
+                "a",
+                "same-id",
+                "A",
+                RunStatus::Done,
+                None,
+            ))],
+        );
+        app.set_tasks_for_project(
+            "b".to_owned(),
+            vec![run_from_event(run_event(
+                "b",
+                "same-id",
+                "B",
+                RunStatus::Done,
+                None,
+            ))],
+        );
+        app.set_global_index(RunsIndexResponse {
+            runs: ["a", "b"]
+                .into_iter()
+                .map(|project_id| RunIndexEntry {
+                    project_id: project_id.to_owned(),
+                    id: "same-id".to_owned(),
+                    status: RunStatus::Done,
+                    created_at: "2026-08-17T00:00:00Z".to_owned(),
+                    ..RunIndexEntry::default()
+                })
+                .collect(),
+            reference_statuses: BTreeMap::new(),
+            per_project_limit: 200,
+            truncated: Vec::new(),
+        });
+
+        app.select_task("a", "same-id");
+        app.apply_workspace_event(WorkspaceEvent::RunDeleted {
+            project: "b".to_owned(),
+            id: "same-id".to_owned(),
+        });
+
+        assert!(
+            app.task_state("a")
+                .unwrap()
+                .runs
+                .iter()
+                .any(|run| run.record.id == "same-id")
+        );
+        assert!(app.task_state("b").unwrap().runs.is_empty());
+        assert_eq!(
+            app.task_state("a").unwrap().selection,
+            Some(TaskKey::new("a", "same-id"))
+        );
+        assert_eq!(app.global_index.as_ref().unwrap().runs.len(), 1);
+        assert_eq!(app.global_index.as_ref().unwrap().runs[0].project_id, "a");
+    }
+
+    #[test]
+    fn project_and_global_filters_and_selection_survive_route_switching() {
+        let mut app = App::new("a", Theme::detect(), Keymap::default());
+        app.set_tasks_for_project(
+            "a".to_owned(),
+            vec![run_from_event(run_event(
+                "a",
+                "a-run",
+                "A",
+                RunStatus::Done,
+                None,
+            ))],
+        );
+        app.set_tasks_for_project(
+            "b".to_owned(),
+            vec![run_from_event(run_event(
+                "b",
+                "b-run",
+                "B",
+                RunStatus::Done,
+                None,
+            ))],
+        );
+        app.select_task("a", "a-run");
+        app.set_task_filter(TaskFilter::Archived);
+        app.navigate_route(Route::GlobalTasks);
+        app.set_task_filter(TaskFilter::Archived);
+        app.navigate_route(Route::Tasks {
+            project: "b".to_owned(),
+        });
+        app.set_task_filter(TaskFilter::Active);
+        app.navigate_route(Route::Tasks {
+            project: "a".to_owned(),
+        });
+
+        assert_eq!(app.task_view(), TaskView::Archived);
+        assert_eq!(app.global_filter, TaskFilter::Archived);
+        assert_eq!(
+            app.task_state("a").unwrap().selection,
+            Some(TaskKey::new("a", "a-run"))
+        );
+        assert_eq!(app.task_state("b").unwrap().filter, TaskFilter::Active);
     }
 
     #[test]

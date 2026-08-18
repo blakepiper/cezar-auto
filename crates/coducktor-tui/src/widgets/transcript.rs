@@ -582,6 +582,19 @@ impl Transcript {
         self.sticky_bottom = true;
     }
 
+    /// Scroll position shared with the compact thread projection. The full transcript keeps
+    /// virtualized item scrolling; the projection uses the same user intent for its wrapped
+    /// summary lines.
+    pub fn projection_scroll(&mut self, total_lines: usize, viewport_height: u16) -> u16 {
+        let max_scroll = total_lines.saturating_sub(usize::from(viewport_height)) as u32;
+        if self.sticky_bottom {
+            self.scroll_offset = max_scroll;
+        } else {
+            self.scroll_offset = self.scroll_offset.min(max_scroll);
+        }
+        self.scroll_offset.min(u32::from(u16::MAX)) as u16
+    }
+
     fn total_height(&mut self, width: u16) -> u32 {
         let mut total: u32 = 0;
         for index in 0..self.items.len() {

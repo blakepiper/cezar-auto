@@ -17,7 +17,7 @@ use futures_util::StreamExt;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::task::JoinHandle;
 
-use coducktor_tui::app::{self, App, PendingAction, QuickTask, WorkspaceEvent};
+use coducktor_tui::app::{self, App, PendingAction, WorkspaceEvent};
 use coducktor_tui::cli::{Cli, Command};
 use coducktor_tui::input::keymap::Keymap;
 use coducktor_tui::terminal::AppTerminal;
@@ -98,11 +98,17 @@ async fn main() -> io::Result<()> {
     run_result.and(restore_result)
 }
 
-fn parse_workspace_event(event: EngineEvent, project: &str) -> Option<WorkspaceEvent> {
+fn parse_workspace_event(event: EngineEvent, fallback_project: &str) -> Option<WorkspaceEvent> {
     if event.data.get("type")?.as_str()? != "run" {
         return None;
     }
     let record = serde_json::from_value(event.data.get("run")?.clone()).ok()?;
+    let project = event
+        .data
+        .get("projectId")
+        .and_then(serde_json::Value::as_str)
+        .filter(|project| !project.is_empty())
+        .unwrap_or(fallback_project);
     Some(WorkspaceEvent::Run {
         project: project.to_owned(),
         run: ApiRun {
@@ -171,9 +177,11 @@ enum BackgroundResult {
     },
     RefreshTasks {
         project: String,
+        generation: u64,
         result: Result<Vec<coducktor_contract::ApiRun>, coducktor_client::EngineError>,
     },
     RefreshIndex {
+        generation: u64,
         result: Result<coducktor_contract::RunsIndexResponse, coducktor_client::EngineError>,
     },
     RefreshModels {
@@ -329,13 +337,7 @@ fn apply_prime_snapshot(app: &mut App, snapshot: PrimeSnapshot) {
     }
     if let Some(runs) = snapshot.runs {
         let project = app.current_project().to_owned();
-        app.set_tasks(runs);
-        app.set_quick_tasks(
-            app.tasks
-                .iter()
-                .map(|run| QuickTask::from_api(project.clone(), run.clone()))
-                .collect::<Vec<_>>(),
-        );
+        app.set_tasks_for_project(project, runs);
     }
     if let Some(projects) = snapshot.projects {
         let boot_project = projects.boot_project.clone();
@@ -535,21 +537,27 @@ async fn execute_pending(
             }
             PendingAction::RefreshTasks { project } => {
                 let scope = Scope::Project(project.clone());
+                let generation = app.begin_task_request(&project);
                 let engine_for_task = engine.clone();
                 spawn_background(
                     background_handle,
                     background_sender,
                     async move { engine_for_task.list_runs(&scope).await },
-                    move |result| BackgroundResult::RefreshTasks { project, result },
+                    move |result| BackgroundResult::RefreshTasks {
+                        project,
+                        generation,
+                        result,
+                    },
                 );
             }
             PendingAction::RefreshIndex => {
+                let generation = app.begin_global_index_request();
                 let engine_for_task = engine.clone();
                 spawn_background(
                     background_handle,
                     background_sender,
                     async move { engine_for_task.runs_index().await },
-                    |result| BackgroundResult::RefreshIndex { result },
+                    move |result| BackgroundResult::RefreshIndex { generation, result },
                 );
             }
             PendingAction::StartRun { project, input } => {
@@ -1370,19 +1378,6 @@ async fn load_new_task_snapshot(engine: Arc<dyn Engine>, project: &str) -> Prime
     }
 }
 
-fn apply_task_list(app: &mut App, project: &str, runs: Vec<ApiRun>) {
-    if app.current_project() != project {
-        return;
-    }
-    app.set_tasks(runs);
-    app.set_quick_tasks(
-        app.tasks
-            .iter()
-            .map(|run| QuickTask::from_api(project.to_owned(), run.clone()))
-            .collect::<Vec<_>>(),
-    );
-}
-
 fn apply_started_run(
     app: &mut App,
     project: String,
@@ -1391,6 +1386,8 @@ fn apply_started_run(
 ) {
     match result {
         Ok(response) => {
+            starts_in_flight.remove(&project);
+            app.pending_start_drafts.remove(&project);
             if let Some(id) = new_task_form::started_run_id(&response) {
                 let already_open = matches!(
                     app.route(),
@@ -1413,6 +1410,7 @@ fn apply_started_run(
         }
         Err(error) => {
             starts_in_flight.remove(&project);
+            screens::new_task::restore_start_draft(app, &project);
             app.notice = Some(format!("start failed: {error}"));
         }
     }
@@ -1522,13 +1520,29 @@ fn drain_background_results(
                     }
                 }
             }
-            BackgroundResult::RefreshTasks { project, result } => match result {
-                Ok(runs) => apply_task_list(app, &project, runs),
-                Err(error) => app.notice = Some(format!("refresh tasks failed: {error}")),
-            },
-            BackgroundResult::RefreshIndex { result } => {
-                if let Ok(index) = result {
-                    app.set_global_index(index);
+            BackgroundResult::RefreshTasks {
+                project,
+                generation,
+                result,
+            } => {
+                let error = result.as_ref().err().map(ToString::to_string);
+                app.apply_task_response(
+                    &project,
+                    generation,
+                    result.map_err(|error| error.to_string()),
+                );
+                if let Some(error) = error {
+                    app.notice = Some(format!("refresh tasks failed: {error}"));
+                }
+            }
+            BackgroundResult::RefreshIndex { generation, result } => {
+                let error = result.as_ref().err().map(ToString::to_string);
+                app.apply_global_index_response(
+                    generation,
+                    result.map_err(|error| error.to_string()),
+                );
+                if let Some(error) = error {
+                    app.notice = Some(format!("refresh all tasks failed: {error}"));
                 }
             }
             BackgroundResult::RefreshModels { runner, result } => match result {
@@ -1589,14 +1603,24 @@ fn drain_background_results(
                 id,
                 result,
             } => {
-                if let Err(error) = result {
-                    let label = match action {
-                        SessionMutation::Send => "send",
-                        SessionMutation::Cancel => "cancel",
-                        SessionMutation::Continue => "continue",
-                        SessionMutation::Finish => "finish",
-                    };
-                    app.notice = Some(format!("{label} failed: {error}"));
+                let label = match action {
+                    SessionMutation::Send => "send",
+                    SessionMutation::Cancel => "cancel",
+                    SessionMutation::Continue => "continue",
+                    SessionMutation::Finish => "finish",
+                };
+                match result {
+                    Ok(()) => {
+                        if matches!(action, SessionMutation::Send | SessionMutation::Continue) {
+                            app.thread_ui.resolve_pending_prompt(&project, &id);
+                        }
+                    }
+                    Err(error) => {
+                        if matches!(action, SessionMutation::Send | SessionMutation::Continue) {
+                            app.thread_ui.restore_pending_prompt(&project, &id);
+                        }
+                        app.notice = Some(format!("{label} failed: {error}"));
+                    }
                 }
                 app.pending.push(PendingAction::LoadThread { project, id });
             }
@@ -1684,23 +1708,29 @@ fn thread_history_event(
 }
 
 async fn refresh_index_if_global(engine: &dyn Engine, app: &mut App) {
-    if matches!(app.route(), app::Route::GlobalTasks)
-        && let Ok(index) = engine.runs_index().await
-    {
-        app.set_global_index(index);
+    if matches!(app.route(), app::Route::GlobalTasks) {
+        let generation = app.begin_global_index_request();
+        let result = engine.runs_index().await;
+        let error = result.as_ref().err().map(ToString::to_string);
+        app.apply_global_index_response(generation, result.map_err(|error| error.to_string()));
+        if let Some(error) = error {
+            app.notice = Some(format!("refresh all tasks failed: {error}"));
+        }
     }
 }
 
 async fn refresh_tasks(engine: &dyn Engine, app: &mut App, project: &str) {
     let scope = Scope::Project(project.to_owned());
-    if let Ok(runs) = engine.list_runs(&scope).await {
-        app.set_tasks(runs);
-        app.set_quick_tasks(
-            app.tasks
-                .iter()
-                .map(|run| QuickTask::from_api(project.to_owned(), run.clone()))
-                .collect::<Vec<_>>(),
-        );
+    let generation = app.begin_task_request(project);
+    let result = engine.list_runs(&scope).await;
+    let error = result.as_ref().err().map(ToString::to_string);
+    app.apply_task_response(
+        project,
+        generation,
+        result.map_err(|error| error.to_string()),
+    );
+    if let Some(error) = error {
+        app.notice = Some(format!("refresh tasks failed: {error}"));
     }
 }
 
@@ -1777,9 +1807,13 @@ struct ThreadListener {
 async fn open_run_listener(engine: Arc<dyn Engine>, project: String, id: String) -> ThreadListener {
     let (sender, receiver) = unbounded_channel();
     let handle = tokio::spawn({
+        let project_for_topic = project.clone();
         let id = id.clone();
         async move {
-            let mut stream = engine.subscribe(Topic::Run { id });
+            let mut stream = engine.subscribe(Topic::Run {
+                project: project_for_topic,
+                id,
+            });
             while let Some(event) = stream.next().await {
                 if sender.send(event).is_err() {
                     return;
@@ -1864,13 +1898,7 @@ async fn run(
         if let Some(events) = workspace_events.as_deref_mut() {
             while let Ok(event) = events.try_recv() {
                 match event {
-                    WorkspaceEvent::Run { project: _, run } => {
-                        let project = app.current_project().to_owned();
-                        if starts_in_flight.remove(&project)
-                            && matches!(app.route(), app::Route::NewTask { .. })
-                        {
-                            screens::thread::open(app, &project, &run.record.id);
-                        }
+                    WorkspaceEvent::Run { project, run } => {
                         app.apply_workspace_event(WorkspaceEvent::Run { project, run });
                     }
                     other => app.apply_workspace_event(other),

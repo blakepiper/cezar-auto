@@ -55,7 +55,7 @@ use coducktor_core::paths::{
 use coducktor_core::skills::discover_skills;
 use coducktor_core::workflows::load::{WORKFLOWS_DIR, load_workflows};
 use coducktor_core::workflows::run::{
-    EventInput, RunManager, StartRunInput as CoreStartRunInput, review_gate_enabled,
+    EventInput, RunManager, SessionFactory, StartRunInput as CoreStartRunInput, review_gate_enabled,
 };
 use coducktor_core::workflows::types::{parse_workflow_file_doc, steps_issue};
 use coducktor_core::workspace::agent_accounts::{
@@ -86,10 +86,39 @@ use crate::{Scope, Topic};
 /// Version string this engine reports through `health()`, set once at construction.
 pub struct InProcessEngine {
     repo_root: PathBuf,
+    workspace_config_path: PathBuf,
     version: String,
     manager: Arc<Mutex<RunManager>>,
+    managers: Arc<Mutex<BTreeMap<String, ProjectManager>>>,
+    session_factory: Arc<Mutex<Box<dyn SessionFactory>>>,
+    boot_project_id: String,
     live_events: broadcast::Sender<EngineEvent>,
     model_catalog: Arc<Mutex<Vec<CachedModelCatalog>>>,
+}
+
+#[derive(Clone)]
+struct ProjectManager {
+    root: PathBuf,
+    manager: Arc<Mutex<RunManager>>,
+}
+
+/// RunManager owns a mutable SessionFactory. Sharing the factory behind a mutex lets lazily
+/// opened project managers use the same production/test backend seam without splitting its
+/// configuration or requiring a cloneable runner factory.
+struct SharedSessionFactory {
+    inner: Arc<Mutex<Box<dyn SessionFactory>>>,
+}
+
+impl SessionFactory for SharedSessionFactory {
+    fn open(
+        &mut self,
+        request: coducktor_core::workflows::run::SessionRequest,
+    ) -> Result<Box<dyn coducktor_core::workflows::run::AgentSession + Send>, String> {
+        self.inner
+            .lock()
+            .map_err(|_| "session factory unavailable".to_owned())?
+            .open(request)
+    }
 }
 
 /// A 5-minute TTL cache so a slow or failing model probe does not re-run on every picker update.
@@ -145,39 +174,47 @@ impl InProcessEngine {
         version: impl Into<String>,
         session_factory: impl coducktor_core::workflows::run::SessionFactory + 'static,
     ) -> Self {
+        let workspace_config_path = coducktor_core::paths::workspace_config_path(&ProcessEnv);
+        Self::with_session_factory_at(repo_root, version, session_factory, workspace_config_path)
+    }
+
+    /// Test/embedding seam for a fixed workspace registry. Production uses the process
+    /// environment through [`Self::with_session_factory`].
+    pub fn with_session_factory_at(
+        repo_root: impl Into<PathBuf>,
+        version: impl Into<String>,
+        session_factory: impl coducktor_core::workflows::run::SessionFactory + 'static,
+        workspace_config_path: impl Into<PathBuf>,
+    ) -> Self {
         let repo_root = repo_root.into();
-        let mut manager = RunManager::with_session_factory(data_dir(&repo_root), session_factory);
+        let workspace_config_path = workspace_config_path.into();
+        let config = load_workspace_config(&workspace_config_path, &ProcessEnv);
+        let boot_project_id = boot_project_id(&config, &repo_root);
+        let session_factory: Arc<Mutex<Box<dyn SessionFactory>>> =
+            Arc::new(Mutex::new(Box::new(session_factory)));
+        let mut manager = RunManager::with_session_factory(
+            data_dir(&repo_root),
+            SharedSessionFactory {
+                inner: session_factory.clone(),
+            },
+        );
+        manager.set_project_id(boot_project_id.clone());
         let (live_events, _) = broadcast::channel(512);
-
-        let event_sender = live_events.clone();
-        manager.subscribe_events(move |notification| {
-            let event = EngineEvent {
-                topic: format!("run:{}", notification.run_id),
-                data: json!({ "type": "run-event", "event": notification.event }),
-            };
-            let _ = event_sender.send(event);
-        });
-        let run_sender = live_events.clone();
-        manager.subscribe_runs(move |run| {
-            let data = json!({ "type": "run", "run": run });
-            let event = EngineEvent {
-                topic: format!("run:{}", run.id),
-                data: data.clone(),
-            };
-            let _ = run_sender.send(event);
-            let _ = run_sender.send(EngineEvent {
-                topic: "workspace".to_owned(),
-                data,
-            });
-        });
-
-        Self {
+        let manager = Arc::new(Mutex::new(manager));
+        let managers = Arc::new(Mutex::new(BTreeMap::new()));
+        let engine = Self {
             repo_root,
+            workspace_config_path,
             version: version.into(),
-            manager: Arc::new(Mutex::new(manager)),
+            manager: manager.clone(),
+            managers: managers.clone(),
+            session_factory,
+            boot_project_id: boot_project_id.clone(),
             live_events,
             model_catalog: Arc::new(Mutex::new(Vec::new())),
-        }
+        };
+        engine.attach_manager(boot_project_id, manager, engine.repo_root.clone());
+        engine
     }
 
     pub fn repo_root(&self) -> &Path {
@@ -185,11 +222,134 @@ impl InProcessEngine {
     }
 
     pub(crate) fn root_for_scope(&self, scope: &Scope) -> Result<PathBuf, EngineError> {
-        let config = load_workspace_config(
-            &coducktor_core::paths::workspace_config_path(&ProcessEnv),
-            &ProcessEnv,
+        self.project_manager(scope).map(|entry| entry.root)
+    }
+
+    fn attach_manager(&self, project_id: String, manager: Arc<Mutex<RunManager>>, root: PathBuf) {
+        self.wire_manager(&project_id, &manager);
+        if let Ok(mut managers) = self.managers.lock() {
+            managers.insert(project_id, ProjectManager { root, manager });
+        }
+    }
+
+    /// Subscribe a manager before publishing it in the registry. Callers that hold the registry
+    /// lock use this helper so two concurrent first uses cannot replace one another's live
+    /// manager after sessions have been opened.
+    fn wire_manager(&self, project_id: &str, manager: &Arc<Mutex<RunManager>>) {
+        let event_sender = self.live_events.clone();
+        let topic_project = project_id.to_owned();
+        if let Ok(mut manager_guard) = manager.lock() {
+            manager_guard.subscribe_events(move |notification| {
+                let event = EngineEvent {
+                    topic: format!("run:{topic_project}:{}", notification.run_id),
+                    data: json!({
+                        "type": "run-event",
+                        "projectId": topic_project,
+                        "event": notification.event
+                    }),
+                };
+                let _ = event_sender.send(event);
+            });
+        }
+        let run_sender = self.live_events.clone();
+        let event_project = project_id.to_owned();
+        if let Ok(mut manager_guard) = manager.lock() {
+            manager_guard.subscribe_runs(move |run| {
+                let data = json!({
+                    "type": "run",
+                    "projectId": event_project,
+                    "run": run
+                });
+                let event = EngineEvent {
+                    topic: format!("run:{event_project}:{}", run.id),
+                    data: data.clone(),
+                };
+                let _ = run_sender.send(event);
+                let _ = run_sender.send(EngineEvent {
+                    topic: "workspace".to_owned(),
+                    data,
+                });
+            });
+        }
+    }
+
+    fn project_manager(&self, scope: &Scope) -> Result<ProjectManager, EngineError> {
+        let config = load_workspace_config(&self.workspace_config_path, &ProcessEnv);
+        let (project_id, root) = match scope {
+            Scope::Workspace => (self.boot_project_id.clone(), self.repo_root.clone()),
+            Scope::Project(id) if id == "default" => {
+                (self.boot_project_id.clone(), self.repo_root.clone())
+            }
+            Scope::Project(id) => {
+                let project = config
+                    .projects
+                    .iter()
+                    .find(|project| project.id == *id)
+                    .ok_or(EngineError::NotFound)?;
+                (project.id.clone(), PathBuf::from(&project.root))
+            }
+        };
+        let root = root
+            .canonicalize()
+            .map_err(|error| EngineError::Unavailable {
+                reason: format!(
+                    "project {project_id} is unavailable at {}: {error}",
+                    root.display()
+                ),
+            })?;
+        if !root.is_dir() {
+            return Err(EngineError::Unavailable {
+                reason: format!(
+                    "project {project_id} is not a directory: {}",
+                    root.display()
+                ),
+            });
+        }
+        let mut managers = self.managers.lock().map_err(|_| lock_err())?;
+        if let Some(entry) = managers.get(&project_id)
+            && same_project_root(&entry.root, &root)
+        {
+            return Ok(entry.clone());
+        }
+        let mut manager = RunManager::with_session_factory(
+            data_dir(&root),
+            SharedSessionFactory {
+                inner: self.session_factory.clone(),
+            },
         );
-        resolve_scope_root(&self.repo_root, scope, &config.projects)
+        manager.set_project_id(project_id.clone());
+        let manager = Arc::new(Mutex::new(manager));
+        self.wire_manager(&project_id, &manager);
+        managers.insert(
+            project_id,
+            ProjectManager {
+                root: root.clone(),
+                manager: manager.clone(),
+            },
+        );
+        Ok(ProjectManager { root, manager })
+    }
+
+    /// Build a view whose repository and manager are the selected project. Existing inherent
+    /// methods can therefore remain the compatibility surface while every scoped trait call
+    /// executes against the same resolved pair.
+    pub(crate) fn scoped(&self, scope: &Scope) -> Result<Self, EngineError> {
+        let entry = self.project_manager(scope)?;
+        Ok(Self {
+            repo_root: entry.root,
+            workspace_config_path: self.workspace_config_path.clone(),
+            version: self.version.clone(),
+            manager: entry.manager,
+            managers: self.managers.clone(),
+            session_factory: self.session_factory.clone(),
+            boot_project_id: self.boot_project_id.clone(),
+            live_events: self.live_events.clone(),
+            model_catalog: self.model_catalog.clone(),
+        })
+    }
+
+    fn loaded_workspace_config(&self) -> coducktor_core::workspace::config::WorkspaceConfig {
+        load_workspace_config(&self.workspace_config_path, &ProcessEnv)
     }
 
     // ---- health -----------------------------------------------------------------------------
@@ -398,33 +558,18 @@ impl InProcessEngine {
         Ok(FinishResponse { finished })
     }
 
-    /// Build the cross-project global Tasks index. Opens a
-    /// fresh, throwaway `RunManager` for every OTHER registered project (this engine's own
-    /// manager already holds the boot project's live state, so that one is reused instead of
-    /// reopened).
+    /// Build the cross-project global Tasks index from the same lazy manager registry used by
+    /// scoped operations. A live project is never reopened into a second manager.
     pub async fn runs_index(&self) -> Result<RunsIndexResponse, EngineError> {
         const PER_PROJECT_LIMIT: usize = 200;
-        let config = load_workspace_config(
-            &coducktor_core::paths::workspace_config_path(&ProcessEnv),
-            &ProcessEnv,
-        );
-        let boot_root = self
-            .repo_root
-            .canonicalize()
-            .unwrap_or_else(|_| self.repo_root.clone());
+        let config = load_workspace_config(&self.workspace_config_path, &ProcessEnv);
         let mut runs = Vec::new();
         let mut truncated = Vec::new();
         for project in config.projects {
-            let root = PathBuf::from(&project.root);
-            if !root.is_dir() {
+            let Ok(entry) = self.project_manager(&Scope::Project(project.id.clone())) else {
                 continue;
-            }
-            let mut recent = if root.canonicalize().ok().as_ref() == Some(&boot_root) {
-                let manager = self.manager.lock().map_err(|_| lock_err())?;
-                manager.list_runs()
-            } else {
-                RunManager::open(root.join(".ai").join("coducktor")).list_runs()
             };
+            let mut recent = entry.manager.lock().map_err(|_| lock_err())?.list_runs();
             recent.sort_by(|left, right| right.created_at.cmp(&left.created_at));
             if recent.len() > PER_PROJECT_LIMIT {
                 truncated.push(project.id.clone());
@@ -569,10 +714,7 @@ impl InProcessEngine {
     // ---- workspace: projects ----------------------------------------------------------------
 
     pub async fn projects(&self) -> Result<ProjectsResponse, EngineError> {
-        let config = load_workspace_config(
-            &coducktor_core::paths::workspace_config_path(&ProcessEnv),
-            &ProcessEnv,
-        );
+        let config = load_workspace_config(&self.workspace_config_path, &ProcessEnv);
         let boot_project = boot_project_id(&config, &self.repo_root);
         let projects = config.projects.iter().map(project_entry).collect();
         Ok(ProjectsResponse {
@@ -603,7 +745,7 @@ impl InProcessEngine {
                 reason: format!("refusing to register {}", root.display()),
             });
         }
-        let config_path = coducktor_core::paths::workspace_config_path(&ProcessEnv);
+        let config_path = self.workspace_config_path.clone();
         let project = coducktor_core::workspace::projects::register_project(
             &config_path,
             &ProcessEnv,
@@ -981,7 +1123,7 @@ impl InProcessEngine {
     pub fn subscribe(&self, topic: Topic) -> futures_core::stream::BoxStream<'static, EngineEvent> {
         let topic_str = match topic {
             Topic::Health => "health".to_owned(),
-            Topic::Run { id } => format!("run:{id}"),
+            Topic::Run { project, id } => format!("run:{project}:{id}"),
             Topic::Named(topic) => topic,
         };
         let receiver = self.live_events.subscribe();
@@ -1277,7 +1419,7 @@ impl InProcessEngine {
     // Reuses the core retention helpers and adds response-shaping glue for the client contract.
 
     fn worktree_keep(&self) -> u64 {
-        let workspace = workspace_config_for(&self.repo_root);
+        let workspace = self.loaded_workspace_config();
         coducktor_core::config::resolve_worktree_retention(
             &self.repo_root,
             Some(workspace.resources.worktree_retention_default),
@@ -1473,7 +1615,7 @@ impl InProcessEngine {
         let losers: Vec<_> = runs.into_iter().filter(|run| run.id != winner.id).collect();
         let repo_root = self.repo_root.clone();
         let data_dir = data_dir(&repo_root);
-        let config = load_config(&repo_root, &workspace_config_for(&repo_root).agent_defaults);
+        let config = load_config(&repo_root, &self.loaded_workspace_config().agent_defaults);
         let review_gate = review_gate_enabled(
             config.review_gate,
             std::env::var("DUCK_REVIEW_GATE").ok().as_deref(),
@@ -1684,7 +1826,7 @@ impl InProcessEngine {
     }
 
     fn plan_provider_disabled(&self) -> Option<String> {
-        let workspace = workspace_config_for(&self.repo_root);
+        let workspace = self.loaded_workspace_config();
         let config = load_config(&self.repo_root, &workspace.agent_defaults);
         let provider = match config.default_runner {
             RunnerSelection::Auto => return None,
@@ -2096,8 +2238,9 @@ impl InProcessEngine {
     // workspace_ui_state/remove_project/update_project handlers) ----------------------------
 
     pub async fn workspace_config(&self) -> Result<WorkspaceConfigResponse, EngineError> {
-        Ok(workspace_config_response(&workspace_config_for(
-            &self.repo_root,
+        Ok(workspace_config_response(&load_workspace_config(
+            &self.workspace_config_path,
+            &ProcessEnv,
         )))
     }
 
@@ -2107,7 +2250,7 @@ impl InProcessEngine {
     ) -> Result<WorkspaceConfigResponse, EngineError> {
         validate_workspace_config_input(input)
             .map_err(|reason| EngineError::Conflict { reason })?;
-        let path = coducktor_core::paths::workspace_config_path(&ProcessEnv);
+        let path = self.workspace_config_path.clone();
         let input = input.clone();
         let saved = merge_write_workspace_config(&path, &ProcessEnv, |config| {
             apply_workspace_config_input(config, &input);
@@ -2156,7 +2299,7 @@ impl InProcessEngine {
         &self,
         project_id: &str,
     ) -> Result<RemoveProjectResponse, EngineError> {
-        let config_path = coducktor_core::paths::workspace_config_path(&ProcessEnv);
+        let config_path = self.workspace_config_path.clone();
         let config = load_workspace_config(&config_path, &ProcessEnv);
         let boot_id = boot_project_id(&config, &self.repo_root);
         let id = if project_id == "default" {
@@ -2189,7 +2332,7 @@ impl InProcessEngine {
         input: &UpdateProjectInput,
     ) -> Result<UpdateProjectResponse, EngineError> {
         validate_project_update(input).map_err(|reason| EngineError::Conflict { reason })?;
-        let config_path = coducktor_core::paths::workspace_config_path(&ProcessEnv);
+        let config_path = self.workspace_config_path.clone();
         let config = load_workspace_config(&config_path, &ProcessEnv);
         let boot_id = boot_project_id(&config, &self.repo_root);
         let id = if project_id == "default" {
@@ -6317,19 +6460,31 @@ fn boot_project_id(
 
 /// Resolve each project's live Git status/
 /// branch on every call; this view deliberately does not cache Git status.
+#[cfg(test)]
 fn resolve_scope_root(
     repo_root: &Path,
     scope: &Scope,
     projects: &[coducktor_core::workspace::config::WorkspaceProject],
 ) -> Result<PathBuf, EngineError> {
-    match scope {
-        Scope::Workspace => Ok(repo_root.to_owned()),
-        Scope::Project(id) if id == "default" => Ok(repo_root.to_owned()),
+    let root = match scope {
+        Scope::Workspace => repo_root.to_owned(),
+        Scope::Project(id) if id == "default" => repo_root.to_owned(),
         Scope::Project(id) => projects
             .iter()
             .find(|project| project.id == *id)
             .map(|project| PathBuf::from(&project.root))
-            .ok_or(EngineError::NotFound),
+            .ok_or(EngineError::NotFound)?,
+    };
+    root.canonicalize()
+        .map_err(|error| EngineError::Unavailable {
+            reason: format!("project root {} is unavailable: {error}", root.display()),
+        })
+}
+
+fn same_project_root(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
     }
 }
 
@@ -6566,6 +6721,22 @@ mod tests {
             &mut self,
             _request: SessionRequest,
         ) -> Result<Box<dyn AgentSession + Send>, String> {
+            Ok(Box::new(FakeSession))
+        }
+    }
+
+    struct RecordingFactory {
+        cwds: Arc<Mutex<Vec<PathBuf>>>,
+    }
+
+    impl SessionFactory for RecordingFactory {
+        fn open(
+            &mut self,
+            request: SessionRequest,
+        ) -> Result<Box<dyn AgentSession + Send>, String> {
+            if let Ok(mut cwds) = self.cwds.lock() {
+                cwds.push(request.cwd);
+            }
             Ok(Box::new(FakeSession))
         }
     }
@@ -6812,6 +6983,119 @@ mod tests {
         // the call must succeed with an empty (or real) registry, never error.
         let projects = engine.projects().await.unwrap();
         assert!(projects.projects.iter().all(|p| !p.id.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn project_scope_uses_one_lazy_manager_per_registered_root() {
+        let workspace = TempDir::new().unwrap();
+        let project_a = TempDir::new().unwrap();
+        let project_b = TempDir::new().unwrap();
+        let unavailable = workspace.path().join("missing-project");
+        let config_path = workspace.path().join("config.json");
+        std::fs::write(
+            &config_path,
+            serde_json::json!({
+                "projects": [
+                    { "id": "project-a", "root": project_a.path(), "name": "A" },
+                    { "id": "project-b", "root": project_b.path(), "name": "B" },
+                    { "id": "project-c", "root": unavailable, "name": "C" }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let cwds = Arc::new(Mutex::new(Vec::new()));
+        let engine = InProcessEngine::with_session_factory_at(
+            project_a.path(),
+            "0.0.0-test",
+            RecordingFactory { cwds: cwds.clone() },
+            &config_path,
+        );
+        let scope_a = Scope::Project("project-a".to_owned());
+        let scope_b = Scope::Project("project-b".to_owned());
+
+        let mut workspace_events = engine.subscribe(Topic::Named("workspace".to_owned()));
+        let CreateRunResponse::Single(run_b) = <InProcessEngine as crate::Engine>::start_run(
+            &engine,
+            &scope_b,
+            steps_input("only in B"),
+        )
+        .await
+        .unwrap() else {
+            panic!("expected a single run");
+        };
+
+        assert_eq!(
+            <InProcessEngine as crate::Engine>::list_runs(&engine, &scope_a)
+                .await
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            <InProcessEngine as crate::Engine>::list_runs(&engine, &scope_b)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            cwds.lock().unwrap().as_slice(),
+            &[project_b.path().to_path_buf()]
+        );
+
+        let event =
+            tokio::time::timeout(std::time::Duration::from_secs(1), workspace_events.next())
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(event.data["projectId"], "project-b");
+
+        let index = engine.runs_index().await.unwrap();
+        assert_eq!(
+            index
+                .runs
+                .iter()
+                .filter(|run| run.project_id == "project-b" && run.id == run_b.id)
+                .count(),
+            1
+        );
+        let unavailable_error = <InProcessEngine as crate::Engine>::list_runs(
+            &engine,
+            &Scope::Project("project-c".to_owned()),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            unavailable_error,
+            EngineError::Unavailable { reason }
+                if reason.contains("project project-c is unavailable")
+                    && reason.contains(&unavailable.display().to_string())
+        ));
+        assert_eq!(
+            <InProcessEngine as crate::Engine>::list_runs(
+                &engine,
+                &Scope::Project("unknown".to_owned()),
+            )
+            .await,
+            Err(EngineError::NotFound)
+        );
+
+        <InProcessEngine as crate::Engine>::delete_run(&engine, &scope_b, &run_b.id)
+            .await
+            .unwrap();
+        assert!(
+            <InProcessEngine as crate::Engine>::list_runs(&engine, &scope_b)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            <InProcessEngine as crate::Engine>::list_runs(&engine, &scope_a)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

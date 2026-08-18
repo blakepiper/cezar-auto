@@ -5,7 +5,11 @@
 //! The review panel exposes its actions without embedding a full diff. The composer sends text,
 //! and the task Git tabs provide Changes, Files, and Commits navigation.
 
+use std::path::PathBuf;
+
 pub mod actions;
+pub mod presenters;
+pub mod projection;
 pub mod reducer;
 mod widgets;
 
@@ -15,7 +19,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::app::{App, PendingAction};
 use crate::widgets::transcript::{
@@ -24,12 +29,14 @@ use crate::widgets::transcript::{
 };
 
 use actions::{is_run_active, last_session_id};
+use projection::ThreadViewModel;
 use reducer::{NoteTone, ThreadAsk, ThreadEntry, ThreadReduceOptions, ThreadState, reduce_thread};
 
 /// A thread-screen control — a header action, a dock toggle, an ask option, a review
 /// button. Routed by `apply_hit` and mirrored by keyboard shortcuts in `handle_key`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ThreadAction {
+    ToggleThreadView,
     Finish,
     Continue,
     Terminal,
@@ -69,6 +76,13 @@ pub enum ThreadFocus {
     Ask,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThreadView {
+    #[default]
+    Conversation,
+    Activity,
+}
+
 /// Engine-fetched state for the currently open thread.
 #[derive(Default)]
 pub struct ThreadData {
@@ -78,6 +92,7 @@ pub struct ThreadData {
     pub events: Vec<RunEvent>,
     pub as_of_seq: f64,
     pub state: ThreadState,
+    pub view_model: ThreadViewModel,
 }
 
 pub struct ThreadUi {
@@ -92,6 +107,9 @@ pub struct ThreadUi {
     pub plan_collapsed: bool,
     pub steps_collapsed: bool,
     pub focus: ThreadFocus,
+    pub view: ThreadView,
+    pub pending_prompt: Option<String>,
+    pub project_root: Option<PathBuf>,
 }
 
 impl Default for ThreadUi {
@@ -108,6 +126,9 @@ impl Default for ThreadUi {
             plan_collapsed: false,
             steps_collapsed: true,
             focus: ThreadFocus::Transcript,
+            view: ThreadView::Conversation,
+            pending_prompt: None,
+            project_root: None,
         }
     }
 }
@@ -122,6 +143,7 @@ impl ThreadUi {
         events: Vec<RunEvent>,
         as_of_seq: f64,
     ) {
+        let same_thread = self.data.project == project && self.data.run_id == run_id;
         self.data = ThreadData {
             project,
             run_id,
@@ -129,6 +151,7 @@ impl ThreadUi {
             events,
             as_of_seq,
             state: ThreadState::default(),
+            view_model: ThreadViewModel::default(),
         };
         self.transcript = Transcript::new();
         self.review_notes.clear();
@@ -136,13 +159,57 @@ impl ThreadUi {
         self.ask_focus = (0, 0);
         self.subagent_sheet = None;
         self.focus = ThreadFocus::Transcript;
+        self.view = ThreadView::Conversation;
+        if !same_thread {
+            self.pending_prompt = None;
+        }
         self.rebuild();
+    }
+
+    pub fn set_pending_prompt(&mut self, text: String) {
+        self.pending_prompt = Some(text);
+    }
+
+    pub fn set_project_root(&mut self, root: Option<PathBuf>) {
+        self.project_root = root;
+        self.rebuild();
+    }
+
+    pub fn resolve_pending_prompt(&mut self, project: &str, run_id: &str) {
+        if self.data.project == project && self.data.run_id == run_id {
+            self.pending_prompt = None;
+        }
+    }
+
+    pub fn restore_pending_prompt(&mut self, project: &str, run_id: &str) {
+        if self.data.project != project || self.data.run_id != run_id {
+            return;
+        }
+        if let Some(text) = &self.pending_prompt {
+            self.composer.set_text(text);
+            self.composer.focus();
+            self.focus = ThreadFocus::Composer;
+        }
     }
 
     /// Replace the loaded run record (a fresh engine read or a workspace run event
     /// for the currently-open thread).
     pub fn set_run(&mut self, run: ApiRun) {
         self.data.run = Some(run);
+        self.rebuild();
+    }
+
+    pub fn clear_if_matches(&mut self, project: &str, run_id: &str) {
+        if self.data.project != project || self.data.run_id != run_id {
+            return;
+        }
+        self.data.run = None;
+        self.data.events.clear();
+        self.data.state = ThreadState::default();
+        self.data.view_model = ThreadViewModel::default();
+        self.data.as_of_seq = 0.0;
+        self.transcript = Transcript::new();
+        self.pending_prompt = None;
     }
 
     /// Append one live run event and re-fold.
@@ -165,6 +232,11 @@ impl ThreadUi {
         let Some(run) = &self.data.run else {
             return;
         };
+        self.data.view_model = projection::project_thread_with_root(
+            run,
+            &self.data.state,
+            self.project_root.as_deref(),
+        );
         self.transcript
             .reconcile(build_transcript_items(run, &self.data.state));
         // A resolved ask, or a fresh one under a different id, clears any stale in-progress
@@ -275,6 +347,17 @@ fn pending_ask(state: &ThreadState) -> Option<&ThreadAsk> {
 /// (Tasks, Global tasks, row menus, a just-started run) should call instead of navigating
 /// `Route::Thread` directly.
 pub fn open(app: &mut App, project: &str, id: &str) {
+    let root = app
+        .project_registry
+        .iter()
+        .find(|entry| entry.id == project)
+        .map(|entry| PathBuf::from(&entry.root))
+        .or_else(|| {
+            (app.default_project == project)
+                .then(|| app.boot_root.clone())
+                .flatten()
+        });
+    app.thread_ui.set_project_root(root);
     app.navigate_route(crate::app::Route::Thread {
         project: project.to_owned(),
         id: id.to_owned(),
@@ -339,11 +422,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     } else {
         0
     };
-    let hint_height = if matches!(record.status, RunStatus::Queued | RunStatus::Waiting) {
-        1
-    } else {
-        0
-    };
+    let hint_height = 1;
     let composer_height = app.thread_ui.composer.height() + 2;
     let dock_height = ask_height
         + review_height
@@ -375,15 +454,24 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         );
     }
 
+    let transcript_title = match app.thread_ui.view {
+        ThreadView::Conversation => format!(
+            " Conversation  ·  {}  ·  Tab: Activity ",
+            app.thread_ui.data.view_model.current_status
+        ),
+        ThreadView::Activity => format!(
+            " Activity  ·  {}  ·  Tab: Conversation ",
+            app.thread_ui.data.view_model.current_status
+        ),
+    };
     let transcript_block = Block::default()
+        .title(transcript_title)
         .borders(Borders::TOP)
         .border_style(Style::default().fg(theme.palette.border));
     let transcript_area = transcript_block.inner(rows[2]);
     frame.render_widget(transcript_block, rows[2]);
     if transcript_area.height > 0 {
-        app.thread_ui
-            .transcript
-            .render(frame.buffer_mut(), transcript_area, &theme);
+        render_thread_view(frame, transcript_area, app, &theme);
     }
 
     let dock_rows = Layout::default()
@@ -446,10 +534,32 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         let text = match record.status {
             RunStatus::Queued => widgets::queue_hint(true),
             RunStatus::Waiting => "Waiting for your reply.",
-            _ => "",
+            RunStatus::Running => "Enter sends guidance to the active turn.",
+            RunStatus::Done | RunStatus::Failed | RunStatus::Cancelled => {
+                "Enter starts a follow-up turn."
+            }
+            RunStatus::Review => "Enter starts a follow-up; review actions are above.",
         };
         widgets::render_status_hint(frame, dock_rows[5], text, &theme);
     }
+    app.thread_ui
+        .composer
+        .set_title(if app.thread_ui.pending_prompt.is_some() {
+            "SENDING"
+        } else {
+            match record.status {
+                RunStatus::Queued => "QUEUED",
+                RunStatus::Waiting => "ANSWER",
+                RunStatus::Running => "GUIDANCE",
+                RunStatus::Review | RunStatus::Done | RunStatus::Failed | RunStatus::Cancelled => {
+                    if last_session_id(record).is_some() {
+                        "FOLLOW UP"
+                    } else {
+                        "NEW TASK"
+                    }
+                }
+            }
+        });
     app.thread_ui
         .composer
         .render(frame, dock_rows[6], theme, &mut app.hitmap, 4);
@@ -471,6 +581,236 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             &theme,
             &mut app.hitmap,
         );
+    }
+}
+
+fn render_thread_view(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &mut App,
+    theme: &crate::theme::Theme,
+) {
+    let view_model = app.thread_ui.data.view_model.clone();
+    let lines = projection_lines(
+        &view_model,
+        app.thread_ui.view,
+        app.thread_ui.pending_prompt.as_deref(),
+        theme,
+    );
+    let offset = app
+        .thread_ui
+        .transcript
+        .projection_scroll(lines.len(), area.height);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .scroll((offset, 0))
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(theme.palette.fg)),
+        area,
+    );
+}
+
+fn projection_lines(
+    view_model: &ThreadViewModel,
+    view: ThreadView,
+    pending_prompt: Option<&str>,
+    theme: &crate::theme::Theme,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    for (index, turn) in view_model.turns.iter().enumerate() {
+        if index > 0 {
+            lines.push(Line::from(Span::raw("")));
+        }
+        push_text_lines(
+            &mut lines,
+            "You  ",
+            &turn.prompt.text,
+            Style::default()
+                .fg(theme.palette.accent)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        );
+        if matches!(view, ThreadView::Conversation) && !turn.activity.is_empty() {
+            let (count, changed, added, removed) = activity_totals(&turn.activity);
+            let detail = if changed > 0 {
+                format!("{count} activities · {changed} files · +{added} -{removed}")
+            } else {
+                format!("{count} activities")
+            };
+            lines.push(Line::from(Span::styled(
+                format!("  · {detail}  (Tab for details)"),
+                Style::default().fg(theme.palette.soft_fg),
+            )));
+            if let Some(commentary) = latest_commentary(&turn.activity) {
+                push_text_lines(
+                    &mut lines,
+                    "    ",
+                    commentary,
+                    Style::default().fg(theme.palette.soft_fg),
+                );
+            }
+        } else {
+            for node in &turn.activity {
+                push_activity_lines(&mut lines, node, 1, theme);
+            }
+        }
+        if let Some(response) = &turn.response {
+            push_text_lines(
+                &mut lines,
+                "Agent  ",
+                &response.text,
+                Style::default().fg(theme.palette.fg),
+            );
+        }
+        lines.push(Line::from(Span::styled(
+            format!("  {}", outcome_label(&turn.outcome)),
+            Style::default().fg(theme.palette.soft_fg),
+        )));
+    }
+    if let Some(prompt) = pending_prompt {
+        if !lines.is_empty() {
+            lines.push(Line::from(Span::raw("")));
+        }
+        push_text_lines(
+            &mut lines,
+            "You  ",
+            prompt,
+            Style::default()
+                .fg(theme.palette.accent)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        );
+        lines.push(Line::from(Span::styled(
+            "  · sending…",
+            Style::default().fg(theme.palette.soft_fg),
+        )));
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "Waiting for the first turn…",
+            Style::default().fg(theme.palette.soft_fg),
+        )));
+    }
+    lines
+}
+
+fn latest_commentary(nodes: &[projection::ActivityNode]) -> Option<&str> {
+    nodes.iter().rev().find_map(|node| {
+        if node.presentation.kind == projection::ActivityKind::Commentary {
+            node.presentation.preview.as_deref()
+        } else {
+            latest_commentary(&node.children)
+        }
+    })
+}
+
+fn push_text_lines(lines: &mut Vec<Line<'static>>, prefix: &str, text: &str, style: Style) {
+    let mut saw_line = false;
+    for value in text.split('\n') {
+        saw_line = true;
+        lines.push(Line::from(vec![
+            Span::styled(prefix.to_owned(), style),
+            Span::styled(value.to_owned(), style),
+        ]));
+    }
+    if !saw_line {
+        lines.push(Line::from(Span::styled(prefix.to_owned(), style)));
+    }
+}
+
+fn push_activity_lines(
+    lines: &mut Vec<Line<'static>>,
+    node: &projection::ActivityNode,
+    depth: usize,
+    theme: &crate::theme::Theme,
+) {
+    let indent = "  ".repeat(depth.min(6));
+    let glyph = match node.presentation.status {
+        projection::ActivityStatus::Pending => "○",
+        projection::ActivityStatus::Running => "●",
+        projection::ActivityStatus::Succeeded => "✓",
+        projection::ActivityStatus::Failed => "✗",
+        projection::ActivityStatus::Declined => "!",
+        projection::ActivityStatus::Cancelled => "×",
+        projection::ActivityStatus::Interrupted => "↯",
+        projection::ActivityStatus::Informational => "·",
+    };
+    let subject = node
+        .presentation
+        .subject
+        .as_deref()
+        .map(|subject| format!(" · {subject}"))
+        .unwrap_or_default();
+    lines.push(Line::from(Span::styled(
+        format!("{indent}{glyph} {}{subject}", node.presentation.title),
+        activity_style(node.presentation.status, theme),
+    )));
+    if let Some(preview) = &node.presentation.preview {
+        push_text_lines(
+            lines,
+            &format!("{indent}  "),
+            preview,
+            Style::default().fg(theme.palette.soft_fg),
+        );
+    }
+    for child in &node.children {
+        push_activity_lines(lines, child, depth + 1, theme);
+    }
+}
+
+fn activity_style(status: projection::ActivityStatus, theme: &crate::theme::Theme) -> Style {
+    match status {
+        projection::ActivityStatus::Failed | projection::ActivityStatus::Declined => {
+            Style::default().fg(theme.palette.failed)
+        }
+        projection::ActivityStatus::Running | projection::ActivityStatus::Pending => {
+            Style::default().fg(theme.palette.running)
+        }
+        projection::ActivityStatus::Succeeded => Style::default().fg(theme.palette.done),
+        _ => Style::default().fg(theme.palette.soft_fg),
+    }
+}
+
+fn activity_totals(nodes: &[projection::ActivityNode]) -> (usize, usize, usize, usize) {
+    nodes.iter().fold((0, 0, 0, 0), |total, node| {
+        let child = activity_totals(&node.children);
+        (
+            total.0 + 1 + child.0,
+            total.1 + node.presentation.changed_files + child.1,
+            total.2 + node.presentation.added_lines + child.2,
+            total.3 + node.presentation.removed_lines + child.3,
+        )
+    })
+}
+
+fn outcome_label(outcome: &projection::TurnOutcome) -> String {
+    match outcome {
+        projection::TurnOutcome::Running => "● Running".to_owned(),
+        projection::TurnOutcome::Completed { verification, .. } => {
+            format!(
+                "✓ Completed · verification {}",
+                verification_label(*verification)
+            )
+        }
+        projection::TurnOutcome::Failed {
+            reason,
+            verification,
+        } => format!(
+            "✗ Failed{} · verification {}",
+            reason
+                .as_deref()
+                .map(|reason| format!(": {reason}"))
+                .unwrap_or_default(),
+            verification_label(*verification)
+        ),
+        projection::TurnOutcome::Interrupted => "↯ Interrupted".to_owned(),
+        projection::TurnOutcome::Unknown => "· Outcome not observed".to_owned(),
+    }
+}
+
+fn verification_label(status: projection::VerificationStatus) -> &'static str {
+    match status {
+        projection::VerificationStatus::Passed => "passed",
+        projection::VerificationStatus::Failed => "failed",
+        projection::VerificationStatus::NotObserved => "not observed",
     }
 }
 
@@ -522,6 +862,13 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             app.thread_ui.transcript.jump_to_bottom();
             true
         }
+        KeyCode::Tab => {
+            app.thread_ui.view = match app.thread_ui.view {
+                ThreadView::Conversation => ThreadView::Activity,
+                ThreadView::Activity => ThreadView::Conversation,
+            };
+            true
+        }
         KeyCode::Char('f') => {
             apply_action(app, ThreadAction::Finish);
             true
@@ -561,21 +908,30 @@ fn handle_composer_key(app: &mut App, key: KeyEvent) -> bool {
     };
     let event = app.thread_ui.composer.handle_key(key, &ctx);
     if let crate::widgets::composer::ComposerEvent::Submit { text } = event {
-        if !text.is_empty() {
-            submit_composer(app, text);
+        let delivered = if !text.is_empty() {
+            submit_composer(app, text)
+        } else {
+            false
+        };
+        if delivered {
+            app.thread_ui.composer.set_text("");
         }
-        app.thread_ui.composer.set_text("");
     }
     true
 }
 
-fn submit_composer(app: &mut App, text: String) {
+fn submit_composer(app: &mut App, text: String) -> bool {
+    if app.thread_ui.pending_prompt.is_some() {
+        app.notice = Some("a message is already being delivered".to_owned());
+        return false;
+    }
     let Some(run) = app.thread_ui.data.run.clone() else {
-        return;
+        return false;
     };
     let project = app.thread_ui.data.project.clone();
     let id = app.thread_ui.data.run_id.clone();
     if is_run_active(run.record.status) {
+        app.thread_ui.set_pending_prompt(text.clone());
         app.pending.push(PendingAction::SendMessage {
             project,
             id,
@@ -584,12 +940,19 @@ fn submit_composer(app: &mut App, text: String) {
                 images: None,
             },
         });
+        true
     } else if last_session_id(&run.record).is_some() {
+        app.thread_ui.set_pending_prompt(text.clone());
         app.pending.push(PendingAction::ContinueRun {
             project,
             id,
             text: Some(text),
         });
+        true
+    } else {
+        app.notice =
+            Some("this task has no live session; start a new task for this follow-up".to_owned());
+        false
     }
 }
 
@@ -749,6 +1112,12 @@ pub fn apply_hit(app: &mut App, action: ThreadAction) {
                 send_ask_answer(app, &ask);
             }
         }
+        ThreadAction::ToggleThreadView => {
+            app.thread_ui.view = match app.thread_ui.view {
+                ThreadView::Conversation => ThreadView::Activity,
+                ThreadView::Activity => ThreadView::Conversation,
+            };
+        }
         ThreadAction::OpenSubagent(id) => app.thread_ui.subagent_sheet = Some(id),
         ThreadAction::CloseSubagentSheet => app.thread_ui.subagent_sheet = None,
         ThreadAction::ToggleStepRail => {
@@ -843,6 +1212,7 @@ fn apply_action(app: &mut App, action: ThreadAction) {
         }
         ThreadAction::AskOption { .. }
         | ThreadAction::AskSend
+        | ThreadAction::ToggleThreadView
         | ThreadAction::OpenSubagent(_)
         | ThreadAction::CloseSubagentSheet
         | ThreadAction::ToggleStepRail

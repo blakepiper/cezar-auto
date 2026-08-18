@@ -270,7 +270,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         &mut app.hitmap,
         &format!("TASKS — {project}"),
         if app.tasks_ui.query.trim().is_empty() {
-            "No tasks yet. Describe a task to get started."
+            "No tasks in this project. Press n for New task."
         } else {
             "No tasks match your search."
         },
@@ -281,22 +281,49 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 fn render_title_row(frame: &mut Frame<'_>, area: Rect, app: &mut App, view: TaskView) {
     let theme = app.theme;
     let runs = &app.tasks;
+    let project = app.current_project();
     let active = runs.iter().filter(|run| !run.record.archived).count();
     let archived = runs.iter().filter(|run| run.record.archived).count();
+    let needs_you = runs
+        .iter()
+        .filter(|run| {
+            !run.record.archived
+                && matches!(run.record.status, RunStatus::Waiting | RunStatus::Review)
+        })
+        .count();
     let finished = finished_run_count(runs);
     let unread = unread_done_count(runs);
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     spans.push(span(
-        " Tasks ",
-        view_style(theme, view == TaskView::Active, active > 0),
+        &format!(" TASKS — {project}  "),
+        Style::default()
+            .fg(theme.palette.fg)
+            .add_modifier(Modifier::BOLD),
     ));
     spans.push(span(
-        &format!("Archived {archived}"),
-        view_style(theme, view == TaskView::Archived, false),
+        &format!("Active {active}"),
+        view_style(theme, view == TaskView::Active, active > 0),
     ));
     spans.push(Span::raw("  "));
-    if view == TaskView::Active {
+    spans.push(span(
+        &format!("Needs you {needs_you}"),
+        Style::default().fg(theme.palette.waiting),
+    ));
+    spans.push(Span::raw("  "));
+    spans.push(span(
+        &format!("Finished {finished}"),
+        Style::default().fg(theme.palette.soft_fg),
+    ));
+    spans.push(Span::raw("  "));
+    if area.width >= 100 {
+        spans.push(span(
+            &format!("Archived {archived}"),
+            view_style(theme, view == TaskView::Archived, false),
+        ));
+        spans.push(Span::raw("  "));
+    }
+    if view == TaskView::Active && area.width >= 100 {
         if unread > 0 {
             spans.push(span("Mark all read", action_style(theme, unread > 0)));
         }
@@ -306,7 +333,19 @@ fn render_title_row(frame: &mut Frame<'_>, area: Rect, app: &mut App, view: Task
         spans.push(Span::raw("  "));
     }
     spans.push(span(
-        &format!("/ {}", app.tasks_ui.query),
+        &format!(
+            "filter: {}{}",
+            if view == TaskView::Active {
+                "active"
+            } else {
+                "archived"
+            },
+            if app.tasks_ui.query.is_empty() {
+                String::new()
+            } else {
+                format!("  / {}", app.tasks_ui.query)
+            }
+        ),
         Style::default().fg(theme.palette.soft_fg),
     ));
 
@@ -393,6 +432,8 @@ pub fn handle_table_hit(app: &mut App, action: HitAction) {
                 return;
             };
             let id = row.key.clone();
+            let project = app.current_project().to_owned();
+            app.select_task(&project, &id);
             open_thread(app, &id);
         }
         HitAction::TableHeader(column) => toggle_sort(app, column),
@@ -509,6 +550,8 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         KeyCode::Enter => {
             if let Some((_, row)) = app.tasks_ui.table.selected_row() {
                 let id = row.key.clone();
+                let project = app.current_project().to_owned();
+                app.select_task(&project, &id);
                 open_thread(app, &id);
             }
             true
