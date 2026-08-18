@@ -606,12 +606,29 @@ pub struct ConfigResponse {
     pub default_runner: RunnerSelection,
     pub system_prompt: Option<String>,
     pub default_models: RunnerModels,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composer_defaults: Option<ProjectComposerDefaults>,
     pub models_locked: bool,
     pub max_parallel: u64,
     pub memory_limit_mb: Option<u64>,
     pub worktree_retention: u64,
     pub live_title_updates: Option<bool>,
     pub review_gate: Option<bool>,
+}
+
+/// The composer defaults explicitly configured by one project. Missing fields inherit from the
+/// workspace composer defaults.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectComposerDefaults {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ReasoningEffort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variants: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autonomous: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<bool>,
 }
 
 /// The response to a config write has the same shape as `ConfigResponse`.
@@ -629,6 +646,8 @@ pub struct SetConfigInput {
     pub system_prompt: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_models: Option<RunnerModelsPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composer_defaults: Option<ComposerDefaultsPatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_parallel: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -230,9 +230,14 @@ pub fn effective_values(draft: &NewTaskDraft, data: &NewTaskData) -> Effective {
         .workspace_config
         .as_ref()
         .map(|config| &config.composer_defaults);
+    let project_defaults = data
+        .config
+        .as_ref()
+        .and_then(|config| config.composer_defaults.as_ref());
     let reasoning_options = new_task_form::reasoning_options_for_model(&model, &models);
-    let configured_reasoning = workspace_defaults
+    let configured_reasoning = project_defaults
         .and_then(|defaults| defaults.reasoning)
+        .or_else(|| workspace_defaults.and_then(|defaults| defaults.reasoning))
         .unwrap_or(ReasoningEffort::Auto);
     let draft_effort = draft.reasoning_effort.unwrap_or(configured_reasoning);
     let reasoning_effort = if reasoning_options
@@ -245,8 +250,9 @@ pub fn effective_values(draft: &NewTaskDraft, data: &NewTaskData) -> Effective {
     };
 
     let has_git = data.repo.is_some();
-    let configured_variants = workspace_defaults
+    let configured_variants = project_defaults
         .and_then(|defaults| defaults.variants)
+        .or_else(|| workspace_defaults.and_then(|defaults| defaults.variants))
         .unwrap_or(1)
         .clamp(1, 3);
     let variants = if has_git {
@@ -258,14 +264,24 @@ pub fn effective_values(draft: &NewTaskDraft, data: &NewTaskData) -> Effective {
     } else {
         1
     };
-    let configured_autonomous = draft.autonomous.or(workspace_defaults.and_then(|defaults| {
-        defaults.autonomous.or(match defaults.inherited_autonomous {
-            coducktor_contract::InheritedAutonomous::Value(value) => Some(value),
-            coducktor_contract::InheritedAutonomous::SourceDependent => None,
+    let configured_autonomous = draft.autonomous.or_else(|| {
+        project_defaults
+            .and_then(|defaults| defaults.autonomous)
+            .or_else(|| {
+                workspace_defaults.and_then(|defaults| {
+                    defaults.autonomous.or(match defaults.inherited_autonomous {
+                        coducktor_contract::InheritedAutonomous::Value(value) => Some(value),
+                        coducktor_contract::InheritedAutonomous::SourceDependent => None,
+                    })
+                })
+            })
+    });
+    let configured_worktree = project_defaults
+        .and_then(|defaults| defaults.worktree)
+        .or_else(|| {
+            workspace_defaults
+                .map(|defaults| defaults.worktree.unwrap_or(defaults.inherited_worktree))
         })
-    }));
-    let configured_worktree = workspace_defaults
-        .map(|defaults| defaults.worktree.unwrap_or(defaults.inherited_worktree))
         .unwrap_or(false);
     let (autonomous_on, worktree_on) = new_task_form::resolve_composer_run_mode(
         has_git,
@@ -1443,9 +1459,9 @@ fn render_picker_overlay(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 #[cfg(test)]
 mod tests {
     use coducktor_contract::{
-        AgentDefaults, ComposerDefaults, InheritedAutonomous, ProviderConnectionState,
-        ProviderStatus, RepoInfo, RunStatus, RunnerModelCatalogResponse, WorkspaceConfigResponse,
-        WorkspaceResources,
+        AgentDefaults, ComposerDefaults, InheritedAutonomous, ProjectComposerDefaults,
+        ProviderConnectionState, ProviderStatus, RepoInfo, RunStatus, RunnerModelCatalogResponse,
+        WorkspaceConfigResponse, WorkspaceResources,
     };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -1629,6 +1645,48 @@ mod tests {
         });
         let effective = effective_values(&app.new_task_ui.draft, &app.new_task_ui.data);
         assert_eq!(effective.reasoning_effort, ReasoningEffort::XHigh);
+        assert_eq!(effective.variants, 3);
+        assert!(!effective.autonomous_on);
+        assert!(effective.worktree_on);
+    }
+
+    #[test]
+    fn project_composer_defaults_override_only_their_global_fields() {
+        let mut app = app_with_new_task("t-project-defaults");
+        app.new_task_ui.data.config = Some(ComposerConfig {
+            composer_defaults: Some(ProjectComposerDefaults {
+                reasoning: Some(ReasoningEffort::Low),
+                variants: None,
+                autonomous: Some(false),
+                worktree: None,
+            }),
+            ..ComposerConfig::default()
+        });
+        app.new_task_ui.data.workspace_config = Some(WorkspaceConfigResponse {
+            projects_dir: "/tmp/projects".to_owned(),
+            composer_defaults: ComposerDefaults {
+                reasoning: Some(ReasoningEffort::XHigh),
+                variants: Some(3),
+                autonomous: Some(true),
+                worktree: Some(true),
+                inherited_autonomous: InheritedAutonomous::Value(true),
+                inherited_worktree: false,
+            },
+            resources: WorkspaceResources {
+                max_parallel: 1,
+                max_monitoring_sessions: 1,
+                monitoring_wake_interval_minutes: None,
+                auto_resume_on_usage_limit: false,
+                intelligent_context_refresh: false,
+                memory_limit_mb: None,
+                worktree_retention_default: 0,
+            },
+            quota_routing: None,
+            agent_defaults: AgentDefaults::default(),
+        });
+
+        let effective = effective_values(&app.new_task_ui.draft, &app.new_task_ui.data);
+        assert_eq!(effective.reasoning_effort, ReasoningEffort::Low);
         assert_eq!(effective.variants, 3);
         assert!(!effective.autonomous_on);
         assert!(effective.worktree_on);

@@ -6,9 +6,9 @@
 
 use coducktor_contract::{
     ConfigResponse, CreateRunInput, CreateRunInputBase, CreateRunResponse, ImageInput,
-    ProviderConnectionState, ProviderStatusResponse, ReasoningEffort, Runner,
-    RunnerModelCatalogResponse, RunnerModels, RunnerSelection, Skill, TaskSource, WorkflowDef,
-    WorkflowStepDef, runner_discovers_models,
+    ProjectComposerDefaults, ProviderConnectionState, ProviderStatusResponse, ReasoningEffort,
+    Runner, RunnerModelCatalogResponse, RunnerModels, RunnerSelection, Skill, TaskSource,
+    WorkflowDef, WorkflowStepDef, runner_discovers_models,
 };
 
 /// What the composer runs: the plain-task baseline, a named workflow, or a single skill.
@@ -509,6 +509,7 @@ pub struct ComposerConfig {
     pub base_branch: Option<String>,
     pub default_runner: RunnerSelection,
     pub default_models: RunnerModels,
+    pub composer_defaults: Option<ProjectComposerDefaults>,
     pub models_locked: bool,
 }
 
@@ -518,6 +519,7 @@ impl Default for ComposerConfig {
             base_branch: None,
             default_runner: RunnerSelection::Claude,
             default_models: RunnerModels::default(),
+            composer_defaults: None,
             models_locked: false,
         }
     }
@@ -529,6 +531,7 @@ impl ComposerConfig {
             base_branch: config.base_branch.clone(),
             default_runner: config.default_runner,
             default_models: config.default_models.clone(),
+            composer_defaults: config.composer_defaults.clone(),
             models_locked: config.models_locked,
         }
     }

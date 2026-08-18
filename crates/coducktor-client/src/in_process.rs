@@ -5664,6 +5664,16 @@ fn config_response(repo_root: &Path) -> ConfigResponse {
     let workspace = workspace_config_for(repo_root);
     let config = coducktor_core::config::load_config(repo_root, &workspace.agent_defaults);
     let models_locked = config_models_locked(repo_root, &config);
+    let composer_defaults = (!config.composer_defaults.reasoning.is_none()
+        || !config.composer_defaults.variants.is_none()
+        || !config.composer_defaults.autonomous.is_none()
+        || !config.composer_defaults.worktree.is_none())
+    .then_some(coducktor_contract::ProjectComposerDefaults {
+        reasoning: config.composer_defaults.reasoning,
+        variants: config.composer_defaults.variants,
+        autonomous: config.composer_defaults.autonomous,
+        worktree: config.composer_defaults.worktree,
+    });
     ConfigResponse {
         base_branch: config.base_branch,
         default_runner: config.default_runner,
@@ -5673,6 +5683,7 @@ fn config_response(repo_root: &Path) -> ConfigResponse {
         } else {
             config.default_models
         },
+        composer_defaults,
         models_locked,
         max_parallel: config.max_parallel,
         memory_limit_mb: config.memory_limit_mb,
@@ -5732,7 +5743,79 @@ fn validate_set_config_input(input: &SetConfigInput) -> Result<(), EngineError> 
             reason: "worktreeRetention must be an integer from 0 to 1000".to_owned(),
         });
     }
+    if input
+        .composer_defaults
+        .as_ref()
+        .and_then(|defaults| defaults.variants)
+        .flatten()
+        .is_some_and(|value| !(1..=3).contains(&value))
+    {
+        return Err(EngineError::Conflict {
+            reason: "composer variants must be an integer from 1 to 3".to_owned(),
+        });
+    }
     Ok(())
+}
+
+fn apply_project_composer_defaults(
+    raw: &mut serde_json::Map<String, Value>,
+    patch: &coducktor_contract::ComposerDefaultsPatch,
+) {
+    let mut defaults = raw
+        .get("composerDefaults")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+
+    if let Some(reasoning) = patch.reasoning {
+        match reasoning {
+            Some(value) => {
+                defaults.insert(
+                    "reasoning".to_owned(),
+                    serde_json::to_value(value).unwrap_or(Value::Null),
+                );
+            }
+            None => {
+                defaults.remove("reasoning");
+            }
+        }
+    }
+    if let Some(variants) = patch.variants {
+        match variants {
+            Some(value) => {
+                defaults.insert("variants".to_owned(), Value::from(value));
+            }
+            None => {
+                defaults.remove("variants");
+            }
+        }
+    }
+    if let Some(autonomous) = patch.autonomous {
+        match autonomous {
+            Some(value) => {
+                defaults.insert("autonomous".to_owned(), Value::Bool(value));
+            }
+            None => {
+                defaults.remove("autonomous");
+            }
+        }
+    }
+    if let Some(worktree) = patch.worktree {
+        match worktree {
+            Some(value) => {
+                defaults.insert("worktree".to_owned(), Value::Bool(value));
+            }
+            None => {
+                defaults.remove("worktree");
+            }
+        }
+    }
+
+    if defaults.is_empty() {
+        raw.remove("composerDefaults");
+    } else {
+        raw.insert("composerDefaults".to_owned(), Value::Object(defaults));
+    }
 }
 
 fn update_repo_config(
@@ -5851,6 +5934,9 @@ fn update_repo_config(
         } else {
             raw.insert("defaultModels".to_owned(), Value::Object(models));
         }
+    }
+    if let Some(composer_patch) = &input.composer_defaults {
+        apply_project_composer_defaults(&mut raw, composer_patch);
     }
     coducktor_core::workspace::config::atomic_write_json_sync(
         &repo_config_path(repo_root),
@@ -8206,6 +8292,46 @@ mod tests {
             .await
             .unwrap();
         assert!(cleared.base_branch.is_none());
+    }
+
+    #[tokio::test]
+    async fn project_composer_defaults_persist_and_clear_independently() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let updated = engine
+            .put_config(&SetConfigInput {
+                composer_defaults: Some(coducktor_contract::ComposerDefaultsPatch {
+                    reasoning: Some(Some(coducktor_contract::ReasoningEffort::High)),
+                    variants: Some(Some(3)),
+                    autonomous: Some(Some(false)),
+                    worktree: Some(Some(true)),
+                }),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let defaults = updated.composer_defaults.as_ref().unwrap();
+        assert_eq!(
+            defaults.reasoning,
+            Some(coducktor_contract::ReasoningEffort::High)
+        );
+        assert_eq!(defaults.variants, Some(3));
+        assert_eq!(defaults.autonomous, Some(false));
+        assert_eq!(defaults.worktree, Some(true));
+
+        let cleared = engine
+            .put_config(&SetConfigInput {
+                composer_defaults: Some(coducktor_contract::ComposerDefaultsPatch {
+                    reasoning: Some(None),
+                    variants: Some(None),
+                    autonomous: Some(None),
+                    worktree: Some(None),
+                }),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(cleared.composer_defaults.is_none());
     }
 
     #[tokio::test]

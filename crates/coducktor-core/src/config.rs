@@ -16,6 +16,7 @@
 
 use serde_json::Value;
 
+use coducktor_contract::ReasoningEffort;
 use coducktor_contract::{Runner, RunnerModels, RunnerSelection};
 
 use crate::workspace::config::{AgentDefaultModels, AgentDefaults as WorkspaceAgentDefaults};
@@ -38,7 +39,18 @@ pub struct RepoConfig {
     pub base_branch: Option<String>,
     pub system_prompt: Option<String>,
     pub default_models: RunnerModels,
+    pub composer_defaults: ProjectComposerDefaults,
     pub models_locked: Option<bool>,
+}
+
+/// Composer defaults explicitly configured by a project. Missing fields inherit from the
+/// workspace configuration.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ProjectComposerDefaults {
+    pub reasoning: Option<ReasoningEffort>,
+    pub variants: Option<u64>,
+    pub autonomous: Option<bool>,
+    pub worktree: Option<bool>,
 }
 
 impl Default for RepoConfig {
@@ -55,6 +67,7 @@ impl Default for RepoConfig {
             base_branch: None,
             system_prompt: None,
             default_models: RunnerModels::default(),
+            composer_defaults: ProjectComposerDefaults::default(),
             models_locked: None,
         }
     }
@@ -163,6 +176,7 @@ fn try_parse(raw: &Value) -> Option<RepoConfig> {
         })
         .unwrap_or_default();
     let models_locked = zod::bool_opt(object.get("modelsLocked"));
+    let composer_defaults = parse_project_composer_defaults(object.get("composerDefaults"));
 
     Some(RepoConfig {
         max_parallel,
@@ -176,8 +190,23 @@ fn try_parse(raw: &Value) -> Option<RepoConfig> {
         base_branch,
         system_prompt,
         default_models,
+        composer_defaults,
         models_locked,
     })
+}
+
+fn parse_project_composer_defaults(value: Option<&Value>) -> ProjectComposerDefaults {
+    let object = zod::as_map(value);
+    ProjectComposerDefaults {
+        reasoning: zod::field(object, "reasoning")
+            .and_then(|value| serde_json::from_value(value.clone()).ok()),
+        variants: zod::field(object, "variants").and_then(|value| {
+            let variants = zod::bounded_i64(Some(value), 1, 3, 0);
+            (1..=3).contains(&variants).then_some(variants as u64)
+        }),
+        autonomous: zod::bool_opt(zod::field(object, "autonomous")),
+        worktree: zod::bool_opt(zod::field(object, "worktree")),
+    }
 }
 
 fn strict_bounded_u64(value: Option<&Value>, lo: i64, hi: i64, default: i64) -> Option<u64> {
