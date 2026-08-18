@@ -5,8 +5,8 @@
 //! The screen contains only the sections listed above. Terminal-only concerns such as
 //! keymaps and external-link safety stay in their owning screens or local configuration. The
 //! Appearance controls are persisted in the workspace UI state.
-//! Provider usage graphs are not rendered in Resources — only the
-//! editable knobs are. Per-project account overrides are read-only here; the "Default
+//! Resources renders the sanitized provider usage windows returned by the engine alongside its
+//! editable knobs. Per-project account overrides are read-only here; the "Default
 //! account" rows write the WORKSPACE default (`projectId: None`) only, not a per-project
 //! pin. The Agent config file editor has no dirty-guard confirm (unlike the IDE's) — `Esc`
 //! discards a pending edit outright. Prompt templates carry no `skills` auto-apply list.
@@ -16,7 +16,8 @@ use coducktor_contract::{
     ComposerDefaultsPatch, ConfigResponse, NotificationsUiState, ProjectComposerDefaults,
     PromptTemplate, QuotaRoutingPatch, ReasoningEffort, Runner, SelectAgentProfileInput,
     SetConfigInput, SetWorkspaceConfigInput, TaskSource, UiState, UpdateAgentProfileInput,
-    UpdateProjectInput, WorkspaceConfigResponse, WorkspaceUiState, WorktreesResponse,
+    UpdateProjectInput, WorkspaceConfigResponse, WorkspaceUiState, WorkspaceUsageResponse,
+    WorktreesResponse,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
@@ -145,6 +146,7 @@ pub struct SettingsUi {
     pub config: Option<ConfigResponse>,
     pub workspace_config: Option<WorkspaceConfigResponse>,
     pub workspace_ui_state: Option<WorkspaceUiState>,
+    pub workspace_usage: Option<WorkspaceUsageResponse>,
     pub ui_state: Option<UiState>,
     pub agent_config: Option<AgentConfigListing>,
     pub agent_profiles: Option<AgentProfilesResponse>,
@@ -172,6 +174,7 @@ impl Default for SettingsUi {
             config: None,
             workspace_config: None,
             workspace_ui_state: None,
+            workspace_usage: None,
             ui_state: None,
             agent_config: None,
             agent_profiles: None,
@@ -634,6 +637,59 @@ fn rows_resources(app: &App) -> Vec<Row> {
         "Quota routing",
         bool_label(config.quota_routing.as_ref().is_some_and(|q| q.enabled)),
     ));
+    if let Some(usage) = &app.settings_ui.workspace_usage {
+        if let Some(health) = usage.policy_health {
+            rows.push(row(
+                "Routing health",
+                format!(
+                    "{}/{} ready · {} unknown",
+                    health.ready_candidates, health.total_candidates, health.unknown_candidates
+                ),
+            ));
+        }
+        if let Some(refresh) = &usage.refresh
+            && let Some(observed_at) = &refresh.observed_at
+        {
+            rows.push(row("Usage observed", observed_at));
+        }
+        for provider in &usage.providers {
+            let provider_name = match provider.provider {
+                coducktor_contract::QuotaProvider::Claude => "Claude",
+                coducktor_contract::QuotaProvider::Codex => "Codex",
+                coducktor_contract::QuotaProvider::OpenCode => "OpenCode",
+            };
+            let health = format!("{:?}", provider.health).to_lowercase();
+            rows.push(row(
+                format!("{provider_name} · {}", provider.profile_id),
+                format!("{health} · {} · {}", provider.source, provider.fetched_at),
+            ));
+            for window in &provider.windows {
+                let name = match window.kind {
+                    coducktor_contract::ProviderUsageWindowKind::Short => "Short window",
+                    coducktor_contract::ProviderUsageWindowKind::Long => "Weekly window",
+                    coducktor_contract::ProviderUsageWindowKind::Model => "Model window",
+                    coducktor_contract::ProviderUsageWindowKind::Unknown => "Usage window",
+                };
+                let used = window
+                    .used_percent
+                    .map(|used| format!("{used:.0}% used"))
+                    .unwrap_or_else(|| "usage unknown".to_owned());
+                let reset = window
+                    .resets_at
+                    .as_deref()
+                    .map(|reset| format!(" · resets {reset}"))
+                    .unwrap_or_default();
+                rows.push(row(format!("  {name}"), format!("{used}{reset}")));
+            }
+            if provider.windows.is_empty()
+                && let Some(error) = &provider.error
+            {
+                rows.push(row("  Limits", &error.message));
+            }
+        }
+    } else {
+        rows.push(row("Provider usage", "Loading…"));
+    }
     rows
 }
 
@@ -755,7 +811,12 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let rows = rows_for(app, section);
     let inner = rows_layout[1];
     let mut lines: Vec<Line<'static>> = Vec::new();
-    for (index, entry) in rows.iter().enumerate() {
+    let viewport = inner.height as usize;
+    let first_visible = app
+        .settings_ui
+        .row
+        .saturating_sub(viewport.saturating_sub(1));
+    for (index, entry) in rows.iter().enumerate().skip(first_visible) {
         let selected = index == app.settings_ui.row && app.screen_focus() == 1;
         let mut label_style = Style::default().fg(app.theme.palette.fg);
         if selected {
@@ -773,7 +834,9 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                 Style::default().fg(app.theme.palette.soft_fg),
             ),
         ]));
-        if let Some(y) = inner.y.checked_add(index as u16)
+        if let Some(y) = inner
+            .y
+            .checked_add(index.saturating_sub(first_visible) as u16)
             && y < inner.bottom()
         {
             app.hitmap.register(
@@ -1940,6 +2003,51 @@ mod tests {
         assert!(content.contains("Projects"));
         assert!(content.contains("+ Add repository"));
         assert!(content.contains("Appearance"));
+    }
+
+    #[test]
+    fn resources_renders_provider_usage_and_unknown_limits_honestly() {
+        let mut app = app_with_global_settings();
+        app.settings_ui.section = 4;
+        app.settings_ui.workspace_usage = Some(WorkspaceUsageResponse {
+            providers: vec![coducktor_contract::ProviderUsageSnapshot {
+                provider: coducktor_contract::QuotaProvider::Codex,
+                profile_id: "default".to_owned(),
+                upstream_provider: None,
+                health: coducktor_contract::ProviderUsageHealth::Available,
+                confidence: Some(coducktor_contract::UsageConfidence::Authoritative),
+                fetched_at: "2026-08-18T00:00:00.000Z".to_owned(),
+                source: "codex_app_server".to_owned(),
+                stale: false,
+                windows: vec![coducktor_contract::ProviderUsageWindow {
+                    id: Some("codex:weekly".to_owned()),
+                    kind: coducktor_contract::ProviderUsageWindowKind::Long,
+                    used_percent: Some(0.0),
+                    resets_at: Some("2026-08-25T00:00:00.000Z".to_owned()),
+                    hard_limit_reached: Some(false),
+                }],
+                consumption: None,
+                error: None,
+                extra: Default::default(),
+            }],
+            refresh: Some(coducktor_contract::WorkspaceUsageRefresh {
+                refreshing: false,
+                observed_at: Some("2026-08-18T00:00:00.000Z".to_owned()),
+                stale: false,
+                error: None,
+            }),
+            policy_health: Some(coducktor_contract::WorkspaceUsagePolicyHealth {
+                ready_candidates: 1,
+                total_candidates: 1,
+                unknown_candidates: 0,
+            }),
+        });
+        let content = render_text(&mut app, 120, 40);
+        assert!(content.contains("Routing health"));
+        assert!(content.contains("Codex · default"));
+        assert!(content.contains("Weekly window"));
+        assert!(content.contains("0% used"));
+        assert!(!content.contains("100% available"));
     }
 
     #[test]

@@ -138,16 +138,23 @@ The current Rust application already has useful pieces:
 - quota configuration shapes and normalized usage contracts; and
 - Settings controls for quota routing and auto-resume.
 
-The pieces are not connected into an intelligent route:
+The first quota-aware slice is now connected:
 
-- `InProcessEngine::workspace_usage` returns no providers;
-- `auto_runner` chooses the first connected runner in a fixed order;
+- `workspace_usage` probes Codex's local app-server through a bounded cached request and represents
+  Claude and OpenCode limits as unknown rather than zero;
+- `duck usage`, `duck usage --json`, and Settings → Resources render that shared sanitized view; and
+- when `quotaRouting.enabled` is true, Auto ranks known available headroom above unknown capacity
+  instead of always allowing the legacy Claude-first order to win.
+
+The broader coordinator work remains incomplete:
+
 - runner Auto is resolved once at run creation rather than at each automatic step;
 - model Auto and reasoning Auto omit overrides and delegate to the runner;
 - the TUI renders runner Auto through Claude's model picker;
 - current recovery retries the same persisted runner/account;
-- `QuotaProvider` accepts only Claude and Codex; and
-- `quotaRouting.enabled` has no execution effect.
+- live Claude session observations and OpenCode consumption have not yet been harvested; and
+- reservations, concurrency caps, route-specific model policy, and automatic failover still need
+  the shared coordinator described below.
 
 Repository history contains a prior TypeScript quota service, policy router, coordinator,
 provider-failure classifier, sanitized snapshot store, blocked queue, and settings UI. The Rust

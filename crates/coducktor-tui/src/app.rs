@@ -2608,6 +2608,10 @@ impl App {
             CommandId::Open => {
                 if let Some(path) = parts.next() {
                     match Route::parse(path, self.default_project.as_str()) {
+                        Some(Route::GlobalSettings) => crate::screens::settings::open_global(self),
+                        Some(Route::Settings { project }) => {
+                            crate::screens::settings::open(self, &project)
+                        }
                         Some(route) => self.request_navigate(route),
                         None => self.notice = Some(format!("unknown route: {path}")),
                     }
@@ -3944,6 +3948,18 @@ mod tests {
             action,
             PendingAction::LoadIdeDirectory { project, path: None } if project == "coducktor"
         )));
+    }
+
+    #[test]
+    fn open_command_to_global_settings_queues_settings_data() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+
+        app.execute_command("open /settings");
+
+        assert_eq!(app.route(), &Route::GlobalSettings);
+        assert!(app.pending.iter().any(
+            |action| matches!(action, PendingAction::LoadSettings { project } if project == "main")
+        ));
     }
 
     #[test]

@@ -249,10 +249,77 @@ fn ensure_data_gitignore(repo_root: &Path) {
 
 // ---- usage ---------------------------------------------------------------------------------
 
-/// `coducktor usage` — quota telemetry is not available in this build.
-pub fn usage_command() -> i32 {
-    eprintln!("coducktor usage: quota telemetry is not available in this build");
-    1
+/// `coducktor usage` — the same sanitized quota view rendered by Settings.
+pub async fn usage_command(repo_root: PathBuf, json: bool, refresh: bool) -> i32 {
+    let engine = InProcessEngine::new(repo_root, env!("CARGO_PKG_VERSION"));
+    let response = if refresh {
+        engine.refresh_workspace_usage().await
+    } else {
+        engine.workspace_usage().await
+    };
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            eprintln!("coducktor usage: {error}");
+            return 1;
+        }
+    };
+    if json {
+        match serde_json::to_string_pretty(&response) {
+            Ok(output) => println!("{output}"),
+            Err(error) => {
+                eprintln!("coducktor usage: {error}");
+                return 1;
+            }
+        }
+        return 0;
+    }
+    if let Some(health) = response.policy_health {
+        println!(
+            "Auto routing: {}/{} ready ({} unknown)",
+            health.ready_candidates, health.total_candidates, health.unknown_candidates
+        );
+    }
+    for provider in response.providers {
+        println!(
+            "{} · {} · {:?}",
+            usage_provider_label(provider.provider),
+            provider.profile_id,
+            provider.health
+        );
+        for window in &provider.windows {
+            let kind = match window.kind {
+                coducktor_contract::ProviderUsageWindowKind::Short => "short",
+                coducktor_contract::ProviderUsageWindowKind::Long => "weekly",
+                coducktor_contract::ProviderUsageWindowKind::Model => "model",
+                coducktor_contract::ProviderUsageWindowKind::Unknown => "window",
+            };
+            let used = window
+                .used_percent
+                .map(|used| format!("{used:.0}% used"))
+                .unwrap_or_else(|| "usage unknown".to_owned());
+            let reset = window
+                .resets_at
+                .as_deref()
+                .map(|reset| format!(", resets {reset}"))
+                .unwrap_or_default();
+            println!("  {kind}: {used}{reset}");
+        }
+        if provider.windows.is_empty()
+            && let Some(error) = provider.error
+        {
+            println!("  {}", error.message);
+        }
+    }
+    0
+}
+
+fn usage_provider_label(provider: coducktor_contract::QuotaProvider) -> &'static str {
+    match provider {
+        coducktor_contract::QuotaProvider::Claude => "Claude",
+        coducktor_contract::QuotaProvider::Codex => "Codex",
+        coducktor_contract::QuotaProvider::OpenCode => "OpenCode",
+    }
 }
 
 // ---- doctor -------------------------------------------------------------------------------
@@ -548,8 +615,15 @@ mod tests {
     }
 
     #[test]
-    fn usage_command_reports_not_yet_implemented_and_fails() {
-        assert_eq!(usage_command(), 1);
+    fn usage_output_uses_stable_provider_labels() {
+        assert_eq!(
+            usage_provider_label(coducktor_contract::QuotaProvider::Claude),
+            "Claude"
+        );
+        assert_eq!(
+            usage_provider_label(coducktor_contract::QuotaProvider::Codex),
+            "Codex"
+        );
     }
 
     /// A fake "repo" carrying just enough of the real tree's shape

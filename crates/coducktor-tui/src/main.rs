@@ -61,8 +61,8 @@ async fn main() -> io::Result<()> {
             headless::init_command(&repo_root);
             return Ok(());
         }
-        Some(Command::Usage { .. }) => {
-            std::process::exit(headless::usage_command());
+        Some(Command::Usage { json, refresh }) => {
+            std::process::exit(headless::usage_command(repo_root, *json, *refresh).await);
         }
         Some(Command::Doctor { json }) => {
             std::process::exit(headless::doctor_command(repo_root, *json).await);
@@ -197,6 +197,9 @@ enum BackgroundResult {
     RefreshNewTask {
         project: String,
         snapshot: PrimeNewTaskSnapshot,
+    },
+    LoadSettingsUsage {
+        result: Result<coducktor_contract::WorkspaceUsageResponse, coducktor_client::EngineError>,
     },
     LoadRepoGit {
         project: String,
@@ -1255,6 +1258,13 @@ async fn execute_pending(
                 }
             }
             PendingAction::LoadSettings { project } => {
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.workspace_usage().await },
+                    |result| BackgroundResult::LoadSettingsUsage { result },
+                );
                 load_settings(engine.as_ref(), app, &project).await;
             }
             PendingAction::SettingsPutConfig { project, input } => {
@@ -1641,6 +1651,10 @@ fn drain_background_results(
                     apply_new_task_snapshot(app, snapshot);
                 }
             }
+            BackgroundResult::LoadSettingsUsage { result } => match result {
+                Ok(usage) => app.settings_ui.workspace_usage = Some(usage),
+                Err(error) => app.notice = Some(format!("load provider usage failed: {error}")),
+            },
             BackgroundResult::LoadRepoGit { project, repo } => {
                 if app.repo_git_ui.project != project {
                     continue;

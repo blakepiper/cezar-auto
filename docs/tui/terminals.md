@@ -27,7 +27,10 @@ records what is implemented and which terminal observations remain unverified.
   transition, splash `q` skip, and alternate-screen restoration all behaved as intended.
 - **Global settings.** Manually exercised through `:open /settings` in the same `script` pseudo-terminal
   at `120x40` on 2026-08-17: the `Global settings` panel exposed `Add repository` and `Appearance`,
-  and quitting restored the alternate screen.
+  and quitting restored the alternate screen. Repeated at `120x40` on 2026-08-18 after adding
+  provider usage: the Resources section showed routing health, observation time, honest unknown
+  states for Claude and OpenCode, and both live Codex weekly windows (16% and 0% used) with reset
+  times; quitting again restored the alternate screen.
 - **Tasks keyboard focus.** Manually exercised through the real TUI in an 80x24 pseudo-terminal
   on 2026-08-17: from the focused sidebar, `Ctrl+Right` moved control into the Tasks table,
   `Down` highlighted the first task row, and `Enter` opened that task's thread. Quitting restored

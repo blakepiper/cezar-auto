@@ -36,6 +36,16 @@ pub fn now_iso8601() -> String {
     format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}.{millis:03}Z")
 }
 
+/// A Unix timestamp as the same UTC ISO-8601 spelling used by persisted Coducktor state.
+/// Provider protocols commonly report reset instants as whole epoch seconds.
+pub fn unix_seconds_iso8601(seconds: i64) -> String {
+    let days = seconds.div_euclid(86_400);
+    let sod = seconds.rem_euclid(86_400);
+    let (y, m, d) = civil_from_days(days);
+    let (hh, mm, ss) = (sod / 3600, (sod % 3600) / 60, sod % 60);
+    format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}.000Z")
+}
+
 /// Mirrors zod's default `z.string().datetime()` (no `offset`/`local` options, so only a
 /// trailing `Z` is accepted, never `+00:00`): `YYYY-MM-DDTHH:mm:ss` with an optional
 /// `.`-prefixed fractional-second run of one or more digits, then `Z`. Used to replay the
@@ -104,6 +114,12 @@ mod tests {
         assert_eq!(&s[4..5], "-");
         assert_eq!(&s[10..11], "T");
         assert_eq!(&s[23..24], "Z");
+    }
+
+    #[test]
+    fn unix_seconds_are_formatted_as_utc() {
+        assert_eq!(unix_seconds_iso8601(0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(unix_seconds_iso8601(86_400), "1970-01-02T00:00:00.000Z");
     }
 
     #[test]

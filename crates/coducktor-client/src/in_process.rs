@@ -33,16 +33,18 @@ use coducktor_contract::{
     OpenTargetsResponse, ParsedWorkflow, PatchRunInput, PickVariantRequest, PickVariantResponse,
     PlanResponse, PresentRepoResponse, ProjectListEntry, ProjectSource, ProjectStatus,
     ProjectsResponse, ProviderConnectionState, ProviderStatus, ProviderStatusResponse,
-    QueuedMessagePatchInput, RUN_HISTORY_PAGE_ITEMS, ReclaimWorktreesResponse,
-    RegisterProjectInput, RegisterProjectResponse, RemoveAgentProfileResponse,
-    RemoveProjectResponse, RemoveQueuedMessageResponse, RemoveWorktreeResponse, RepoBranchRequest,
-    RepoBranchResponse, RepoCommitPayload, RepoDiffStat, RepoInfo, RepoResponse, RunCommit,
-    RunCommitsResponse, RunEvent, RunHistoryContext, RunHistoryEvent, RunHistoryPage,
-    RunIndexEntry, Runner, RunnerModelCatalogResponse, RunnerModelOption, RunnerSelection,
-    RunsIndexResponse, SaveWorkflowInput, SaveWorkflowResponse, SelectAgentProfileInput,
-    SetAgentConfigInput, SetConfigInput, SetWorkspaceConfigInput, SetWorkspaceUiStateInput, Skill,
-    StatusEntry, UpdateAgentProfileInput, UpdateProjectInput, UpdateProjectResponse,
-    UserMcpListing, WorkflowStepDef, WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUiState,
+    ProviderUsageError, ProviderUsageHealth, ProviderUsageSnapshot, ProviderUsageWindow,
+    ProviderUsageWindowKind, QueuedMessagePatchInput, QuotaProvider, RUN_HISTORY_PAGE_ITEMS,
+    ReclaimWorktreesResponse, RegisterProjectInput, RegisterProjectResponse,
+    RemoveAgentProfileResponse, RemoveProjectResponse, RemoveQueuedMessageResponse,
+    RemoveWorktreeResponse, RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoDiffStat,
+    RepoInfo, RepoResponse, RunCommit, RunCommitsResponse, RunEvent, RunHistoryContext,
+    RunHistoryEvent, RunHistoryPage, RunIndexEntry, Runner, RunnerModelCatalogResponse,
+    RunnerModelOption, RunnerSelection, RunsIndexResponse, SaveWorkflowInput, SaveWorkflowResponse,
+    SelectAgentProfileInput, SetAgentConfigInput, SetConfigInput, SetWorkspaceConfigInput,
+    SetWorkspaceUiStateInput, Skill, StatusEntry, UpdateAgentProfileInput, UpdateProjectInput,
+    UpdateProjectResponse, UsageConfidence, UserMcpListing, WorkflowStepDef, WorkflowsResponse,
+    WorkspaceConfigResponse, WorkspaceUiState, WorkspaceUsagePolicyHealth, WorkspaceUsageRefresh,
     WorkspaceUsageResponse, WorktreeDirEntry, WorktreeEntry, WorktreeEntryType, WorktreeInfo,
     WorktreeRunStatus, WorktreesResponse,
 };
@@ -95,6 +97,7 @@ pub struct InProcessEngine {
     boot_project_id: String,
     live_events: broadcast::Sender<EngineEvent>,
     model_catalog: Arc<Mutex<Vec<CachedModelCatalog>>>,
+    usage_cache: Arc<Mutex<Option<CachedWorkspaceUsage>>>,
 }
 
 #[derive(Clone)]
@@ -136,6 +139,12 @@ struct CachedModelCatalog {
     models: Vec<RunnerModelOption>,
     expires_at: Instant,
     failure_reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedWorkspaceUsage {
+    response: WorkspaceUsageResponse,
+    expires_at: Instant,
 }
 
 const MODEL_CATALOG_TTL: Duration = Duration::from_secs(5 * 60);
@@ -220,6 +229,7 @@ impl InProcessEngine {
             boot_project_id: boot_project_id.clone(),
             live_events,
             model_catalog: Arc::new(Mutex::new(Vec::new())),
+            usage_cache: Arc::new(Mutex::new(None)),
         };
         engine.attach_manager(boot_project_id, manager, engine.repo_root.clone());
         engine
@@ -353,6 +363,7 @@ impl InProcessEngine {
             boot_project_id: self.boot_project_id.clone(),
             live_events: self.live_events.clone(),
             model_catalog: self.model_catalog.clone(),
+            usage_cache: self.usage_cache.clone(),
         })
     }
 
@@ -453,7 +464,21 @@ impl InProcessEngine {
         };
         let requested_runner = input.runner;
         let resolved_runner = if requested_runner == Some(RunnerSelection::Auto) {
-            auto_runner(&provider_status_response())
+            let status = provider_status_response();
+            let workspace = self.loaded_workspace_config();
+            if workspace.quota_routing.enabled {
+                let usage = self.workspace_usage().await?;
+                Some(
+                    quota_aware_auto_runner(&status, &usage, &workspace.quota_routing).ok_or_else(
+                        || EngineError::Unavailable {
+                            reason: "no connected provider has eligible quota for Auto routing"
+                                .to_owned(),
+                        },
+                    )?,
+                )
+            } else {
+                auto_runner(&status)
+            }
         } else {
             None
         };
@@ -867,13 +892,38 @@ impl InProcessEngine {
         })
     }
 
-    /// Quota telemetry is not available in this build, so the provider list is empty.
+    /// Return the shared, sanitized quota view. Provider probes are bounded and cached so opening
+    /// Settings repeatedly does not keep starting agent CLI processes.
     pub async fn workspace_usage(&self) -> Result<WorkspaceUsageResponse, EngineError> {
-        Ok(WorkspaceUsageResponse {
-            providers: vec![],
-            refresh: None,
-            policy_health: None,
-        })
+        self.workspace_usage_cached(false).await
+    }
+
+    /// Force a bounded refresh for the headless `usage --refresh` path.
+    pub async fn refresh_workspace_usage(&self) -> Result<WorkspaceUsageResponse, EngineError> {
+        self.workspace_usage_cached(true).await
+    }
+
+    async fn workspace_usage_cached(
+        &self,
+        force_refresh: bool,
+    ) -> Result<WorkspaceUsageResponse, EngineError> {
+        if !force_refresh
+            && let Ok(cache) = self.usage_cache.lock()
+            && let Some(cached) = cache.as_ref()
+            && cached.expires_at > Instant::now()
+        {
+            return Ok(cached.response.clone());
+        }
+        let config = self.loaded_workspace_config();
+        let response = collect_workspace_usage(&self.repo_root, &config).await;
+        if let Ok(mut cache) = self.usage_cache.lock() {
+            *cache = Some(CachedWorkspaceUsage {
+                response: response.clone(),
+                expires_at: Instant::now()
+                    + Duration::from_secs(config.quota_routing.cache_ttl_seconds),
+            });
+        }
+        Ok(response)
     }
 
     // ---- provider status + agent-profile accounts ------------------------------------------
@@ -3923,6 +3973,268 @@ async fn read_codex_response(
     Err(())
 }
 
+fn quota_provider(runner: Runner) -> Option<QuotaProvider> {
+    match runner {
+        Runner::Claude => Some(QuotaProvider::Claude),
+        Runner::Codex => Some(QuotaProvider::Codex),
+        Runner::OpenCode => Some(QuotaProvider::OpenCode),
+        Runner::Pi => None,
+    }
+}
+
+fn unknown_usage_snapshot(
+    profile: &ResolvedAgentProfile,
+    status: ProviderConnectionState,
+    fetched_at: &str,
+) -> ProviderUsageSnapshot {
+    let (health, code, message) = match status {
+        ProviderConnectionState::Connected => (
+            ProviderUsageHealth::Unknown,
+            "limits_unknown",
+            match profile.provider {
+                Runner::Claude => "Claude reports limits only after a real session observation",
+                Runner::OpenCode => "configured upstreams do not expose a common quota API",
+                Runner::Codex => "Codex did not return a usable rate-limit snapshot",
+                Runner::Pi => "quota telemetry is unavailable",
+            },
+        ),
+        ProviderConnectionState::Disconnected => (
+            ProviderUsageHealth::AuthError,
+            "authentication_required",
+            "sign in with the provider CLI",
+        ),
+        ProviderConnectionState::NotInstalled => (
+            ProviderUsageHealth::Unavailable,
+            "not_installed",
+            "provider CLI is not installed",
+        ),
+        ProviderConnectionState::Unknown => (
+            ProviderUsageHealth::Unavailable,
+            "provider_error",
+            "provider CLI could not be inspected",
+        ),
+    };
+    ProviderUsageSnapshot {
+        provider: quota_provider(profile.provider).unwrap_or(QuotaProvider::OpenCode),
+        profile_id: profile.id.clone(),
+        upstream_provider: None,
+        health,
+        confidence: Some(UsageConfidence::Unknown),
+        fetched_at: fetched_at.to_owned(),
+        source: "local_cli".to_owned(),
+        stale: false,
+        windows: Vec::new(),
+        consumption: None,
+        error: Some(ProviderUsageError {
+            code: code.to_owned(),
+            message: message.to_owned(),
+        }),
+        extra: Default::default(),
+    }
+}
+
+fn codex_window(value: &Value, id: String) -> Option<ProviderUsageWindow> {
+    let used_percent = value.get("usedPercent").and_then(Value::as_f64);
+    let duration = value.get("windowDurationMins").and_then(Value::as_u64);
+    let resets_at = value
+        .get("resetsAt")
+        .and_then(Value::as_i64)
+        .map(coducktor_core::time::unix_seconds_iso8601);
+    if used_percent.is_none() && duration.is_none() && resets_at.is_none() {
+        return None;
+    }
+    Some(ProviderUsageWindow {
+        id: Some(id),
+        kind: if duration.is_some_and(|minutes| minutes >= 24 * 60) {
+            ProviderUsageWindowKind::Long
+        } else if duration.is_some() {
+            ProviderUsageWindowKind::Short
+        } else {
+            ProviderUsageWindowKind::Unknown
+        },
+        used_percent,
+        resets_at,
+        hard_limit_reached: used_percent.map(|used| used >= 100.0),
+    })
+}
+
+fn parse_codex_usage_snapshot(
+    profile: &ResolvedAgentProfile,
+    result: &Value,
+    policy: &coducktor_core::workspace::config::QuotaProviderPolicy,
+    fetched_at: &str,
+) -> Option<ProviderUsageSnapshot> {
+    let mut buckets = Vec::new();
+    if let Some(by_id) = result.get("rateLimitsByLimitId").and_then(Value::as_object) {
+        buckets.extend(by_id.iter().map(|(id, snapshot)| (id.as_str(), snapshot)));
+    }
+    if buckets.is_empty() {
+        buckets.push(("codex", result.get("rateLimits")?));
+    }
+    let mut windows = Vec::new();
+    let mut reached = false;
+    for (bucket_id, snapshot) in buckets {
+        reached |= snapshot
+            .get("rateLimitReachedType")
+            .is_some_and(|value| !value.is_null());
+        for name in ["primary", "secondary"] {
+            if let Some(window) = snapshot
+                .get(name)
+                .filter(|value| !value.is_null())
+                .and_then(|value| codex_window(value, format!("{bucket_id}:{name}")))
+            {
+                windows.push(window);
+            }
+        }
+    }
+    if windows.is_empty() && !reached {
+        return None;
+    }
+    let reserved = windows.iter().any(|window| {
+        window.used_percent.is_some_and(|used| {
+            let stop = if window.kind == ProviderUsageWindowKind::Long {
+                policy.long_window_stop_at_percent
+            } else {
+                policy.stop_new_work_at_percent
+            };
+            used >= stop
+        })
+    });
+    let exhausted = reached
+        || windows
+            .iter()
+            .any(|window| window.hard_limit_reached == Some(true));
+    Some(ProviderUsageSnapshot {
+        provider: QuotaProvider::Codex,
+        profile_id: profile.id.clone(),
+        upstream_provider: None,
+        health: if exhausted {
+            ProviderUsageHealth::HardExhausted
+        } else if reserved {
+            ProviderUsageHealth::SoftExhausted
+        } else {
+            ProviderUsageHealth::Available
+        },
+        confidence: Some(UsageConfidence::Authoritative),
+        fetched_at: fetched_at.to_owned(),
+        source: "codex_app_server".to_owned(),
+        stale: false,
+        windows,
+        consumption: None,
+        error: None,
+        extra: Default::default(),
+    })
+}
+
+async fn probe_codex_usage(
+    repo_root: &Path,
+    profile: &ResolvedAgentProfile,
+    policy: &coducktor_core::workspace::config::QuotaProviderPolicy,
+    timeout: Duration,
+    fetched_at: &str,
+) -> Option<ProviderUsageSnapshot> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let executable = provider_executable(Runner::Codex);
+    let mut command = tokio::process::Command::new(executable);
+    command
+        .arg("app-server")
+        .current_dir(repo_root)
+        .stdin(Stdio::piped())
+        .stderr(Stdio::null())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true);
+    if !profile.is_default {
+        command.env("CODEX_HOME", &profile.path);
+    }
+    let mut child = command.spawn().ok()?;
+    let mut stdin = child.stdin.take()?;
+    let stdout = child.stdout.take()?;
+    let mut lines = BufReader::new(stdout).lines();
+    tokio::time::timeout(timeout, async {
+        write_codex_message(
+            &mut stdin,
+            json!({
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "clientInfo": { "name": "coducktor", "title": "Coducktor", "version": "0.1.0" },
+                    "capabilities": { "experimentalApi": true }
+                }
+            }),
+        )
+        .await?;
+        read_codex_response(&mut lines, 1).await?;
+        write_codex_message(&mut stdin, json!({ "method": "initialized", "params": {} })).await?;
+        write_codex_message(
+            &mut stdin,
+            json!({ "id": 2, "method": "account/rateLimits/read" }),
+        )
+        .await?;
+        let result = read_codex_response(&mut lines, 2).await?;
+        parse_codex_usage_snapshot(profile, &result, policy, fetched_at).ok_or(())
+    })
+    .await
+    .ok()?
+    .ok()
+}
+
+async fn collect_workspace_usage(
+    repo_root: &Path,
+    config: &coducktor_core::workspace::config::WorkspaceConfig,
+) -> WorkspaceUsageResponse {
+    let fetched_at = coducktor_core::time::now_iso8601();
+    let store = coducktor_core::workspace::agent_accounts::load_agent_accounts(
+        &agent_accounts_path(&ProcessEnv),
+    );
+    let mut profiles = vec![
+        default_agent_profile(Runner::Claude),
+        default_agent_profile(Runner::Codex),
+        default_agent_profile(Runner::OpenCode),
+    ];
+    profiles.extend(store.accounts.iter().map(resolved_agent_profile));
+    let mut providers = Vec::new();
+    for profile in profiles {
+        let status = provider_status_for_profile(&profile).status;
+        if profile.provider == Runner::Codex
+            && status == ProviderConnectionState::Connected
+            && let Some(snapshot) = probe_codex_usage(
+                repo_root,
+                &profile,
+                &config.quota_routing.codex,
+                Duration::from_secs(config.quota_routing.request_timeout_seconds),
+                &fetched_at,
+            )
+            .await
+        {
+            providers.push(snapshot);
+            continue;
+        }
+        providers.push(unknown_usage_snapshot(&profile, status, &fetched_at));
+    }
+    let ready_candidates = providers
+        .iter()
+        .filter(|provider| provider.health == ProviderUsageHealth::Available)
+        .count() as u64;
+    let unknown_candidates = providers
+        .iter()
+        .filter(|provider| provider.health == ProviderUsageHealth::Unknown)
+        .count() as u64;
+    WorkspaceUsageResponse {
+        policy_health: Some(WorkspaceUsagePolicyHealth {
+            ready_candidates,
+            total_candidates: providers.len() as u64,
+            unknown_candidates,
+        }),
+        refresh: Some(WorkspaceUsageRefresh {
+            refreshing: false,
+            observed_at: Some(fetched_at),
+            stale: false,
+            error: None,
+        }),
+        providers,
+    }
+}
+
 fn parse_codex_reasoning_efforts(value: Option<&Value>) -> Result<Option<Vec<String>>, ()> {
     let Some(value) = value else {
         return Ok(None);
@@ -6428,6 +6740,88 @@ fn auto_runner(status: &ProviderStatusResponse) -> Option<Runner> {
         })
 }
 
+/// Quota-aware provider selection deliberately ranks trustworthy available capacity above an
+/// unknown account. This is the missing behavior that otherwise made the legacy Claude-first
+/// fallback win even while Codex had a fresh, unused weekly window.
+fn quota_aware_auto_runner(
+    status: &ProviderStatusResponse,
+    usage: &WorkspaceUsageResponse,
+    policy: &coducktor_core::workspace::config::QuotaRouting,
+) -> Option<Runner> {
+    let candidates = [Runner::Claude, Runner::Codex, Runner::OpenCode];
+    candidates
+        .into_iter()
+        .filter(|runner| {
+            status.providers.iter().any(|provider| {
+                provider.provider == *runner
+                    && provider.enabled == Some(true)
+                    && provider.status == ProviderConnectionState::Connected
+            })
+        })
+        .filter_map(|runner| {
+            let (provider, provider_policy) = match runner {
+                Runner::Claude => (QuotaProvider::Claude, &policy.claude),
+                Runner::Codex => (QuotaProvider::Codex, &policy.codex),
+                Runner::OpenCode => (QuotaProvider::OpenCode, &policy.opencode),
+                Runner::Pi => return None,
+            };
+            if !provider_policy.enabled {
+                return None;
+            }
+            let snapshot = usage
+                .providers
+                .iter()
+                .find(|snapshot| snapshot.provider == provider && snapshot.profile_id == "default")
+                .or_else(|| {
+                    usage
+                        .providers
+                        .iter()
+                        .find(|snapshot| snapshot.provider == provider)
+                });
+            let health = snapshot
+                .map(|snapshot| snapshot.health)
+                .unwrap_or(ProviderUsageHealth::Unknown);
+            let health_rank = match health {
+                ProviderUsageHealth::Available => 2_u8,
+                ProviderUsageHealth::Unknown
+                    if policy.unknown_usage_policy
+                        == coducktor_contract::UnknownUsagePolicy::AllowWithPenalty =>
+                {
+                    1
+                }
+                ProviderUsageHealth::SoftExhausted
+                | ProviderUsageHealth::HardExhausted
+                | ProviderUsageHealth::AuthError
+                | ProviderUsageHealth::Unavailable
+                | ProviderUsageHealth::Unknown => return None,
+            };
+            let headroom = snapshot
+                .into_iter()
+                .flat_map(|snapshot| &snapshot.windows)
+                .filter_map(|window| window.used_percent)
+                .map(|used| (100.0 - used.clamp(0.0, 100.0)).round() as i64)
+                .min()
+                .unwrap_or(-1);
+            let order = policy
+                .provider_order
+                .iter()
+                .position(|candidate| *candidate == provider)
+                .map(|position| u64::MAX - position as u64)
+                .unwrap_or(0);
+            Some((
+                health_rank,
+                headroom,
+                provider_policy.priority,
+                order,
+                runner,
+            ))
+        })
+        .max_by_key(|(health, headroom, priority, order, _)| {
+            (*health, *headroom, *priority, *order)
+        })
+        .map(|(_, _, _, _, runner)| runner)
+}
+
 fn provider_models_locked() -> bool {
     std::env::var("DUCK_AGENT_MODELS_LOCKED").is_ok_and(|value| value == "1")
 }
@@ -7042,6 +7436,94 @@ mod tests {
             ],
         };
         assert_eq!(auto_runner(&status), Some(Runner::OpenCode));
+    }
+
+    #[test]
+    fn quota_aware_auto_prefers_known_codex_headroom_to_unknown_claude() {
+        let status = ProviderStatusResponse {
+            providers: [Runner::Claude, Runner::Codex]
+                .into_iter()
+                .map(|provider| ProviderStatus {
+                    provider,
+                    status: ProviderConnectionState::Connected,
+                    enabled: Some(true),
+                    hint: None,
+                    auth_failure_id: None,
+                    profile_id: None,
+                })
+                .collect(),
+        };
+        let snapshot = |provider: QuotaProvider,
+                        health: ProviderUsageHealth,
+                        used_percent: Option<f64>| ProviderUsageSnapshot {
+            provider,
+            profile_id: "default".to_owned(),
+            upstream_provider: None,
+            health,
+            confidence: Some(UsageConfidence::Authoritative),
+            fetched_at: "2026-08-18T00:00:00.000Z".to_owned(),
+            source: "test".to_owned(),
+            stale: false,
+            windows: used_percent
+                .map(|used_percent| ProviderUsageWindow {
+                    id: Some("weekly".to_owned()),
+                    kind: ProviderUsageWindowKind::Long,
+                    used_percent: Some(used_percent),
+                    resets_at: None,
+                    hard_limit_reached: Some(false),
+                })
+                .into_iter()
+                .collect(),
+            consumption: None,
+            error: None,
+            extra: Default::default(),
+        };
+        let usage = WorkspaceUsageResponse {
+            providers: vec![
+                snapshot(QuotaProvider::Claude, ProviderUsageHealth::Unknown, None),
+                snapshot(
+                    QuotaProvider::Codex,
+                    ProviderUsageHealth::Available,
+                    Some(0.0),
+                ),
+            ],
+            refresh: None,
+            policy_health: None,
+        };
+        assert_eq!(
+            quota_aware_auto_runner(
+                &status,
+                &usage,
+                &coducktor_core::workspace::config::QuotaRouting::default()
+            ),
+            Some(Runner::Codex)
+        );
+    }
+
+    #[test]
+    fn codex_rate_limit_payload_is_normalized_and_reserved_at_the_weekly_threshold() {
+        let profile = default_agent_profile(Runner::Codex);
+        let result = json!({
+            "rateLimits": {
+                "primary": { "usedPercent": 12.0, "windowDurationMins": 300, "resetsAt": 0 },
+                "secondary": { "usedPercent": 92.0, "windowDurationMins": 10080, "resetsAt": 86400 },
+                "rateLimitReachedType": null
+            }
+        });
+        let snapshot = parse_codex_usage_snapshot(
+            &profile,
+            &result,
+            &coducktor_core::workspace::config::QuotaRouting::default().codex,
+            "2026-08-18T00:00:00.000Z",
+        )
+        .unwrap();
+        assert_eq!(snapshot.health, ProviderUsageHealth::SoftExhausted);
+        assert_eq!(snapshot.windows.len(), 2);
+        assert_eq!(snapshot.windows[1].kind, ProviderUsageWindowKind::Long);
+        assert_eq!(
+            snapshot.windows[1].resets_at.as_deref(),
+            Some("1970-01-02T00:00:00.000Z")
+        );
     }
     use coducktor_contract::WorkflowStepDef;
     use coducktor_core::workflows::run::{
@@ -7684,10 +8166,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workspace_usage_reports_no_providers() {
+    async fn workspace_usage_reports_sanitized_default_profiles() {
         let dir = TempDir::new().unwrap();
         let engine = engine(&dir);
-        assert_eq!(engine.workspace_usage().await.unwrap().providers, vec![]);
+        let usage = engine.workspace_usage().await.unwrap();
+        assert!(
+            usage
+                .providers
+                .iter()
+                .any(|provider| provider.provider == QuotaProvider::Claude)
+        );
+        assert!(
+            usage
+                .providers
+                .iter()
+                .any(|provider| provider.provider == QuotaProvider::Codex)
+        );
+        assert!(usage.refresh.is_some());
+        assert!(usage.policy_health.is_some());
     }
 
     fn save_input(name: &str, steps: Vec<WorkflowStepDef>) -> SaveWorkflowInput {
