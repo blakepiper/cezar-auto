@@ -605,9 +605,6 @@ pub struct CreateRunInputBase {
     pub reasoning_effort: Option<ReasoningEffort>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runner: Option<RunnerSelection>,
-    /// When the runner is `auto`, rank providers using the current quota snapshot for this run.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quota_aware_auto: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

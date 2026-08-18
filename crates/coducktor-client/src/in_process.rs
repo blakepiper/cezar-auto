@@ -475,16 +475,10 @@ impl InProcessEngine {
         let requested_runner = Some(effective_requested_runner(input.runner, configured_runner));
         let auto_runner_candidates = if requested_runner == Some(RunnerSelection::Auto) {
             let status = provider_status_response();
-            if input.quota_aware_auto == Some(true) {
-                self.fresh_cached_workspace_usage()
-                    .map(|usage| {
-                        quota_aware_auto_runners(&status, &usage, &workspace.quota_routing)
-                    })
-                    .filter(|candidates| !candidates.is_empty())
-                    .unwrap_or_else(|| auto_runners(&status))
-            } else {
-                auto_runners(&status)
-            }
+            self.fresh_cached_workspace_usage()
+                .map(|usage| quota_aware_auto_runners(&status, &usage, &workspace.quota_routing))
+                .filter(|candidates| !candidates.is_empty())
+                .unwrap_or_else(|| auto_runners(&status))
         } else {
             Vec::new()
         };
@@ -7900,7 +7894,6 @@ mod tests {
             model: None,
             reasoning_effort: None,
             runner: None,
-            quota_aware_auto: None,
             agent_profile: None,
             variants: None,
             worktree: Some(false),

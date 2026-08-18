@@ -399,7 +399,6 @@ pub struct CreateRunBodyOpts {
     pub reasoning_effort: Option<ReasoningEffort>,
     pub models_locked: bool,
     pub runner: RunnerSelection,
-    pub quota_aware_auto: bool,
     pub runner_explicit: bool,
     pub default_runner: Option<RunnerSelection>,
     pub variants: u64,
@@ -449,8 +448,6 @@ pub fn build_create_run_body(opts: &CreateRunBodyOpts) -> CreateRunInput {
             .reasoning_effort
             .filter(|effort| *effort != ReasoningEffort::Auto),
         runner: runner_override(opts.runner, opts.default_runner, opts.runner_explicit),
-        quota_aware_auto: (opts.runner == RunnerSelection::Auto && opts.quota_aware_auto)
-            .then_some(true),
         agent_profile: None,
         variants: (opts.variants > 1).then_some(opts.variants as f64),
         worktree: match opts.worktree {
@@ -547,8 +544,6 @@ pub struct NewTaskDraft {
     pub text: String,
     pub source: Option<TaskSource>,
     pub runner: Option<RunnerSelection>,
-    /// Per-prompt opt-in for quota-aware selection when the runner is Auto.
-    pub quota_aware_auto: bool,
     pub model: Option<String>,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub variants: u64,
@@ -566,7 +561,6 @@ impl Default for NewTaskDraft {
             text: String::new(),
             source: None,
             runner: None,
-            quota_aware_auto: false,
             model: None,
             reasoning_effort: None,
             variants: 1,
@@ -847,7 +841,6 @@ mod tests {
             reasoning_effort: None,
             models_locked: false,
             runner: RunnerSelection::Claude,
-            quota_aware_auto: false,
             runner_explicit: false,
             default_runner: Some(RunnerSelection::Claude),
             variants: 1,
@@ -953,17 +946,6 @@ mod tests {
             build_create_run_body(&opts).runner,
             Some(RunnerSelection::Codex)
         );
-    }
-
-    #[test]
-    fn quota_aware_auto_is_sent_only_for_an_auto_runner() {
-        let mut opts = base_opts();
-        opts.runner = RunnerSelection::Auto;
-        opts.quota_aware_auto = true;
-        assert_eq!(build_create_run_body(&opts).quota_aware_auto, Some(true));
-
-        opts.runner = RunnerSelection::Codex;
-        assert_eq!(build_create_run_body(&opts).quota_aware_auto, None);
     }
 
     #[test]

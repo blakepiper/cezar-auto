@@ -136,7 +136,7 @@ The current Rust application already has useful pieces:
 - normalized per-run token and cost events;
 - durable `autoResumeAt`, account holds, and reconciliation;
 - quota configuration shapes and normalized usage contracts; and
-- Composer controls for per-run quota-aware Auto selection and Settings controls for auto-resume.
+- Auto runner selection and Settings controls for auto-resume.
 
 The first quota-aware slice is now connected:
 
@@ -144,7 +144,7 @@ The first quota-aware slice is now connected:
   through bounded cached requests; Claude and OpenCode upstreams without a supported quota
   interface remain unknown rather than zero;
 - `duck usage`, `duck usage --json`, and Settings → Resources render that shared sanitized view; and
-- when a Composer request sets `quotaAwareAuto: true`, Auto ranks known available headroom above unknown capacity
+- when the Composer selects the `Auto` runner, it ranks known available headroom above unknown capacity
   instead of always allowing the legacy Claude-first order to win; and
 - runner Auto retains the ranked connected-provider list, emits its choices into the run event
   stream, and retries the unchanged opening prompt on the next provider after a classified quota,
@@ -1062,8 +1062,8 @@ Work:
 2. Implement Codex, Claude-observation, and OpenCode adapters according to Phase 0.
 3. Feed live session usage and limit observations back from runners.
 4. Implement `workspace_usage`, refresh, `duck usage`, and the Settings usage view.
-5. Keep quota policy configuration separate from the Composer's per-run `quotaAwareAuto` choice
-   until the coordinator ships.
+5. Keep quota policy configuration separate from the Composer's Auto runner choice until the
+   coordinator ships.
 
 Exit criteria: users can inspect honest usage/limit state without enabling Auto, refreshes do not
 block the TUI, and provider failures degrade to unknown/unavailable.
