@@ -1065,6 +1065,7 @@ pub struct App {
     pub skills_ui: crate::screens::skills::SkillsUi,
     pub workflows_ui: crate::screens::workflows::WorkflowsUi,
     pub settings_ui: crate::screens::settings::SettingsUi,
+    pub settings_request_generation: u64,
     pub palette: crate::overlay::Palette,
     /// Settings → Notifications' toggle, loaded once at startup and kept live by every write
     /// Gates `pending_notifications`, never the terminal-title update.
@@ -1149,6 +1150,7 @@ impl App {
             skills_ui: crate::screens::skills::SkillsUi::default(),
             workflows_ui: crate::screens::workflows::WorkflowsUi::default(),
             settings_ui: crate::screens::settings::SettingsUi::default(),
+            settings_request_generation: 0,
             palette: crate::overlay::Palette::default(),
             notifications_enabled: false,
             pending_notifications: Vec::new(),
@@ -1309,6 +1311,11 @@ impl App {
             .or_default();
         *generation = generation.wrapping_add(1);
         *generation
+    }
+
+    pub fn begin_settings_request(&mut self) -> u64 {
+        self.settings_request_generation = self.settings_request_generation.wrapping_add(1);
+        self.settings_request_generation
     }
 
     pub fn accepts_new_task_response(&self, project: &str, generation: u64) -> bool {

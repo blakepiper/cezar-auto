@@ -242,6 +242,7 @@ enum BackgroundResult {
     },
     LoadSettings {
         project: String,
+        generation: u64,
         snapshot: SettingsSnapshot,
     },
     LoadRepoGit {
@@ -1508,6 +1509,7 @@ async fn execute_pending(
                 }
             }
             PendingAction::LoadSettings { project } => {
+                let generation = app.begin_settings_request();
                 let engine_for_task = engine.clone();
                 let project_for_task = project.clone();
                 spawn_background(
@@ -1521,7 +1523,11 @@ async fn execute_pending(
                     background_handle,
                     background_sender,
                     async move { load_settings_snapshot(engine_for_task, &project_for_task).await },
-                    move |snapshot| BackgroundResult::LoadSettings { project, snapshot },
+                    move |snapshot| BackgroundResult::LoadSettings {
+                        project,
+                        generation,
+                        snapshot,
+                    },
                 );
             }
             PendingAction::SettingsPutConfig { project, input } => {
@@ -1999,7 +2005,11 @@ fn drain_background_results(
                 Ok(usage) => app.settings_ui.workspace_usage = Some(usage),
                 Err(error) => app.notice = Some(format!("load provider usage failed: {error}")),
             },
-            BackgroundResult::LoadSettings { project, snapshot } => {
+            BackgroundResult::LoadSettings {
+                project,
+                generation,
+                snapshot,
+            } => {
                 if !matches!(
                     app.route(),
                     app::Route::Settings { project: route_project } if route_project == &project
@@ -2007,7 +2017,9 @@ fn drain_background_results(
                 {
                     continue;
                 }
-                apply_settings_snapshot(app, snapshot);
+                if app.settings_request_generation == generation {
+                    apply_settings_snapshot(app, snapshot);
+                }
             }
             BackgroundResult::LoadScratchpad { project, result } => {
                 if !matches!(
