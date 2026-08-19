@@ -26,9 +26,15 @@ the larger coordinator rewrite:
 - run-index reads salvage valid entries, quarantine corrupt or partially corrupt state from
   overwrite, preserve unknown run and step keys, and replace indexes with collision-safe `0600`
   writes plus file synchronization;
+- startup retention prunes only terminal stale records after committing the replacement index,
+  removes matching NDJSON/handoff sidecars, and never removes recoverable worktrees;
+- the usage-limit auto-resume setting now reaches runtime policy, so disabled workspaces keep due
+  quota-limited runs parked rather than silently requeueing them;
+- child process teardown owns and reaps stdout/stderr reader threads after bounded termination;
 - Codex server requests receive explicit responses, Claude forwards subagent text, terminal CLI
-  handoff uses structured arguments on Linux, macOS, and Windows, and dead thread docks plus the
-  duplicated binary test target were removed.
+  handoff uses structured arguments on Linux, macOS, and Windows, and Codex fixture coverage now
+  proves unsupported MCP elicitation and unknown client requests cannot leave the provider
+  waiting; dead thread docks plus the duplicated binary test target were removed.
 
 The critical coordinator work is not complete. Provider turns still need to move out of the
 project-manager critical section into bounded per-run workers before same-project parallelism and
