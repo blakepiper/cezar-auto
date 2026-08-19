@@ -170,7 +170,7 @@ Evidence:
   Post-action thread refreshes likewise queue the existing background thread loader instead of
   fetching a run inline. The task-Git changes load now fetches its run and diff concurrently on a
   background worker and discards results after navigation away from that task; task-Git file-tree
-  reads now use the same route-guarded background path.
+  reads and commit-list/detail reads now use the same route-guarded background path.
 - Exact queued duplicates of the safe task/index/new-task/model refreshes coalesce before a frame;
   mutations retain their original FIFO order and are never collapsed.
 

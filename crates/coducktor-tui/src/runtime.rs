@@ -240,6 +240,16 @@ enum BackgroundResult {
         id: String,
         result: Result<coducktor_contract::WorktreeEntry, coducktor_client::EngineError>,
     },
+    LoadTaskGitCommits {
+        project: String,
+        id: String,
+        result: Result<coducktor_contract::RunCommitsResponse, coducktor_client::EngineError>,
+    },
+    LoadTaskGitCommitDiff {
+        project: String,
+        id: String,
+        result: Result<coducktor_contract::RepoCommitPayload, coducktor_client::EngineError>,
+    },
     LoadRepoGitCommit {
         project: String,
         result: Result<coducktor_contract::RepoCommitPayload, coducktor_client::EngineError>,
@@ -943,17 +953,38 @@ async fn execute_pending(
             }
             PendingAction::LoadTaskGitCommits { project, id } => {
                 let scope = Scope::Project(project.clone());
-                match engine.run_commits(&scope, &id).await {
-                    Ok(commits) => app.task_git_ui.commits = Some(commits),
-                    Err(error) => app.notice = Some(format!("load commits failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                let id_for_task = id.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.run_commits(&scope, &id_for_task).await },
+                    move |result| BackgroundResult::LoadTaskGitCommits {
+                        project,
+                        id,
+                        result,
+                    },
+                );
             }
             PendingAction::LoadTaskGitCommitDiff { project, id, sha } => {
                 let scope = Scope::Project(project.clone());
-                match engine.run_commit(&scope, &id, &sha).await {
-                    Ok(commit) => app.task_git_ui.commit_detail = Some(commit),
-                    Err(error) => app.notice = Some(format!("load commit failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                let id_for_task = id.clone();
+                let sha_for_task = sha.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move {
+                        engine_for_task
+                            .run_commit(&scope, &id_for_task, &sha_for_task)
+                            .await
+                    },
+                    move |result| BackgroundResult::LoadTaskGitCommitDiff {
+                        project,
+                        id,
+                        result,
+                    },
+                );
             }
             PendingAction::TaskGitCommit { project, id } => {
                 let scope = Scope::Project(project.clone());
@@ -1818,6 +1849,34 @@ fn drain_background_results(
                 match result {
                     Ok(entry) => app.task_git_ui.files_entry = Some(entry),
                     Err(error) => app.notice = Some(format!("load files failed: {error}")),
+                }
+            }
+            BackgroundResult::LoadTaskGitCommits {
+                project,
+                id,
+                result,
+            } => {
+                if !matches!(app.route(), app::Route::TaskGit { project: route_project, id: route_id, tab: app::TaskGitTab::Commits } if route_project == &project && route_id == &id)
+                {
+                    continue;
+                }
+                match result {
+                    Ok(commits) => app.task_git_ui.commits = Some(commits),
+                    Err(error) => app.notice = Some(format!("load commits failed: {error}")),
+                }
+            }
+            BackgroundResult::LoadTaskGitCommitDiff {
+                project,
+                id,
+                result,
+            } => {
+                if !matches!(app.route(), app::Route::TaskGit { project: route_project, id: route_id, tab: app::TaskGitTab::Commits } if route_project == &project && route_id == &id)
+                {
+                    continue;
+                }
+                match result {
+                    Ok(commit) => app.task_git_ui.commit_detail = Some(commit),
+                    Err(error) => app.notice = Some(format!("load commit failed: {error}")),
                 }
             }
             BackgroundResult::LoadRepoGitCommit { project, result } => {
