@@ -18,8 +18,8 @@ the larger coordinator rewrite:
   passed to the child process;
 - production checks and diff inspection use the run worktree, preserve real exit status, bound
   captured output, and enforce a timeout;
-- workspace and project parallel limits plus the review-gate setting now configure every run
-  manager, including lazily opened projects;
+- workspace/project parallel limits, the monitoring-session cap, and the review-gate setting now
+  configure every run manager, including lazily opened projects;
 - reads use an observer-maintained run snapshot, cancellation bypasses a busy manager, activation
   threads are coalesced and owned, and session registrations are removed when sessions close;
 - streamed events remain durable while index rewrites and TUI transcript rebuilds are batched;
@@ -301,12 +301,12 @@ Evidence:
 
 - workspace/project Settings expose `maxParallel`, `maxMonitoringSessions`, monitoring wake
   interval, auto-resume, intelligent context refresh, and memory limits.
-- production manager construction calls `set_project_id` but not `set_runtime_options`,
-  `set_workspace_semaphore`, `set_repository_lease`, `set_intelligent_context_refresh`,
-  `set_check_executor`, or `set_diff_inspector`.
-- `busy_slots(..., max_monitoring_sessions)` and stale-index selection exist but have no production
-  caller. Memory limits and monitoring wake configuration are parsed and rendered with no runtime
-  enforcement/scheduler in this codebase.
+- production manager construction now applies runtime options, but the workspace scheduler,
+  repository lease, intelligent-context refresh, check executor, and diff inspector remain
+  unwired.
+- monitoring-session admission is enforced at runtime. Memory limits and monitoring wake
+  configuration are still parsed and rendered with no runtime enforcement/scheduler in this
+  codebase.
 
 Required correction:
 

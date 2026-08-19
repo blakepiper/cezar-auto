@@ -357,6 +357,7 @@ fn configure_production_manager(
         max_parallel: project_limit
             .min(workspace.resources.max_parallel as usize)
             .max(1),
+        max_monitoring_sessions: workspace.resources.max_monitoring_sessions as usize,
         review_gate: review_gate_enabled(
             repo.review_gate,
             std::env::var("DUCK_REVIEW_GATE").ok().as_deref(),
@@ -8971,6 +8972,7 @@ mod tests {
             json!({
                 "resources": {
                     "maxParallel": 1,
+                    "maxMonitoringSessions": 1,
                     "autoResumeOnUsageLimit": false,
                     "intelligentContextRefresh": true
                 }
@@ -8986,6 +8988,7 @@ mod tests {
         );
         let manager = engine.manager.lock().unwrap();
         assert_eq!(manager.runtime_options().max_parallel, 1);
+        assert_eq!(manager.runtime_options().max_monitoring_sessions, 1);
         assert!(!manager.runtime_options().auto_resume_on_usage_limit);
     }
 

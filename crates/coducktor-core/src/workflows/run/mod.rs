@@ -740,6 +740,7 @@ pub trait DiffInspector: Send {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeOptions {
     pub max_parallel: usize,
+    pub max_monitoring_sessions: usize,
     pub review_gate: bool,
     pub auto_resume_on_usage_limit: bool,
 }
@@ -748,6 +749,7 @@ impl Default for RuntimeOptions {
     fn default() -> Self {
         Self {
             max_parallel: 2,
+            max_monitoring_sessions: 2,
             review_gate: false,
             auto_resume_on_usage_limit: true,
         }
@@ -2696,8 +2698,17 @@ impl RunManager {
         &mut self,
         run_id: &str,
         active: RuntimeActive,
-        monitoring: bool,
+        requested_monitoring: bool,
     ) -> io::Result<()> {
+        let monitoring = requested_monitoring
+            && self
+                .runs
+                .iter()
+                .filter(|(id, run)| {
+                    id.as_str() != run_id && run.activity == Some(RunActivity::Monitoring)
+                })
+                .count()
+                < self.runtime_options.max_monitoring_sessions;
         if active.holds_slot {
             let _ = self.try_acquire_workspace_resume(run_id);
         } else {
@@ -5076,6 +5087,33 @@ mod tests {
         assert_eq!(cancelled.status, RunStatus::Cancelled);
         assert!(cancelled.activity.is_none());
         assert!(!manager.is_active(&run.id));
+    }
+
+    #[test]
+    fn runtime_caps_monitoring_sessions_and_parks_additional_sessions() {
+        let dir = tempdir().unwrap();
+        let (factory, _requests) = fake_factory(vec![
+            waiting_session(Some(TurnMarkerDecision::Monitoring)),
+            waiting_session(Some(TurnMarkerDecision::Monitoring)),
+        ]);
+        let mut manager = RunManager::with_session_factory(dir.path(), factory);
+        manager.set_runtime_options(RuntimeOptions {
+            max_monitoring_sessions: 1,
+            ..RuntimeOptions::default()
+        });
+        let workflow = workflow_with_steps(vec![agent_workflow_step("work")]);
+
+        let first = manager
+            .start_run(&workflow, start_input("first monitor"))
+            .unwrap();
+        assert_eq!(first.status, RunStatus::Running);
+        assert_eq!(first.activity, Some(RunActivity::Monitoring));
+
+        let second = manager
+            .start_run(&workflow, start_input("second monitor"))
+            .unwrap();
+        assert_eq!(second.status, RunStatus::Waiting);
+        assert!(second.activity.is_none());
     }
 
     #[test]
