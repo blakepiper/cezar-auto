@@ -313,8 +313,8 @@ Evidence:
   executor, and diff inspector; the cross-project workspace scheduler and repository lease remain
   unwired.
 - monitoring-session admission is enforced at runtime. Memory limits and monitoring wake
-  configuration are still parsed and rendered with no runtime enforcement/scheduler in this
-  codebase.
+  configuration have no runtime enforcement/scheduler in this build and are rendered as explicitly
+  unavailable with their reason rather than as active policy.
 
 Required correction:
 
