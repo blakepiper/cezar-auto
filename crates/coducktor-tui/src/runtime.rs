@@ -2133,7 +2133,9 @@ fn drain_background_results(
                 Err(error) => app.notice = Some(format!("pick failed: {error}")),
             },
             BackgroundResult::LoadRepoGit { project, repo } => {
-                if app.repo_git_ui.project != project {
+                if !matches!(app.route(), app::Route::RepoGit { project: route_project, .. } if route_project == &project)
+                    || app.repo_git_ui.project != project
+                {
                     continue;
                 }
                 match repo {
@@ -2142,7 +2144,9 @@ fn drain_background_results(
                 }
             }
             BackgroundResult::LoadRepoGitChanges { project, changes } => {
-                if app.repo_git_ui.project != project {
+                if !matches!(app.route(), app::Route::RepoGit { project: route_project, .. } if route_project == &project)
+                    || app.repo_git_ui.project != project
+                {
                     continue;
                 }
                 app.repo_git_ui.changes_loading = false;
@@ -2262,7 +2266,12 @@ fn drain_background_results(
                 }
             }
             BackgroundResult::LoadRepoGitCommit { project, result } => {
-                if app.repo_git_ui.project != project {
+                if !matches!(
+                    app.route(),
+                    app::Route::RepoGit { project: route_project, tab: app::RepoGitTab::Commits }
+                        if route_project == &project
+                ) || app.repo_git_ui.project != project
+                {
                     continue;
                 }
                 match result {
@@ -3146,6 +3155,30 @@ mod tests {
 
         assert!(!app.scratchpad_ui.loaded);
         assert!(app.scratchpad_ui.editor.text.is_empty());
+    }
+
+    #[test]
+    fn stale_repo_git_load_does_not_report_after_navigation() {
+        let (sender, receiver) = channel();
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        screens::repo_git::open(&mut app, "main", app::RepoGitTab::Changes);
+        app.navigate_route(app::Route::Tasks {
+            project: "main".to_owned(),
+        });
+        let mut starts_in_flight = HashSet::new();
+
+        sender
+            .send(BackgroundResult::LoadRepoGit {
+                project: "main".to_owned(),
+                repo: Err(coducktor_client::EngineError::Unavailable {
+                    reason: "stale request".to_owned(),
+                }),
+            })
+            .unwrap();
+
+        drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+
+        assert!(app.notice.is_none());
     }
 
     #[test]
