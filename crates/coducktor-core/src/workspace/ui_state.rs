@@ -32,7 +32,12 @@ pub fn merge_write_workspace_ui_state(
 ) -> io::Result<WorkspaceUiState> {
     let mut next = read_workspace_ui_state(path);
     mutator(&mut next);
-    let value = serde_json::to_value(&next).expect("WorkspaceUiState always serializes");
+    let value = serde_json::to_value(&next).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("could not serialize workspace UI state: {error}"),
+        )
+    })?;
     atomic_write_json_sync(path, &value)?;
     Ok(next)
 }

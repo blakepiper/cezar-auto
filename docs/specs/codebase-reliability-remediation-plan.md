@@ -37,6 +37,8 @@ the larger coordinator rewrite:
   waiting; dead thread docks plus the duplicated binary test target were removed; and
 - forge cache-lock poisoning now resets only ephemeral cached state, while a poisoned merge guard
   fails closed; optional GitHub refreshes cannot terminate the terminal process.
+- workspace UI-state serialization now returns a typed write error instead of panicking at the
+  persistence boundary.
 
 The critical coordinator work is not complete. Provider turns still need to move out of the
 project-manager critical section into bounded per-run workers before same-project parallelism and
