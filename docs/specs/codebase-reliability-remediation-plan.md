@@ -1,11 +1,42 @@
 # Codebase reliability and core-functionality remediation
 
-Status: implementation plan based on a repository audit on 2026-08-18
+Status: implementation in progress; audit and first remediation tranche completed on 2026-08-18
 
 Scope: defects, incomplete production wiring, dead code, durability, and measured performance.
 This plan does not propose new product features. It makes already-advertised behavior work, keeps
 the cockpit responsive under its existing workload, and removes implementation that no longer has
 a caller.
+
+## Implementation progress
+
+The first remediation tranche establishes the production seams and bounded hot paths needed by
+the larger coordinator rewrite:
+
+- run admission now materializes and persists worktrees before activation, and runners execute in
+  the admitted worktree;
+- selected agent profiles are resolved at admission and their provider-specific environment is
+  passed to the child process;
+- production checks and diff inspection use the run worktree, preserve real exit status, bound
+  captured output, and enforce a timeout;
+- workspace and project parallel limits plus the review-gate setting now configure every run
+  manager, including lazily opened projects;
+- reads use an observer-maintained run snapshot, cancellation bypasses a busy manager, activation
+  threads are coalesced and owned, and session registrations are removed when sessions close;
+- streamed events remain durable while index rewrites and TUI transcript rebuilds are batched;
+- run-index reads salvage valid entries, quarantine corrupt or partially corrupt state from
+  overwrite, preserve unknown run and step keys, and replace indexes with collision-safe `0600`
+  writes plus file synchronization;
+- Codex server requests receive explicit responses, Claude forwards subagent text, terminal CLI
+  handoff uses structured arguments on Linux, macOS, and Windows, and dead thread docks plus the
+  duplicated binary test target were removed.
+
+The critical coordinator work is not complete. Provider turns still need to move out of the
+project-manager critical section into bounded per-run workers before same-project parallelism and
+all mutation latency requirements in R1 are satisfied. R2 still needs a general TUI command
+executor instead of action-specific background work. The remaining R7 policy controls, full R8
+protocol fixture matrix, bounded shutdown escalation in R9, explicit repair/retention work in R10,
+and real-terminal R12 verification also remain open. The findings and acceptance criteria below
+remain authoritative until each item is closed by its named tests and measurements.
 
 ## Outcome
 
