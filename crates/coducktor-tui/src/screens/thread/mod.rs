@@ -948,6 +948,11 @@ pub fn handle_paste(app: &mut App, text: &str) -> bool {
     if app.thread_ui.subagent_sheet.is_some() || app.thread_ui.focus != ThreadFocus::Composer {
         return false;
     }
+    // Image pastes have no textual payload in some terminal implementations. In that case,
+    // read the native clipboard so a copied image can still become a follow-up attachment.
+    if text.is_empty() {
+        return handle_clipboard_paste(app);
+    }
     let ctx = crate::widgets::composer::ComposerContext {
         skills: &[],
         skill_usage: None,
@@ -999,6 +1004,7 @@ fn handle_clipboard_paste(app: &mut App) -> bool {
             app.thread_ui.composer.attach_clipboard_image(png);
             true
         }
+        Ok(crate::clipboard::ClipboardContent::Text(text)) if text.is_empty() => true,
         Ok(crate::clipboard::ClipboardContent::Text(text)) => handle_paste(app, &text),
         Err(error) => {
             app.notice = Some(format!("Could not paste: {error}"));

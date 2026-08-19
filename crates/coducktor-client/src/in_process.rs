@@ -3447,8 +3447,49 @@ fn shell_quote(value: &str) -> String {
 
 fn open_terminal_for_command(command: &str) -> bool {
     if cfg!(target_os = "linux") {
-        return Command::new("x-terminal-emulator")
-            .args(["-e", "sh", "-lc", command])
+        let Some((program, mut args)) = linux_terminal_command(Path::new(".")) else {
+            return false;
+        };
+        match program.as_str() {
+            "x-terminal-emulator" | "konsole" => {
+                args.extend([
+                    "-e".to_owned(),
+                    "sh".to_owned(),
+                    "-lc".to_owned(),
+                    command.to_owned(),
+                ]);
+            }
+            "xterm" => {
+                args = vec![
+                    "-e".to_owned(),
+                    "sh".to_owned(),
+                    "-lc".to_owned(),
+                    command.to_owned(),
+                ];
+            }
+            "gnome-terminal" | "xfce4-terminal" | "alacritty" | "foot" => {
+                args.extend([
+                    "--".to_owned(),
+                    "sh".to_owned(),
+                    "-lc".to_owned(),
+                    command.to_owned(),
+                ]);
+            }
+            "kitty" => {
+                args.extend(["sh".to_owned(), "-lc".to_owned(), command.to_owned()]);
+            }
+            "wezterm" => {
+                args.extend([
+                    "--".to_owned(),
+                    "sh".to_owned(),
+                    "-lc".to_owned(),
+                    command.to_owned(),
+                ]);
+            }
+            _ => return false,
+        }
+        return Command::new(program)
+            .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
