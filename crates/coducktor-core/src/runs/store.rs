@@ -778,6 +778,23 @@ mod tests {
         assert_eq!(load_run_index(&path, true), Vec::<RunRecord>::new());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn repair_backup_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = index_path(dir.path());
+        fs::write(&path, b"{ definitely not json").unwrap();
+
+        let backup = backup_then_repair_run_index(&path, &[]).unwrap();
+
+        assert_eq!(
+            fs::metadata(backup).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
     #[test]
     fn failed_repair_replacement_preserves_the_corrupt_index_and_its_backup() {
         let dir = tempfile::tempdir().unwrap();

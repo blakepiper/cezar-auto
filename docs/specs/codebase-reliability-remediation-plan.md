@@ -430,7 +430,8 @@ Evidence:
   regression coverage proves both levels survive.
 - index writes use a collision-safe staging name, owner-only permissions, data sync before rename,
   and a best-effort directory sync afterwards. Explicit repair copies the original bytes to an
-  owner-only backup before replacing the index.
+  owner-only backup before replacing the index; a Unix regression verifies the backup mode is
+  `0600`.
 - production manager construction invokes terminal-record retention. It atomically removes only
   inactive terminal records, then best-effort cleans matching NDJSON and handoff sidecars while
   leaving worktrees recoverable.
