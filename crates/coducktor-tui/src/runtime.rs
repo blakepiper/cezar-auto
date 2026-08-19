@@ -250,6 +250,16 @@ enum BackgroundResult {
         id: String,
         result: Result<coducktor_contract::RepoCommitPayload, coducktor_client::EngineError>,
     },
+    LoadIdeDirectory {
+        project: String,
+        path: Option<String>,
+        result: Result<coducktor_contract::IdeDirectoryResponse, coducktor_client::EngineError>,
+    },
+    LoadIdeFile {
+        project: String,
+        path: String,
+        result: Result<coducktor_contract::IdeFileResponse, coducktor_client::EngineError>,
+    },
     LoadRepoGitCommit {
         project: String,
         result: Result<coducktor_contract::RepoCommitPayload, coducktor_client::EngineError>,
@@ -1138,32 +1148,37 @@ async fn execute_pending(
                 // point queues a root listing, GoUp/Enter queue a subdirectory, and the state
                 // must converge on the same path the header renders.
                 app.ide_ui.directory_path = path.clone().unwrap_or_default();
-                match engine.ide_tree(&scope, path.as_deref()).await {
-                    Ok(directory) => {
-                        app.ide_ui.entries = Some(directory);
-                        app.ide_ui.tree_selected = 0;
-                    }
-                    Err(error) => app.notice = Some(format!("load directory failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                let path_for_task = path.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move {
+                        engine_for_task
+                            .ide_tree(&scope, path_for_task.as_deref())
+                            .await
+                    },
+                    move |result| BackgroundResult::LoadIdeDirectory {
+                        project,
+                        path,
+                        result,
+                    },
+                );
             }
             PendingAction::LoadIdeFile { project, path } => {
                 let scope = Scope::Project(project.clone());
-                match engine.ide_file(&scope, &path).await {
-                    Ok(file) => {
-                        // The draft survives a reload only when it is still pristine — a
-                        // reload while dirty would silently eat the user's edits.
-                        if app.ide_ui.dirty {
-                            app.notice = Some("unsaved changes kept — reload skipped".to_owned());
-                        } else {
-                            app.ide_ui.editor.set_text(&file.content);
-                            app.ide_ui.file_size = file.size;
-                            app.ide_ui.file_error = None;
-                        }
-                    }
-                    Err(error) => {
-                        app.ide_ui.file_error = Some(error.to_string());
-                    }
-                }
+                let engine_for_task = engine.clone();
+                let path_for_task = path.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.ide_file(&scope, &path_for_task).await },
+                    move |result| BackgroundResult::LoadIdeFile {
+                        project,
+                        path,
+                        result,
+                    },
+                );
             }
             PendingAction::SaveIdeFile { project, path } => {
                 let scope = Scope::Project(project.clone());
@@ -1879,6 +1894,49 @@ fn drain_background_results(
                     Err(error) => app.notice = Some(format!("load commit failed: {error}")),
                 }
             }
+            BackgroundResult::LoadIdeDirectory {
+                project,
+                path,
+                result,
+            } => {
+                if !matches!(app.route(), app::Route::Ide { project: route_project } if route_project == &project)
+                    || app.ide_ui.directory_path != path.unwrap_or_default()
+                {
+                    continue;
+                }
+                match result {
+                    Ok(directory) => {
+                        app.ide_ui.entries = Some(directory);
+                        app.ide_ui.tree_selected = 0;
+                    }
+                    Err(error) => app.notice = Some(format!("load directory failed: {error}")),
+                }
+            }
+            BackgroundResult::LoadIdeFile {
+                project,
+                path,
+                result,
+            } => {
+                if !matches!(app.route(), app::Route::Ide { project: route_project } if route_project == &project)
+                    || app.ide_ui.file_path.as_deref() != Some(path.as_str())
+                {
+                    continue;
+                }
+                match result {
+                    Ok(file) => {
+                        // The draft survives a reload only when it is still pristine — a
+                        // reload while dirty would silently eat the user's edits.
+                        if app.ide_ui.dirty {
+                            app.notice = Some("unsaved changes kept — reload skipped".to_owned());
+                        } else {
+                            app.ide_ui.editor.set_text(&file.content);
+                            app.ide_ui.file_size = file.size;
+                            app.ide_ui.file_error = None;
+                        }
+                    }
+                    Err(error) => app.ide_ui.file_error = Some(error.to_string()),
+                }
+            }
             BackgroundResult::LoadRepoGitCommit { project, result } => {
                 if app.repo_git_ui.project != project {
                     continue;
@@ -2515,6 +2573,47 @@ mod tests {
         queue_global_index_refresh(&mut app);
 
         assert_eq!(app.pending, vec![PendingAction::RefreshIndex]);
+    }
+
+    #[test]
+    fn stale_ide_loads_do_not_replace_the_current_directory_or_file() {
+        let (sender, receiver) = channel();
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.navigate_route(app::Route::Ide {
+            project: "main".to_owned(),
+        });
+        app.ide_ui.directory_path = "src".to_owned();
+        app.ide_ui.file_path = Some("src/current.rs".to_owned());
+        app.ide_ui.editor.set_text("current");
+        let mut starts_in_flight = HashSet::new();
+
+        sender
+            .send(BackgroundResult::LoadIdeDirectory {
+                project: "main".to_owned(),
+                path: Some("old".to_owned()),
+                result: Ok(coducktor_contract::IdeDirectoryResponse {
+                    path: "old".to_owned(),
+                    entries: Vec::new(),
+                    truncated: false,
+                }),
+            })
+            .unwrap();
+        sender
+            .send(BackgroundResult::LoadIdeFile {
+                project: "main".to_owned(),
+                path: "src/old.rs".to_owned(),
+                result: Ok(coducktor_contract::IdeFileResponse {
+                    path: "src/old.rs".to_owned(),
+                    content: "stale".to_owned(),
+                    size: 5,
+                }),
+            })
+            .unwrap();
+
+        drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+
+        assert!(app.ide_ui.entries.is_none());
+        assert_eq!(app.ide_ui.editor.text, "current");
     }
 
     #[tokio::test]

@@ -171,6 +171,8 @@ Evidence:
   fetching a run inline. The task-Git changes load now fetches its run and diff concurrently on a
   background worker and discards results after navigation away from that task; task-Git file-tree
   reads and commit-list/detail reads now use the same route-guarded background path.
+- IDE explorer and file reads now use that same route- and path-guarded background path, so
+  out-of-order navigation completions cannot overwrite the selected directory or open draft.
 - Exact queued duplicates of the safe task/index/new-task/model refreshes coalesce before a frame;
   mutations retain their original FIFO order and are never collapsed.
 
