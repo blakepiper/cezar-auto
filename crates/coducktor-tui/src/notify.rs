@@ -5,7 +5,7 @@
 //! notification daemon or a terminal that ignores title escapes must never crash or block
 //! the render loop.
 
-use std::io::stdout;
+use std::io::{Write, stdout};
 
 use crossterm::execute;
 use crossterm::terminal::SetTitle;
@@ -25,6 +25,18 @@ pub fn notify(enabled: bool, summary: &str, body: &str) {
         .body(body)
         .appname("coducktor")
         .show();
+}
+
+/// Ring the user's terminal bell, if notifications are enabled.
+///
+/// This deliberately uses the terminal's native bell instead of adding an audio playback
+/// dependency. Terminals may choose their own sound, visual bell, or silence it entirely.
+pub fn bell(enabled: bool) {
+    if enabled {
+        let mut output = stdout();
+        let _ = output.write_all(b"\x07");
+        let _ = output.flush();
+    }
 }
 
 /// The always-on title, reflecting how many of the current project's tasks need the user —
