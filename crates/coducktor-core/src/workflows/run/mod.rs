@@ -1064,6 +1064,20 @@ impl RunManager {
         self.persist()
     }
 
+    /// Repair state that was quarantined during load. This is deliberately explicit: the
+    /// original index is backed up before the currently salvaged records replace it.
+    pub fn repair_quarantined_index(&mut self) -> io::Result<Option<PathBuf>> {
+        if !self.write_quarantined {
+            return Ok(None);
+        }
+        let records: Vec<RunRecord> = self.runs.values().cloned().collect();
+        let backup =
+            store::backup_then_repair_run_index(&store::index_path(&self.data_dir), &records)?;
+        self.write_quarantined = false;
+        self.last_index_flush = Instant::now();
+        Ok(Some(backup))
+    }
+
     fn notify_run(&self, run: &RunRecord) {
         for observer in self.run_observers.values() {
             observer(run);

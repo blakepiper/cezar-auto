@@ -142,6 +142,28 @@ pub fn write_run_index(index_path: &Path, runs: &[RunRecord]) -> io::Result<()> 
     result
 }
 
+/// Explicitly repair a quarantined index. The original bytes are first copied to an owner-only,
+/// collision-safe backup beside the index; only then is the supplied salvaged record set written.
+/// Callers must opt in after presenting the backup location to the user.
+pub fn backup_then_repair_run_index(index_path: &Path, runs: &[RunRecord]) -> io::Result<PathBuf> {
+    let staged_backup = atomic_tmp_path(index_path);
+    let mut backup_name = staged_backup.file_name().unwrap_or_default().to_os_string();
+    backup_name.push(".corrupt-backup.json");
+    let backup_path = index_path.with_file_name(backup_name);
+    fs::copy(index_path, &staged_backup)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&staged_backup, fs::Permissions::from_mode(0o600))?;
+    }
+    if let Err(error) = fs::rename(&staged_backup, &backup_path) {
+        let _ = fs::remove_file(&staged_backup);
+        return Err(error);
+    }
+    write_run_index(index_path, runs)?;
+    Ok(backup_path)
+}
+
 /// Reconcile one record just read off disk with the fact that whichever process wrote it is
 /// gone. This is shared by the stateful store's loader and the read-only workspace-index reader,
 /// and the two must never diverge on what a `running` row on disk means.
@@ -689,5 +711,18 @@ mod tests {
         let stale = select_stale_run_ids(&runs);
         assert_eq!(stale.len(), 2 + 3);
         assert!(stale.iter().all(|id| runs.iter().any(|r| &r.id == id)));
+    }
+
+    #[test]
+    fn explicit_repair_backs_up_corrupt_bytes_before_replacing_the_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = index_path(dir.path());
+        let corrupt = b"{ definitely not json";
+        fs::write(&path, corrupt).unwrap();
+
+        let backup = backup_then_repair_run_index(&path, &[]).unwrap();
+
+        assert_eq!(fs::read(backup).unwrap(), corrupt);
+        assert_eq!(load_run_index(&path, true), Vec::<RunRecord>::new());
     }
 }
