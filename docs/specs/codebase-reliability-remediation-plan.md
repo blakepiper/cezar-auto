@@ -39,19 +39,26 @@ verification, so this is not a percentage-complete release claim.
 | R11 dead UI/duplicate tests | primary correction complete | Extract oversized orchestration code only when needed by R1/R2; no standalone refactor. |
 | R12 cross-platform CLI handoff | code complete | Record real-terminal results where the platform is available; do not fabricate unavailable-platform evidence. |
 
-Evidence checked during this rewrite:
+Evidence checked during this rewrite and subsequent implementation:
 
 - `InProcessEngine::activate_runs` in `crates/coducktor-client/src/in_process.rs` still spawns one
   thread per project and holds `Arc<Mutex<RunManager>>` while calling `RunManager::pump`. This
   remains the blocking ownership defect; its background thread does not create same-project
   parallelism.
-- `crates/coducktor-tui/src/runtime.rs` has a fixed four-thread background pool, generation guards
-  for many loads, and per-frame receiver/action budgets. `execute_pending` still awaits ordered
-  engine and host operations directly in the render/input task, and the pool queue is unbounded
-  and non-cancellable.
-- `RunManager` already has injectable `WorkspaceSemaphore` and `RepositoryRootLease` seams in
-  `crates/coducktor-core/src/workflows/run/{mod.rs,semaphore.rs}`, but production manager wiring
-  does not install shared process-wide implementations.
+- `crates/coducktor-tui/src/runtime.rs` now dispatches normal engine/host operations through its
+  fixed four-thread bounded worker pool; route generations reject stale results, input drains
+  before receivers, and a receiver that exhausts its item/time budget wakes the next frame
+  immediately. Same-run workspace updates coalesce per frame, with a sanitized counter. The
+  remaining R2 work is the typed executor's cancellation/supersession ownership and complete
+  request-key coverage, not another direct await in the frame task.
+- Production manager wiring now installs one shared workspace admission instance and canonical
+  repository-root leases. Monitoring wake deadlines are durable, but there is no owned scheduler
+  to reconcile them yet, so the Settings UI correctly presents that control as unavailable.
+- Durable run metrics now report event appends, index flushes/bytes, and thread projection
+  rebuild count/work. A truncated index is covered end-to-end: boot degrades, writes quarantine,
+  and explicit repair makes a backup before replacing the index.
+- `fixtures/CAPABILITY_MATRIX.md` is checked in and its golden test requires every replayed
+  normalized Codex, Claude, OpenCode, and pi fixture to remain represented in the matrix.
 - Worktree admission, production checks/diff inspection, account-home propagation, durable index
   salvage/repair, `repair-runs`, reader teardown, and portable handoff argument construction are
   present with focused regressions. Do not duplicate them.
