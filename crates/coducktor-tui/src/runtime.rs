@@ -264,6 +264,17 @@ enum BackgroundResult {
         project: String,
         result: Result<coducktor_contract::Scratchpad, coducktor_client::EngineError>,
     },
+    LoadCompare {
+        project: String,
+        group_id: String,
+        result: Result<coducktor_contract::GroupResponse, coducktor_client::EngineError>,
+    },
+    LoadCompareVariantDiff {
+        project: String,
+        group_id: String,
+        run_id: String,
+        result: Result<coducktor_contract::ChangesPayload, coducktor_client::EngineError>,
+    },
     LoadRepoGitCommit {
         project: String,
         result: Result<coducktor_contract::RepoCommitPayload, coducktor_client::EngineError>,
@@ -1100,33 +1111,38 @@ async fn execute_pending(
             }
             PendingAction::LoadCompare { project, group_id } => {
                 let scope = Scope::Project(project.clone());
-                match engine.group(&scope, &group_id).await {
-                    Ok(group) => {
-                        let first = group.runs.first().map(|variant| variant.id.clone());
-                        app.compare_ui.group = Some(group);
-                        if let Some(run_id) = first {
-                            app.pending.push(PendingAction::LoadCompareVariantDiff {
-                                project,
-                                group_id,
-                                run_id,
-                            });
-                        }
-                    }
-                    Err(error) => app.notice = Some(format!("load compare failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                let group_id_for_task = group_id.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.group(&scope, &group_id_for_task).await },
+                    move |result| BackgroundResult::LoadCompare {
+                        project,
+                        group_id,
+                        result,
+                    },
+                );
             }
             PendingAction::LoadCompareVariantDiff {
                 project,
-                group_id: _,
+                group_id,
                 run_id,
             } => {
                 let scope = Scope::Project(project.clone());
-                match engine.run_changes(&scope, &run_id).await {
-                    Ok(changes) => {
-                        app.compare_ui.variant_diffs.insert(run_id, changes);
-                    }
-                    Err(error) => app.notice = Some(format!("load diff failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                let run_id_for_task = run_id.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.run_changes(&scope, &run_id_for_task).await },
+                    move |result| BackgroundResult::LoadCompareVariantDiff {
+                        project,
+                        group_id,
+                        run_id,
+                        result,
+                    },
+                );
             }
             PendingAction::PickVariant {
                 project,
@@ -1825,6 +1841,53 @@ fn drain_background_results(
                         app.scratchpad_ui.loaded = true;
                         app.notice = Some(format!("scratchpad: {error}"));
                     }
+                }
+            }
+            BackgroundResult::LoadCompare {
+                project,
+                group_id,
+                result,
+            } => {
+                if !matches!(
+                    app.route(),
+                    app::Route::Compare { project: route_project, group_id: route_group_id }
+                        if route_project == &project && route_group_id == &group_id
+                ) {
+                    continue;
+                }
+                match result {
+                    Ok(group) => {
+                        let first = group.runs.first().map(|variant| variant.id.clone());
+                        app.compare_ui.group = Some(group);
+                        if let Some(run_id) = first {
+                            app.pending.push(PendingAction::LoadCompareVariantDiff {
+                                project,
+                                group_id,
+                                run_id,
+                            });
+                        }
+                    }
+                    Err(error) => app.notice = Some(format!("load compare failed: {error}")),
+                }
+            }
+            BackgroundResult::LoadCompareVariantDiff {
+                project,
+                group_id,
+                run_id,
+                result,
+            } => {
+                if !matches!(
+                    app.route(),
+                    app::Route::Compare { project: route_project, group_id: route_group_id }
+                        if route_project == &project && route_group_id == &group_id
+                ) {
+                    continue;
+                }
+                match result {
+                    Ok(changes) => {
+                        app.compare_ui.variant_diffs.insert(run_id, changes);
+                    }
+                    Err(error) => app.notice = Some(format!("load diff failed: {error}")),
                 }
             }
             BackgroundResult::LoadRepoGit { project, repo } => {
@@ -2655,6 +2718,46 @@ mod tests {
 
         assert!(!app.scratchpad_ui.loaded);
         assert!(app.scratchpad_ui.editor.text.is_empty());
+    }
+
+    #[test]
+    fn stale_compare_loads_do_not_replace_the_active_variant_group() {
+        let (sender, receiver) = channel();
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        screens::compare::open(&mut app, "main", "current-group");
+        let mut starts_in_flight = HashSet::new();
+
+        sender
+            .send(BackgroundResult::LoadCompare {
+                project: "main".to_owned(),
+                group_id: "old-group".to_owned(),
+                result: Ok(coducktor_contract::GroupResponse {
+                    group_id: "old-group".to_owned(),
+                    runs: Vec::new(),
+                }),
+            })
+            .unwrap();
+        sender
+            .send(BackgroundResult::LoadCompareVariantDiff {
+                project: "main".to_owned(),
+                group_id: "old-group".to_owned(),
+                run_id: "old-run".to_owned(),
+                result: Ok(coducktor_contract::ChangesPayload {
+                    files: Vec::new(),
+                    stat: coducktor_contract::RepoDiffStat {
+                        adds: 0.0,
+                        dels: 0.0,
+                        files: 0.0,
+                    },
+                    repointed_head: None,
+                }),
+            })
+            .unwrap();
+
+        drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+
+        assert!(app.compare_ui.group.is_none());
+        assert!(app.compare_ui.variant_diffs.is_empty());
     }
 
     #[tokio::test]

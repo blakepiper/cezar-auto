@@ -174,6 +174,8 @@ Evidence:
 - IDE explorer and file reads now use that same route- and path-guarded background path, so
   out-of-order navigation completions cannot overwrite the selected directory or open draft.
 - Scratchpad hydration also runs in the background and applies only to its still-active project.
+- Compare-group metadata and variant diffs likewise load in the background and reject stale
+  project/group completions.
 - Exact queued duplicates of the safe task/index/new-task/model refreshes coalesce before a frame;
   mutations retain their original FIFO order and are never collapsed.
 
