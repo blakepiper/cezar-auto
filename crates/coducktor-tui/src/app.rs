@@ -956,7 +956,7 @@ pub enum PendingAction {
 }
 
 impl PendingAction {
-    fn is_coalescable_refresh(&self) -> bool {
+    pub(crate) fn is_coalescable_refresh(&self) -> bool {
         matches!(
             self,
             Self::RefreshTasks { .. }
@@ -1095,6 +1095,14 @@ pub struct App {
     /// (summary, body) pairs main.rs drains once per tick and fires via `notify-rust`.
     pub pending_notifications: Vec<(String, String)>,
     pub pending: Vec<PendingAction>,
+    /// Coalescable refresh actions the runtime has already dispatched to a background worker and
+    /// not yet resolved. `queue_pending`'s dedup only sees `pending` itself, so it cannot stop a
+    /// later frame's submission once the earlier one has been drained and dispatched — many
+    /// production call sites also push onto `pending` directly rather than through
+    /// `queue_pending`. This is the second, dispatch-time layer that closes both gaps: checked
+    /// immediately before `execute_pending` would otherwise spawn a duplicate, regardless of how
+    /// the action reached the queue.
+    in_flight_coalescable: Vec<PendingAction>,
     runtime_metrics: AppRuntimeMetrics,
     /// The absolute path main.rs should hand to `$EDITOR` (set by the `OpenIdeInEditor`
     /// handler; consumed by the run loop, which owns the terminal).
@@ -1184,6 +1192,7 @@ impl App {
             notifications_enabled: false,
             pending_notifications: Vec::new(),
             pending: Vec::new(),
+            in_flight_coalescable: Vec::new(),
             runtime_metrics: AppRuntimeMetrics::default(),
             editor_handoff: None,
             filter_mode: false,
@@ -1526,6 +1535,35 @@ impl App {
     pub fn take_pending_up_to(&mut self, limit: usize) -> Vec<PendingAction> {
         let count = limit.min(self.pending.len());
         self.pending.drain(..count).collect()
+    }
+
+    /// Whether an identical coalescable refresh is already dispatched to a background worker and
+    /// still unresolved. `execute_pending` checks this immediately before it would otherwise spawn
+    /// one, for every action reaching that point regardless of which of the many `pending.push`
+    /// call sites (or `queue_pending`) put it there.
+    pub fn coalescable_in_flight(&self, action: &PendingAction) -> bool {
+        self.in_flight_coalescable.contains(action)
+    }
+
+    /// Record a coalescable action as dispatched. Callers must check
+    /// [`Self::coalescable_in_flight`] first — this does not itself dedupe, so calling it twice
+    /// for the same action would need two matching [`Self::finish_coalescable_dispatch`] calls to
+    /// fully clear.
+    pub fn begin_coalescable_dispatch(&mut self, action: PendingAction) {
+        self.in_flight_coalescable.push(action);
+    }
+
+    /// Clear one dispatched coalescable action once its result has arrived — accepted or
+    /// discarded as stale, it no longer needs to block a later identical submission. A caller
+    /// reconstructs the exact `PendingAction` its `BackgroundResult` corresponds to.
+    pub fn finish_coalescable_dispatch(&mut self, action: &PendingAction) {
+        if let Some(index) = self
+            .in_flight_coalescable
+            .iter()
+            .position(|queued| queued == action)
+        {
+            self.in_flight_coalescable.remove(index);
+        }
     }
 
     pub fn take_pending_notifications(&mut self) -> Vec<(String, String)> {
@@ -3708,6 +3746,25 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn coalescable_dispatch_tracking_blocks_a_duplicate_and_clears_on_finish() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        let action = PendingAction::RefreshTasks {
+            project: "main".to_owned(),
+        };
+        assert!(!app.coalescable_in_flight(&action));
+
+        app.begin_coalescable_dispatch(action.clone());
+        assert!(app.coalescable_in_flight(&action));
+        // A different project is a different key — never blocked by an unrelated dispatch.
+        assert!(!app.coalescable_in_flight(&PendingAction::RefreshTasks {
+            project: "other".to_owned(),
+        }));
+
+        app.finish_coalescable_dispatch(&action);
+        assert!(!app.coalescable_in_flight(&action));
     }
 
     #[test]

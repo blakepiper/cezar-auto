@@ -718,6 +718,17 @@ fn execute_pending(
     background_handle: &mut BackgroundWorkers,
 ) {
     for action in app.take_pending_up_to(PENDING_ACTIONS_PER_FRAME) {
+        // A coalescable refresh already in flight from an earlier frame satisfies this one too —
+        // `queue_pending`'s own dedup only ever sees the still-queued tail, not a request already
+        // handed to a worker, and several call sites push onto `pending` directly rather than
+        // through `queue_pending` in the first place. Skipping here is the one point every such
+        // action passes through regardless of how it got queued.
+        if action.is_coalescable_refresh() {
+            if app.coalescable_in_flight(&action) {
+                continue;
+            }
+            app.begin_coalescable_dispatch(action.clone());
+        }
         match action {
             PendingAction::Archive {
                 project,
@@ -2338,6 +2349,9 @@ fn drain_background_results(
                 generation,
                 result,
             } => {
+                app.finish_coalescable_dispatch(&PendingAction::RefreshTasks {
+                    project: project.clone(),
+                });
                 let error = result.as_ref().err().map(ToString::to_string);
                 app.apply_task_response(
                     &project,
@@ -2349,6 +2363,7 @@ fn drain_background_results(
                 }
             }
             BackgroundResult::RefreshIndex { generation, result } => {
+                app.finish_coalescable_dispatch(&PendingAction::RefreshIndex);
                 let error = result.as_ref().err().map(ToString::to_string);
                 app.apply_global_index_response(
                     generation,
@@ -2359,30 +2374,37 @@ fn drain_background_results(
                 }
             }
             BackgroundResult::RefreshProjectRegistry { result } => {
+                app.finish_coalescable_dispatch(&PendingAction::RefreshProjectRegistry);
                 if let Ok(projects) = result {
                     apply_project_registry(app, projects);
                 }
             }
-            BackgroundResult::RefreshModels { runner, result } => match result {
-                Ok(catalog) => {
-                    if matches!(app.route(), app::Route::NewTask { .. }) {
-                        screens::new_task::apply_model_catalog(app, catalog);
-                    } else if matches!(
-                        app.route(),
-                        app::Route::Settings { .. } | app::Route::GlobalSettings
-                    ) {
-                        screens::settings::apply_model_catalog(app, catalog);
+            BackgroundResult::RefreshModels { runner, result } => {
+                app.finish_coalescable_dispatch(&PendingAction::RefreshModels { runner });
+                match result {
+                    Ok(catalog) => {
+                        if matches!(app.route(), app::Route::NewTask { .. }) {
+                            screens::new_task::apply_model_catalog(app, catalog);
+                        } else if matches!(
+                            app.route(),
+                            app::Route::Settings { .. } | app::Route::GlobalSettings
+                        ) {
+                            screens::settings::apply_model_catalog(app, catalog);
+                        }
+                    }
+                    Err(error) => {
+                        app.notice = Some(format!("{runner:?} model catalog failed: {error}"))
                     }
                 }
-                Err(error) => {
-                    app.notice = Some(format!("{runner:?} model catalog failed: {error}"))
-                }
-            },
+            }
             BackgroundResult::RefreshNewTask {
                 project,
                 generation,
                 snapshot,
             } => {
+                app.finish_coalescable_dispatch(&PendingAction::RefreshNewTask {
+                    project: project.clone(),
+                });
                 if app.current_project() == project
                     && app.accepts_new_task_response(&project, generation)
                 {
@@ -4076,6 +4098,52 @@ mod tests {
         .unwrap();
         assert_eq!(workers.worker_count(), BACKGROUND_WORKER_COUNT);
         assert_eq!(workers.pending_count(), 0);
+    }
+
+    /// R2's required scaling case: 1,000 identical refresh submissions must not spawn 1,000
+    /// background jobs. Each iteration mimics a separate frame — `queue_pending`'s own dedup
+    /// cannot help here (the previous frame's `execute_pending` already drained its copy out of
+    /// `pending` before this one pushes a fresh one) — so only the dispatch-time
+    /// `coalescable_in_flight` check can bound this. Nothing drains `receiver` during the loop, so
+    /// the first dispatched job's `in_flight` entry is never cleared — a deterministic way to
+    /// prove every one of the other 999 submissions was recognized as redundant and skipped
+    /// entirely, not just executed and later discarded.
+    #[tokio::test]
+    async fn a_thousand_identical_refresh_submissions_across_frames_stay_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine: Arc<dyn Engine> = Arc::new(InProcessEngine::new(dir.path(), "0.0.0-test"));
+        let (sender, receiver) = channel();
+        let mut workers = BackgroundWorkers::new(tokio::runtime::Handle::current());
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+
+        for _ in 0..1_000 {
+            app.pending.push(PendingAction::RefreshTasks {
+                project: "main".to_owned(),
+            });
+            execute_pending(engine.clone(), &mut app, &sender, &mut workers);
+        }
+
+        let first = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(result) = receiver.try_recv() {
+                    return result;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the one coalesced request should complete");
+        assert!(matches!(first, BackgroundResult::RefreshTasks { .. }));
+
+        // Give an (incorrectly) duplicated job every chance to also complete, then confirm none
+        // did — bounded workers alone would still let 1,000 real jobs run to completion, so this
+        // is the assertion that actually distinguishes coalescing from mere pool bounding.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            receiver.try_recv().is_err(),
+            "1,000 identical submissions across separate frames should coalesce to exactly one \
+             dispatched job, not one per frame"
+        );
     }
 
     #[test]

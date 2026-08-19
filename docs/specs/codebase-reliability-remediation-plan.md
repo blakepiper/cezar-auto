@@ -27,7 +27,7 @@ verification, so this is not a percentage-complete release claim.
 | Finding | Current state | What remains |
 | --- | --- | --- |
 | R1 provider turn monopolizes a manager | core defect fixed | Concurrent same-project turns and non-blocking admission are in place (see evidence). `SessionFactory::open` still holds one process-wide `Mutex` for its whole call, so concurrent *opens* still serialize even though concurrent *turns* no longer do — narrowing the trait to `&self` would need every implementor updated across three crates; not attempted here. |
-| R2 TUI awaits normal actions | partial, critical | Route every action through one bounded command executor; finish input-priority and backlog scheduling. |
+| R2 TUI awaits normal actions | partial, critical | Dispatch-time coalescing for idempotent refreshes now covers both `pending`-queue and cross-frame in-flight duplicates (see evidence). Remaining: the 10,000-event-burst, slow-A→B→A-route, and 100ms-slow-mutation required tests are not yet written (mechanics they'd exercise — route generations, per-frame budgets, input draining — are already in place per earlier evidence, but unverified by a dedicated test); true mid-flight cancellation of an in-flight background job is not attempted (`BackgroundWorkers` jobs run a native thread to completion once dispatched — only *pre-dispatch* duplicates are now avoided). |
 | R3 stream amplification | partial | Add the remaining coalescing/metrics/fault assertions; retain the implemented batched index and transcript paths. |
 | R4 worktree execution | complete | Do not redesign; preserve its integration coverage. |
 | R5 checks and review gate | complete | Do not redesign; preserve its integration coverage. |
@@ -105,9 +105,25 @@ Evidence checked during this rewrite and subsequent implementation:
 - `crates/coducktor-tui/src/runtime.rs` now dispatches normal engine/host operations through its
   fixed four-thread bounded worker pool; route generations reject stale results, input drains
   before receivers, and a receiver that exhausts its item/time budget wakes the next frame
-  immediately. Same-run workspace updates coalesce per frame, with a sanitized counter. The
-  remaining R2 work is the typed executor's cancellation/supersession ownership and complete
-  request-key coverage, not another direct await in the frame task.
+  immediately. Same-run workspace updates coalesce per frame, with a sanitized counter.
+- Closed one concrete piece of "complete request-key coverage": `App::queue_pending`'s existing
+  dedup only ever saw the still-queued tail of `pending`, so a coalescable refresh
+  (`RefreshTasks`/`RefreshIndex`/`RefreshProjectRegistry`/`RefreshNewTask`/`RefreshModels`)
+  resubmitted from a *later frame*, after the earlier identical one had already been drained and
+  handed to a background worker, was never recognized as a duplicate — nor were the many
+  production call sites that push onto `pending` directly rather than through `queue_pending`.
+  `App` now tracks `in_flight_coalescable`; `execute_pending` checks
+  `coalescable_in_flight`/`begin_coalescable_dispatch` immediately before it would otherwise spawn
+  one (the single point every such action passes through regardless of how it reached the queue),
+  and each of the five `BackgroundResult` arms calls `finish_coalescable_dispatch` once its result
+  arrives. `a_thousand_identical_refresh_submissions_across_frames_stay_bounded` proves 1,000
+  submissions across 1,000 separate simulated frames collapse to exactly one dispatched job, not
+  one per frame — the required R2 scaling case for idempotent loads. Still open: the
+  10,000-event-burst, slow-A→B→A-route, and 100ms-slow-mutation required tests (the mechanics they
+  would exercise already exist per the bullet above, just not yet pinned by a dedicated test), and
+  true mid-flight cancellation of a job already handed to a worker thread (native threads running
+  `handle.block_on(future)` to completion have no cancellation seam today — only pre-dispatch
+  coalescing was addressed this pass).
 - Production manager wiring now installs one shared workspace admission instance and canonical
   repository-root leases. Monitoring wake deadlines now have an owned scheduler:
   `RunManager::due_monitoring_wakes` (a thin filter over the new, pure
