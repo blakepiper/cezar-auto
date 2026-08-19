@@ -178,6 +178,8 @@ Evidence:
   project/group completions.
 - GitHub handoff workflow and skill pickers now fetch concurrently in the background and discard
   a completion after leaving that project.
+- Skills, workflow catalog, and workflow-palette skill reads now follow the same background,
+  project-guarded completion model.
 - Exact queued duplicates of the safe task/index/new-task/model refreshes coalesce before a frame;
   mutations retain their original FIFO order and are never collapsed.
 

@@ -288,6 +288,18 @@ enum BackgroundResult {
         workflows: Result<coducktor_contract::WorkflowsResponse, coducktor_client::EngineError>,
         skills: Result<Vec<coducktor_contract::Skill>, coducktor_client::EngineError>,
     },
+    LoadSkills {
+        project: String,
+        result: Result<Vec<coducktor_contract::Skill>, coducktor_client::EngineError>,
+    },
+    LoadWorkflows {
+        project: String,
+        result: Result<coducktor_contract::WorkflowsResponse, coducktor_client::EngineError>,
+    },
+    LoadWorkflowSkills {
+        project: String,
+        result: Result<Vec<coducktor_contract::Skill>, coducktor_client::EngineError>,
+    },
     SessionMutation {
         action: SessionMutation,
         project: String,
@@ -1356,32 +1368,33 @@ async fn execute_pending(
             }
             PendingAction::LoadSkills { project } => {
                 let scope = Scope::Project(project.clone());
-                match engine.skills(&scope).await {
-                    Ok(skills) => app.skills_ui.skills = skills,
-                    Err(error) => app.notice = Some(format!("load skills failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.skills(&scope).await },
+                    move |result| BackgroundResult::LoadSkills { project, result },
+                );
             }
             PendingAction::LoadWorkflows { project } => {
                 let scope = Scope::Project(project.clone());
-                match engine.workflows(&scope).await {
-                    Ok(workflows) => {
-                        app.workflows_ui.workflows = workflows.workflows;
-                        if let Some(issue) = workflows.issues.first() {
-                            app.notice = Some(format!(
-                                "workflow issue: {} — {}",
-                                issue.path, issue.message
-                            ));
-                        }
-                    }
-                    Err(error) => app.notice = Some(format!("load workflows failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.workflows(&scope).await },
+                    move |result| BackgroundResult::LoadWorkflows { project, result },
+                );
             }
             PendingAction::LoadWorkflowSkills { project } => {
                 let scope = Scope::Project(project.clone());
-                match engine.skills(&scope).await {
-                    Ok(skills) => app.workflows_ui.palette_skills = skills,
-                    Err(error) => app.notice = Some(format!("load skills failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.skills(&scope).await },
+                    move |result| BackgroundResult::LoadWorkflowSkills { project, result },
+                );
             }
             PendingAction::SaveWorkflow { project } => {
                 save_or_export_workflow(engine.as_ref(), app, &project, false).await;
@@ -2075,6 +2088,47 @@ fn drain_background_results(
                 }
                 if let Ok(skills) = skills {
                     app.github_ui.skills = skills;
+                }
+            }
+            BackgroundResult::LoadSkills { project, result } => {
+                if !matches!(app.route(), app::Route::Skills { project: route_project } if route_project == &project)
+                    || app.skills_ui.project != project
+                {
+                    continue;
+                }
+                match result {
+                    Ok(skills) => app.skills_ui.skills = skills,
+                    Err(error) => app.notice = Some(format!("load skills failed: {error}")),
+                }
+            }
+            BackgroundResult::LoadWorkflows { project, result } => {
+                if !matches!(app.route(), app::Route::Workflows { project: route_project } if route_project == &project)
+                    || app.workflows_ui.project != project
+                {
+                    continue;
+                }
+                match result {
+                    Ok(workflows) => {
+                        app.workflows_ui.workflows = workflows.workflows;
+                        if let Some(issue) = workflows.issues.first() {
+                            app.notice = Some(format!(
+                                "workflow issue: {} — {}",
+                                issue.path, issue.message
+                            ));
+                        }
+                    }
+                    Err(error) => app.notice = Some(format!("load workflows failed: {error}")),
+                }
+            }
+            BackgroundResult::LoadWorkflowSkills { project, result } => {
+                if !matches!(app.route(), app::Route::Workflows { project: route_project } if route_project == &project)
+                    || app.workflows_ui.project != project
+                {
+                    continue;
+                }
+                match result {
+                    Ok(skills) => app.workflows_ui.palette_skills = skills,
+                    Err(error) => app.notice = Some(format!("load skills failed: {error}")),
                 }
             }
             BackgroundResult::SessionMutation {
@@ -2814,6 +2868,54 @@ mod tests {
 
         assert!(app.github_ui.workflows.is_empty());
         assert!(app.github_ui.skills.is_empty());
+    }
+
+    #[test]
+    fn stale_workflow_loads_do_not_update_the_active_project() {
+        let (sender, receiver) = channel();
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        screens::workflows::open(&mut app, "main");
+        let mut starts_in_flight = HashSet::new();
+
+        sender
+            .send(BackgroundResult::LoadWorkflows {
+                project: "other".to_owned(),
+                result: Ok(coducktor_contract::WorkflowsResponse {
+                    workflows: Vec::new(),
+                    issues: Vec::new(),
+                }),
+            })
+            .unwrap();
+        sender
+            .send(BackgroundResult::LoadWorkflowSkills {
+                project: "other".to_owned(),
+                result: Ok(Vec::new()),
+            })
+            .unwrap();
+
+        drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+
+        assert!(app.workflows_ui.workflows.is_empty());
+        assert!(app.workflows_ui.palette_skills.is_empty());
+    }
+
+    #[test]
+    fn stale_skill_load_does_not_update_the_active_project() {
+        let (sender, receiver) = channel();
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        screens::skills::open(&mut app, "main");
+        let mut starts_in_flight = HashSet::new();
+
+        sender
+            .send(BackgroundResult::LoadSkills {
+                project: "other".to_owned(),
+                result: Ok(Vec::new()),
+            })
+            .unwrap();
+
+        drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+
+        assert!(app.skills_ui.skills.is_empty());
     }
 
     #[tokio::test]
