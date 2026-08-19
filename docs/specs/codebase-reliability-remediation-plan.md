@@ -26,7 +26,7 @@ verification, so this is not a percentage-complete release claim.
 
 | Finding | Current state | What remains |
 | --- | --- | --- |
-| R1 provider turn monopolizes a manager | open, critical | Replace project-wide blocking `pump` ownership with cancellable per-run workers and real shared admission. |
+| R1 provider turn monopolizes a manager | core defect fixed | Concurrent same-project turns and non-blocking admission are in place (see evidence). `SessionFactory::open` still holds one process-wide `Mutex` for its whole call, so concurrent *opens* still serialize even though concurrent *turns* no longer do — narrowing the trait to `&self` would need every implementor updated across three crates; not attempted here. |
 | R2 TUI awaits normal actions | partial, critical | Route every action through one bounded command executor; finish input-priority and backlog scheduling. |
 | R3 stream amplification | partial | Add the remaining coalescing/metrics/fault assertions; retain the implemented batched index and transcript paths. |
 | R4 worktree execution | complete | Do not redesign; preserve its integration coverage. |
@@ -41,10 +41,52 @@ verification, so this is not a percentage-complete release claim.
 
 Evidence checked during this rewrite and subsequent implementation:
 
-- `InProcessEngine::activate_runs` in `crates/coducktor-client/src/in_process.rs` still spawns one
-  thread per project and holds `Arc<Mutex<RunManager>>` while calling `RunManager::pump`. This
-  remains the blocking ownership defect; its background thread does not create same-project
-  parallelism.
+- `RunManager::execute_job` (`crates/coducktor-core/src/workflows/run/mod.rs`) no longer opens a
+  session or runs a turn itself. It stops the instant it would have called
+  `SessionFactory::open`, records an `AdmittedTurn` (request plus enough resume state — workflow,
+  step index, retry counts, plan checkpoint, failover context — to continue afterward), and
+  returns; `RunManager::pump` keeps its exact signature and behavior for every existing caller,
+  it just never blocks on provider I/O anymore. `RunManager::apply_open_failure`,
+  `apply_admitted_turn`, and `apply_active_turn` are the three new entry points a caller uses to
+  report back an open/turn/nudge result and receive either `TurnStep::Done` or
+  `TurnStep::Nudge(RuntimeActive)` (send one more autonomous nudge and call `apply_active_turn`
+  again). `RunManager::in_flight` counts an admitted-but-unresolved turn as busy so `pump`'s own
+  capacity check and `RunManager::cancel` (which now defers to the worker's own eventual report
+  instead of racing it) stay correct. `handle_active_outcome` (used by the synchronous
+  `finish`/`deliver_message` resume path) is now `continue_active_turn`, shared by both that path
+  and the new one; only a freshly admitted turn's `active.failover` is `Some`, so auto-failover
+  stays exactly as failover-ineligible for a resumed session as it always was.
+- `InProcessEngine`'s new `TurnDispatch` (`crates/coducktor-client/src/in_process.rs`) is the only
+  place production code now actually opens a session or runs a turn: `activate_runs` and every
+  mutating engine call that could admit new work (`cancel_run`, `finish_run`,
+  `send_message`/`deliver_message`, `continue_run`) drains `RunManager::take_pending_turns` after
+  its manager-lock section ends and hands each `AdmittedTurn` to its own OS thread. That thread
+  opens the session and calls `turn`/`send_message` with no manager lock held at all; each
+  streamed event and the final outcome are applied through a fresh, brief lock acquisition per
+  call, never held across the child-process I/O. Two runs admitted from the same project now
+  execute their turns genuinely concurrently, proved by
+  `two_blocked_sessions_in_the_same_project_reach_their_first_tool_event_together` (a two-party
+  barrier only satisfiable if both turns are in flight together); the parallelism ceiling itself
+  is still enforced, proved by `a_single_slot_leaves_the_second_run_queued_behind_a_blocked_first`.
+  `activate_runs`'s existing per-project background thread and worker-registry reaping are
+  unchanged in shape — it just does admission (fast) and dispatch (spawns the real workers) instead
+  of running a turn itself.
+- Not fixed: `SharedSessionFactory::open` still locks the one process-wide
+  `Arc<Mutex<Box<dyn SessionFactory>>>` for the entire `open` call (unchanged from before this
+  session), because `SessionFactory::open` takes `&mut self`. Two runs opening concurrently on
+  different providers still serialize on that mutex before their (now genuinely concurrent) turns
+  begin. The real fix — narrowing `open`/`request_cancel` to `&self`, since no implementation
+  actually needs exclusive access beyond an already-interior-mutable cancellation map — touches
+  the trait and every implementor (`DefaultSessionFactory`, `SharedSessionFactory`, and every test
+  fake across `coducktor-core`, `coducktor-client`, and `coducktor-runners`). Left for a dedicated
+  follow-up rather than folded into this session's diff.
+- Two blocking mock sessions on separate worktree paths in the same project both reach their first
+  streamed event without waiting on each other (max_parallel 2); on max_parallel 1 the second run
+  observably stays `Queued` and its session factory is never invoked while the first is blocked —
+  both are now covered by dedicated tests in `crates/coducktor-client/src/in_process.rs`.
+  Cancellation reaching a session blocked in `open` (not just `pump`'s old lock) remains covered by
+  the existing `cancel_reaches_a_session_factory_blocked_during_open` test, still passing unchanged
+  against the new worker path.
 - `crates/coducktor-tui/src/runtime.rs` now dispatches normal engine/host operations through its
   fixed four-thread bounded worker pool; route generations reject stale results, input drains
   before receivers, and a receiver that exhausts its item/time budget wakes the next frame

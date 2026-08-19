@@ -49,7 +49,11 @@ use crate::runs::store;
 use crate::runs::task_markers::{self, TaskMarkers};
 use crate::time::{is_zod_datetime, now_iso8601, now_plus_iso8601};
 
-const AUTONOMOUS_NUDGE: &str = "Your immediately preceding response may already have completed the user's original request, but it did not include the required completion marker. Do not begin new work, search for unrelated work, or expand the task. If the original request is fully complete, reply with exactly DUCK:DONE. Otherwise, continue only the original request. If you genuinely need user input, end normally without a marker.";
+/// The exact nudge text sent to an autonomous session that appears to have finished without the
+/// completion marker. `pub` so a caller driving [`TurnStep::Nudge`] outside this module (a
+/// per-run worker) sends byte-for-byte the same prompt this module's own synchronous resume path
+/// uses.
+pub const AUTONOMOUS_NUDGE: &str = "Your immediately preceding response may already have completed the user's original request, but it did not include the required completion marker. Do not begin new work, search for unrelated work, or expand the task. If the original request is fully complete, reply with exactly DUCK:DONE. Otherwise, continue only the original request. If you genuinely need user input, end normally without a marker.";
 
 /// A patch represented with the same camelCase keys as the persisted contract.
 ///
@@ -774,15 +778,75 @@ enum RuntimeJob {
     },
 }
 
-struct RuntimeActive {
+/// Failover eligibility scoped to one live turn's original open attempt: `try_auto_failover`
+/// only ever applies to the fresh session that hit the failure, never to a later externally
+/// resumed interaction. [`RuntimeActive::park`] drops this the moment a turn goes idle so a
+/// `deliver_message`/`finish` resume can never inherit it.
+#[derive(Debug, Clone)]
+struct FailoverContext {
+    concrete: Runner,
+    retry_prompt: String,
+}
+
+/// A live turn moved out of the manager's lock for the duration of its blocking session I/O.
+/// The session itself lives on a per-run worker; this struct is the opaque handle threaded back
+/// into the manager (via [`RunManager::apply_admitted_turn`]/[`RunManager::apply_active_turn`])
+/// to apply each streamed event and terminal outcome under a briefly held lock. Its fields stay
+/// private — a caller in another crate can hold and move the value but never construct or
+/// inspect it directly.
+pub struct RuntimeActive {
     workflow: WorkflowDef,
     step_index: usize,
     next_index: usize,
     retry_counts: BTreeMap<String, u32>,
-    session: Box<dyn AgentSession>,
+    session: Box<dyn AgentSession + Send>,
     holds_slot: bool,
     plan_checkpoint: context_refresh::PlanCheckpoint,
     auto_continues: u32,
+    failover: Option<FailoverContext>,
+}
+
+impl RuntimeActive {
+    /// The only way an external worker touches the live session: call `turn`/`send_message` on
+    /// it directly (never through the manager lock), then hand the same [`RuntimeActive`] back.
+    pub fn session_mut(&mut self) -> &mut (dyn AgentSession + Send) {
+        self.session.as_mut()
+    }
+}
+
+/// Everything [`RunManager::execute_job`] has already computed for a step by the time it needs a
+/// live session — captured so the caller can open the session and run the turn outside the
+/// manager's lock, then resume exactly where the workflow loop left off.
+struct PendingResume {
+    workflow: WorkflowDef,
+    index: usize,
+    retry_counts: BTreeMap<String, u32>,
+    plan_checkpoint: context_refresh::PlanCheckpoint,
+    concrete: Runner,
+    retry_prompt: String,
+}
+
+/// A turn admitted for execution: the request is ready to open, but opening and running it is
+/// the caller's job, entirely outside the manager's lock. Pass the result back through
+/// [`RunManager::apply_open_failure`] (open failed) or [`RunManager::apply_admitted_turn`] (open
+/// and the first turn both ran). Opaque outside this module beyond the two `pub` fields a caller
+/// needs to actually open the session.
+pub struct AdmittedTurn {
+    pub run_id: String,
+    pub step_id: String,
+    pub request: SessionRequest,
+    resume: PendingResume,
+}
+
+/// What a caller driving a live turn must do next.
+pub enum TurnStep {
+    /// This worker's dispatch is finished — terminal state (parked, failed, cancelled, completed,
+    /// or requeued) has already been applied durably.
+    Done,
+    /// The run is autonomous and the manager decided to nudge it. The caller must call
+    /// `active.session_mut().send_message(..)` (no lock held) and report the result back through
+    /// [`RunManager::apply_active_turn`].
+    Nudge(Box<RuntimeActive>),
 }
 
 /// A stateful, synchronous facade over the durable run files.
@@ -802,6 +866,11 @@ pub struct RunManager {
     runtime_options: RuntimeOptions,
     jobs: BTreeMap<String, RuntimeJob>,
     active: BTreeMap<String, RuntimeActive>,
+    /// Turns `execute_job` admitted but has not yet handed to a worker. Counted as busy by
+    /// `runtime_busy_slots` from the moment they land here until `apply_open_failure` or
+    /// `apply_admitted_turn`/`apply_active_turn` resolves them.
+    pending_turns: VecDeque<AdmittedTurn>,
+    in_flight: BTreeSet<String>,
     project_id: String,
     workspace_semaphore: Option<Box<dyn WorkspaceSemaphore>>,
     repository_lease: Option<Box<dyn RepositoryRootLease>>,
@@ -882,6 +951,8 @@ impl RunManager {
             runtime_options: RuntimeOptions::default(),
             jobs: BTreeMap::new(),
             active: BTreeMap::new(),
+            pending_turns: VecDeque::new(),
+            in_flight: BTreeSet::new(),
             project_id: "default".to_owned(),
             workspace_semaphore: None,
             repository_lease: None,
@@ -1222,7 +1293,7 @@ impl RunManager {
         input: StartRunInput,
     ) -> io::Result<RunRecord> {
         let run = self.enqueue_run(workflow, input)?;
-        self.pump()?;
+        self.run_to_completion()?;
         Ok(self.get_run(&run.id).cloned().unwrap_or(run))
     }
 
@@ -1290,7 +1361,7 @@ impl RunManager {
         count: usize,
     ) -> io::Result<Vec<RunRecord>> {
         let runs = self.enqueue_variants(workflow, input, count)?;
-        self.pump()?;
+        self.run_to_completion()?;
         Ok(runs
             .into_iter()
             .map(|run| self.get_run(&run.id).cloned().unwrap_or(run))
@@ -1599,6 +1670,19 @@ impl RunManager {
             }
             self.append_event(&run_id, event).map(|_| ())
         }
+    }
+
+    /// Apply one live event a worker's `AgentSession::turn`/`send_message` produced, outside any
+    /// lock, to durable state. A caller holds this manager's lock only for the duration of this
+    /// one call, in between reads from the (lock-free) child process — never across the I/O
+    /// itself. Same normalization as the synchronous `event_sink` path.
+    pub fn apply_turn_event(
+        &mut self,
+        run_id: &str,
+        step_id: &str,
+        event: EventInput,
+    ) -> io::Result<()> {
+        (self.event_sink(run_id, step_id))(event)
     }
 
     /// Read the raw event history through the shared event reader.
@@ -1993,13 +2077,19 @@ impl RunManager {
             }
         }
         let _ = self.reconcile_auto_resumes(&now_iso8601())?;
-        self.pump()?;
+        self.run_to_completion()?;
         Ok(report)
     }
 
     /// Drain queued jobs while an injected runtime slot is available. The method is synchronous on
     /// purpose: the engine can call it from its scheduler, while unit tests can observe every
     /// transition without sleeps or a process-wide executor.
+    /// Admit as much of the queue as current capacity allows. This never opens a session or runs
+    /// a provider turn — `execute_job` stops the moment a job needs a live session and records an
+    /// [`AdmittedTurn`] instead, so this always returns quickly regardless of how long a provider
+    /// turn takes. A caller that wants those turns to actually run must drain
+    /// [`Self::take_pending_turns`] afterward and dispatch each one to its own worker, outside any
+    /// lock on this manager.
     pub fn pump(&mut self) -> io::Result<()> {
         loop {
             if !self.capacity_available() {
@@ -2025,12 +2115,74 @@ impl RunManager {
         Ok(())
     }
 
+    /// Drain every turn `pump` admitted but did not run. A caller must call this after any
+    /// operation that could have called `pump` (directly or via a durable-state transition that
+    /// re-admits queued work) and dispatch each returned turn to its own worker.
+    pub fn take_pending_turns(&mut self) -> Vec<AdmittedTurn> {
+        self.pending_turns.drain(..).collect()
+    }
+
+    /// Single-threaded stand-in for the production per-run worker coordinator: opens and runs
+    /// every admitted turn synchronously (against whatever `session_factory` was configured),
+    /// applying results the same way a concurrent worker would, until nothing is admittable. This
+    /// is what a genuinely single-shot, no-TUI caller (the headless `coducktor run` CLI, and this
+    /// module's own tests) wants — one turn at a time, blocking the caller until the whole
+    /// workflow settles, with no separate coordinator thread to stand up.
+    pub fn run_to_completion(&mut self) -> io::Result<()> {
+        loop {
+            self.pump()?;
+            let admitted = self.take_pending_turns();
+            if admitted.is_empty() {
+                return Ok(());
+            }
+            for turn in admitted {
+                self.drive_admitted_turn_sync(turn)?;
+            }
+        }
+    }
+
+    fn drive_admitted_turn_sync(&mut self, admitted: AdmittedTurn) -> io::Result<()> {
+        let run_id = admitted.run_id.clone();
+        let mut step_id = admitted.step_id.clone();
+        let mut factory = self.session_factory.take();
+        let opened = match factory.as_mut() {
+            Some(factory) => factory.open(admitted.request.clone()),
+            None => Err("session factory unavailable".to_owned()),
+        };
+        self.session_factory = factory;
+        let cancellation_requested = admitted.request.cancellation.is_requested();
+        let mut session = match opened {
+            Ok(session) => session,
+            Err(error) => {
+                return self.apply_open_failure(admitted, error, cancellation_requested);
+            }
+        };
+        let turn_result =
+            session.turn(&mut |event| self.apply_turn_event(&run_id, &step_id, event));
+        let mut step =
+            self.apply_admitted_turn(admitted, session, turn_result, cancellation_requested)?;
+        while let TurnStep::Nudge(boxed) = step {
+            let mut active = *boxed;
+            step_id = active.workflow.steps[active.step_index].id.clone();
+            let cancellation_requested = false;
+            let send_result =
+                active
+                    .session_mut()
+                    .send_message(AUTONOMOUS_NUDGE, &[], &mut |event| {
+                        self.apply_turn_event(&run_id, &step_id, event)
+                    });
+            step = self.apply_active_turn(&run_id, active, send_result, cancellation_requested)?;
+        }
+        Ok(())
+    }
+
     fn runtime_busy_slots(&self) -> usize {
         self.active
             .values()
             .filter(|active| active.holds_slot)
             .count()
             .saturating_add(self.queue.starting().count())
+            .saturating_add(self.in_flight.len())
     }
 
     fn capacity_available(&self) -> bool {
@@ -2135,7 +2287,7 @@ impl RunManager {
         let Some(record) = self.get_run(run_id).cloned() else {
             return Ok(());
         };
-        let mut plan_checkpoint = self.plan_checkpoints.remove(run_id).unwrap_or_default();
+        let plan_checkpoint = self.plan_checkpoints.remove(run_id).unwrap_or_default();
         let mut pending_context_prompt = self.pending_context_prompts.remove(run_id);
 
         if continuation.is_some() {
@@ -2183,7 +2335,6 @@ impl RunManager {
             .as_ref()
             .and_then(|(_, _, _, _, model)| model.clone());
         let continuation_step = continuation.is_some();
-        let mut initial_images_sent = false;
 
         while index < workflow.steps.len() {
             let step = workflow.steps[index].clone();
@@ -2373,10 +2524,7 @@ impl RunManager {
                 prompt,
                 images: if continuation_step {
                     std::mem::take(&mut continuation_images)
-                } else if initial_images_sent {
-                    Vec::new()
                 } else {
-                    initial_images_sent = true;
                     self.get_run(run_id)
                         .map(hydrate_queued_images)
                         .unwrap_or_default()
@@ -2429,201 +2577,176 @@ impl RunManager {
             if requested_runner == RunnerSelection::Auto {
                 self.announce_auto_route(run_id, concrete, request.model.as_deref())?;
             }
-            let opened = match self.session_factory.as_mut() {
-                Some(factory) => factory.open(request),
-                None => Err("session factory unavailable".to_owned()),
-            };
-            let mut session = match opened {
-                Ok(session) => session,
-                Err(error) => {
-                    if cancellation.is_requested() {
-                        self.cancel_run_after_session(run_id, &step.id)?;
-                        return Ok(());
-                    }
-                    if self.try_auto_failover(run_id, &step.id, concrete, &error, true)? {
-                        pending_context_prompt = Some(retry_prompt);
-                        initial_images_sent = false;
-                        continue;
-                    }
-                    self.fail_run(run_id, Some(&step.id), error)?;
-                    return Ok(());
-                }
-            };
-            let fallback_session_id = session.session_id();
-            let turn_result = session.turn(&mut self.event_sink(run_id, &step.id));
-            let mut outcome = match turn_result {
-                Ok(_) if cancellation.is_requested() => {
-                    SessionOutcome::Cancelled(SessionReport::default())
-                }
-                Ok(outcome) => outcome,
-                Err(_) if cancellation.is_requested() => {
-                    SessionOutcome::Cancelled(SessionReport::default())
-                }
-                Err(error) => {
-                    if self.try_auto_failover(run_id, &step.id, concrete, &error, false)? {
-                        pending_context_prompt = Some(retry_prompt);
-                        initial_images_sent = false;
-                        continue;
-                    }
-                    self.fail_run(run_id, Some(&step.id), error)?;
-                    return Ok(());
-                }
-            };
-            let mut auto_continues = 0;
-            loop {
-                let report = session_outcome_report(&outcome).clone();
-                self.apply_session_report(run_id, &step.id, &report, fallback_session_id.clone())?;
-                self.apply_session_markers(run_id, &report.turn_text)?;
-                let refresh_prompt = if self.intelligent_context_refresh {
-                    report.plan_entries.as_deref().and_then(|entries| {
-                        context_refresh::observe_plan(&mut plan_checkpoint, entries, true)
-                    })
-                } else {
-                    None
-                };
-                if let Some(refresh_prompt) = refresh_prompt
-                    && matches!(
-                        &outcome,
-                        SessionOutcome::Completed(_) | SessionOutcome::Waiting(_)
-                    )
-                {
-                    self.update_step(
-                        run_id,
-                        &step.id,
-                        StepPatch::new()
-                            .set("status", StepStatus::Pending)
-                            .clear("finishedAt")
-                            .clear("error"),
-                    )?;
-                    self.update_run(
-                        run_id,
-                        RunPatch::new()
-                            .set("status", RunStatus::Queued)
-                            .clear("currentStepId")
-                            .clear("finishedAt"),
-                    )?;
-                    self.release_workspace_hold(run_id);
-                    self.plan_checkpoints
-                        .insert(run_id.to_owned(), plan_checkpoint);
-                    self.pending_context_prompts
-                        .insert(run_id.to_owned(), refresh_prompt);
-                    self.jobs.insert(
-                        run_id.to_owned(),
-                        RuntimeJob::Workflow {
-                            workflow: workflow.clone(),
-                            start_index: index,
-                            retry_counts,
-                        },
-                    );
-                    self.enqueue(run_id.to_owned());
-                    self.append_event(
-                        run_id,
-                        EventInput::new("note").field(
-                            "message",
-                            "intelligent context refresh — reopening a fresh session",
-                        ),
-                    )?;
-                    self.pump()?;
-                    return Ok(());
-                }
-
-                let should_nudge = self
-                    .get_run(run_id)
-                    .is_some_and(|run| run.autonomous == Some(true))
-                    && matches!(
-                        &outcome,
-                        SessionOutcome::Waiting(report)
-                            if report.decision.is_none()
-                                || report.decision == Some(TurnMarkerDecision::Waiting)
-                    )
-                    && auto_continues < MAX_AUTONOMOUS_CONTINUES;
-                if !should_nudge {
-                    break;
-                }
-                auto_continues += 1;
-                self.append_event(
-                    run_id,
-                    EventInput::new("note").field(
-                        "message",
-                        format!("autonomous pass {auto_continues} of {MAX_AUTONOMOUS_CONTINUES}"),
-                    ),
-                )?;
-                outcome = match session.send_message(
-                    AUTONOMOUS_NUDGE,
-                    &[],
-                    &mut self.event_sink(run_id, &step.id),
-                ) {
-                    Ok(_) if cancellation.is_requested() => {
-                        SessionOutcome::Cancelled(SessionReport::default())
-                    }
-                    Ok(outcome) => outcome,
-                    Err(_) if cancellation.is_requested() => {
-                        SessionOutcome::Cancelled(SessionReport::default())
-                    }
-                    Err(error) => SessionOutcome::Failed {
-                        message: error,
-                        report: SessionReport::default(),
-                    },
-                };
-            }
-
-            match outcome {
-                SessionOutcome::Completed(_) => {
-                    self.complete_step(run_id, &step.id, None)?;
-                    index += 1;
-                    continue;
-                }
-                SessionOutcome::Waiting(report) => {
-                    self.park_session(
-                        run_id,
-                        RuntimeActive {
-                            workflow: workflow.clone(),
-                            step_index: index,
-                            next_index: index + 1,
-                            retry_counts,
-                            session,
-                            holds_slot: false,
-                            plan_checkpoint: plan_checkpoint.clone(),
-                            auto_continues,
-                        },
-                        report.decision == Some(TurnMarkerDecision::Monitoring),
-                    )?;
-                    return Ok(());
-                }
-                SessionOutcome::Running(_) => {
-                    self.park_session(
-                        run_id,
-                        RuntimeActive {
-                            workflow: workflow.clone(),
-                            step_index: index,
-                            next_index: index + 1,
-                            retry_counts,
-                            session,
-                            holds_slot: true,
-                            plan_checkpoint: plan_checkpoint.clone(),
-                            auto_continues,
-                        },
-                        false,
-                    )?;
-                    return Ok(());
-                }
-                SessionOutcome::Failed { message, .. } => {
-                    if self.try_auto_failover(run_id, &step.id, concrete, &message, false)? {
-                        pending_context_prompt = Some(retry_prompt);
-                        initial_images_sent = false;
-                        continue;
-                    }
-                    self.fail_run(run_id, Some(&step.id), message)?;
-                    return Ok(());
-                }
-                SessionOutcome::Cancelled(_) => {
-                    self.cancel_run_after_session(run_id, &step.id)?;
-                    return Ok(());
-                }
-            }
+            // Opening and running this turn is deliberately not done here: both can block for the
+            // lifetime of a provider turn, and this function runs under the manager's lock. The
+            // caller (a per-run worker, outside any lock) opens `request` and runs the turn, then
+            // reports back through `apply_open_failure`/`apply_admitted_turn` so this workflow can
+            // resume exactly where it left off.
+            self.in_flight.insert(run_id.to_owned());
+            self.pending_turns.push_back(AdmittedTurn {
+                run_id: run_id.to_owned(),
+                step_id: step.id.clone(),
+                request,
+                resume: PendingResume {
+                    workflow,
+                    index,
+                    retry_counts,
+                    plan_checkpoint,
+                    concrete,
+                    retry_prompt,
+                },
+            });
+            return Ok(());
         }
 
         self.settle_success(run_id)
+    }
+
+    /// Requeue a run for the given step so a fresh `execute_job` call rebuilds and reattempts its
+    /// turn — used by both open-failure and turn-failure auto-failover retries, which durably
+    /// mutate the run's runner before asking for another attempt.
+    fn requeue_for_retry(
+        &mut self,
+        run_id: &str,
+        workflow: WorkflowDef,
+        index: usize,
+        retry_counts: BTreeMap<String, u32>,
+        retry_prompt: String,
+    ) -> io::Result<()> {
+        self.pending_context_prompts
+            .insert(run_id.to_owned(), retry_prompt);
+        self.jobs.insert(
+            run_id.to_owned(),
+            RuntimeJob::Workflow {
+                workflow,
+                start_index: index,
+                retry_counts,
+            },
+        );
+        self.enqueue(run_id.to_owned());
+        self.pump()
+    }
+
+    /// Apply the result of attempting to open a session for an [`AdmittedTurn`]. Mirrors the
+    /// pre-refactor open-failure branch: cancellation wins outright, then auto-failover retries by
+    /// requeuing (a fresh `execute_job` call rebuilds the request against the newly selected
+    /// runner), otherwise the run fails.
+    pub fn apply_open_failure(
+        &mut self,
+        admitted: AdmittedTurn,
+        error: String,
+        cancellation_requested: bool,
+    ) -> io::Result<()> {
+        let AdmittedTurn {
+            run_id,
+            step_id,
+            resume,
+            ..
+        } = admitted;
+        self.in_flight.remove(&run_id);
+        if cancellation_requested {
+            return self.cancel_run_after_session(&run_id, &step_id);
+        }
+        if self.try_auto_failover(&run_id, &step_id, resume.concrete, &error, true)? {
+            return self.requeue_for_retry(
+                &run_id,
+                resume.workflow,
+                resume.index,
+                resume.retry_counts,
+                resume.retry_prompt,
+            );
+        }
+        self.fail_run(&run_id, Some(&step_id), error)
+    }
+
+    /// Fail a run that a caller admitted but could not even hand to a worker — e.g. the OS
+    /// refused to start a thread. A local resource failure, not a provider one, so unlike
+    /// [`Self::apply_open_failure`] this never retries through auto-failover; it just needs the
+    /// run's id, not the full [`AdmittedTurn`] (deliberately, so a caller that already lost the
+    /// value moving it toward a worker that never started can still report the failure).
+    pub fn fail_admission(
+        &mut self,
+        run_id: &str,
+        step_id: &str,
+        reason: String,
+    ) -> io::Result<()> {
+        self.in_flight.remove(run_id);
+        self.fail_run(run_id, Some(step_id), reason)
+    }
+
+    /// Apply the result of a successfully opened session's first turn. `turn_result` is exactly
+    /// what `AgentSession::turn` returned, run entirely outside the manager's lock by the caller.
+    pub fn apply_admitted_turn(
+        &mut self,
+        admitted: AdmittedTurn,
+        session: Box<dyn AgentSession + Send>,
+        turn_result: Result<SessionOutcome, String>,
+        cancellation_requested: bool,
+    ) -> io::Result<TurnStep> {
+        let AdmittedTurn {
+            run_id,
+            step_id: _,
+            resume,
+            ..
+        } = admitted;
+        let outcome = match turn_result {
+            Ok(_) if cancellation_requested => SessionOutcome::Cancelled(SessionReport::default()),
+            Ok(outcome) => outcome,
+            Err(_) if cancellation_requested => SessionOutcome::Cancelled(SessionReport::default()),
+            Err(error) => {
+                self.in_flight.remove(&run_id);
+                let step_id = resume.workflow.steps[resume.index].id.clone();
+                if self.try_auto_failover(&run_id, &step_id, resume.concrete, &error, false)? {
+                    self.requeue_for_retry(
+                        &run_id,
+                        resume.workflow,
+                        resume.index,
+                        resume.retry_counts,
+                        resume.retry_prompt,
+                    )?;
+                    return Ok(TurnStep::Done);
+                }
+                self.fail_run(&run_id, Some(&step_id), error)?;
+                return Ok(TurnStep::Done);
+            }
+        };
+        let active = RuntimeActive {
+            workflow: resume.workflow,
+            step_index: resume.index,
+            next_index: resume.index + 1,
+            retry_counts: resume.retry_counts,
+            session,
+            holds_slot: true,
+            plan_checkpoint: resume.plan_checkpoint,
+            auto_continues: 0,
+            failover: Some(FailoverContext {
+                concrete: resume.concrete,
+                retry_prompt: resume.retry_prompt,
+            }),
+        };
+        self.continue_active_turn(&run_id, active, outcome)
+    }
+
+    /// Apply the result of an autonomous nudge (`AgentSession::send_message`) the caller sent
+    /// after a prior [`TurnStep::Nudge`]. Behaves exactly like the initial turn's wrapping: a
+    /// cancellation request wins over whatever the session actually returned.
+    pub fn apply_active_turn(
+        &mut self,
+        run_id: &str,
+        active: RuntimeActive,
+        send_result: Result<SessionOutcome, String>,
+        cancellation_requested: bool,
+    ) -> io::Result<TurnStep> {
+        let outcome = match send_result {
+            Ok(_) if cancellation_requested => SessionOutcome::Cancelled(SessionReport::default()),
+            Ok(outcome) => outcome,
+            Err(_) if cancellation_requested => SessionOutcome::Cancelled(SessionReport::default()),
+            Err(error) => SessionOutcome::Failed {
+                message: error,
+                report: SessionReport::default(),
+            },
+        };
+        self.continue_active_turn(run_id, active, outcome)
     }
 
     fn apply_session_report(
@@ -2730,9 +2853,12 @@ impl RunManager {
     fn park_session(
         &mut self,
         run_id: &str,
-        active: RuntimeActive,
+        mut active: RuntimeActive,
         requested_monitoring: bool,
     ) -> io::Result<()> {
+        // Failover eligibility belongs to the live turn that hit the failure, never to a later,
+        // separately triggered resume (`deliver_message`/`finish`) of this same parked session.
+        active.failover = None;
         let monitoring = requested_monitoring
             && self
                 .runs
@@ -2795,12 +2921,20 @@ impl RunManager {
         Ok(())
     }
 
-    fn handle_active_outcome(
+    /// Apply one turn's outcome to a live, in-progress session and decide what happens next.
+    /// Shared by both a freshly admitted turn's worker (`apply_admitted_turn`/`apply_active_turn`,
+    /// where `active.failover` carries the original open attempt's failover eligibility) and the
+    /// synchronous `deliver_message`/`finish` resume of an already-parked session (where it is
+    /// always `None` — auto-failover never applies to a resumed session, matching prior
+    /// behavior). A `Nudge` result means the caller must run one more send_message turn itself
+    /// (outside any lock for a worker; inline, still under the lock, for a synchronous resume)
+    /// and call this again with the result.
+    fn continue_active_turn(
         &mut self,
         run_id: &str,
         mut active: RuntimeActive,
         outcome: SessionOutcome,
-    ) -> io::Result<()> {
+    ) -> io::Result<TurnStep> {
         let step_id = active.workflow.steps[active.step_index].id.clone();
         let report = session_outcome_report(&outcome).clone();
         self.apply_session_report(run_id, &step_id, &report, active.session.session_id())?;
@@ -2854,7 +2988,9 @@ impl RunManager {
                     "intelligent context refresh — reopening a fresh session",
                 ),
             )?;
-            return self.pump();
+            self.in_flight.remove(run_id);
+            self.pump()?;
+            return Ok(TurnStep::Done);
         }
         let should_nudge = self
             .get_run(run_id)
@@ -2878,37 +3014,55 @@ impl RunManager {
                     ),
                 ),
             )?;
-            let next = match active.session.send_message(
-                AUTONOMOUS_NUDGE,
-                &[],
-                &mut self.event_sink(run_id, &step_id),
-            ) {
-                Ok(outcome) => outcome,
-                Err(error) => SessionOutcome::Failed {
-                    message: error,
-                    report: SessionReport::default(),
-                },
-            };
-            return self.handle_active_outcome(run_id, active, next);
+            return Ok(TurnStep::Nudge(Box::new(active)));
         }
         match outcome {
             SessionOutcome::Failed { message, .. } => {
-                self.fail_run(run_id, Some(&step_id), message)
+                self.in_flight.remove(run_id);
+                if let Some(failover) = active.failover.clone()
+                    && self.try_auto_failover(
+                        run_id,
+                        &step_id,
+                        failover.concrete,
+                        &message,
+                        false,
+                    )?
+                {
+                    self.requeue_for_retry(
+                        run_id,
+                        active.workflow,
+                        active.step_index,
+                        active.retry_counts,
+                        failover.retry_prompt,
+                    )?;
+                    return Ok(TurnStep::Done);
+                }
+                self.fail_run(run_id, Some(&step_id), message)?;
+                Ok(TurnStep::Done)
             }
-            SessionOutcome::Cancelled(_) => self.cancel_run_after_session(run_id, &step_id),
+            SessionOutcome::Cancelled(_) => {
+                self.in_flight.remove(run_id);
+                self.cancel_run_after_session(run_id, &step_id)?;
+                Ok(TurnStep::Done)
+            }
             SessionOutcome::Running(_) => {
+                self.in_flight.remove(run_id);
                 active.holds_slot = true;
-                self.park_session(run_id, active, false)
+                self.park_session(run_id, active, false)?;
+                Ok(TurnStep::Done)
             }
             SessionOutcome::Waiting(report) => {
+                self.in_flight.remove(run_id);
                 active.holds_slot = false;
                 self.park_session(
                     run_id,
                     active,
                     report.decision == Some(TurnMarkerDecision::Monitoring),
-                )
+                )?;
+                Ok(TurnStep::Done)
             }
             SessionOutcome::Completed(_) => {
+                self.in_flight.remove(run_id);
                 self.complete_step(run_id, &step_id, None)?;
                 if active.next_index < active.workflow.steps.len() {
                     self.update_run(
@@ -2930,7 +3084,8 @@ impl RunManager {
                 } else {
                     self.settle_success(run_id)?;
                 }
-                self.pump()
+                self.pump()?;
+                Ok(TurnStep::Done)
             }
         }
     }
@@ -3121,6 +3276,14 @@ impl RunManager {
     /// Terminal cleanup removes all process-local queue/job/usage state while
     /// leaving the durable record as the source of truth.
     pub fn cancel(&mut self, run_id: &str) -> io::Result<bool> {
+        // A worker already owns this run's session outside any lock this call holds; settling it
+        // here would race the worker's own eventual `apply_open_failure`/`apply_admitted_turn`
+        // report. Cancellation itself goes through the run's `CancellationToken`, not this call —
+        // the caller signals that independently before ever reaching the manager lock. Once the
+        // worker observes it, it reports back through the normal `Cancelled` outcome path.
+        if self.in_flight.contains(run_id) {
+            return Ok(true);
+        }
         if self.queue.is_queued(run_id) || self.jobs.contains_key(run_id) {
             self.cleanup_runtime(run_id);
             if self.get_run(run_id).is_none() {
@@ -3251,8 +3414,38 @@ impl RunManager {
             }
             other => other,
         };
-        self.handle_active_outcome(run_id, active, outcome)?;
+        self.drive_active_turn(run_id, active, outcome)?;
         Ok(true)
+    }
+
+    /// Drive a synchronously resumed session (`finish`/`deliver_message`) through
+    /// `continue_active_turn` to completion, sending any autonomous nudge inline under the same
+    /// lock hold this call already has — unlike a worker-driven turn, a resume is a single
+    /// foreground action with no separate admission to keep unblocked.
+    fn drive_active_turn(
+        &mut self,
+        run_id: &str,
+        active: RuntimeActive,
+        outcome: SessionOutcome,
+    ) -> io::Result<()> {
+        let mut step = self.continue_active_turn(run_id, active, outcome)?;
+        while let TurnStep::Nudge(boxed) = step {
+            let mut active = *boxed;
+            let step_id = active.workflow.steps[active.step_index].id.clone();
+            let next = match active.session_mut().send_message(
+                AUTONOMOUS_NUDGE,
+                &[],
+                &mut self.event_sink(run_id, &step_id),
+            ) {
+                Ok(outcome) => outcome,
+                Err(error) => SessionOutcome::Failed {
+                    message: error,
+                    report: SessionReport::default(),
+                },
+            };
+            step = self.continue_active_turn(run_id, active, next)?;
+        }
+        Ok(())
     }
 
     /// Deliver a user follow-up to a parked active session. The session outcome owns the next
@@ -3291,7 +3484,7 @@ impl RunManager {
                 return Ok(false);
             }
         };
-        self.handle_active_outcome(run_id, active, outcome)?;
+        self.drive_active_turn(run_id, active, outcome)?;
         Ok(true)
     }
 
@@ -4681,7 +4874,7 @@ mod tests {
         assert_eq!(queued.task, "show activity immediately");
         assert!(requests.lock().unwrap().is_empty());
 
-        manager.pump().unwrap();
+        manager.run_to_completion().unwrap();
         assert_eq!(requests.lock().unwrap().len(), 1);
     }
 
@@ -5583,6 +5776,7 @@ mod tests {
             )
             .unwrap();
         assert!(result.ok);
+        manager.run_to_completion().unwrap();
         let continued = manager.get_run(&run.id).unwrap();
         assert_eq!(continued.runner, Some(Runner::Codex));
         assert_eq!(continued.model.as_deref(), Some("gpt-5.1-codex"));
@@ -5626,6 +5820,7 @@ mod tests {
                 },
             )
             .unwrap();
+        manager.run_to_completion().unwrap();
         assert_eq!(requests.lock().unwrap()[1].runner, RunnerSelection::Claude);
         assert_eq!(
             requests.lock().unwrap()[1].session_id.as_deref(),

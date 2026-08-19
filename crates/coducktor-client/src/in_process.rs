@@ -57,9 +57,10 @@ use coducktor_core::paths::{
 use coducktor_core::skills::discover_skills;
 use coducktor_core::workflows::load::{WORKFLOWS_DIR, load_workflows};
 use coducktor_core::workflows::run::{
-    CancellationToken, CheckExecutor, CheckResult, DiffInspector, EventInput, PromptImage,
-    RepositoryRootLease, RunManager, RuntimeOptions, SessionFactory,
-    StartRunInput as CoreStartRunInput, WorkspaceSemaphore, review_gate_enabled,
+    AUTONOMOUS_NUDGE, AdmittedTurn, CancellationToken, CheckExecutor, CheckResult, DiffInspector,
+    EventInput, PromptImage, RepositoryRootLease, RunManager, RuntimeActive, RuntimeOptions,
+    SessionFactory, StartRunInput as CoreStartRunInput, TurnStep, WorkspaceSemaphore,
+    review_gate_enabled,
 };
 use coducktor_core::workflows::types::{parse_workflow_file_doc, steps_issue};
 use coducktor_core::workspace::agent_accounts::{
@@ -101,6 +102,9 @@ pub struct InProcessEngine {
     project_id: String,
     run_snapshot: Arc<RwLock<BTreeMap<String, BTreeMap<String, coducktor_contract::RunRecord>>>>,
     activation_workers: Arc<Mutex<BTreeMap<String, std::thread::JoinHandle<()>>>>,
+    /// One worker thread per run currently running a live turn outside any manager lock. Keyed
+    /// by run id, matching `RunManager`'s own `in_flight` bookkeeping — a run has at most one.
+    turn_workers: Arc<Mutex<BTreeMap<String, std::thread::JoinHandle<()>>>>,
     live_events: broadcast::Sender<EngineEvent>,
     model_catalog: Arc<Mutex<Vec<CachedModelCatalog>>>,
     usage_cache: Arc<Mutex<Option<CachedWorkspaceUsage>>>,
@@ -333,6 +337,153 @@ impl SessionFactory for SharedSessionFactory {
             .lock()
             .map(|mut factory| factory.request_cancel(run_id))
             .unwrap_or(false)
+    }
+}
+
+/// Runs [`AdmittedTurn`]s to completion on their own worker threads, entirely outside the
+/// manager's lock: `RunManager::execute_job` stops the instant it would otherwise call
+/// `SessionFactory::open`, so this is the only place production code actually opens a session or
+/// runs a turn. Each clone shares the same manager, factory, cancellation registry, and worker
+/// registry — cheap to hand to a new thread, and cheap to hand back to itself for the next
+/// admitted turn a just-applied outcome unblocked.
+#[derive(Clone)]
+struct TurnDispatch {
+    manager: Arc<Mutex<RunManager>>,
+    session_factory: Arc<Mutex<Box<dyn SessionFactory>>>,
+    state_home: PathBuf,
+    cancellations: Arc<Mutex<BTreeMap<String, CancellationToken>>>,
+    workers: Arc<Mutex<BTreeMap<String, std::thread::JoinHandle<()>>>>,
+}
+
+impl TurnDispatch {
+    /// Spawn one worker per admitted turn. Safe to call with an empty list — the common case,
+    /// since most manager operations admit nothing new.
+    fn dispatch(&self, admitted: Vec<AdmittedTurn>) {
+        for turn in admitted {
+            self.spawn(turn);
+        }
+    }
+
+    fn spawn(&self, admitted: AdmittedTurn) {
+        // Registered before the thread even starts so a `cancel_run` racing this dispatch can
+        // never land in the gap between admission and the worker's first lock acquisition — the
+        // token is reachable the moment `RunManager::in_flight` says this run is busy.
+        if let Ok(mut cancellations) = self.cancellations.lock() {
+            cancellations.insert(
+                admitted.run_id.clone(),
+                admitted.request.cancellation.clone(),
+            );
+        }
+        let run_id = admitted.run_id.clone();
+        let step_id = admitted.step_id.clone();
+        let dispatch = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name("coducktor-turn".to_owned())
+            .spawn(move || dispatch.run(admitted));
+        match spawned {
+            Ok(handle) => {
+                if let Ok(mut workers) = self.workers.lock() {
+                    workers.insert(run_id, handle);
+                }
+            }
+            Err(error) => {
+                // The closure above (and the `AdmittedTurn` it moved) is gone the instant `spawn`
+                // returns `Err` — a local resource failure, so there is no provider error to
+                // auto-failover from anyway. A run stuck `Running` forever with no worker would be
+                // worse than a fast, visible failure.
+                if let Ok(mut manager) = self.manager.lock() {
+                    let _ = manager.fail_admission(
+                        &run_id,
+                        &step_id,
+                        format!("could not start a turn worker: {error}"),
+                    );
+                }
+            }
+        }
+    }
+
+    /// One admitted turn's whole lifetime on its own thread: open, run the turn (and any
+    /// autonomous nudges), report back, then look for whatever the manager admitted as a result
+    /// — completing this run's next step, or another run capacity freed up for — and dispatch
+    /// that too. No branch of this function ever holds the manager's lock across the session
+    /// calls themselves, only around the brief, individual state mutations each one produces.
+    fn run(&self, admitted: AdmittedTurn) {
+        let run_id = admitted.run_id.clone();
+        let step_id = admitted.step_id.clone();
+        let cancellation = admitted.request.cancellation.clone();
+        let mut factory = SharedSessionFactory {
+            inner: self.session_factory.clone(),
+            state_home: self.state_home.clone(),
+            cancellations: self.cancellations.clone(),
+        };
+        let opened = factory.open(admitted.request.clone());
+        let mut session = match opened {
+            Ok(session) => session,
+            Err(error) => {
+                if let Ok(mut manager) = self.manager.lock() {
+                    let _ =
+                        manager.apply_open_failure(admitted, error, cancellation.is_requested());
+                }
+                self.redispatch();
+                return;
+            }
+        };
+        let turn_result = session.turn(&mut |event| self.apply_event(&run_id, &step_id, event));
+        let mut step = match self.manager.lock() {
+            Ok(mut manager) => manager.apply_admitted_turn(
+                admitted,
+                session,
+                turn_result,
+                cancellation.is_requested(),
+            ),
+            Err(_) => return,
+        };
+        loop {
+            let active = match step {
+                Ok(TurnStep::Done) | Err(_) => break,
+                Ok(TurnStep::Nudge(active)) => active,
+            };
+            step = self.run_nudge(&run_id, &step_id, active, &cancellation);
+        }
+        self.redispatch();
+    }
+
+    fn run_nudge(
+        &self,
+        run_id: &str,
+        step_id: &str,
+        mut active: Box<RuntimeActive>,
+        cancellation: &CancellationToken,
+    ) -> std::io::Result<TurnStep> {
+        let send_result = active
+            .session_mut()
+            .send_message(AUTONOMOUS_NUDGE, &[], &mut |event| {
+                self.apply_event(run_id, step_id, event)
+            });
+        self.manager
+            .lock()
+            .map_err(|_| std::io::Error::other("manager unavailable"))?
+            .apply_active_turn(run_id, *active, send_result, cancellation.is_requested())
+    }
+
+    /// Applied under a fresh, brief lock per event — never the same lock the child process I/O
+    /// between events runs under.
+    fn apply_event(&self, run_id: &str, step_id: &str, event: EventInput) -> std::io::Result<()> {
+        self.manager
+            .lock()
+            .map_err(|_| std::io::Error::other("manager unavailable"))?
+            .apply_turn_event(run_id, step_id, event)
+    }
+
+    /// Drain whatever the manager admitted while this worker was running — its own next step, or
+    /// unrelated queued work this run finishing freed capacity for — and dispatch it. Cheap and a
+    /// no-op when nothing is pending, so it is safe to call unconditionally at the end of a run.
+    fn redispatch(&self) {
+        let admitted = match self.manager.lock() {
+            Ok(mut manager) => manager.take_pending_turns(),
+            Err(_) => return,
+        };
+        self.dispatch(admitted);
     }
 }
 
@@ -643,6 +794,7 @@ impl InProcessEngine {
             project_id: boot_project_id.clone(),
             run_snapshot,
             activation_workers: Arc::new(Mutex::new(BTreeMap::new())),
+            turn_workers: Arc::new(Mutex::new(BTreeMap::new())),
             live_events,
             model_catalog: Arc::new(Mutex::new(Vec::new())),
             usage_cache: Arc::new(Mutex::new(None)),
@@ -858,6 +1010,7 @@ impl InProcessEngine {
             },
             run_snapshot: self.run_snapshot.clone(),
             activation_workers: self.activation_workers.clone(),
+            turn_workers: self.turn_workers.clone(),
             live_events: self.live_events.clone(),
             model_catalog: self.model_catalog.clone(),
             usage_cache: self.usage_cache.clone(),
@@ -1190,19 +1343,36 @@ impl InProcessEngine {
         if let Some(finished) = workers.remove(&self.project_id) {
             let _ = finished.join();
         }
-        let manager = self.manager.clone();
+        let dispatch = self.turn_dispatch();
         let worker = std::thread::Builder::new()
             .name("coducktor-runner".to_owned())
             .spawn(move || {
-                if let Ok(mut manager) = manager.lock() {
-                    let _ = manager.pump();
-                }
+                let admitted = match dispatch.manager.lock() {
+                    Ok(mut manager) => {
+                        let _ = manager.pump();
+                        manager.take_pending_turns()
+                    }
+                    Err(_) => return,
+                };
+                dispatch.dispatch(admitted);
             })
             .map_err(|error| EngineError::Unavailable {
                 reason: format!("could not start the agent worker: {error}"),
             })?;
         workers.insert(self.project_id.clone(), worker);
         Ok(())
+    }
+
+    /// Build a handle any per-run turn can be dispatched through — cheap, since every field is
+    /// an `Arc` clone or owned small value.
+    fn turn_dispatch(&self) -> TurnDispatch {
+        TurnDispatch {
+            manager: self.manager.clone(),
+            session_factory: self.session_factory.clone(),
+            state_home: self.state_home.clone(),
+            cancellations: self.cancellations.clone(),
+            workers: self.turn_workers.clone(),
+        }
     }
 
     /// Join completed activation workers irrespective of the project that started them. This
@@ -1382,6 +1552,9 @@ impl InProcessEngine {
             return Err(EngineError::NotFound);
         }
         let cancelled = manager.cancel(run_id).map_err(io_err)?;
+        let admitted = manager.take_pending_turns();
+        drop(manager);
+        self.turn_dispatch().dispatch(admitted);
         Ok(CancelResponse { cancelled })
     }
 
@@ -1391,6 +1564,9 @@ impl InProcessEngine {
             return Err(EngineError::NotFound);
         }
         let finished = manager.finish(run_id).map_err(io_err)?;
+        let admitted = manager.take_pending_turns();
+        drop(manager);
+        self.turn_dispatch().dispatch(admitted);
         Ok(FinishResponse { finished })
     }
 
@@ -3327,7 +3503,11 @@ impl InProcessEngine {
         if manager.get_run(run_id).is_none() {
             return Err(EngineError::NotFound);
         }
-        match manager.deliver_message(run_id, text, images) {
+        let result = manager.deliver_message(run_id, text, images);
+        let admitted = manager.take_pending_turns();
+        drop(manager);
+        self.turn_dispatch().dispatch(admitted);
+        match result {
             Ok(true) => Ok(MessageResponse::Delivered { delivered: true }),
             Ok(false) => Err(EngineError::Conflict {
                 reason: "session closed".to_owned(),
@@ -3357,7 +3537,11 @@ impl InProcessEngine {
         if manager.get_run(run_id).is_none() {
             return Err(EngineError::NotFound);
         }
-        match manager.continue_run(run_id, options) {
+        let result = manager.continue_run(run_id, options);
+        let admitted = manager.take_pending_turns();
+        drop(manager);
+        self.turn_dispatch().dispatch(admitted);
+        match result {
             Ok(result) if result.ok => Ok(ContinueResponse { continued: true }),
             Ok(result) => Err(EngineError::Conflict {
                 reason: result
@@ -8620,10 +8804,11 @@ mod tests {
     }
     use coducktor_contract::WorkflowStepDef;
     use coducktor_core::workflows::run::{
-        AgentSession, CancellationToken, EventInput, SessionFactory, SessionRequest,
+        AgentSession, CancellationToken, EventInput, SessionFactory, SessionOutcome, SessionRequest,
     };
     use std::io;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Barrier;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tempfile::TempDir;
 
     /// A session that immediately completes with `DUCK:DONE` — enough to prove
@@ -8947,6 +9132,207 @@ mod tests {
         .unwrap();
     }
 
+    /// A session that emits one event, then blocks until every session sharing its `barrier`
+    /// has reached the same point — satisfiable only if `barrier.wait()` is reached by all of
+    /// them concurrently, since none of them ever return before that happens.
+    struct RendezvousSession {
+        barrier: Arc<Barrier>,
+        reached: Arc<AtomicUsize>,
+        release: Arc<AtomicBool>,
+    }
+
+    impl AgentSession for RendezvousSession {
+        fn turn(
+            &mut self,
+            on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
+        ) -> Result<SessionOutcome, String> {
+            on_event(EventInput::new("tool-call").field("name", "noop")).ok();
+            self.reached.fetch_add(1, Ordering::SeqCst);
+            self.barrier.wait();
+            while !self.release.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok(SessionOutcome::Completed(
+                coducktor_core::workflows::run::SessionReport::default(),
+            ))
+        }
+    }
+
+    struct RendezvousFactory {
+        barrier: Arc<Barrier>,
+        reached: Arc<AtomicUsize>,
+        release: Arc<AtomicBool>,
+    }
+
+    impl SessionFactory for RendezvousFactory {
+        fn open(
+            &mut self,
+            _request: SessionRequest,
+        ) -> Result<Box<dyn AgentSession + Send>, String> {
+            Ok(Box::new(RendezvousSession {
+                barrier: self.barrier.clone(),
+                reached: self.reached.clone(),
+                release: self.release.clone(),
+            }))
+        }
+    }
+
+    /// R1's central regression test: two runs admitted from the same project must actually
+    /// execute their provider turns concurrently, not merely be admitted concurrently. Before the
+    /// admit/apply split, `RunManager::pump` called `execute_job` synchronously in a loop, so the
+    /// second run's `AgentSession::turn` could not even start until the first one returned —
+    /// this two-party barrier is only satisfiable if both turns are genuinely in flight together.
+    #[tokio::test]
+    async fn two_blocked_sessions_in_the_same_project_reach_their_first_tool_event_together() {
+        let dir = TempDir::new().unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let reached = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(AtomicBool::new(false));
+        let engine = InProcessEngine::with_session_factory(
+            dir.path(),
+            "0.0.0-test",
+            RendezvousFactory {
+                barrier: barrier.clone(),
+                reached: reached.clone(),
+                release: release.clone(),
+            },
+        );
+        assert_eq!(
+            engine
+                .manager
+                .lock()
+                .unwrap()
+                .runtime_options()
+                .max_parallel,
+            2
+        );
+
+        let CreateRunResponse::Single(first) =
+            engine.start_run(steps_input("first")).await.unwrap()
+        else {
+            panic!("expected one run");
+        };
+        let CreateRunResponse::Single(second) =
+            engine.start_run(steps_input("second")).await.unwrap()
+        else {
+            panic!("expected one run");
+        };
+        // Two in-place (non-worktree) runs against the same checkout are correctly serialized by
+        // the repository-root lease — that is a different, deliberate protection, not the R1
+        // defect under test here. Give each an independent worktree path so only the runtime
+        // parallelism limit (not the repository lease) gates their concurrency.
+        {
+            let mut manager = engine.manager.lock().unwrap();
+            manager
+                .update_run_value(
+                    &first.id,
+                    json!({"worktreePath": dir.path().join("wt-first").to_string_lossy()}),
+                )
+                .unwrap();
+            manager
+                .update_run_value(
+                    &second.id,
+                    json!({"worktreePath": dir.path().join("wt-second").to_string_lossy()}),
+                )
+                .unwrap();
+        }
+        engine.activate_runs().unwrap();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while reached.load(Ordering::SeqCst) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both sessions should reach their first tool event without waiting on each other");
+
+        release.store(true, Ordering::Release);
+        activate_until_terminal(&engine, &first.id).await;
+        activate_until_terminal(&engine, &second.id).await;
+        assert_eq!(
+            engine.get_run(&first.id).await.unwrap().record.status,
+            coducktor_contract::RunStatus::Done
+        );
+        assert_eq!(
+            engine.get_run(&second.id).await.unwrap().record.status,
+            coducktor_contract::RunStatus::Done
+        );
+    }
+
+    /// The mirror case: with effective parallelism of one, the second run must stay queued while
+    /// the first is in flight — proving the barrier test above is not passing merely because
+    /// admission no longer bounds concurrency at all.
+    #[tokio::test]
+    async fn a_single_slot_leaves_the_second_run_queued_behind_a_blocked_first() {
+        let dir = TempDir::new().unwrap();
+        let state = TempDir::new().unwrap();
+        let config_path = state.path().join("config.json");
+        std::fs::write(
+            &config_path,
+            json!({"resources": {"maxParallel": 1}}).to_string(),
+        )
+        .unwrap();
+        let tokens = Arc::new(Mutex::new(BTreeMap::new()));
+        let engine = InProcessEngine::with_session_factory_at(
+            dir.path(),
+            "0.0.0-test",
+            BlockingFactory {
+                tokens: tokens.clone(),
+            },
+            config_path,
+        );
+        assert_eq!(
+            engine
+                .manager
+                .lock()
+                .unwrap()
+                .runtime_options()
+                .max_parallel,
+            1
+        );
+
+        let CreateRunResponse::Single(first) =
+            engine.start_run(steps_input("first")).await.unwrap()
+        else {
+            panic!("expected one run");
+        };
+        let CreateRunResponse::Single(second) =
+            engine.start_run(steps_input("second")).await.unwrap()
+        else {
+            panic!("expected one run");
+        };
+        engine.activate_runs().unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if tokens.lock().unwrap().contains_key(&first.id) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        // Give the second run every chance to have started too, if admission were not actually
+        // bounded — then assert it never did.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!tokens.lock().unwrap().contains_key(&second.id));
+        assert_eq!(
+            engine.get_run(&second.id).await.unwrap().record.status,
+            coducktor_contract::RunStatus::Queued
+        );
+
+        assert!(
+            tokens
+                .lock()
+                .unwrap()
+                .get(&first.id)
+                .is_some_and(CancellationToken::request)
+        );
+        activate_until_terminal(&engine, &first.id).await;
+    }
+
     #[tokio::test]
     async fn cancel_reaches_a_session_factory_blocked_during_open() {
         let dir = TempDir::new().unwrap();
@@ -9061,11 +9447,17 @@ mod tests {
     async fn completed_activation_workers_are_reaped_from_the_registry() {
         let dir = TempDir::new().unwrap();
         let engine = engine(&dir);
-        engine
+        let response = engine
             .enqueue_run(steps_input("complete on the worker"))
             .await
             .unwrap();
-        engine.activate_runs().unwrap();
+        let CreateRunResponse::Single(run) = response else {
+            panic!("expected a single run");
+        };
+        // `activate_runs`'s own per-project thread only does admission — it finishes as soon as
+        // the turn is handed to its own worker, well before the turn itself (and the durable
+        // status this waits for) completes.
+        activate_until_terminal(&engine, &run.id).await;
 
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
