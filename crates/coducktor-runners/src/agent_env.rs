@@ -19,13 +19,17 @@ use coducktor_contract::Runner;
 use regex::Regex;
 
 /// The single source of truth for "is this env var name a credential?" in the child-env filter.
-static SECRET_NAME_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|_KEY$|_KEY_|APIKEY|API_KEY|PRIVATE_KEY|ACCESS_KEY|_AUTH$|_AUTH_|SESSION|COOKIE|PASSPHRASE)")
-        .expect("SECRET_NAME_RE is a fixed, valid pattern")
+static SECRET_NAME_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|_KEY$|_KEY_|APIKEY|API_KEY|PRIVATE_KEY|ACCESS_KEY|_AUTH$|_AUTH_|SESSION|COOKIE|PASSPHRASE)",
+    )
 });
 
 pub fn looks_secret(name: &str) -> bool {
-    SECRET_NAME_RE.is_match(name)
+    // A broken credential classifier must not leak host variables into an agent process.
+    SECRET_NAME_RE
+        .as_ref()
+        .map_or(true, |regex| regex.is_match(name))
 }
 
 fn upper_set(names: &[&str]) -> HashSet<String> {

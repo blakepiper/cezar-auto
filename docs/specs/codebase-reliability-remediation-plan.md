@@ -51,6 +51,8 @@ the larger coordinator rewrite:
   remaining serialization panic paths while retaining the established wire spellings.
 - agent-account serialization now uses the same stable provider spelling directly, removing its
   last persistence-boundary panic path.
+- child-environment credential filtering now fails closed if its fixed regex cannot initialize,
+  preserving the no-host-secret-leak guarantee without a startup panic.
 
 The critical coordinator work is not complete. Provider turns still need to move out of the
 project-manager critical section into bounded per-run workers before same-project parallelism and
