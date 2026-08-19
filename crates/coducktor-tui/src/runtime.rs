@@ -29,6 +29,7 @@ use crate::{cli, headless, new_task_form, screens, terminal};
 const FRAME_BUDGET: Duration = Duration::from_millis(33);
 const INPUT_ITEMS_PER_FRAME: usize = 64;
 const RECEIVER_ITEMS_PER_FRAME: usize = 256;
+const RECEIVER_TIME_BUDGET: Duration = Duration::from_millis(4);
 const PENDING_ACTIONS_PER_FRAME: usize = 16;
 const BACKGROUND_WORKER_COUNT: usize = 4;
 
@@ -1715,7 +1716,11 @@ fn drain_background_results(
     app: &mut App,
     starts_in_flight: &mut HashSet<String>,
 ) {
+    let started = Instant::now();
     for _ in 0..RECEIVER_ITEMS_PER_FRAME {
+        if started.elapsed() >= RECEIVER_TIME_BUDGET {
+            break;
+        }
         let Ok(result) = receiver.try_recv() else {
             break;
         };
@@ -2536,7 +2541,11 @@ async fn run(
             }
         }
         if let Some(events) = workspace_events.as_deref_mut() {
+            let started = Instant::now();
             for _ in 0..RECEIVER_ITEMS_PER_FRAME {
+                if started.elapsed() >= RECEIVER_TIME_BUDGET {
+                    break;
+                }
                 let Ok(event) = events.try_recv() else {
                     break;
                 };
@@ -2567,7 +2576,11 @@ async fn run(
         }
         if let Some(listener) = thread_listener.as_mut() {
             let mut live_batch = Vec::new();
+            let started = Instant::now();
             for _ in 0..RECEIVER_ITEMS_PER_FRAME {
+                if started.elapsed() >= RECEIVER_TIME_BUDGET {
+                    break;
+                }
                 let Ok(event) = listener.receiver.try_recv() else {
                     break;
                 };

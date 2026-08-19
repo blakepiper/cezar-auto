@@ -163,8 +163,9 @@ Evidence:
   The pool has no request cancellation or bounded queue yet, and ordered mutations still await the
   general command executor.
 - workspace events, background results, and thread events are each bounded by
-  `RECEIVER_ITEMS_PER_FRAME`; thread events are collected into one batch before projection. The
-  terminal loop still lacks time-budgeting, backlog wake accounting, and input-priority scheduling.
+  `RECEIVER_ITEMS_PER_FRAME` and a four-millisecond receiver time budget; thread events are
+  collected into one batch before projection. The terminal loop still lacks backlog wake
+  accounting and input-priority scheduling.
 - Pending actions now drain FIFO in batches of `PENDING_ACTIONS_PER_FRAME`, retaining the tail for
   later frames. Individual actions still await engine and host work in the frame task, but their
   post-mutation global-index refresh is now queued into the backgrounded, generation-checked
