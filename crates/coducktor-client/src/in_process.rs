@@ -907,20 +907,12 @@ impl InProcessEngine {
 
     /// Mirrors `create_run`'s handler exactly, including its `variants` validation.
     pub async fn start_run(&self, input: CreateRunInput) -> Result<CreateRunResponse, EngineError> {
-        let response = self.enqueue_run(input).await?;
-        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
-        manager.pump().map_err(io_err)?;
-        Ok(match response {
-            CreateRunResponse::Single(run) => CreateRunResponse::Single(Box::new(
-                manager.get_run(&run.id).cloned().unwrap_or(*run),
-            )),
-            CreateRunResponse::Group { runs } => CreateRunResponse::Group {
-                runs: runs
-                    .into_iter()
-                    .map(|run| manager.get_run(&run.id).cloned().unwrap_or(run))
-                    .collect(),
-            },
-        })
+        // Admission is durable, but execution is deliberately separate. Starting a provider
+        // turn here used to hold the manager mutex throughout `RunManager::pump`, making the
+        // request path (and any caller sharing that manager) wait behind runner I/O. The TUI
+        // installs its live listener and then explicitly calls `activate_runs`; headless callers
+        // own the same activation boundary.
+        self.enqueue_run(input).await
     }
 
     /// Persist queued runs and return their ids before any agent process is opened.
@@ -8703,6 +8695,27 @@ mod tests {
         )
     }
 
+    async fn activate_until_terminal(engine: &InProcessEngine, run_id: &str) {
+        engine.activate_runs().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                let status = engine.get_run(run_id).await.unwrap().record.status;
+                if matches!(
+                    status,
+                    coducktor_contract::RunStatus::Done
+                        | coducktor_contract::RunStatus::Failed
+                        | coducktor_contract::RunStatus::Cancelled
+                        | coducktor_contract::RunStatus::Review
+                ) {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn starting_a_run_keeps_the_repository_free_of_coducktor_runtime_state() {
         let workspace = TempDir::new().unwrap();
@@ -8950,7 +8963,8 @@ mod tests {
         let CreateRunResponse::Single(run) = response else {
             panic!("expected a single run");
         };
-        assert_eq!(run.status, coducktor_contract::RunStatus::Done);
+        assert_eq!(run.status, coducktor_contract::RunStatus::Queued);
+        activate_until_terminal(&engine, &run.id).await;
 
         let listed = engine.list_runs().await.unwrap();
         assert_eq!(listed.len(), 1);
@@ -8986,6 +9000,7 @@ mod tests {
         else {
             panic!("expected a single run");
         };
+        activate_until_terminal(&engine, &run.id).await;
 
         let archived = engine.archive_run(&run.id, true).await.unwrap();
         assert!(archived.record.archived);
@@ -9014,6 +9029,8 @@ mod tests {
         else {
             panic!("expected a single run");
         };
+        activate_until_terminal(&engine, &one.id).await;
+        activate_until_terminal(&engine, &two.id).await;
         // A run completed via the fake session is already "seen" by the time `start_run`
         // returns (there was no live cockpit watching it) — mark both explicitly unread first
         // so `mark_all_read` has something real to count.
@@ -9037,8 +9054,7 @@ mod tests {
         else {
             panic!("expected a single run");
         };
-        // The fake session completes synchronously, so by the time `start_run` returns the run
-        // is already `done`, not `queued` — renaming its title (not its task) is still allowed.
+        // Admission is durable but execution starts only at the explicit activation boundary.
         let patched = engine
             .patch_run(
                 &run.id,
@@ -9050,6 +9066,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(patched.record.title, "new title");
+
+        activate_until_terminal(&engine, &run.id).await;
 
         let error = engine
             .patch_run(
@@ -10713,6 +10731,7 @@ mod tests {
         else {
             panic!("expected a single run");
         };
+        activate_until_terminal(&engine, &run.id).await;
         let response = engine.remove_run_worktree(&run.id).await.unwrap();
         assert!(response.removed);
     }
@@ -11905,6 +11924,7 @@ mod tests {
         let CreateRunResponse::Single(run) = response else {
             panic!("expected a single run");
         };
+        activate_until_terminal(&engine, &run.id).await;
         let error = engine.create_pr(&run.id).await.unwrap_err();
         assert_eq!(
             error,
@@ -11931,6 +11951,7 @@ mod tests {
         let CreateRunResponse::Single(run) = response else {
             panic!("expected a single run");
         };
+        activate_until_terminal(&engine, &run.id).await;
         let page = engine.run_history(&run.id, None).await.unwrap();
         assert!(!page.events.is_empty());
     }
