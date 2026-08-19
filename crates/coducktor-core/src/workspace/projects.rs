@@ -3,6 +3,7 @@
 //! Status probing is intentionally lightweight: it reports whether a registered path exists and
 //! is a Git repository.
 
+use std::io;
 use std::path::{Path, PathBuf};
 
 use coducktor_contract::ProjectStatus;
@@ -148,7 +149,7 @@ pub fn register_project(
         config.projects.push(entry.clone());
         result = Some(entry);
     })?;
-    Ok(result.expect("the mutator above always sets result"))
+    result.ok_or_else(|| io::Error::other("project registration did not produce an entry"))
 }
 
 /// Registry entries in stored order. Callers wanting `status`/`branch` call [`probe_status`]
