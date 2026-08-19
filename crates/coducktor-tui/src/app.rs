@@ -954,6 +954,7 @@ impl PendingAction {
             self,
             Self::RefreshTasks { .. }
                 | Self::RefreshIndex
+                | Self::RefreshProjectRegistry
                 | Self::RefreshNewTask { .. }
                 | Self::RefreshModels { .. }
         )
