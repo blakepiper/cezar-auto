@@ -2,8 +2,10 @@
 //! the VS Code extension and desktop app use.
 //!
 //! Auth is the host's logged-in ChatGPT/Codex session (or `CODEX_API_KEY`). The agent runs
-//! autonomously via `sandbox: danger-full-access` + `approvalPolicy: never`; `DUCK_CODEX_NETWORK=0`
-//! retains the previous network-blocked `workspace-write` sandbox as an explicit restriction.
+//! autonomously via `sandbox: danger-full-access` + `approvalPolicy: never`; setting
+//! `DUCK_APPROVAL_GATE=1` changes the policy to `on-request` and parks supported approval RPCs for
+//! the cockpit to answer. `DUCK_CODEX_NETWORK=0` retains the previous network-blocked
+//! `workspace-write` sandbox as an explicit restriction.
 //! Codex has no per-tool allowlist, so `spec.allowed_tools`/`bash_allowlist` are ignored. Pasted
 //! images are forwarded as app-server `image` user-input items on opening and follow-up turns.
 //!
@@ -111,9 +113,29 @@ fn resolve_reasoning_summary(env: &BTreeMap<String, String>) -> String {
     }
 }
 
+fn resolve_approval_policy(env: &BTreeMap<String, String>) -> &'static str {
+    if env.get("DUCK_APPROVAL_GATE").map(String::as_str) == Some("1") {
+        "on-request"
+    } else {
+        "never"
+    }
+}
+
 struct PendingUserInput {
     rpc_id: Value,
     questions: Vec<AskQuestion>,
+}
+
+#[derive(Clone, Copy)]
+enum ApprovalKind {
+    Command,
+    FileChange,
+}
+
+struct PendingApproval {
+    rpc_id: Value,
+    request_id: String,
+    kind: ApprovalKind,
 }
 
 /// A live `codex app-server` session driving a single thread. Implements [`AgentSession`].
@@ -124,12 +146,14 @@ pub struct CodexSession {
     thread_id: Option<String>,
     active_turn_id: Option<String>,
     pending_user_input: Option<PendingUserInput>,
+    pending_approval: Option<PendingApproval>,
     /// Whether stdin is still open for this session.
     open: bool,
     /// 0 disables the wall-clock kill switch entirely (interactive sessions).
     timeout_ms: u64,
     sandbox: &'static str,
     reasoning_summary: String,
+    approval_gate: bool,
 }
 
 /// Spawn a codex app-server process. Unlike claude's `open_claude_session`, this does not talk to
@@ -168,10 +192,12 @@ pub fn open_codex_session(
         thread_id: None,
         active_turn_id: None,
         pending_user_input: None,
+        pending_approval: None,
         open: true,
         timeout_ms,
         sandbox,
         reasoning_summary,
+        approval_gate: resolve_approval_policy(host_env) == "on-request",
     })
 }
 
@@ -321,6 +347,103 @@ fn user_input_answers(questions: &[AskQuestion], text: &str) -> Value {
     Value::Object(answers)
 }
 
+fn ask_requested_event(request_id: &Value, questions: &[AskQuestion]) -> EventInput {
+    let request_id = request_id
+        .as_str()
+        .map(ToOwned::to_owned)
+        .or_else(|| request_id.as_u64().map(|id| id.to_string()))
+        .unwrap_or_else(|| "codex-ask".to_owned());
+    let questions: Vec<Value> = questions
+        .iter()
+        .enumerate()
+        .map(|(index, question)| {
+            json!({
+                "id": question.id.clone().unwrap_or_else(|| index.to_string()),
+                "header": question.header,
+                "question": question.question,
+                "options": question.options.iter().map(|option| json!({
+                    "label": option.label,
+                    "description": option.description,
+                })).collect::<Vec<_>>(),
+                "multiSelect": question.multi_select.unwrap_or(false),
+            })
+        })
+        .collect();
+    EventInput::new("ask.requested")
+        .field("requestId", request_id)
+        .field("questions", questions)
+}
+
+fn approval_request(
+    method: &str,
+    rpc_id: Value,
+    params: &Value,
+) -> Option<(PendingApproval, EventInput)> {
+    let kind = match method {
+        "item/commandExecution/requestApproval" => ApprovalKind::Command,
+        "item/fileChange/requestApproval" => ApprovalKind::FileChange,
+        _ => return None,
+    };
+    let request_id = rpc_id
+        .as_str()
+        .map(ToOwned::to_owned)
+        .or_else(|| rpc_id.as_u64().map(|id| id.to_string()))?;
+    let item_id = params.get("itemId").and_then(Value::as_str);
+    let subject = match kind {
+        ApprovalKind::Command => params
+            .get("command")
+            .and_then(Value::as_str)
+            .filter(|command| !command.trim().is_empty())
+            .unwrap_or("Run the requested command"),
+        ApprovalKind::FileChange => params
+            .get("reason")
+            .and_then(Value::as_str)
+            .filter(|reason| !reason.trim().is_empty())
+            .unwrap_or("Apply the requested file change"),
+    };
+    let subject: String = subject.chars().take(300).collect();
+    let title = match kind {
+        ApprovalKind::Command => format!("Allow command: {subject}?"),
+        ApprovalKind::FileChange => format!("Allow file change: {subject}?"),
+    };
+    let event = EventInput::new("permission.requested")
+        .field("requestId", &request_id)
+        .field("itemId", item_id)
+        .field("title", title)
+        .field(
+            "options",
+            json!([
+                {"id":"allow_once","label":"Allow once","kind":"allow_once"},
+                {"id":"allow_session","label":"Allow session","kind":"allow_always"},
+                {"id":"reject_once","label":"Reject","kind":"reject_once"}
+            ]),
+        );
+    Some((
+        PendingApproval {
+            rpc_id,
+            request_id,
+            kind,
+        },
+        event,
+    ))
+}
+
+fn approval_response(kind: ApprovalKind, text: &str) -> (&'static str, Value) {
+    let normalized = text.trim().to_ascii_lowercase();
+    let (option_id, decision) =
+        if normalized.contains("allow session") || normalized.contains("allow always") {
+            ("allow_session", "acceptForSession")
+        } else if normalized.contains("allow once") {
+            ("allow_once", "accept")
+        } else {
+            ("reject_once", "decline")
+        };
+    let response = match kind {
+        ApprovalKind::Command | ApprovalKind::FileChange => json!({"decision": decision}),
+    };
+    (option_id, response)
+}
+
 impl CodexSession {
     fn write_request(&mut self, id: u64, method: &str, params: Value) -> Result<(), String> {
         self.process
@@ -412,6 +535,8 @@ impl CodexSession {
                 let params = msg.get("params").cloned().unwrap_or(Value::Null);
                 match params.get("questions").and_then(codex_ask_questions) {
                     Some(questions) => {
+                        on_event(ask_requested_event(&id, &questions))
+                            .map_err(|error| error.to_string())?;
                         self.pending_user_input = Some(PendingUserInput {
                             rpc_id: id,
                             questions,
@@ -427,6 +552,42 @@ impl CodexSession {
                         continue;
                     }
                 }
+            }
+
+            if let Some(id) = id.clone()
+                && let Some((pending, event)) = approval_request(
+                    &method,
+                    id,
+                    &msg.get("params").cloned().unwrap_or(Value::Null),
+                )
+            {
+                if self.approval_gate {
+                    on_event(event).map_err(|error| error.to_string())?;
+                    self.pending_approval = Some(pending);
+                    return Ok(StopReason::UserInputRequested);
+                }
+                let (_, response) = approval_response(pending.kind, "reject");
+                self.write_response(pending.rpc_id, response)?;
+                continue;
+            }
+            if let Some(id) = id.clone()
+                && (method.ends_with("/requestApproval")
+                    || matches!(
+                        method.as_str(),
+                        "applyPatchApproval" | "execCommandApproval"
+                    ))
+            {
+                self.write_response_error(id, -32601, "unsupported approval request")?;
+                on_event(
+                    EventInput::new("error")
+                        .field(
+                            "message",
+                            format!("unsupported Codex approval request: {method}"),
+                        )
+                        .field("fatal", false),
+                )
+                .map_err(|error| error.to_string())?;
+                continue;
             }
 
             let params = msg.get("params").cloned().unwrap_or(Value::Null);
@@ -572,6 +733,7 @@ impl CodexSession {
             }
             "turn/completed" | "turn/failed" => {
                 self.pending_user_input = None;
+                self.pending_approval = None;
                 self.active_turn_id = None;
                 // An interrupted/failed item never sees item/completed — surface its partial
                 // prose before the turn boundary (marker detection reads it there).
@@ -623,7 +785,14 @@ impl CodexSession {
         }
         overrides.insert("cwd".to_owned(), json!(self.spec.cwd.to_string_lossy()));
         overrides.insert("sandbox".to_owned(), json!(self.sandbox));
-        overrides.insert("approvalPolicy".to_owned(), json!("never"));
+        overrides.insert(
+            "approvalPolicy".to_owned(),
+            json!(if self.approval_gate {
+                "on-request"
+            } else {
+                "never"
+            }),
+        );
 
         let result = if self.spec.resume && self.spec.session_id.is_some() {
             let mut params = overrides;
@@ -827,6 +996,15 @@ impl AgentSession for CodexSession {
         if let Some(pending) = self.pending_user_input.take() {
             let answers = user_input_answers(&pending.questions, prompt);
             self.write_response(pending.rpc_id, json!({ "answers": answers }))?;
+        } else if let Some(pending) = self.pending_approval.take() {
+            let (option_id, response) = approval_response(pending.kind, prompt);
+            self.write_response(pending.rpc_id, response)?;
+            on_event(
+                EventInput::new("permission.resolved")
+                    .field("requestId", pending.request_id)
+                    .field("optionId", option_id),
+            )
+            .map_err(|error| error.to_string())?;
         } else {
             let image_urls = images.iter().map(PromptImage::data_url).collect::<Vec<_>>();
             self.start_or_steer_turn(prompt, &image_urls, deadline, &mut turn, on_event)?;
@@ -930,6 +1108,58 @@ mod tests {
     }
 
     #[test]
+    fn approval_gate_is_an_explicit_opt_in() {
+        assert_eq!(resolve_approval_policy(&BTreeMap::new()), "never");
+        let mut env = BTreeMap::new();
+        env.insert("DUCK_APPROVAL_GATE".to_owned(), "1".to_owned());
+        assert_eq!(resolve_approval_policy(&env), "on-request");
+        env.insert("DUCK_APPROVAL_GATE".to_owned(), "true".to_owned());
+        assert_eq!(resolve_approval_policy(&env), "never");
+    }
+
+    #[test]
+    fn command_approval_is_normalized_and_unknown_answers_decline() {
+        let (pending, event) = approval_request(
+            "item/commandExecution/requestApproval",
+            json!(42),
+            &json!({"itemId":"item-1","command":"cargo test"}),
+        )
+        .expect("supported approval request");
+        assert_eq!(pending.request_id, "42");
+        assert_eq!(event.event_type, "permission.requested");
+        assert_eq!(
+            event.extra.get("title").and_then(Value::as_str),
+            Some("Allow command: cargo test?")
+        );
+        assert_eq!(
+            approval_response(ApprovalKind::Command, "Permission: Allow once").1,
+            json!({"decision":"accept"})
+        );
+        assert_eq!(
+            approval_response(ApprovalKind::Command, "yes please").1,
+            json!({"decision":"decline"})
+        );
+    }
+
+    #[test]
+    fn file_approval_supports_session_scope() {
+        let (_, event) = approval_request(
+            "item/fileChange/requestApproval",
+            json!("approval-1"),
+            &json!({"itemId":"item-2","reason":"write outside the workspace"}),
+        )
+        .expect("supported approval request");
+        assert_eq!(
+            event.extra.get("requestId").and_then(Value::as_str),
+            Some("approval-1")
+        );
+        assert_eq!(
+            approval_response(ApprovalKind::FileChange, "Permission: Allow session").1,
+            json!({"decision":"acceptForSession"})
+        );
+    }
+
+    #[test]
     fn a_first_turn_streams_the_expected_events_and_parks_waiting() {
         let dir = tempfile::tempdir().unwrap();
         let config = node_config();
@@ -962,6 +1192,37 @@ mod tests {
     }
 
     #[test]
+    fn approval_request_parks_and_the_follow_up_answers_the_original_rpc() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = node_config();
+        let run_spec = spec_for(dir.path(), "mock:approval");
+        let mut env = BTreeMap::new();
+        env.insert("DUCK_APPROVAL_GATE".to_owned(), "1".to_owned());
+        let mut session = open_codex_session(&config, run_spec, &env).unwrap();
+        let (outcome, events) = run_turn(&mut session);
+        assert!(matches!(outcome, Ok(SessionOutcome::Waiting(_))));
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == "permission.requested")
+        );
+
+        let mut follow_up_events = Vec::new();
+        let outcome = session
+            .send_message("Permission: Allow once", &[], &mut |event| {
+                follow_up_events.push(event);
+                Ok(())
+            })
+            .expect("approval response should resume the turn");
+        assert!(matches!(outcome, SessionOutcome::Waiting(_)));
+        assert!(follow_up_events.iter().any(|event| {
+            event.event_type == "permission.resolved"
+                && event.extra.get("optionId").and_then(Value::as_str) == Some("allow_once")
+        }));
+        session.finish(&mut |_| Ok(())).unwrap();
+    }
+
+    #[test]
     fn a_failed_turn_surfaces_an_error_event_and_settles_the_session() {
         let dir = tempfile::tempdir().unwrap();
         let config = node_config();
@@ -983,7 +1244,11 @@ mod tests {
         let config = node_config();
         let run_spec = spec_for(dir.path(), "mock:native-codex-ask");
         let mut session = open_codex_session(&config, run_spec, &BTreeMap::new()).unwrap();
-        let (outcome, _events) = run_turn(&mut session);
+        let (outcome, events) = run_turn(&mut session);
+        assert!(events.iter().any(|event| {
+            event.event_type == "ask.requested"
+                && event.extra.get("requestId").and_then(Value::as_str) == Some("ask-1")
+        }));
         match outcome.unwrap() {
             SessionOutcome::Waiting(report) => {
                 assert_eq!(report.decision, Some(TurnMarkerDecision::Ask))

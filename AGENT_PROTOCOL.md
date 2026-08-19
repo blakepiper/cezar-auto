@@ -47,6 +47,16 @@ Stable item ids are required. Child work is nested with `parent_item_id`. Token 
 provider values; weighting belongs to presentation. A backend may omit a capability only when its
 wire cannot provide it, and the UI must degrade that capability rather than the whole backend.
 
+Provider-native delegation stays inside the backend process; Coducktor observes and nests the
+reported child work but does not start its own subagent runtime. Agent command tools are headless
+and never borrow the user-controlled Terminal tab's PTY.
+
+`DUCK_APPROVAL_GATE=1` opts supported backends into recoverable tool approvals. A runner that
+receives an approval RPC it can answer emits `permission.requested`, returns a waiting outcome
+without closing the provider session, translates the user's selected option back to that exact
+RPC, and emits `permission.resolved` before it resumes reading the turn. Unsupported approval
+shapes fail closed and must never leave the provider blocked on an unanswered request.
+
 ## Teardown and timeouts
 
 The shared child-process helper owns stdin closure, stdout line delivery, stderr collection and

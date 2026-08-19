@@ -13,7 +13,9 @@
 use std::collections::HashMap;
 
 use coducktor_contract::RunEvent;
-use coducktor_protocol::{PlanEntry, StopReason, UiAskOption, UiAskQuestion, UiItem};
+use coducktor_protocol::{
+    PermissionOption, PlanEntry, StopReason, UiAskOption, UiAskQuestion, UiItem,
+};
 use serde_json::Value;
 
 /// A dim/warning/danger transcript line (v1 note/lifecycle/error, v2 non-fatal session.error).
@@ -499,6 +501,61 @@ pub fn reduce_thread(events: &[RunEvent], options: ThreadReduceOptions) -> Threa
                 turns[idx].items.push(ThreadEntry::Ask(ask));
                 pending_ask = Some((idx, turns[idx].items.len() - 1));
             }
+            "permission.requested" => {
+                let Some(request_id) = str_field(extra, "requestId") else {
+                    continue;
+                };
+                let options: Vec<PermissionOption> = extra
+                    .get("options")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|option| serde_json::from_value(option.clone()).ok())
+                    .collect();
+                if options.is_empty() {
+                    continue;
+                }
+                let question_options = options
+                    .into_iter()
+                    .map(|option| UiAskOption {
+                        label: option.label,
+                        description: None,
+                    })
+                    .collect();
+                let idx = current_turn(&mut turns, &mut turn_seq);
+                let ask = ThreadAsk {
+                    id: request_id,
+                    questions: vec![UiAskQuestion {
+                        id: Some("permission".to_owned()),
+                        header: "Permission".to_owned(),
+                        question: str_field(extra, "title")
+                            .unwrap_or_else(|| "Allow this tool request?".to_owned()),
+                        options: question_options,
+                        multi_select: Some(false),
+                    }],
+                    resolved: false,
+                    answer: None,
+                };
+                turns[idx].items.push(ThreadEntry::Ask(ask));
+                pending_ask = Some((idx, turns[idx].items.len() - 1));
+            }
+            "permission.resolved" => {
+                let Some(request_id) = str_field(extra, "requestId") else {
+                    continue;
+                };
+                for turn in turns.iter_mut().rev() {
+                    if let Some(ThreadEntry::Ask(ask)) = turn
+                        .items
+                        .iter_mut()
+                        .rev()
+                        .find(|entry| entry.id() == request_id)
+                    {
+                        ask.resolved = true;
+                        break;
+                    }
+                }
+                pending_ask = None;
+            }
             "session.ended" => {
                 session_ended = Some(SessionEnded {
                     reason: extra
@@ -946,6 +1003,37 @@ mod tests {
         };
         assert!(ask.resolved);
         assert_eq!(ask.answer.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn permission_request_reuses_the_answer_card_and_resolution_settles_it() {
+        let events = vec![
+            event(1.0, "user-message", json!({"text": "go"})),
+            event(
+                2.0,
+                "permission.requested",
+                json!({
+                    "requestId": "permission-1",
+                    "title": "Allow command: cargo test?",
+                    "options": [
+                        {"id":"allow_once","label":"Allow once","kind":"allow_once"},
+                        {"id":"reject_once","label":"Reject","kind":"reject_once"}
+                    ]
+                }),
+            ),
+            event(
+                3.0,
+                "permission.resolved",
+                json!({"requestId":"permission-1","optionId":"allow_once"}),
+            ),
+        ];
+        let state = reduce_thread(&events, ThreadReduceOptions::default());
+        let ThreadEntry::Ask(ask) = &state.turns[0].items[0] else {
+            panic!("expected a permission card");
+        };
+        assert_eq!(ask.questions[0].header, "Permission");
+        assert_eq!(ask.questions[0].options[0].label, "Allow once");
+        assert!(ask.resolved);
     }
 
     #[test]

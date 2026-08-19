@@ -38,12 +38,17 @@ rl.on('line', (line) => {
     emit((Array.isArray(answer) && answer[0] === 'Vitest') || (Array.isArray(freeText) && freeText[0] === 'Use sensible defaults')
       ? { method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } }
       : { method: 'turn/failed', params: { turn: { id: 'turn_mock_1', status: 'failed' }, error: { message: 'bad answer' } } });
+  } else if (msg.id === 'approval-1' && msg.result) {
+    emit(msg.result.decision === 'accept'
+      ? { method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } }
+      : { method: 'turn/failed', params: { turn: { id: 'turn_mock_1', status: 'failed' }, error: { message: 'approval declined' } } });
   } else if (msg.method === 'initialize') {
     emit({ id: msg.id, result: { userAgent: 'mock-codex/0.0.0' } });
   } else if (msg.method === 'thread/start' || msg.method === 'thread/resume') {
     const expectedSandbox = process.env.DUCK_CODEX_NETWORK === '0' ? 'workspace-write' : 'danger-full-access';
-    if (msg.params?.sandbox !== expectedSandbox || msg.params?.approvalPolicy !== 'never') {
-      emit({ id: msg.id, error: { code: -32602, message: `expected ${expectedSandbox} auto permissions` } });
+    const expectedApproval = process.env.DUCK_APPROVAL_GATE === '1' ? 'on-request' : 'never';
+    if (msg.params?.sandbox !== expectedSandbox || msg.params?.approvalPolicy !== expectedApproval) {
+      emit({ id: msg.id, error: { code: -32602, message: `expected ${expectedSandbox} ${expectedApproval} permissions` } });
       return;
     }
     if (process.argv.includes('sandbox_workspace_write.network_access=true')) {
@@ -104,6 +109,13 @@ rl.on('line', (line) => {
       emit({ id: 'ask-1', method: 'item/tool/requestUserInput', params: {
         threadId: 'th_mock_1', turnId: 'turn_mock_1', itemId: 'item_ask_1', autoResolutionMs: null,
         questions,
+      } });
+      return;
+    }
+    if (turnText.includes('mock:approval')) {
+      emit({ id: 'approval-1', method: 'item/commandExecution/requestApproval', params: {
+        threadId: 'th_mock_1', turnId: 'turn_mock_1', itemId: 'item_command_1',
+        command: 'cargo test', reason: 'run the test suite', startedAtMs: Date.now(),
       } });
       return;
     }

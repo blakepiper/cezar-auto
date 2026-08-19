@@ -90,7 +90,9 @@ pub fn step_kind(step: &WorkflowStepDef) -> StepKind {
 }
 
 /// Tools granted to an agent step when its workflow does not provide an explicit list.
-pub const DEFAULT_ALLOWED_TOOLS: &[&str] = &["Read", "Edit", "Write", "Grep", "Glob", "Bash"];
+pub const DEFAULT_ALLOWED_TOOLS: &[&str] = &[
+    "Read", "Edit", "Write", "Grep", "Glob", "Bash", "Task", "Agent",
+];
 
 /// Guard later agent sessions against mistaking an earlier chain step's DONE signal for their own.
 /// Check steps do not count toward chain position or total.
@@ -422,7 +424,9 @@ mod tests {
         assert!(chain_step_note(&steps, 2).unwrap().contains("step 2 of 2"));
         assert_eq!(
             DEFAULT_ALLOWED_TOOLS,
-            &["Read", "Edit", "Write", "Grep", "Glob", "Bash"]
+            &[
+                "Read", "Edit", "Write", "Grep", "Glob", "Bash", "Task", "Agent"
+            ]
         );
     }
 }

@@ -289,9 +289,15 @@ DUCK_PI_BIN=/path/to/pi
 DUCK_HOME=/path/to/coducktor-state
 ```
 
-`DUCK_APPROVAL_GATE=1` opts Claude back into its interactive edit approval mode. By default,
-headless Claude runs deny tools that are not allowed by the workflow. `DUCK_CODEX_NETWORK=0`
+`DUCK_APPROVAL_GATE=1` enables supported provider approval gates. Claude uses its edit-approval
+mode; Codex parks command and file-change requests in `Needs You` so they can be allowed once,
+allowed for the session, or rejected from the task thread. By default, headless Claude denies tools
+that are not allowed by the workflow, while Codex runs autonomously. `DUCK_CODEX_NETWORK=0`
 selects Codex's network-blocked workspace-write sandbox instead of its default full-access mode.
+
+Agent command tools run headlessly and do not share the user-controlled Terminal tab. Provider-
+native delegation is allowed by the default workflow tool policy and appears as nested task
+activity when the backend reports it.
 
 ## Git and GitHub
 
