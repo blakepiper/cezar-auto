@@ -55,6 +55,8 @@ the larger coordinator rewrite:
   preserving the no-host-secret-leak guarantee without a startup panic.
 - task-branch compatibility detection now uses its two exact retained prefixes directly, removing
   an unnecessary lazy regex initialization from the Git reader path.
+- AskUser marker parsing and stripping now treat an unavailable compatibility regex as no marker,
+  preserving the raw transcript instead of panicking on provider output.
 
 The critical coordinator work is not complete. Provider turns still need to move out of the
 project-manager critical section into bounded per-run workers before same-project parallelism and

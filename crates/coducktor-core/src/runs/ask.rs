@@ -416,13 +416,13 @@ fn normalize_option(value: &Value) -> Value {
 /// *assembled* turn text so delta-streaming backends can't split it — uniform across every
 /// runner. The JSON is greedily captured from the first `{` after the keyword to the end of the
 /// (already right-trimmed) text.
-static ASK_MARKER_CANDIDATE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"DUCK:ASK[ \t]+([\s\S]*)$").expect("fixed pattern"));
+static ASK_MARKER_CANDIDATE_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"DUCK:ASK[ \t]+([\s\S]*)$"));
 
 /// Stricter twin used only to strip a marker for display — the captured group must look like a
 /// JSON object, and any whitespace/newline right before the marker goes with it.
-static ASK_MARKER_STRIP_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\s*DUCK:ASK[ \t]+\{[\s\S]*\}\s*$").expect("fixed pattern"));
+static ASK_MARKER_STRIP_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"\s*DUCK:ASK[ \t]+\{[\s\S]*\}\s*$"));
 
 /// Parse a trailing marker with an actionable result for diagnostics. A parseable near-valid
 /// request gets one bounded normalization pass; structural violations remain rejected so the
@@ -430,7 +430,11 @@ static ASK_MARKER_STRIP_RE: LazyLock<Regex> =
 pub fn parse_ask_marker_result(turn_text: &str) -> AskMarkerParseResult {
     let canonical = canonicalize_markers(turn_text);
     let trimmed = canonical.trim_end();
-    let Some(captures) = ASK_MARKER_CANDIDATE_RE.captures(trimmed) else {
+    let Some(captures) = ASK_MARKER_CANDIDATE_RE
+        .as_ref()
+        .ok()
+        .and_then(|regex| regex.captures(trimmed))
+    else {
         return AskMarkerParseResult::None;
     };
     let raw: Value = match serde_json::from_str(&captures[1]) {
@@ -477,7 +481,11 @@ pub fn strip_ask_marker(text: &str) -> String {
     if parse_ask_marker(&canonical).is_none() {
         return text.to_owned();
     }
-    ASK_MARKER_STRIP_RE.replace(&canonical, "").into_owned()
+    ASK_MARKER_STRIP_RE
+        .as_ref()
+        .map_or(canonical.clone(), |regex| {
+            regex.replace(&canonical, "").into_owned()
+        })
 }
 
 #[cfg(test)]
