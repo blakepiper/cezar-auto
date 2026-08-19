@@ -309,7 +309,9 @@ Evidence:
 
 - workspace/project Settings expose `maxParallel`, `maxMonitoringSessions`, monitoring wake
   interval, auto-resume, intelligent context refresh, and memory limits.
-- production manager construction applies runtime options, intelligent-context refresh, the check
+- one tested effective-runtime-options resolver combines workspace resource limits, project
+  overrides, repository configuration, and the retained `DUCK_REVIEW_GATE` compatibility override
+  before production-manager construction. It also applies intelligent-context refresh, the check
   executor, and diff inspector; the cross-project workspace scheduler and repository lease remain
   unwired.
 - monitoring-session admission is enforced at runtime. Memory limits and monitoring wake

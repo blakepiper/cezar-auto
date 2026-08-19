@@ -48,7 +48,7 @@ use coducktor_contract::{
     WorkspaceUsageResponse, WorktreeDirEntry, WorktreeEntry, WorktreeEntryType, WorktreeInfo,
     WorktreeRunStatus, WorktreesResponse,
 };
-use coducktor_core::config::load_config;
+use coducktor_core::config::{RepoConfig, load_config};
 use coducktor_core::handoff::{append_handoff_heartbeat, handoff_progress_excerpt, read_handoff};
 use coducktor_core::paths::{
     ProcessEnv, agent_accounts_path, agent_home_paths, expand_tilde, is_absolute_config_dir,
@@ -66,7 +66,7 @@ use coducktor_core::workspace::agent_accounts::{
     merge_write_agent_accounts, supports_profiles,
 };
 use coducktor_core::workspace::config::{
-    PROVIDER_IDS, load_workspace_config, merge_write_workspace_config,
+    PROVIDER_IDS, WorkspaceConfig, load_workspace_config, merge_write_workspace_config,
 };
 use coducktor_core::workspace::ui_state::{
     merge_write_workspace_ui_state, read_workspace_ui_state,
@@ -346,6 +346,27 @@ fn configure_production_manager(
         &repo_config_path_at(repo_root, state_home),
         &workspace.agent_defaults,
     );
+    manager.set_runtime_options(effective_runtime_options(
+        workspace,
+        &repo,
+        project_id,
+        std::env::var("DUCK_REVIEW_GATE").ok().as_deref(),
+    ));
+    manager.set_intelligent_context_refresh(workspace.resources.intelligent_context_refresh);
+    manager.set_check_executor(ProductionCheckExecutor);
+    manager.set_diff_inspector(ProductionDiffInspector {
+        repo_root: repo_root.to_path_buf(),
+    });
+}
+
+/// Resolve the policy used for future run admissions from every retained configuration layer.
+/// Running sessions keep their existing limits; callers rebuild managers before applying changes.
+fn effective_runtime_options(
+    workspace: &WorkspaceConfig,
+    repo: &RepoConfig,
+    project_id: &str,
+    review_gate_override: Option<&str>,
+) -> RuntimeOptions {
     let project_limit = workspace
         .projects
         .iter()
@@ -353,22 +374,14 @@ fn configure_production_manager(
         .and_then(|project| project.max_parallel)
         .map(|value| value as usize)
         .unwrap_or(repo.max_parallel as usize);
-    manager.set_runtime_options(RuntimeOptions {
+    RuntimeOptions {
         max_parallel: project_limit
             .min(workspace.resources.max_parallel as usize)
             .max(1),
         max_monitoring_sessions: workspace.resources.max_monitoring_sessions as usize,
-        review_gate: review_gate_enabled(
-            repo.review_gate,
-            std::env::var("DUCK_REVIEW_GATE").ok().as_deref(),
-        ),
+        review_gate: review_gate_enabled(repo.review_gate, review_gate_override),
         auto_resume_on_usage_limit: workspace.resources.auto_resume_on_usage_limit,
-    });
-    manager.set_intelligent_context_refresh(workspace.resources.intelligent_context_refresh);
-    manager.set_check_executor(ProductionCheckExecutor);
-    manager.set_diff_inspector(ProductionDiffInspector {
-        repo_root: repo_root.to_path_buf(),
-    });
+    }
 }
 
 /// Build a lifecycle event without repeating the full `EventInput` construction at each site.
@@ -8990,6 +9003,39 @@ mod tests {
         assert_eq!(manager.runtime_options().max_parallel, 1);
         assert_eq!(manager.runtime_options().max_monitoring_sessions, 1);
         assert!(!manager.runtime_options().auto_resume_on_usage_limit);
+    }
+
+    #[test]
+    fn effective_runtime_options_apply_project_workspace_and_env_precedence() {
+        let mut workspace = WorkspaceConfig::default_for(&ProcessEnv);
+        workspace.resources.max_parallel = 3;
+        workspace.resources.max_monitoring_sessions = 1;
+        workspace.resources.auto_resume_on_usage_limit = false;
+        workspace
+            .projects
+            .push(coducktor_core::workspace::config::WorkspaceProject {
+                id: "alpha".to_owned(),
+                root: "/tmp/alpha".to_owned(),
+                name: "Alpha".to_owned(),
+                added_at: String::new(),
+                last_opened_at: String::new(),
+                source: coducktor_core::workspace::config::ProjectSource::Local,
+                max_parallel: Some(2),
+                tags: None,
+                extra: Map::new(),
+            });
+        let repo = RepoConfig {
+            max_parallel: 8,
+            review_gate: None,
+            ..RepoConfig::default()
+        };
+
+        let options = effective_runtime_options(&workspace, &repo, "alpha", Some("1"));
+
+        assert_eq!(options.max_parallel, 2);
+        assert_eq!(options.max_monitoring_sessions, 1);
+        assert!(!options.auto_resume_on_usage_limit);
+        assert!(options.review_gate);
     }
 
     #[tokio::test]
