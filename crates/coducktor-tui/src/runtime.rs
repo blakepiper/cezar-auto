@@ -260,6 +260,7 @@ enum BackgroundResult {
     LoadTaskGitChanges {
         project: String,
         id: String,
+        generation: u64,
         run: Result<coducktor_contract::ApiRun, coducktor_client::EngineError>,
         changes: Result<coducktor_contract::ChangesPayload, coducktor_client::EngineError>,
     },
@@ -1036,6 +1037,7 @@ async fn execute_pending(
                 app.pending.push(PendingAction::LoadThread { project, id });
             }
             PendingAction::LoadTaskGitChanges { project, id } => {
+                let generation = app.begin_task_git_request();
                 let scope = Scope::Project(project.clone());
                 let engine_for_task = engine.clone();
                 let id_for_task = id.clone();
@@ -1051,6 +1053,7 @@ async fn execute_pending(
                     move |(run, changes)| BackgroundResult::LoadTaskGitChanges {
                         project,
                         id,
+                        generation,
                         run,
                         changes,
                     },
@@ -2188,6 +2191,7 @@ fn drain_background_results(
             BackgroundResult::LoadTaskGitChanges {
                 project,
                 id,
+                generation,
                 run,
                 changes,
             } => {
@@ -2195,7 +2199,8 @@ fn drain_background_results(
                     app.route(),
                     app::Route::TaskGit { project: route_project, id: route_id, .. }
                         if route_project == &project && route_id == &id
-                ) {
+                ) || app.task_git_request_generation != generation
+                {
                     continue;
                 }
                 match (run, changes) {
@@ -3144,6 +3149,35 @@ mod tests {
         drain_background_results(&receiver, &mut app, &mut starts_in_flight);
 
         assert_eq!(app.repo_git_request_generation, current_generation);
+        assert!(app.notice.is_none());
+    }
+
+    #[test]
+    fn stale_task_git_refresh_failures_are_rejected() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        screens::task_git::open(&mut app, "main", "run", app::TaskGitTab::Changes);
+        let stale_generation = app.begin_task_git_request();
+        let current_generation = app.begin_task_git_request();
+        let (sender, receiver) = channel();
+        let mut starts_in_flight = HashSet::new();
+
+        sender
+            .send(BackgroundResult::LoadTaskGitChanges {
+                project: "main".to_owned(),
+                id: "run".to_owned(),
+                generation: stale_generation,
+                run: Err(coducktor_client::EngineError::Unavailable {
+                    reason: "stale request".to_owned(),
+                }),
+                changes: Err(coducktor_client::EngineError::Unavailable {
+                    reason: "stale request".to_owned(),
+                }),
+            })
+            .unwrap();
+
+        drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+
+        assert_eq!(app.task_git_request_generation, current_generation);
         assert!(app.notice.is_none());
     }
 

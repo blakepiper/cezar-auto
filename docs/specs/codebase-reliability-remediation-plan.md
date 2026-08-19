@@ -174,8 +174,9 @@ Evidence:
   matching settings route remains active.
   Post-action thread refreshes likewise queue the existing background thread loader instead of
   fetching a run inline. The task-Git changes load now fetches its run and diff concurrently on a
-  background worker and discards results after navigation away from that task; task-Git file-tree
-  reads and commit-list/detail reads now use the same route-guarded background path.
+  background worker and discards results after navigation away from that task or after a newer
+  request; task-Git file-tree reads and commit-list/detail reads now use the same route-guarded
+  background path.
 - IDE explorer and file reads now use that same route- and path-guarded background path, so
   out-of-order navigation completions cannot overwrite the selected directory or open draft.
 - Repository Git aggregate, changes, and commit-detail loads now likewise require their active

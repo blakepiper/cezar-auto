@@ -1059,6 +1059,8 @@ pub struct App {
     pub pending_start_composers: BTreeMap<String, crate::widgets::composer::Composer>,
     pub thread_ui: crate::screens::thread::ThreadUi,
     pub task_git_ui: crate::screens::task_git::TaskGitUi,
+    /// Rejects an older Task Git aggregate load after returning to the same task.
+    pub task_git_request_generation: u64,
     pub repo_git_ui: crate::screens::repo_git::RepoGitUi,
     /// Rejects an older repository Git refresh after revisiting the same project.
     pub repo_git_request_generation: u64,
@@ -1151,6 +1153,7 @@ impl App {
             pending_start_composers: BTreeMap::new(),
             thread_ui: crate::screens::thread::ThreadUi::default(),
             task_git_ui: crate::screens::task_git::TaskGitUi::default(),
+            task_git_request_generation: 0,
             repo_git_ui: crate::screens::repo_git::RepoGitUi::default(),
             repo_git_request_generation: 0,
             compare_ui: crate::screens::compare::CompareUi::default(),
@@ -1348,6 +1351,11 @@ impl App {
     pub fn begin_repo_git_request(&mut self) -> u64 {
         self.repo_git_request_generation = self.repo_git_request_generation.wrapping_add(1);
         self.repo_git_request_generation
+    }
+
+    pub fn begin_task_git_request(&mut self) -> u64 {
+        self.task_git_request_generation = self.task_git_request_generation.wrapping_add(1);
+        self.task_git_request_generation
     }
 
     pub fn accepts_new_task_response(&self, project: &str, generation: u64) -> bool {
