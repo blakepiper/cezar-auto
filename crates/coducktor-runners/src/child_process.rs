@@ -57,6 +57,12 @@ pub enum NextLine {
 /// ("claude CLI timed out…" vs "codex app-server timed out…").
 pub struct TimedOut;
 
+fn clean_up_missing_pipe(child: &mut Child, pipe: &str) -> io::Error {
+    let _ = child.kill();
+    let _ = child.wait();
+    io::Error::other(format!("spawned agent process has no piped {pipe}"))
+}
+
 impl ChildProcess {
     pub fn spawn(
         config: &SpawnConfig,
@@ -81,9 +87,18 @@ impl ChildProcess {
             .stderr(Stdio::piped());
 
         let mut child = command.spawn()?;
-        let stdin = child.stdin.take().expect("stdin was piped");
-        let stdout = child.stdout.take().expect("stdout was piped");
-        let stderr = child.stderr.take().expect("stderr was piped");
+        let stdin = match child.stdin.take() {
+            Some(stdin) => stdin,
+            None => return Err(clean_up_missing_pipe(&mut child, "stdin")),
+        };
+        let stdout = match child.stdout.take() {
+            Some(stdout) => stdout,
+            None => return Err(clean_up_missing_pipe(&mut child, "stdout")),
+        };
+        let stderr = match child.stderr.take() {
+            Some(stderr) => stderr,
+            None => return Err(clean_up_missing_pipe(&mut child, "stderr")),
+        };
 
         let (tx, rx) = mpsc::channel();
         let stdout_handle = thread::spawn(move || {
