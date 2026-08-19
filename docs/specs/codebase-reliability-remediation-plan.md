@@ -201,8 +201,9 @@ Evidence:
 - `ThreadUi::push_events` receives the frame's live batch and rebuilds once after accepting it,
   rather than rebuilding per event. A 1,000-event regression proves the batch performs one rebuild
   while retaining every event and its final sequence watermark.
-- `runs_index` serially opens/locks every project and sorts up to 200 records from each on every
-  refresh.
+- `runs_index` lazily opens a project only to seed its observer-maintained snapshot; routine
+  refreshes sort that snapshot without taking a manager lock. A blocked-session regression proves
+  the global index returns within 100 ms while the project's provider worker owns its manager.
 
 Required correction:
 

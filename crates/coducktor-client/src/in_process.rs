@@ -1158,18 +1158,28 @@ impl InProcessEngine {
         Ok(FinishResponse { finished })
     }
 
-    /// Build the cross-project global Tasks index from the same lazy manager registry used by
-    /// scoped operations. A live project is never reopened into a second manager.
+    /// Build the cross-project global Tasks index from the observer-maintained snapshot. A project
+    /// is opened lazily once so its durable state enters that snapshot, but routine refreshes do
+    /// not contend on a manager held by a live provider turn.
     pub async fn runs_index(&self) -> Result<RunsIndexResponse, EngineError> {
         const PER_PROJECT_LIMIT: usize = 200;
         let config = load_workspace_config(&self.workspace_config_path, &ProcessEnv);
         let mut runs = Vec::new();
         let mut truncated = Vec::new();
         for project in config.projects {
-            let Ok(entry) = self.project_manager(&Scope::Project(project.id.clone())) else {
+            if self
+                .project_manager(&Scope::Project(project.id.clone()))
+                .is_err()
+            {
                 continue;
-            };
-            let mut recent = entry.manager.lock().map_err(|_| lock_err())?.list_runs();
+            }
+            let mut recent = self
+                .run_snapshot
+                .read()
+                .map_err(|_| lock_err())?
+                .get(&project.id)
+                .map(|runs| runs.values().cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
             recent.sort_by(|left, right| right.created_at.cmp(&left.created_at));
             if recent.len() > PER_PROJECT_LIMIT {
                 truncated.push(project.id.clone());
@@ -8634,6 +8644,62 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn global_index_reads_the_snapshot_while_a_project_manager_is_busy() {
+        let repo = TempDir::new().unwrap();
+        let workspace = TempDir::new().unwrap();
+        let config_path = workspace.path().join("config.json");
+        std::fs::write(
+            &config_path,
+            json!({
+                "projects": [{ "id": "project-a", "root": repo.path(), "name": "A" }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let tokens = Arc::new(Mutex::new(BTreeMap::new()));
+        let engine = InProcessEngine::with_session_factory_at(
+            repo.path(),
+            "0.0.0-test",
+            BlockingFactory {
+                tokens: tokens.clone(),
+            },
+            config_path,
+        );
+        let scope = Scope::Project("project-a".to_owned());
+        let CreateRunResponse::Single(run) = <InProcessEngine as crate::Engine>::start_run(
+            &engine,
+            &scope,
+            steps_input("block while indexing"),
+        )
+        .await
+        .unwrap() else {
+            panic!("expected one run");
+        };
+        <InProcessEngine as crate::Engine>::activate_runs(&engine, &scope)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if tokens.lock().unwrap().contains_key(&run.id) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let started = Instant::now();
+        let index = engine.runs_index().await.unwrap();
+        assert!(started.elapsed() < Duration::from_millis(100));
+        assert!(index.runs.iter().any(|entry| entry.id == run.id));
+
+        <InProcessEngine as crate::Engine>::cancel_run(&engine, &scope, &run.id)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
