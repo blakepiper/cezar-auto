@@ -3967,6 +3967,25 @@ mod tests {
     }
 
     #[test]
+    fn truncated_index_quarantines_writes_until_an_explicit_repair_keeps_a_backup() {
+        let dir = tempdir().unwrap();
+        let index_path = store::index_path(dir.path());
+        let truncated = b"[{\"id\": \"interrupted";
+        fs::write(&index_path, truncated).unwrap();
+
+        let mut manager = RunManager::open(dir.path());
+        assert!(manager.list_runs().is_empty());
+        let error = manager.create_run(create_input()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(fs::read(&index_path).unwrap(), truncated);
+
+        let backup = manager.repair_quarantined_index().unwrap().unwrap();
+        assert_eq!(fs::read(&backup).unwrap(), truncated);
+        manager.create_run(create_input()).unwrap();
+        assert_eq!(manager.list_runs().len(), 1);
+    }
+
+    #[test]
     fn create_update_add_and_update_step_are_durable() {
         let dir = tempdir().unwrap();
         let mut manager = RunManager::open(dir.path());
