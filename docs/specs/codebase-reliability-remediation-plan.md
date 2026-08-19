@@ -183,7 +183,8 @@ Evidence:
 - Scratchpad hydration also runs in the background and applies only to its still-active project
   and request generation.
 - Compare-group metadata and variant diffs likewise load in the background and reject stale
-  project/group completions.
+  project/group completions; aggregate metadata also carries a request generation for group
+  revisits.
 - GitHub handoff workflow and skill pickers now fetch concurrently in the background and discard
   a completion after leaving that project.
 - Skills, workflow catalog, and workflow-palette skill reads now follow the same background,

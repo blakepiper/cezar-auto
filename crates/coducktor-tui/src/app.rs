@@ -1061,6 +1061,8 @@ pub struct App {
     pub task_git_ui: crate::screens::task_git::TaskGitUi,
     pub repo_git_ui: crate::screens::repo_git::RepoGitUi,
     pub compare_ui: crate::screens::compare::CompareUi,
+    /// Rejects a stale aggregate compare load after returning to a group.
+    pub compare_request_generation: u64,
     pub ide_ui: crate::screens::ide::IdeUi,
     pub github_ui: crate::screens::github::GithubUi,
     /// Rejects an older GitHub aggregate refresh after the screen is reopened.
@@ -1149,6 +1151,7 @@ impl App {
             task_git_ui: crate::screens::task_git::TaskGitUi::default(),
             repo_git_ui: crate::screens::repo_git::RepoGitUi::default(),
             compare_ui: crate::screens::compare::CompareUi::default(),
+            compare_request_generation: 0,
             ide_ui: crate::screens::ide::IdeUi::default(),
             github_ui: crate::screens::github::GithubUi::default(),
             github_request_generation: 0,
@@ -1332,6 +1335,11 @@ impl App {
     pub fn begin_scratchpad_request(&mut self) -> u64 {
         self.scratchpad_request_generation = self.scratchpad_request_generation.wrapping_add(1);
         self.scratchpad_request_generation
+    }
+
+    pub fn begin_compare_request(&mut self) -> u64 {
+        self.compare_request_generation = self.compare_request_generation.wrapping_add(1);
+        self.compare_request_generation
     }
 
     pub fn accepts_new_task_response(&self, project: &str, generation: u64) -> bool {

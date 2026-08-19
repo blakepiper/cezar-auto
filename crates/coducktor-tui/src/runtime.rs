@@ -294,6 +294,7 @@ enum BackgroundResult {
     LoadCompare {
         project: String,
         group_id: String,
+        generation: u64,
         result: Result<coducktor_contract::GroupResponse, coducktor_client::EngineError>,
     },
     LoadCompareVariantDiff {
@@ -1210,6 +1211,7 @@ async fn execute_pending(
                 app.pending.push(PendingAction::LoadRepoGit { project });
             }
             PendingAction::LoadCompare { project, group_id } => {
+                let generation = app.begin_compare_request();
                 let scope = Scope::Project(project.clone());
                 let engine_for_task = engine.clone();
                 let group_id_for_task = group_id.clone();
@@ -1220,6 +1222,7 @@ async fn execute_pending(
                     move |result| BackgroundResult::LoadCompare {
                         project,
                         group_id,
+                        generation,
                         result,
                     },
                 );
@@ -2081,13 +2084,15 @@ fn drain_background_results(
             BackgroundResult::LoadCompare {
                 project,
                 group_id,
+                generation,
                 result,
             } => {
                 if !matches!(
                     app.route(),
                     app::Route::Compare { project: route_project, group_id: route_group_id }
                         if route_project == &project && route_group_id == &group_id
-                ) {
+                ) || app.compare_request_generation != generation
+                {
                     continue;
                 }
                 match result {
@@ -3061,6 +3066,32 @@ mod tests {
     }
 
     #[test]
+    fn stale_compare_refresh_failures_are_rejected() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        screens::compare::open(&mut app, "main", "group");
+        let stale_generation = app.begin_compare_request();
+        let current_generation = app.begin_compare_request();
+        let (sender, receiver) = channel();
+        let mut starts_in_flight = HashSet::new();
+
+        sender
+            .send(BackgroundResult::LoadCompare {
+                project: "main".to_owned(),
+                group_id: "group".to_owned(),
+                generation: stale_generation,
+                result: Err(coducktor_client::EngineError::Unavailable {
+                    reason: "stale request".to_owned(),
+                }),
+            })
+            .unwrap();
+
+        drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+
+        assert_eq!(app.compare_request_generation, current_generation);
+        assert!(app.notice.is_none());
+    }
+
+    #[test]
     fn launch_repo_switch_queues_background_refreshes() {
         let repo = tempfile::tempdir().unwrap();
         let mut app = App::new("main", Theme::detect(), Keymap::default());
@@ -3192,6 +3223,7 @@ mod tests {
             .send(BackgroundResult::LoadCompare {
                 project: "main".to_owned(),
                 group_id: "old-group".to_owned(),
+                generation: 0,
                 result: Ok(coducktor_contract::GroupResponse {
                     group_id: "old-group".to_owned(),
                     runs: Vec::new(),
