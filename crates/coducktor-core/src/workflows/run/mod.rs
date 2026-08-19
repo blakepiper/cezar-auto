@@ -737,6 +737,9 @@ pub struct RuntimeOptions {
 pub struct RuntimeMetrics {
     pub event_appends: usize,
     pub index_flushes: usize,
+    /// Cumulative bytes in successfully written index snapshots. This is local diagnostic
+    /// accounting only; it never includes event payloads or provider output.
+    pub index_flush_bytes: u64,
     pub active_sessions: usize,
     pub queued_jobs: usize,
 }
@@ -811,6 +814,7 @@ pub struct RunManager {
     last_index_flush: Instant,
     write_quarantined: bool,
     index_write_count: usize,
+    index_write_bytes: u64,
     event_append_count: usize,
 }
 
@@ -890,6 +894,7 @@ impl RunManager {
             last_index_flush: Instant::now(),
             write_quarantined,
             index_write_count: 0,
+            index_write_bytes: 0,
             event_append_count: 0,
         }
     }
@@ -946,6 +951,7 @@ impl RunManager {
         RuntimeMetrics {
             event_appends: self.event_append_count,
             index_flushes: self.index_write_count,
+            index_flush_bytes: self.index_write_bytes,
             active_sessions: self.active.len(),
             queued_jobs: self.jobs.len(),
         }
@@ -1065,8 +1071,12 @@ impl RunManager {
         }
         fs::create_dir_all(self.data_dir.join("runs"))?;
         let records: Vec<RunRecord> = self.runs.values().cloned().collect();
-        store::write_run_index(&store::index_path(&self.data_dir), &records)?;
+        let index_path = store::index_path(&self.data_dir);
+        store::write_run_index(&index_path, &records)?;
         self.index_write_count += 1;
+        if let Ok(metadata) = fs::metadata(index_path) {
+            self.index_write_bytes = self.index_write_bytes.saturating_add(metadata.len());
+        }
         self.last_index_flush = Instant::now();
         Ok(())
     }
@@ -4143,6 +4153,7 @@ mod tests {
         let metrics = manager.runtime_metrics();
         assert_eq!(metrics.event_appends, 10_000);
         assert!(metrics.index_flushes >= 1);
+        assert!(metrics.index_flush_bytes > 0);
         assert!(notifications.load(Ordering::Relaxed) < 100);
         assert!(manager.index_write_count - writes_before_stream < 100);
     }
