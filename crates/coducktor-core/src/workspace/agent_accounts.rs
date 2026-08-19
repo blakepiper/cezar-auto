@@ -39,6 +39,18 @@ pub fn supports_profiles(provider: Runner) -> bool {
     matches!(provider, Runner::Claude | Runner::Codex)
 }
 
+fn runner_value(runner: Runner) -> Value {
+    Value::String(
+        match runner {
+            Runner::Claude => "claude",
+            Runner::Codex => "codex",
+            Runner::OpenCode => "opencode",
+            Runner::Pi => "pi",
+        }
+        .to_owned(),
+    )
+}
+
 /// One extra config dir for a provider. `id`, `provider`, and `config_dir`
 /// are load-bearing and carry no catch: a row missing any of them names no account and
 /// is dropped by the per-entry salvage. `config_dir` is stored AS WRITTEN — a literal `~`
@@ -90,10 +102,7 @@ impl AgentAccount {
             &self.extra,
             vec![
                 ("id", Value::String(self.id.clone())),
-                (
-                    "provider",
-                    serde_json::to_value(self.provider).expect("Runner always serializes"),
-                ),
+                ("provider", runner_value(self.provider)),
                 ("configDir", Value::String(self.config_dir.clone())),
                 ("label", Value::String(self.label.clone())),
                 ("addedAt", Value::String(self.added_at.clone())),

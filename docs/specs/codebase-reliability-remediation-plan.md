@@ -49,6 +49,8 @@ the larger coordinator rewrite:
   removing serialization and validation panics from config startup.
 - workspace config serialization now writes its closed enum vocabulary directly, removing the
   remaining serialization panic paths while retaining the established wire spellings.
+- agent-account serialization now uses the same stable provider spelling directly, removing its
+  last persistence-boundary panic path.
 
 The critical coordinator work is not complete. Provider turns still need to move out of the
 project-manager critical section into bounded per-run workers before same-project parallelism and
