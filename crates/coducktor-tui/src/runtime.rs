@@ -155,6 +155,7 @@ fn apply_workspace_event_batch(
         }
     }
     flush_workspace_run_updates(app, &mut pending_runs);
+    app.record_coalesced_workspace_run_updates(coalesced);
     coalesced
 }
 
@@ -3424,6 +3425,7 @@ mod tests {
         );
 
         assert_eq!(coalesced, 2);
+        assert_eq!(app.runtime_metrics().coalesced_workspace_run_updates, 2);
         assert_eq!(app.tasks.len(), 1);
         assert_eq!(
             app.tasks[0].record.status,

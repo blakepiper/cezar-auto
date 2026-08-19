@@ -621,6 +621,13 @@ pub enum WorkspaceEvent {
     },
 }
 
+/// Sanitized local counters for runtime backpressure behavior. These values never include task
+/// text, provider payloads, credentials, or file contents.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AppRuntimeMetrics {
+    pub coalesced_workspace_run_updates: usize,
+}
+
 /// A mutation the shell or a screen wants the engine loop to run next frame.
 /// Main owns the engine; the app only queues these.
 #[derive(Debug, Clone, PartialEq)]
@@ -1088,6 +1095,7 @@ pub struct App {
     /// (summary, body) pairs main.rs drains once per tick and fires via `notify-rust`.
     pub pending_notifications: Vec<(String, String)>,
     pub pending: Vec<PendingAction>,
+    runtime_metrics: AppRuntimeMetrics,
     /// The absolute path main.rs should hand to `$EDITOR` (set by the `OpenIdeInEditor`
     /// handler; consumed by the run loop, which owns the terminal).
     pub editor_handoff: Option<String>,
@@ -1176,6 +1184,7 @@ impl App {
             notifications_enabled: false,
             pending_notifications: Vec::new(),
             pending: Vec::new(),
+            runtime_metrics: AppRuntimeMetrics::default(),
             editor_handoff: None,
             filter_mode: false,
             sort_picker_index: 0,
@@ -1188,6 +1197,19 @@ impl App {
 
     pub fn should_quit(&self) -> bool {
         self.quit
+    }
+
+    /// Return sanitized runtime counters for diagnostics and scaling tests.
+    pub fn runtime_metrics(&self) -> AppRuntimeMetrics {
+        self.runtime_metrics
+    }
+
+    /// Account for superseded whole-record updates after a bounded receiver batch is folded.
+    pub fn record_coalesced_workspace_run_updates(&mut self, count: usize) {
+        self.runtime_metrics.coalesced_workspace_run_updates = self
+            .runtime_metrics
+            .coalesced_workspace_run_updates
+            .saturating_add(count);
     }
 
     pub(crate) fn screen_focus(&self) -> usize {
