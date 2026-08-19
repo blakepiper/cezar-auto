@@ -2348,6 +2348,29 @@ mod tests {
     }
 
     #[test]
+    fn resources_render_a_status_for_every_retained_policy_control() {
+        let mut app = app_with_global_settings();
+        app.settings_ui.section = 5;
+        let content = render_text(&mut app, 120, 40);
+
+        for (label, unavailable) in [
+            ("Max parallel tasks", false),
+            ("Max monitoring sessions", false),
+            ("Auto-resume on usage limit", false),
+            ("Intelligent context refresh", false),
+            ("Default worktree retention", false),
+            ("Monitoring wake interval (min) · unavailable", true),
+            ("Memory limit (MB) · unavailable", true),
+        ] {
+            assert!(
+                content.contains(label),
+                "missing resource policy row: {label}"
+            );
+            assert_eq!(label.contains("· unavailable"), unavailable);
+        }
+    }
+
+    #[test]
     fn global_settings_theme_control_persists_the_theme() {
         let mut app = app_with_global_settings();
         handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));

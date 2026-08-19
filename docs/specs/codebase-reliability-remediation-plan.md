@@ -319,6 +319,8 @@ Evidence:
 - monitoring-session admission is enforced at runtime. Memory limits and monitoring wake
   configuration have no runtime enforcement/scheduler in this build and are rendered as explicitly
   unavailable with their reason rather than as active policy.
+- a table-driven Settings regression names every retained resource control and asserts the two
+  unsupported controls visibly carry the unavailable marker, preventing a silent UI regression.
 
 Required correction:
 
