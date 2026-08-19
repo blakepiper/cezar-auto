@@ -193,9 +193,9 @@ Acceptance:
 
 Evidence:
 
-- Every `RunManager::append_event` appends NDJSON, stamps `updated_at`, pretty-serializes the entire
-  project `runs.json`, atomically renames it, publishes a full cloned run record, and then publishes
-  the event.
+- Every `RunManager::append_event` appends durable NDJSON and stamps `updated_at`; streaming index
+  writes and run-record notifications debounce to a 250 ms boundary. Its 10,000-delta regression
+  asserts fewer than 100 index writes and notifications after the explicit final flush.
 - Some runner streams can emit fine-grained deltas (pi emits text deltas directly; protocol mappers
   also expose tool/reasoning/output updates).
 - `ThreadUi::push_events` receives the frame's live batch and rebuilds once after accepting it,
