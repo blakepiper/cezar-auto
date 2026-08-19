@@ -741,6 +741,7 @@ pub trait DiffInspector: Send {
 pub struct RuntimeOptions {
     pub max_parallel: usize,
     pub review_gate: bool,
+    pub auto_resume_on_usage_limit: bool,
 }
 
 impl Default for RuntimeOptions {
@@ -748,6 +749,7 @@ impl Default for RuntimeOptions {
         Self {
             max_parallel: 2,
             review_gate: false,
+            auto_resume_on_usage_limit: true,
         }
     }
 }
@@ -1725,6 +1727,9 @@ impl RunManager {
             plan: plan.clone(),
             ..AutoResumeReport::default()
         };
+        if !self.runtime_options.auto_resume_on_usage_limit {
+            return Ok(report);
+        }
         for run_id in &plan.stale {
             if self.get_run(run_id).is_none() {
                 continue;
@@ -4894,6 +4899,7 @@ mod tests {
         manager.set_runtime_options(RuntimeOptions {
             max_parallel: 1,
             review_gate: false,
+            ..RuntimeOptions::default()
         });
         let workflow = workflow_with_steps(vec![agent_workflow_step("work")]);
         let first = manager.start_run(&workflow, start_input("first")).unwrap();
@@ -5066,6 +5072,7 @@ mod tests {
         manager.set_runtime_options(RuntimeOptions {
             max_parallel: 1,
             review_gate: true,
+            ..RuntimeOptions::default()
         });
         manager.set_diff_inspector(FakeDiff(true));
         let workflow = workflow_with_steps(vec![agent_workflow_step("work")]);
@@ -5126,6 +5133,7 @@ mod tests {
         first.set_runtime_options(RuntimeOptions {
             max_parallel: 0,
             review_gate: false,
+            ..RuntimeOptions::default()
         });
         let workflow = workflow_with_steps(vec![agent_workflow_step("work")]);
         let queued = first
@@ -5372,6 +5380,7 @@ mod tests {
         first.set_runtime_options(RuntimeOptions {
             max_parallel: 0,
             review_gate: false,
+            ..RuntimeOptions::default()
         });
         let report = first
             .reconcile_auto_resumes("2026-01-01T00:00:00.000Z")
@@ -5388,6 +5397,47 @@ mod tests {
                 .holds
                 .in_flight
                 .contains("claude:second")
+        );
+    }
+
+    #[test]
+    fn disabled_auto_resume_keeps_due_usage_limited_runs_parked() {
+        let dir = tempdir().unwrap();
+        let workflow = workflow_with_steps(vec![agent_workflow_step("work")]);
+        let mut manager = RunManager::open(dir.path());
+        let run = manager
+            .create_workflow_run(&workflow, "wait for quota")
+            .unwrap();
+        manager
+            .update_step(
+                &run.id,
+                "work",
+                StepPatch::new().set("sessionId", "quota-session"),
+            )
+            .unwrap();
+        manager
+            .update_run(
+                &run.id,
+                RunPatch::new()
+                    .set("status", RunStatus::Failed)
+                    .set("autoResumeAt", "2020-01-01T00:00:00.000Z"),
+            )
+            .unwrap();
+        manager.set_runtime_options(RuntimeOptions {
+            auto_resume_on_usage_limit: false,
+            ..RuntimeOptions::default()
+        });
+
+        let report = manager
+            .reconcile_auto_resumes("2026-01-01T00:00:00.000Z")
+            .unwrap();
+
+        assert_eq!(report.plan.due, vec![run.id.clone()]);
+        assert!(report.requeued.is_empty());
+        assert_eq!(manager.get_run(&run.id).unwrap().status, RunStatus::Failed);
+        assert_eq!(
+            manager.get_run(&run.id).unwrap().auto_resume_at.as_deref(),
+            Some("2020-01-01T00:00:00.000Z")
         );
     }
 

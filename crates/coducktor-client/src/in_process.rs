@@ -361,6 +361,7 @@ fn configure_production_manager(
             repo.review_gate,
             std::env::var("DUCK_REVIEW_GATE").ok().as_deref(),
         ),
+        auto_resume_on_usage_limit: workspace.resources.auto_resume_on_usage_limit,
     });
     manager.set_intelligent_context_refresh(workspace.resources.intelligent_context_refresh);
     manager.set_check_executor(ProductionCheckExecutor);
@@ -8970,6 +8971,7 @@ mod tests {
             json!({
                 "resources": {
                     "maxParallel": 1,
+                    "autoResumeOnUsageLimit": false,
                     "intelligentContextRefresh": true
                 }
             })
@@ -8984,6 +8986,7 @@ mod tests {
         );
         let manager = engine.manager.lock().unwrap();
         assert_eq!(manager.runtime_options().max_parallel, 1);
+        assert!(!manager.runtime_options().auto_resume_on_usage_limit);
     }
 
     #[tokio::test]
