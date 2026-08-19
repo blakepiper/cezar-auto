@@ -158,6 +158,14 @@ fn write_run_index_with_before_rename(
 /// collision-safe backup beside the index; only then is the supplied salvaged record set written.
 /// Callers must opt in after presenting the backup location to the user.
 pub fn backup_then_repair_run_index(index_path: &Path, runs: &[RunRecord]) -> io::Result<PathBuf> {
+    backup_then_repair_run_index_with_writer(index_path, runs, write_run_index)
+}
+
+fn backup_then_repair_run_index_with_writer(
+    index_path: &Path,
+    runs: &[RunRecord],
+    write_index: impl FnOnce(&Path, &[RunRecord]) -> io::Result<()>,
+) -> io::Result<PathBuf> {
     let staged_backup = atomic_tmp_path(index_path);
     let mut backup_name = staged_backup.file_name().unwrap_or_default().to_os_string();
     backup_name.push(".corrupt-backup.json");
@@ -172,7 +180,7 @@ pub fn backup_then_repair_run_index(index_path: &Path, runs: &[RunRecord]) -> io
         let _ = fs::remove_file(&staged_backup);
         return Err(error);
     }
-    write_run_index(index_path, runs)?;
+    write_index(index_path, runs)?;
     Ok(backup_path)
 }
 
@@ -768,5 +776,33 @@ mod tests {
 
         assert_eq!(fs::read(backup).unwrap(), corrupt);
         assert_eq!(load_run_index(&path, true), Vec::<RunRecord>::new());
+    }
+
+    #[test]
+    fn failed_repair_replacement_preserves_the_corrupt_index_and_its_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = index_path(dir.path());
+        let corrupt = b"{ definitely not json";
+        fs::write(&path, corrupt).unwrap();
+
+        let error = backup_then_repair_run_index_with_writer(&path, &[], |_, _| {
+            Err(io::Error::other("injected repair replacement failure"))
+        })
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(fs::read(&path).unwrap(), corrupt);
+        let backups = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".corrupt-backup.json")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(fs::read(backups[0].path()).unwrap(), corrupt);
     }
 }

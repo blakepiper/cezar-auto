@@ -442,6 +442,8 @@ The implementation is complete. The remaining verification work is the fault-inj
 the acceptance criteria, especially concurrent-writer, permission, disk-full, and
 crash-between-write/rename cases. The pre-rename crash boundary is now covered deterministically:
 the old index remains readable and the staging file is removed when the injected boundary fails.
+An injected repair-replacement failure likewise leaves the corrupt original and its owner-only
+backup intact.
 
 Required correction:
 
