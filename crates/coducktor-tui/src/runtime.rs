@@ -288,6 +288,7 @@ enum BackgroundResult {
     },
     LoadScratchpad {
         project: String,
+        generation: u64,
         result: Result<coducktor_contract::Scratchpad, coducktor_client::EngineError>,
     },
     LoadCompare {
@@ -768,13 +769,18 @@ async fn execute_pending(
                 );
             }
             PendingAction::LoadScratchpad { project } => {
+                let generation = app.begin_scratchpad_request();
                 let scope = Scope::Project(project.clone());
                 let engine_for_task = engine.clone();
                 spawn_background(
                     background_handle,
                     background_sender,
                     async move { engine_for_task.scratchpad(&scope).await },
-                    move |result| BackgroundResult::LoadScratchpad { project, result },
+                    move |result| BackgroundResult::LoadScratchpad {
+                        project,
+                        generation,
+                        result,
+                    },
                 );
             }
             PendingAction::ClearScratchpad { project } => {
@@ -2047,11 +2053,16 @@ fn drain_background_results(
                     apply_settings_snapshot(app, snapshot);
                 }
             }
-            BackgroundResult::LoadScratchpad { project, result } => {
+            BackgroundResult::LoadScratchpad {
+                project,
+                generation,
+                result,
+            } => {
                 if !matches!(
                     app.route(),
                     app::Route::Scratchpad { project: route_project } if route_project == &project
                 ) || app.scratchpad_ui.project != project
+                    || app.scratchpad_request_generation != generation
                 {
                     continue;
                 }
@@ -3016,6 +3027,31 @@ mod tests {
     }
 
     #[test]
+    fn stale_scratchpad_hydration_failures_are_rejected() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        crate::screens::scratchpad::open(&mut app, "main");
+        let stale_generation = app.begin_scratchpad_request();
+        let current_generation = app.begin_scratchpad_request();
+        let (sender, receiver) = channel();
+        let mut starts_in_flight = HashSet::new();
+
+        sender
+            .send(BackgroundResult::LoadScratchpad {
+                project: "main".to_owned(),
+                generation: stale_generation,
+                result: Err(coducktor_client::EngineError::Unavailable {
+                    reason: "stale request".to_owned(),
+                }),
+            })
+            .unwrap();
+
+        drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+
+        assert_eq!(app.scratchpad_request_generation, current_generation);
+        assert!(app.notice.is_none());
+    }
+
+    #[test]
     fn launch_repo_switch_queues_background_refreshes() {
         let repo = tempfile::tempdir().unwrap();
         let mut app = App::new("main", Theme::detect(), Keymap::default());
@@ -3099,6 +3135,7 @@ mod tests {
         sender
             .send(BackgroundResult::LoadScratchpad {
                 project: "other".to_owned(),
+                generation: 0,
                 result: Ok(coducktor_contract::Scratchpad {
                     content: "stale notes".to_owned(),
                 }),

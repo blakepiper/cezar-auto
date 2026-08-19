@@ -1046,6 +1046,8 @@ pub struct App {
     /// Per-project generations reject a stale New Task snapshot after an A → B → A switch.
     new_task_request_generations: BTreeMap<String, u64>,
     pub scratchpad_ui: crate::screens::scratchpad::ScratchpadUi,
+    /// Rejects a stale hydration after navigating away from and back to a scratchpad.
+    pub scratchpad_request_generation: u64,
     /// Per-project New Task drafts, keyed by project id. Survives navigation and
     /// project switching for the lifetime of the cockpit (a TUI has no reload).
     pub new_task_drafts: BTreeMap<String, crate::new_task_form::NewTaskDraft>,
@@ -1138,6 +1140,7 @@ impl App {
             new_task_ui: crate::screens::new_task::NewTaskUi::default(),
             new_task_request_generations: BTreeMap::new(),
             scratchpad_ui: crate::screens::scratchpad::ScratchpadUi::default(),
+            scratchpad_request_generation: 0,
             new_task_drafts: BTreeMap::new(),
             new_task_composers: BTreeMap::new(),
             pending_start_drafts: BTreeMap::new(),
@@ -1324,6 +1327,11 @@ impl App {
     pub fn begin_github_request(&mut self) -> u64 {
         self.github_request_generation = self.github_request_generation.wrapping_add(1);
         self.github_request_generation
+    }
+
+    pub fn begin_scratchpad_request(&mut self) -> u64 {
+        self.scratchpad_request_generation = self.scratchpad_request_generation.wrapping_add(1);
+        self.scratchpad_request_generation
     }
 
     pub fn accepts_new_task_response(&self, project: &str, generation: u64) -> bool {
