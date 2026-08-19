@@ -174,6 +174,11 @@ enum BackgroundResult {
     OpenInCli {
         result: Result<coducktor_contract::OpenInCliResponse, coducktor_client::EngineError>,
     },
+    ResolveIdeEditorRoot {
+        project: String,
+        path: String,
+        result: Result<String, coducktor_client::EngineError>,
+    },
     Github {
         project: String,
         result: Result<coducktor_contract::GithubData, coducktor_client::EngineError>,
@@ -1298,24 +1303,26 @@ async fn execute_pending(
                 // Prefer the registry entry (the root the user added), then the
                 // engine's scope resolution, which also knows the workspace root
                 // (`default`) and any registered project root.
-                let root = app
+                if let Some(root) = app
                     .project_registry
                     .iter()
                     .find(|entry| entry.id == project)
                     .map(|entry| entry.root.clone())
-                    .or_else(|| engine.project_root(&Scope::Project(project.clone())).ok());
-                match root {
-                    Some(root) => {
-                        let absolute = if path.is_empty() {
-                            root
-                        } else {
-                            format!("{}/{}", root.trim_end_matches('/'), path)
-                        };
-                        app.set_editor_handoff(absolute);
-                    }
-                    None => {
-                        app.notice = Some("project root unknown — cannot open in editor".to_owned())
-                    }
+                {
+                    queue_editor_handoff(app, root, path);
+                } else {
+                    let scope = Scope::Project(project.clone());
+                    let engine_for_task = engine.clone();
+                    spawn_background(
+                        background_handle,
+                        background_sender,
+                        async move { engine_for_task.project_root(&scope) },
+                        move |result| BackgroundResult::ResolveIdeEditorRoot {
+                            project,
+                            path,
+                            result,
+                        },
+                    );
                 }
             }
             PendingAction::IdeDiscardThenNavigate(_) => unreachable!("resolved in app.rs"),
@@ -1788,6 +1795,22 @@ fn drain_background_results(
             BackgroundResult::OpenInCli { result } => {
                 if let Err(error) = result {
                     app.notice = Some(format!("open in terminal failed: {error}"));
+                }
+            }
+            BackgroundResult::ResolveIdeEditorRoot {
+                project,
+                path,
+                result,
+            } => {
+                if !matches!(app.route(), app::Route::Ide { project: route_project } if route_project == &project)
+                {
+                    continue;
+                }
+                match result {
+                    Ok(root) => queue_editor_handoff(app, root, path),
+                    Err(_) => {
+                        app.notice = Some("project root unknown — cannot open in editor".to_owned())
+                    }
                 }
             }
             BackgroundResult::Github { project, result } => {
@@ -2334,6 +2357,15 @@ fn queue_project_registry_refresh(
         async move { engine.projects().await },
         |result| BackgroundResult::RefreshProjectRegistry { result },
     );
+}
+
+fn queue_editor_handoff(app: &mut App, root: String, path: String) {
+    let absolute = if path.is_empty() {
+        root
+    } else {
+        format!("{}/{}", root.trim_end_matches('/'), path)
+    };
+    app.set_editor_handoff(absolute);
 }
 
 fn apply_project_registry(app: &mut App, projects: coducktor_contract::ProjectsResponse) {
@@ -3118,6 +3150,35 @@ mod tests {
             app.notice.as_deref(),
             Some("start failed: service unavailable: runner worker unavailable")
         );
+    }
+
+    #[test]
+    fn resolved_editor_root_only_handoffs_for_the_active_ide_project() {
+        let (sender, receiver) = channel();
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.navigate_route(app::Route::Ide {
+            project: "main".to_owned(),
+        });
+        let mut starts_in_flight = HashSet::new();
+
+        sender
+            .send(BackgroundResult::ResolveIdeEditorRoot {
+                project: "main".to_owned(),
+                path: "src/main.rs".to_owned(),
+                result: Ok("/repo".to_owned()),
+            })
+            .unwrap();
+        sender
+            .send(BackgroundResult::ResolveIdeEditorRoot {
+                project: "other".to_owned(),
+                path: "stale.rs".to_owned(),
+                result: Ok("/other".to_owned()),
+            })
+            .unwrap();
+
+        drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+
+        assert_eq!(app.editor_handoff.as_deref(), Some("/repo/src/main.rs"));
     }
 
     #[test]

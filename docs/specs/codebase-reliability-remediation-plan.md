@@ -199,6 +199,8 @@ Evidence:
   is applied from its completion.
 - Run activation now likewise leaves the frame task before taking the manager lock and starting its
   native runner worker.
+- IDE editor handoff only resolves an absent project-registry root in the background and rejects
+  that fallback after navigation away from the project.
 - Exact queued duplicates of the safe task/index/new-task/model refreshes coalesce before a frame;
   mutations retain their original FIFO order and are never collapsed.
 
