@@ -919,13 +919,23 @@ async fn execute_pending(
                     base_branch: Some(base_branch),
                     ..coducktor_contract::SetConfigInput::default()
                 };
-                match engine.put_config(&scope, &input).await {
-                    Ok(config) => {
-                        app.new_task_ui.data.config =
-                            Some(new_task_form::ComposerConfig::from_config(&config));
-                    }
-                    Err(error) => app.notice = Some(format!("base branch failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.put_config(&scope, &input).await },
+                    move |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(config) => {
+                                app.new_task_ui.data.config =
+                                    Some(new_task_form::ComposerConfig::from_config(&config));
+                            }
+                            Err(error) => {
+                                app.notice = Some(format!("base branch failed: {error}"));
+                            }
+                        }))
+                    },
+                );
             }
             PendingAction::LoadThread { project, id } => {
                 let generation = app.begin_thread_request();
