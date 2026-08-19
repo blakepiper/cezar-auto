@@ -163,7 +163,9 @@ Evidence:
   `RECEIVER_ITEMS_PER_FRAME`; thread events are collected into one batch before projection. The
   terminal loop still lacks time-budgeting, backlog wake accounting, and input-priority scheduling.
 - Pending actions now drain FIFO in batches of `PENDING_ACTIONS_PER_FRAME`, retaining the tail for
-  later frames. Individual actions still await engine and host work in the frame task.
+  later frames. Individual actions still await engine and host work in the frame task, but their
+  post-mutation global-index refresh is now queued into the backgrounded, generation-checked
+  refresh path rather than awaited inline.
 - Exact queued duplicates of the safe task/index/new-task/model refreshes coalesce before a frame;
   mutations retain their original FIFO order and are never collapsed.
 

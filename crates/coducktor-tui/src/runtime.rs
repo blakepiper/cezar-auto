@@ -536,7 +536,7 @@ async fn execute_pending(
                 match engine.archive_run(&scope, &id, archived).await {
                     Ok(run) => {
                         app.apply_workspace_event(WorkspaceEvent::Run { project, run });
-                        refresh_index_if_global(engine.as_ref(), app).await;
+                        queue_global_index_refresh(app);
                     }
                     Err(error) => app.notice = Some(format!("archive failed: {error}")),
                 }
@@ -546,7 +546,7 @@ async fn execute_pending(
                 match engine.delete_run(&scope, &id).await {
                     Ok(_) => {
                         app.apply_workspace_event(WorkspaceEvent::RunDeleted { project, id });
-                        refresh_index_if_global(engine.as_ref(), app).await;
+                        queue_global_index_refresh(app);
                     }
                     Err(error) => app.notice = Some(format!("delete failed: {error}")),
                 }
@@ -556,7 +556,7 @@ async fn execute_pending(
                 match engine.read_run(&scope, &id).await {
                     Ok(run) => {
                         app.apply_workspace_event(WorkspaceEvent::Run { project, run });
-                        refresh_index_if_global(engine.as_ref(), app).await;
+                        queue_global_index_refresh(app);
                     }
                     Err(error) => app.notice = Some(format!("mark read failed: {error}")),
                 }
@@ -566,7 +566,7 @@ async fn execute_pending(
                 match engine.unread_run(&scope, &id).await {
                     Ok(run) => {
                         app.apply_workspace_event(WorkspaceEvent::Run { project, run });
-                        refresh_index_if_global(engine.as_ref(), app).await;
+                        queue_global_index_refresh(app);
                     }
                     Err(error) => app.notice = Some(format!("mark unread failed: {error}")),
                 }
@@ -1854,15 +1854,9 @@ fn thread_history_event(
     }
 }
 
-async fn refresh_index_if_global(engine: &dyn Engine, app: &mut App) {
+fn queue_global_index_refresh(app: &mut App) {
     if matches!(app.route(), app::Route::GlobalTasks) {
-        let generation = app.begin_global_index_request();
-        let result = engine.runs_index().await;
-        let error = result.as_ref().err().map(ToString::to_string);
-        app.apply_global_index_response(generation, result.map_err(|error| error.to_string()));
-        if let Some(error) = error {
-            app.notice = Some(format!("refresh all tasks failed: {error}"));
-        }
+        app.queue_pending(PendingAction::RefreshIndex);
     }
 }
 
@@ -2351,6 +2345,17 @@ fn parse_editor_command(raw: &str) -> io::Result<(String, Vec<String>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn global_index_refreshes_are_queued_and_coalesced_after_mutations() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.navigate_route(app::Route::GlobalTasks);
+
+        queue_global_index_refresh(&mut app);
+        queue_global_index_refresh(&mut app);
+
+        assert_eq!(app.pending, vec![PendingAction::RefreshIndex]);
+    }
 
     #[tokio::test]
     async fn completed_background_workers_are_reaped() {
