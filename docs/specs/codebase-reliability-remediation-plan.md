@@ -193,6 +193,8 @@ Evidence:
   refresh only after that mutation completes.
 - A `--repo` launch switch queues its task and New Task snapshots through those background paths
   instead of awaiting either read while applying launch arguments.
+- New Task snapshots now carry a per-project generation, so an A → B → A navigation cycle cannot
+  hydrate A from the first request after the second request supersedes it.
 - Draft PR creation now runs on the worker pool and preserves the follow-up thread refresh after
   its completion.
 - CLI handoff terminal probing and launch now run on the worker pool; the existing failure notice

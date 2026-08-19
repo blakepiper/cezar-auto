@@ -1043,6 +1043,8 @@ pub struct App {
     pub tasks_ui: crate::screens::tasks::TasksUi,
     pub global_ui: crate::screens::global_tasks::GlobalUi,
     pub new_task_ui: crate::screens::new_task::NewTaskUi,
+    /// Per-project generations reject a stale New Task snapshot after an A → B → A switch.
+    new_task_request_generations: BTreeMap<String, u64>,
     pub scratchpad_ui: crate::screens::scratchpad::ScratchpadUi,
     /// Per-project New Task drafts, keyed by project id. Survives navigation and
     /// project switching for the lifetime of the cockpit (a TUI has no reload).
@@ -1131,6 +1133,7 @@ impl App {
             tasks_ui: crate::screens::tasks::TasksUi::default(),
             global_ui: crate::screens::global_tasks::GlobalUi::default(),
             new_task_ui: crate::screens::new_task::NewTaskUi::default(),
+            new_task_request_generations: BTreeMap::new(),
             scratchpad_ui: crate::screens::scratchpad::ScratchpadUi::default(),
             new_task_drafts: BTreeMap::new(),
             new_task_composers: BTreeMap::new(),
@@ -1297,6 +1300,19 @@ impl App {
         state.loading = true;
         state.error = None;
         state.request_generation
+    }
+
+    pub fn begin_new_task_request(&mut self, project: &str) -> u64 {
+        let generation = self
+            .new_task_request_generations
+            .entry(project.to_owned())
+            .or_default();
+        *generation = generation.wrapping_add(1);
+        *generation
+    }
+
+    pub fn accepts_new_task_response(&self, project: &str, generation: u64) -> bool {
+        self.new_task_request_generations.get(project) == Some(&generation)
     }
 
     pub fn apply_task_response(
@@ -3985,6 +4001,18 @@ mod tests {
             app.route(),
             Route::Thread { project, id } if project == "main" && id == "run-2"
         ));
+    }
+
+    #[test]
+    fn stale_new_task_refreshes_are_rejected_per_project_generation() {
+        let mut app = App::new("a", Theme::detect(), Keymap::default());
+        let first_a = app.begin_new_task_request("a");
+        let _ = app.begin_new_task_request("b");
+        let second_a = app.begin_new_task_request("a");
+
+        assert!(!app.accepts_new_task_response("a", first_a));
+        assert!(app.accepts_new_task_response("a", second_a));
+        assert!(!app.accepts_new_task_response("b", second_a));
     }
 
     #[test]

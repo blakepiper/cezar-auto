@@ -234,6 +234,7 @@ enum BackgroundResult {
     },
     RefreshNewTask {
         project: String,
+        generation: u64,
         snapshot: PrimeNewTaskSnapshot,
     },
     LoadSettingsUsage {
@@ -750,12 +751,17 @@ async fn execute_pending(
             }
             PendingAction::RefreshNewTask { project } => {
                 let project_for_task = project.clone();
+                let generation = app.begin_new_task_request(&project);
                 let engine_for_task = engine.clone();
                 spawn_background(
                     background_handle,
                     background_sender,
                     async move { load_new_task_snapshot(engine_for_task, &project_for_task).await },
-                    move |snapshot| BackgroundResult::RefreshNewTask { project, snapshot },
+                    move |snapshot| BackgroundResult::RefreshNewTask {
+                        project,
+                        generation,
+                        snapshot,
+                    },
                 );
             }
             PendingAction::LoadScratchpad { project } => {
@@ -1978,8 +1984,14 @@ fn drain_background_results(
                     app.notice = Some(format!("{runner:?} model catalog failed: {error}"))
                 }
             },
-            BackgroundResult::RefreshNewTask { project, snapshot } => {
-                if app.current_project() == project {
+            BackgroundResult::RefreshNewTask {
+                project,
+                generation,
+                snapshot,
+            } => {
+                if app.current_project() == project
+                    && app.accepts_new_task_response(&project, generation)
+                {
                     apply_new_task_snapshot(app, snapshot);
                 }
             }
