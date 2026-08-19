@@ -159,8 +159,9 @@ Evidence:
   serially before the next draw.
 - Refreshes use detached OS threads that call `Handle::block_on`; they have no concurrency bound,
   cancellation, request registry, or shutdown ownership.
-- terminal input, workspace events, background results, and thread events are drained with
-  unrestricted `while try_recv()` loops in one frame.
+- workspace events, background results, and thread events are each bounded by
+  `RECEIVER_ITEMS_PER_FRAME`; thread events are collected into one batch before projection. The
+  terminal loop still lacks time-budgeting, backlog wake accounting, and input-priority scheduling.
 
 Required correction:
 
