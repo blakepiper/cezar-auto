@@ -235,6 +235,11 @@ enum BackgroundResult {
         run: Result<coducktor_contract::ApiRun, coducktor_client::EngineError>,
         changes: Result<coducktor_contract::ChangesPayload, coducktor_client::EngineError>,
     },
+    LoadTaskGitFiles {
+        project: String,
+        id: String,
+        result: Result<coducktor_contract::WorktreeEntry, coducktor_client::EngineError>,
+    },
     LoadRepoGitCommit {
         project: String,
         result: Result<coducktor_contract::RepoCommitPayload, coducktor_client::EngineError>,
@@ -919,10 +924,22 @@ async fn execute_pending(
             }
             PendingAction::LoadTaskGitFiles { project, id, path } => {
                 let scope = Scope::Project(project.clone());
-                match engine.run_files(&scope, &id, path.as_deref()).await {
-                    Ok(entry) => app.task_git_ui.files_entry = Some(entry),
-                    Err(error) => app.notice = Some(format!("load files failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                let id_for_task = id.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move {
+                        engine_for_task
+                            .run_files(&scope, &id_for_task, path.as_deref())
+                            .await
+                    },
+                    move |result| BackgroundResult::LoadTaskGitFiles {
+                        project,
+                        id,
+                        result,
+                    },
+                );
             }
             PendingAction::LoadTaskGitCommits { project, id } => {
                 let scope = Scope::Project(project.clone());
@@ -1784,6 +1801,23 @@ fn drain_background_results(
                     (Err(error), _) | (_, Err(error)) => {
                         app.notice = Some(format!("load changes failed: {error}"));
                     }
+                }
+            }
+            BackgroundResult::LoadTaskGitFiles {
+                project,
+                id,
+                result,
+            } => {
+                if !matches!(
+                    app.route(),
+                    app::Route::TaskGit { project: route_project, id: route_id, tab: app::TaskGitTab::Files }
+                        if route_project == &project && route_id == &id
+                ) {
+                    continue;
+                }
+                match result {
+                    Ok(entry) => app.task_git_ui.files_entry = Some(entry),
+                    Err(error) => app.notice = Some(format!("load files failed: {error}")),
                 }
             }
             BackgroundResult::LoadRepoGitCommit { project, result } => {
