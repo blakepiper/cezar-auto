@@ -8783,6 +8783,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn start_admission_returns_before_a_blocked_provider_turn_is_activated() {
+        let dir = TempDir::new().unwrap();
+        let engine = InProcessEngine::with_session_factory(
+            dir.path(),
+            "0.0.0-test",
+            BlockingFactory {
+                tokens: Arc::new(Mutex::new(BTreeMap::new())),
+            },
+        );
+        let started = Instant::now();
+        let CreateRunResponse::Single(run) = engine
+            .start_run(steps_input("block until explicitly activated"))
+            .await
+            .unwrap()
+        else {
+            panic!("expected one run");
+        };
+        assert!(started.elapsed() < std::time::Duration::from_millis(100));
+        assert_eq!(run.status, coducktor_contract::RunStatus::Queued);
+        assert!(engine.activation_workers.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn cancel_interrupts_a_turn_while_the_manager_is_busy() {
         let dir = TempDir::new().unwrap();
         let tokens = Arc::new(Mutex::new(BTreeMap::new()));
