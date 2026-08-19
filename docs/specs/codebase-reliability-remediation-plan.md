@@ -72,9 +72,9 @@ The critical coordinator work is not complete. Provider turns still need to move
 project-manager critical section into bounded per-run workers before same-project parallelism and
 all mutation latency requirements in R1 are satisfied. R2 still needs a general TUI command
 executor instead of action-specific background work. The remaining R7 policy controls, full R8
-protocol fixture matrix, bounded shutdown escalation in R9, a user-facing recovery action in R10,
-and real-terminal R12 verification also remain open. R10's core persistence protections are now in
-place, but its recovery operation is not yet exposed through the product. The findings and
+protocol fixture matrix, bounded shutdown escalation in R9, and real-terminal R12 verification
+also remain open. R10's core persistence protections and the `repair-runs` recovery command are
+implemented; its exhaustive fault-injection matrix remains verification work. The findings and
 acceptance criteria below remain authoritative until each item is closed by its named tests and
 measurements.
 
@@ -402,7 +402,7 @@ Acceptance:
 - 1,000 mocked open/cancel/finish cycles return cancellation, worker, reader, and child counts to
   baseline.
 
-### R10 — Run-state durability violates repository invariants (high; partially implemented)
+### R10 — Run-state durability violates repository invariants (high; implementation complete, fault coverage ongoing)
 
 Evidence:
 
@@ -417,8 +417,13 @@ Evidence:
 - production manager construction invokes terminal-record retention. It atomically removes only
   inactive terminal records, then best-effort cleans matching NDJSON and handoff sidecars while
   leaving worktrees recoverable.
-- `repair_quarantined_index` is currently a core-manager operation only; there is no Engine/TUI
-  recovery action that can present its backup path to a user.
+- the terminal-native `repair-runs` command opens the affected project's manager, runs the explicit
+  repair, and prints the backup path. Its headless regression test proves corrupt bytes are backed
+  up before the repaired index is accepted.
+
+The implementation is complete. The remaining verification work is the fault-injection matrix in
+the acceptance criteria, especially concurrent-writer, permission, disk-full, and
+crash-between-write/rename cases.
 
 Required correction:
 
