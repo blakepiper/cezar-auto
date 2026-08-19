@@ -22,6 +22,8 @@ the larger coordinator rewrite:
   configure every run manager, including lazily opened projects;
 - reads use an observer-maintained run snapshot, cancellation bypasses a busy manager, activation
   threads are coalesced and owned, and session registrations are removed when sessions close;
+- TUI background commands now run on a fixed four-worker native pool, so refresh storms cannot
+  create one OS thread per request;
 - streamed events remain durable while index rewrites and TUI transcript rebuilds are batched;
 - run-index reads salvage valid entries, quarantine corrupt or partially corrupt state from
   overwrite, preserve unknown run and step keys, and replace indexes with collision-safe `0600`
@@ -157,8 +159,9 @@ Evidence:
 - Several of those operations take the manager lock from R1 or perform synchronous filesystem work
   behind an `async fn`. Rapid navigation can queue several actions, which are then processed
   serially before the next draw.
-- Refreshes use detached OS threads that call `Handle::block_on`; they have no concurrency bound,
-  cancellation, request registry, or shutdown ownership.
+- Refreshes use the fixed native worker pool to isolate blocking engine seams from the frame task.
+  The pool has no request cancellation or bounded queue yet, and ordered mutations still await the
+  general command executor.
 - workspace events, background results, and thread events are each bounded by
   `RECEIVER_ITEMS_PER_FRAME`; thread events are collected into one batch before projection. The
   terminal loop still lacks time-budgeting, backlog wake accounting, and input-priority scheduling.
@@ -421,8 +424,8 @@ Evidence:
 - a 1,000-cycle registration regression test proves dropped sessions return the cancellation
   registry to its baseline without retaining inactive tokens.
 - activation workers coalesce per project and now globally reap completed handles; TUI background
-  threads likewise retain and reap completed handles between submissions and at loop exit. Both
-  paths still lack a concurrency cap, cancellation registry, and bounded shutdown escalation.
+  work is dispatched through a fixed four-thread pool rather than creating per-request threads.
+  Both paths still lack a cancellation registry and bounded shutdown escalation.
 - child stdout, stderr, and discard readers are owned by `ChildProcess`; termination reaps the
   child and joins readers after bounded escalation.
 

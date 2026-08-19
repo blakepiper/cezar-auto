@@ -3,8 +3,9 @@ use std::env;
 use std::future::Future;
 use std::io;
 use std::io::Write;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver as BackgroundReceiver, Sender as BackgroundSender, channel};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -29,6 +30,7 @@ const FRAME_BUDGET: Duration = Duration::from_millis(33);
 const INPUT_ITEMS_PER_FRAME: usize = 64;
 const RECEIVER_ITEMS_PER_FRAME: usize = 256;
 const PENDING_ACTIONS_PER_FRAME: usize = 16;
+const BACKGROUND_WORKER_COUNT: usize = 4;
 
 #[tokio::main]
 pub async fn entry() -> io::Result<()> {
@@ -324,39 +326,57 @@ enum SessionMutation {
     Finish,
 }
 
-/// Run an engine future away from the TUI task. In-process engine methods intentionally retain
-/// synchronous run/session seams, so a Tokio task alone would only move the freeze to another
-/// runtime worker and still leave shutdown waiting on an agent process. A plain worker thread lets
-/// the cockpit keep polling input and lets a confirmed quit return without joining a live agent.
+type BackgroundJob = Box<dyn FnOnce(tokio::runtime::Handle) + Send>;
+
+/// Run engine futures away from the TUI task on a fixed native-worker pool. In-process engine
+/// methods intentionally retain synchronous run/session seams, so a Tokio task alone would only
+/// move the freeze to another runtime worker and still leave shutdown waiting on an agent process.
+/// The pool is deliberately never joined: a confirmed quit must not wait for a live agent call.
 struct BackgroundWorkers {
-    runtime_handle: tokio::runtime::Handle,
-    handles: Vec<thread::JoinHandle<()>>,
+    sender: BackgroundSender<BackgroundJob>,
+    pending: Arc<AtomicUsize>,
+    _handles: Vec<thread::JoinHandle<()>>,
 }
 
 impl BackgroundWorkers {
     fn new(runtime_handle: tokio::runtime::Handle) -> Self {
+        let (sender, receiver) = channel::<BackgroundJob>();
+        let receiver = Arc::new(Mutex::new(receiver));
+        let pending = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::with_capacity(BACKGROUND_WORKER_COUNT);
+        for _ in 0..BACKGROUND_WORKER_COUNT {
+            let receiver = Arc::clone(&receiver);
+            let pending = Arc::clone(&pending);
+            let runtime_handle = runtime_handle.clone();
+            handles.push(thread::spawn(move || {
+                loop {
+                    let job = match receiver.lock() {
+                        Ok(receiver) => receiver.recv(),
+                        Err(_) => return,
+                    };
+                    let Ok(job) = job else {
+                        return;
+                    };
+                    job(runtime_handle.clone());
+                    pending.fetch_sub(1, Ordering::Release);
+                }
+            }));
+        }
         Self {
-            runtime_handle,
-            handles: Vec::new(),
+            sender,
+            pending,
+            _handles: handles,
         }
-    }
-
-    /// Reap only completed workers. A live provider call must not delay a confirmed TUI quit.
-    fn reap_finished(&mut self) {
-        let mut live = Vec::with_capacity(self.handles.len());
-        for handle in std::mem::take(&mut self.handles) {
-            if handle.is_finished() {
-                let _ = handle.join();
-            } else {
-                live.push(handle);
-            }
-        }
-        self.handles = live;
     }
 
     #[cfg(test)]
-    fn retained_count(&self) -> usize {
-        self.handles.len()
+    fn pending_count(&self) -> usize {
+        self.pending.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    fn worker_count(&self) -> usize {
+        self._handles.len()
     }
 }
 
@@ -370,13 +390,15 @@ fn spawn_background<F, T, M>(
     T: Send + 'static,
     M: FnOnce(T) -> BackgroundResult + Send + 'static,
 {
-    workers.reap_finished();
-    let handle = workers.runtime_handle.clone();
+    workers.pending.fetch_add(1, Ordering::Release);
     let sender = sender.clone();
-    workers.handles.push(thread::spawn(move || {
+    let job = Box::new(move |handle: tokio::runtime::Handle| {
         let result = handle.block_on(future);
         let _ = sender.send(map(result));
-    }));
+    });
+    if workers.sender.send(job).is_err() {
+        workers.pending.fetch_sub(1, Ordering::Release);
+    }
 }
 
 /// Load the data that makes the first screen useful without holding up the first frame. The
@@ -2641,7 +2663,6 @@ async fn run(
     if let Some((handle, _)) = bootstrap {
         handle.abort();
     }
-    background_handle.reap_finished();
 
     Ok(())
 }
@@ -3031,20 +3052,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn completed_background_workers_are_reaped() {
+    async fn background_work_uses_a_fixed_worker_pool() {
         let (sender, receiver) = channel();
         let mut workers = BackgroundWorkers::new(tokio::runtime::Handle::current());
-        spawn_background(&mut workers, &sender, async {}, |_| {
-            BackgroundResult::LoadSettingsUsage {
-                result: Err(coducktor_client::EngineError::Unavailable {
-                    reason: "test worker".to_owned(),
-                }),
-            }
-        });
+        for _ in 0..1_000 {
+            spawn_background(&mut workers, &sender, async {}, |_| {
+                BackgroundResult::LoadSettingsUsage {
+                    result: Err(coducktor_client::EngineError::Unavailable {
+                        reason: "test worker".to_owned(),
+                    }),
+                }
+            });
+        }
 
         tokio::time::timeout(Duration::from_secs(1), async {
+            let mut completed = 0;
             loop {
-                if receiver.try_recv().is_ok() {
+                while receiver.try_recv().is_ok() {
+                    completed += 1;
+                }
+                if completed == 1_000 {
                     break;
                 }
                 tokio::task::yield_now().await;
@@ -3054,8 +3081,7 @@ mod tests {
         .unwrap();
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                workers.reap_finished();
-                if workers.retained_count() == 0 {
+                if workers.pending_count() == 0 {
                     break;
                 }
                 tokio::task::yield_now().await;
@@ -3063,7 +3089,8 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(workers.retained_count(), 0);
+        assert_eq!(workers.worker_count(), BACKGROUND_WORKER_COUNT);
+        assert_eq!(workers.pending_count(), 0);
     }
 
     #[test]
