@@ -1492,6 +1492,23 @@ mod tests {
     }
 
     #[test]
+    fn unknown_approval_requests_receive_a_protocol_error_without_blocking_the_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = node_config();
+        let run_spec = spec_for(dir.path(), "mock:unknown-approval");
+        let mut session = open_codex_session(&config, run_spec, &BTreeMap::new()).unwrap();
+        let (outcome, events) = run_turn(&mut session);
+
+        assert!(outcome.is_ok());
+        assert!(events.iter().any(|event| {
+            event.event_type == "error"
+                && event.extra.get("message").and_then(Value::as_str)
+                    == Some("unsupported Codex approval request: item/browser/requestApproval")
+        }));
+        session.finish(&mut |_| Ok(())).unwrap();
+    }
+
+    #[test]
     fn codex_user_input_places_data_url_images_before_text() {
         assert_eq!(
             codex_user_input("inspect", &["data:image/png;base64,AQID".to_owned()]),

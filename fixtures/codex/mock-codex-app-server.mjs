@@ -59,6 +59,10 @@ rl.on('line', (line) => {
     emit(msg.error?.code === -32601
       ? { method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } }
       : { method: 'turn/failed', params: { turn: { id: 'turn_mock_1', status: 'failed' }, error: { message: 'unknown request was not declined' } } });
+  } else if (msg.id === 'unknown-approval-1') {
+    emit(msg.error?.code === -32601
+      ? { method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } }
+      : { method: 'turn/failed', params: { turn: { id: 'turn_mock_1', status: 'failed' }, error: { message: 'unknown approval was not declined' } } });
   } else if (msg.id === 'malformed-ask-1') {
     emit(msg.error?.code === -32602
       ? { method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } }
@@ -169,6 +173,12 @@ rl.on('line', (line) => {
     if (turnText.includes('mock:unknown-request')) {
       emit({ id: 'unknown-request-1', method: 'item/terminalInteraction/request', params: {
         threadId: 'th_mock_1', turnId: 'turn_mock_1', itemId: 'terminal_1',
+      } });
+      return;
+    }
+    if (turnText.includes('mock:unknown-approval')) {
+      emit({ id: 'unknown-approval-1', method: 'item/browser/requestApproval', params: {
+        threadId: 'th_mock_1', turnId: 'turn_mock_1', itemId: 'browser_1',
       } });
       return;
     }

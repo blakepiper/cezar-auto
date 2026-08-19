@@ -359,6 +359,8 @@ Evidence:
   non-hanging JSON-RPC error.
 - A mock malformed native `requestUserInput` request now proves the adapter returns `-32602`, emits
   a normalized non-fatal error, and allows the provider turn to settle rather than waiting forever.
+- A mock unknown approval request likewise proves the generic approval fallback returns `-32601`
+  and cannot leave the provider waiting for an unimplemented approval surface.
 - the schema also exposes dynamic tool, MCP progress, terminal-interaction, and richer item shapes.
   The generic tool fallback retains some JSON, but parity fixtures do not prove these current
   shapes remain usable.
