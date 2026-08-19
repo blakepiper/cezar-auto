@@ -961,7 +961,50 @@ impl RunManager {
         }
         let event_path = events::events_path(&self.data_dir, run_id);
         let _ = fs::remove_file(event_path);
+        crate::handoff::delete_handoff(&self.data_dir, run_id);
         Ok(true)
+    }
+
+    /// Remove terminal records beyond the durable index retention budget. The replacement index
+    /// is committed before best-effort sidecar cleanup, so a crash cannot leave an index entry
+    /// that points at already-deleted history. Queued, running, and waiting work is never a
+    /// retention candidate, even if an old clock or imported state makes it look stale.
+    ///
+    /// Worktrees have their own explicit retention policy: removing an index record must not
+    /// remove a checkout that may contain recoverable agent edits.
+    pub fn prune_stale_runs(&mut self) -> io::Result<Vec<String>> {
+        let candidates = store::select_stale_run_ids(&self.list_runs());
+        let stale: Vec<String> = candidates
+            .into_iter()
+            .filter(|run_id| {
+                self.runs.get(run_id).is_some_and(|run| {
+                    matches!(
+                        run.status,
+                        RunStatus::Done
+                            | RunStatus::Failed
+                            | RunStatus::Cancelled
+                            | RunStatus::Review
+                    ) && !self.is_active(run_id)
+                })
+            })
+            .collect();
+        if stale.is_empty() {
+            return Ok(stale);
+        }
+
+        let removed: Vec<(String, RunRecord)> = stale
+            .iter()
+            .filter_map(|run_id| self.runs.remove(run_id).map(|run| (run_id.clone(), run)))
+            .collect();
+        if let Err(error) = self.persist() {
+            self.runs.extend(removed);
+            return Err(error);
+        }
+        for run_id in &stale {
+            let _ = fs::remove_file(events::events_path(&self.data_dir, run_id));
+            crate::handoff::delete_handoff(&self.data_dir, run_id);
+        }
+        Ok(stale)
     }
 
     /// Register an observer for appended events. The callback is invoked after the NDJSON append
@@ -3792,6 +3835,52 @@ mod tests {
     use tempfile::tempdir;
 
     use super::semaphore::{RepositoryRootLease, WorkspaceSemaphore};
+
+    #[test]
+    fn retention_prunes_terminal_sidecars_but_keeps_live_records_and_worktrees() {
+        let dir = tempdir().unwrap();
+        let stale_id = "done-0000";
+        let retained_worktree = dir.path().join("recoverable-worktree");
+        fs::create_dir(&retained_worktree).unwrap();
+        let mut records = Vec::new();
+        for index in 0..=(store::MAX_RUNS_KEPT + 1) {
+            records.push(RunRecord {
+                id: format!("done-{index:04}"),
+                created_at: format!("2026-01-{index:04}T00:00:00.000Z"),
+                status: RunStatus::Done,
+                worktree_path: (index == 0)
+                    .then(|| retained_worktree.to_string_lossy().into_owned()),
+                ..RunRecord::default()
+            });
+        }
+        let live_id = "queued-old";
+        records.push(RunRecord {
+            id: live_id.to_owned(),
+            created_at: "2000-01-01T00:00:00.000Z".to_owned(),
+            status: RunStatus::Queued,
+            ..RunRecord::default()
+        });
+        store::write_run_index(&store::index_path(dir.path()), &records).unwrap();
+
+        fs::create_dir_all(dir.path().join("runs")).unwrap();
+        fs::write(events::events_path(dir.path(), stale_id), "{}\n").unwrap();
+        fs::write(
+            crate::handoff::handoff_path(dir.path(), stale_id),
+            "handoff",
+        )
+        .unwrap();
+
+        let mut manager = RunManager::open(dir.path());
+        let pruned = manager.prune_stale_runs().unwrap();
+
+        assert!(pruned.iter().any(|id| id == stale_id));
+        assert!(manager.get_run(stale_id).is_none());
+        assert!(manager.get_run(live_id).is_some());
+        assert!(!events::events_path(dir.path(), stale_id).exists());
+        assert!(!crate::handoff::handoff_path(dir.path(), stale_id).exists());
+        assert!(retained_worktree.is_dir());
+        assert_eq!(manager.list_runs().len(), store::MAX_RUNS_KEPT + 1);
+    }
 
     fn step(id: &str, kind: StepKind) -> StepSeed {
         StepSeed {

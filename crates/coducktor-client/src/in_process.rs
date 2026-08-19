@@ -431,6 +431,9 @@ impl InProcessEngine {
             &config,
             &boot_project_id,
         );
+        if let Err(error) = manager.prune_stale_runs() {
+            eprintln!("coducktor: could not apply run retention: {error}");
+        }
         let (live_events, _) = broadcast::channel(512);
         let manager = Arc::new(Mutex::new(manager));
         let managers = Arc::new(Mutex::new(BTreeMap::new()));
@@ -582,6 +585,9 @@ impl InProcessEngine {
         );
         manager.set_project_id(project_id.clone());
         configure_production_manager(&mut manager, &root, &self.state_home, &config, &project_id);
+        if let Err(error) = manager.prune_stale_runs() {
+            eprintln!("coducktor: could not apply run retention: {error}");
+        }
         let manager = Arc::new(Mutex::new(manager));
         self.wire_manager(&project_id, &manager);
         managers.insert(
