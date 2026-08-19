@@ -62,6 +62,8 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Back up and repair quarantined per-project run state.
+    RepairRuns,
     /// List, register, or drop entries in the project registry.
     Projects {
         #[command(subcommand)]
@@ -182,6 +184,12 @@ mod tests {
             Some(Command::Doctor { json: true })
         ));
         assert!(matches!(
+            Cli::try_parse_from(["coducktor", "repair-runs"])
+                .unwrap()
+                .command,
+            Some(Command::RepairRuns)
+        ));
+        assert!(matches!(
             Cli::try_parse_from(["coducktor", "projects"])
                 .unwrap()
                 .command,
@@ -227,6 +235,7 @@ mod tests {
             "init",
             "usage",
             "doctor",
+            "repair-runs",
             "projects",
         ] {
             assert!(

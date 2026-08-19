@@ -69,6 +69,9 @@ pub async fn entry() -> io::Result<()> {
         Some(Command::Doctor { json }) => {
             std::process::exit(headless::doctor_command(repo_root, *json).await);
         }
+        Some(Command::RepairRuns) => {
+            std::process::exit(headless::repair_runs_command(&repo_root));
+        }
         Some(Command::Projects { action }) => {
             std::process::exit(headless::projects_command(&repo_root, action.clone()));
         }

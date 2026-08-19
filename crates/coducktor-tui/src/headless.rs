@@ -38,6 +38,28 @@ pub fn resolve_repo_root(explicit: Option<&Path>) -> PathBuf {
     }
 }
 
+/// Back up and repair a run index that was quarantined during load.
+pub fn repair_runs_command(repo_root: &Path) -> i32 {
+    let mut manager = RunManager::open(project_state_dir(repo_root, &ProcessEnv));
+    match manager.repair_quarantined_index() {
+        Ok(Some(backup)) => {
+            println!(
+                "repaired runs.json; original backed up to {}",
+                backup.display()
+            );
+            0
+        }
+        Ok(None) => {
+            println!("runs.json does not need repair");
+            0
+        }
+        Err(error) => {
+            eprintln!("could not repair runs.json: {error}");
+            1
+        }
+    }
+}
+
 // ---- run (headless) -----------------------------------------------------------------------
 
 /// `coducktor run "<task>"` — headless execution. Returns the process exit code: 0 for `done`/
