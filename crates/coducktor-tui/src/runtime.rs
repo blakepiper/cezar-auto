@@ -159,6 +159,9 @@ struct SettingsSnapshot {
 
 #[allow(clippy::large_enum_variant)]
 enum BackgroundResult {
+    /// A completion that only touches UI state. The engine operation has already finished on a
+    /// bounded native worker; applying this closure is deliberately tiny and frame-local.
+    AppUpdate(Box<dyn FnOnce(&mut App) + Send>),
     StartRun {
         project: String,
         result: Result<coducktor_contract::CreateRunResponse, coducktor_client::EngineError>,
@@ -676,43 +679,79 @@ async fn execute_pending(
                 archived,
             } => {
                 let scope = Scope::Project(project.clone());
-                match engine.archive_run(&scope, &id, archived).await {
-                    Ok(run) => {
-                        app.apply_workspace_event(WorkspaceEvent::Run { project, run });
-                        queue_global_index_refresh(app);
-                    }
-                    Err(error) => app.notice = Some(format!("archive failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.archive_run(&scope, &id, archived).await },
+                    move |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(run) => {
+                                app.apply_workspace_event(WorkspaceEvent::Run { project, run });
+                                queue_global_index_refresh(app);
+                            }
+                            Err(error) => app.notice = Some(format!("archive failed: {error}")),
+                        }))
+                    },
+                );
             }
             PendingAction::Delete { project, id } => {
                 let scope = Scope::Project(project.clone());
-                match engine.delete_run(&scope, &id).await {
-                    Ok(_) => {
-                        app.apply_workspace_event(WorkspaceEvent::RunDeleted { project, id });
-                        queue_global_index_refresh(app);
-                    }
-                    Err(error) => app.notice = Some(format!("delete failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                let id_for_task = id.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.delete_run(&scope, &id_for_task).await },
+                    move |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(_) => {
+                                app.apply_workspace_event(WorkspaceEvent::RunDeleted {
+                                    project,
+                                    id,
+                                });
+                                queue_global_index_refresh(app);
+                            }
+                            Err(error) => app.notice = Some(format!("delete failed: {error}")),
+                        }))
+                    },
+                );
             }
             PendingAction::Read { project, id } => {
                 let scope = Scope::Project(project.clone());
-                match engine.read_run(&scope, &id).await {
-                    Ok(run) => {
-                        app.apply_workspace_event(WorkspaceEvent::Run { project, run });
-                        queue_global_index_refresh(app);
-                    }
-                    Err(error) => app.notice = Some(format!("mark read failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.read_run(&scope, &id).await },
+                    move |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(run) => {
+                                app.apply_workspace_event(WorkspaceEvent::Run { project, run });
+                                queue_global_index_refresh(app);
+                            }
+                            Err(error) => app.notice = Some(format!("mark read failed: {error}")),
+                        }))
+                    },
+                );
             }
             PendingAction::Unread { project, id } => {
                 let scope = Scope::Project(project.clone());
-                match engine.unread_run(&scope, &id).await {
-                    Ok(run) => {
-                        app.apply_workspace_event(WorkspaceEvent::Run { project, run });
-                        queue_global_index_refresh(app);
-                    }
-                    Err(error) => app.notice = Some(format!("mark unread failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.unread_run(&scope, &id).await },
+                    move |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(run) => {
+                                app.apply_workspace_event(WorkspaceEvent::Run { project, run });
+                                queue_global_index_refresh(app);
+                            }
+                            Err(error) => app.notice = Some(format!("mark unread failed: {error}")),
+                        }))
+                    },
+                );
             }
             PendingAction::RefreshTasks { project } => {
                 let scope = Scope::Project(project.clone());
@@ -794,32 +833,48 @@ async fn execute_pending(
                 let input = coducktor_contract::SetScratchpadInput {
                     content: String::new(),
                 };
-                match engine.put_scratchpad(&scope, &input).await {
-                    Ok(_) if app.scratchpad_ui.project == project => {
-                        app.scratchpad_ui.loaded = true;
-                        app.scratchpad_ui.saving = false;
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        app.scratchpad_ui.saving = false;
-                        app.notice = Some(format!("clear scratchpad failed: {error}"));
-                    }
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.put_scratchpad(&scope, &input).await },
+                    move |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(_) if app.scratchpad_ui.project == project => {
+                                app.scratchpad_ui.loaded = true;
+                                app.scratchpad_ui.saving = false;
+                            }
+                            Ok(_) => {}
+                            Err(error) => {
+                                app.scratchpad_ui.saving = false;
+                                app.notice = Some(format!("clear scratchpad failed: {error}"));
+                            }
+                        }))
+                    },
+                );
             }
             PendingAction::SaveScratchpad { project, content } => {
                 let scope = Scope::Project(project.clone());
                 let input = coducktor_contract::SetScratchpadInput { content };
-                match engine.put_scratchpad(&scope, &input).await {
-                    Ok(_) if app.scratchpad_ui.project == project => {
-                        app.scratchpad_ui.loaded = true;
-                        app.scratchpad_ui.saving = false;
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        app.scratchpad_ui.saving = false;
-                        app.notice = Some(format!("save scratchpad failed: {error}"));
-                    }
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.put_scratchpad(&scope, &input).await },
+                    move |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(_) if app.scratchpad_ui.project == project => {
+                                app.scratchpad_ui.loaded = true;
+                                app.scratchpad_ui.saving = false;
+                            }
+                            Ok(_) => {}
+                            Err(error) => {
+                                app.scratchpad_ui.saving = false;
+                                app.notice = Some(format!("save scratchpad failed: {error}"));
+                            }
+                        }))
+                    },
+                );
             }
             PendingAction::RefreshModels { runner } => {
                 let engine_for_task = engine.clone();
@@ -832,12 +887,20 @@ async fn execute_pending(
             }
             PendingAction::PutUiState { project, state } => {
                 let scope = Scope::Project(project.clone());
-                match engine.put_ui_state(&scope, &state).await {
-                    Ok(state) => {
-                        app.new_task_ui.data.ui_state = Some(state);
-                    }
-                    Err(error) => app.notice = Some(format!("ui-state write failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.put_ui_state(&scope, &state).await },
+                    move |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(state) => app.new_task_ui.data.ui_state = Some(state),
+                            Err(error) => {
+                                app.notice = Some(format!("ui-state write failed: {error}"))
+                            }
+                        }))
+                    },
+                );
             }
             PendingAction::SetBaseBranch {
                 project,
@@ -1821,6 +1884,7 @@ fn drain_background_results(
             break;
         };
         match result {
+            BackgroundResult::AppUpdate(update) => update(app),
             BackgroundResult::StartRun { project, result } => {
                 apply_started_run(app, project, result, starts_in_flight);
             }
