@@ -57,6 +57,27 @@ fn fixture_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures")
 }
 
+#[test]
+fn capability_matrix_references_every_normalized_runner() {
+    let matrix = fs::read_to_string(fixture_root().join("CAPABILITY_MATRIX.md"))
+        .expect("capability matrix must be checked in");
+    for runner in ["Codex", "Claude", "OpenCode", "pi"] {
+        assert!(matrix.contains(runner), "matrix must cover {runner}");
+    }
+    for fixture in [
+        "text-turn",
+        "command-lifecycle",
+        "bash-and-screenshot",
+        "tool-lifecycle",
+        "rpc-lifecycle",
+    ] {
+        assert!(
+            matrix.contains(fixture),
+            "matrix must link fixture {fixture}"
+        );
+    }
+}
+
 fn replay_claude(name: &str) -> Vec<UiEvent> {
     let path = fixture_root().join("claude").join(format!("{name}.ndjson"));
     let raw = fs::read_to_string(path).expect("fixture must be readable");
