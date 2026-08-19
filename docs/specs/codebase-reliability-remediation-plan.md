@@ -47,6 +47,8 @@ the larger coordinator rewrite:
   registry entry, rather than panicking on the internal result path.
 - repository defaults now use a direct contract-value mapping and a safe all-default fallback,
   removing serialization and validation panics from config startup.
+- workspace config serialization now writes its closed enum vocabulary directly, removing the
+  remaining serialization panic paths while retaining the established wire spellings.
 
 The critical coordinator work is not complete. Provider turns still need to move out of the
 project-manager critical section into bounded per-run workers before same-project parallelism and

@@ -41,6 +41,63 @@ pub fn is_valid_slug(value: &str) -> bool {
 /// to.
 pub const PROVIDER_IDS: [Runner; 4] = [Runner::Claude, Runner::Codex, Runner::OpenCode, Runner::Pi];
 
+fn runner_value(runner: Runner) -> Value {
+    Value::String(
+        match runner {
+            Runner::Claude => "claude",
+            Runner::Codex => "codex",
+            Runner::OpenCode => "opencode",
+            Runner::Pi => "pi",
+        }
+        .to_owned(),
+    )
+}
+
+fn runner_selection_value(runner: RunnerSelection) -> Value {
+    Value::String(
+        match runner {
+            RunnerSelection::Claude => "claude",
+            RunnerSelection::Codex => "codex",
+            RunnerSelection::OpenCode => "opencode",
+            RunnerSelection::Pi => "pi",
+            RunnerSelection::Auto => "auto",
+        }
+        .to_owned(),
+    )
+}
+
+fn quota_provider_value(provider: QuotaProvider) -> Value {
+    Value::String(
+        match provider {
+            QuotaProvider::Claude => "claude",
+            QuotaProvider::Codex => "codex",
+            QuotaProvider::OpenCode => "opencode",
+        }
+        .to_owned(),
+    )
+}
+
+fn unknown_usage_policy_value(policy: UnknownUsagePolicy) -> Value {
+    Value::String(
+        match policy {
+            UnknownUsagePolicy::AllowWithPenalty => "allow_with_penalty",
+            UnknownUsagePolicy::Exclude => "exclude",
+        }
+        .to_owned(),
+    )
+}
+
+fn quality_preference_value(preference: QualityPreference) -> Value {
+    Value::String(
+        match preference {
+            QualityPreference::Economy => "economy",
+            QualityPreference::Balanced => "balanced",
+            QualityPreference::Best => "best",
+        }
+        .to_owned(),
+    )
+}
+
 /// One registry entry. `id` and
 /// `root` are load-bearing — an entry missing either is dropped by the caller's
 /// per-entry salvage; every other field degrades to its own default in place.
@@ -417,9 +474,7 @@ impl AgentDefaults {
                 (
                     "runner",
                     self.runner
-                        .map(|r| {
-                            serde_json::to_value(r).expect("RunnerSelection always serializes")
-                        })
+                        .map(runner_selection_value)
                         .unwrap_or(Value::Null),
                 ),
                 (
@@ -713,9 +768,7 @@ impl QuotaRouting {
                     Value::from(
                         self.provider_order
                             .iter()
-                            .map(|p| {
-                                serde_json::to_value(p).expect("QuotaProvider always serializes")
-                            })
+                            .map(|p| quota_provider_value(*p))
                             .collect::<Vec<_>>(),
                     ),
                 ),
@@ -730,13 +783,11 @@ impl QuotaRouting {
                 ),
                 (
                     "qualityPreference",
-                    serde_json::to_value(self.quality_preference)
-                        .unwrap_or_else(|_| Value::String("balanced".to_owned())),
+                    quality_preference_value(self.quality_preference),
                 ),
                 (
                     "unknownUsagePolicy",
-                    serde_json::to_value(self.unknown_usage_policy)
-                        .expect("UnknownUsagePolicy always serializes"),
+                    unknown_usage_policy_value(self.unknown_usage_policy),
                 ),
                 (
                     "maxAutoAttemptsPerGeneration",
@@ -850,7 +901,7 @@ impl WorkspaceConfig {
                     Value::from(
                         self.disabled_providers
                             .iter()
-                            .map(|p| serde_json::to_value(p).expect("Runner always serializes"))
+                            .map(|p| runner_value(*p))
                             .collect::<Vec<_>>(),
                     ),
                 ),
