@@ -42,6 +42,14 @@ rl.on('line', (line) => {
     emit(msg.result.decision === 'accept'
       ? { method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } }
       : { method: 'turn/failed', params: { turn: { id: 'turn_mock_1', status: 'failed' }, error: { message: 'approval declined' } } });
+  } else if (msg.id === 'elicitation-1') {
+    emit(msg.result?.action === 'decline'
+      ? { method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } }
+      : { method: 'turn/failed', params: { turn: { id: 'turn_mock_1', status: 'failed' }, error: { message: 'elicitation was not declined' } } });
+  } else if (msg.id === 'unknown-request-1') {
+    emit(msg.error?.code === -32601
+      ? { method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } }
+      : { method: 'turn/failed', params: { turn: { id: 'turn_mock_1', status: 'failed' }, error: { message: 'unknown request was not declined' } } });
   } else if (msg.method === 'initialize') {
     emit({ id: msg.id, result: { userAgent: 'mock-codex/0.0.0' } });
   } else if (msg.method === 'thread/start' || msg.method === 'thread/resume') {
@@ -116,6 +124,18 @@ rl.on('line', (line) => {
       emit({ id: 'approval-1', method: 'item/commandExecution/requestApproval', params: {
         threadId: 'th_mock_1', turnId: 'turn_mock_1', itemId: 'item_command_1',
         command: 'cargo test', reason: 'run the test suite', startedAtMs: Date.now(),
+      } });
+      return;
+    }
+    if (turnText.includes('mock:elicitation')) {
+      emit({ id: 'elicitation-1', method: 'mcpServer/elicitation/request', params: {
+        message: 'Enter a secret token', requestedSchema: { type: 'object' },
+      } });
+      return;
+    }
+    if (turnText.includes('mock:unknown-request')) {
+      emit({ id: 'unknown-request-1', method: 'item/terminalInteraction/request', params: {
+        threadId: 'th_mock_1', turnId: 'turn_mock_1', itemId: 'terminal_1',
       } });
       return;
     }
