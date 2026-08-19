@@ -180,6 +180,8 @@ Evidence:
   a completion after leaving that project.
 - Skills, workflow catalog, and workflow-palette skill reads now follow the same background,
   project-guarded completion model.
+- Settings agent-config file reads now carry the selected file ID through the background result,
+  preventing a slower earlier selection from opening the wrong editor.
 - Exact queued duplicates of the safe task/index/new-task/model refreshes coalesce before a frame;
   mutations retain their original FIFO order and are never collapsed.
 

@@ -171,6 +171,9 @@ pub struct SettingsUi {
     pub worktrees: Option<WorktreesResponse>,
 
     pub open_file: Option<AgentConfigFileContent>,
+    /// File ID for the in-flight config-file read. It makes a fast selection change a
+    /// route-derived request key, so an older completion cannot open the wrong file.
+    pub loading_file: Option<String>,
     pub file_editing: bool,
     pub file_editor: Editor,
     pub file_highlighter: Highlighter,
@@ -200,6 +203,7 @@ impl Default for SettingsUi {
             agent_profiles: None,
             worktrees: None,
             open_file: None,
+            loading_file: None,
             file_editing: false,
             file_editor: Editor::default(),
             file_highlighter: Highlighter::new(true),
@@ -219,6 +223,7 @@ pub fn open(app: &mut App, project: &str) {
     app.settings_ui.section = 0;
     app.settings_ui.row = 0;
     app.settings_ui.edit = None;
+    app.settings_ui.loading_file = None;
     app.settings_ui.file_editing = false;
     app.request_navigate(Route::Settings {
         project: project.to_owned(),

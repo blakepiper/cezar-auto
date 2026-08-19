@@ -300,6 +300,11 @@ enum BackgroundResult {
         project: String,
         result: Result<Vec<coducktor_contract::Skill>, coducktor_client::EngineError>,
     },
+    LoadSettingsConfigFile {
+        project: String,
+        id: String,
+        result: Result<coducktor_contract::AgentConfigFileContent, coducktor_client::EngineError>,
+    },
     SessionMutation {
         action: SessionMutation,
         project: String,
@@ -1468,15 +1473,24 @@ async fn execute_pending(
                 }
             }
             PendingAction::SettingsLoadConfigFile { project, id } => {
-                let scope = Scope::Project(project);
-                match engine.agent_config_file(&scope, &id).await {
-                    Ok(file) => {
-                        app.settings_ui.file_editor.set_text(&file.content);
-                        app.settings_ui.open_file = Some(file);
-                        app.settings_ui.file_editing = true;
-                    }
-                    Err(error) => app.notice = Some(format!("agent config: {error}")),
-                }
+                let scope = Scope::Project(project.clone());
+                app.settings_ui.loading_file = Some(id.clone());
+                let engine_for_task = engine.clone();
+                let id_for_task = id.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move {
+                        engine_for_task
+                            .agent_config_file(&scope, &id_for_task)
+                            .await
+                    },
+                    move |result| BackgroundResult::LoadSettingsConfigFile {
+                        project,
+                        id,
+                        result,
+                    },
+                );
             }
             PendingAction::SettingsPutConfigFile {
                 project,
@@ -2129,6 +2143,29 @@ fn drain_background_results(
                 match result {
                     Ok(skills) => app.workflows_ui.palette_skills = skills,
                     Err(error) => app.notice = Some(format!("load skills failed: {error}")),
+                }
+            }
+            BackgroundResult::LoadSettingsConfigFile {
+                project,
+                id,
+                result,
+            } => {
+                if !matches!(
+                    app.route(),
+                    app::Route::Settings { project: route_project } if route_project == &project
+                ) || app.settings_ui.project != project
+                    || app.settings_ui.loading_file.as_deref() != Some(id.as_str())
+                {
+                    continue;
+                }
+                app.settings_ui.loading_file = None;
+                match result {
+                    Ok(file) => {
+                        app.settings_ui.file_editor.set_text(&file.content);
+                        app.settings_ui.open_file = Some(file);
+                        app.settings_ui.file_editing = true;
+                    }
+                    Err(error) => app.notice = Some(format!("agent config: {error}")),
                 }
             }
             BackgroundResult::SessionMutation {
@@ -2916,6 +2953,34 @@ mod tests {
         drain_background_results(&receiver, &mut app, &mut starts_in_flight);
 
         assert!(app.skills_ui.skills.is_empty());
+    }
+
+    #[test]
+    fn stale_agent_config_load_does_not_open_the_wrong_file() {
+        let (sender, receiver) = channel();
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        screens::settings::open(&mut app, "main");
+        app.settings_ui.loading_file = Some("current".to_owned());
+        let mut starts_in_flight = HashSet::new();
+
+        sender
+            .send(BackgroundResult::LoadSettingsConfigFile {
+                project: "main".to_owned(),
+                id: "old".to_owned(),
+                result: Ok(coducktor_contract::AgentConfigFileContent {
+                    id: "old".to_owned(),
+                    path: ".agent/old.json".to_owned(),
+                    exists: true,
+                    content: "stale".to_owned(),
+                    version: Some("1".to_owned()),
+                }),
+            })
+            .unwrap();
+
+        drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+
+        assert!(app.settings_ui.open_file.is_none());
+        assert_eq!(app.settings_ui.loading_file.as_deref(), Some("current"));
     }
 
     #[tokio::test]
