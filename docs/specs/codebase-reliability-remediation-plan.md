@@ -65,6 +65,8 @@ the larger coordinator rewrite:
   session fallback without a second invariant-based unwrap.
 - Codex permission-profile approvals now park behind the existing durable permission flow and can
   grant only the exact bounded permission subset requested by the app server.
+- Unsupported Codex dynamic-tool calls now receive the protocol's explicit failed result shape,
+  so experimental provider tools cannot wait indefinitely for a nonexistent host.
 
 The critical coordinator work is not complete. Provider turns still need to move out of the
 project-manager critical section into bounded per-run workers before same-project parallelism and
@@ -338,8 +340,9 @@ Evidence:
 
 - Codex handles command, file-change, and permission-profile approvals through the durable
   permission flow. Permission-profile grants are limited to the exact requested object and a
-  16 KiB bound; malformed forms are declined. Unsupported MCP elicitations and every other
-  client-directed request receive explicit non-hanging declines.
+  16 KiB bound; malformed forms are declined. Unsupported MCP elicitations and dynamic-tool calls
+  receive their required explicit decline shapes; every other client-directed request receives a
+  non-hanging JSON-RPC error.
 - the schema also exposes dynamic tool, MCP progress, terminal-interaction, and richer item shapes.
   The generic tool fallback retains some JSON, but parity fixtures do not prove these current
   shapes remain usable.

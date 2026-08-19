@@ -637,6 +637,22 @@ impl CodexSession {
                 continue;
             }
 
+            if method == "item/tool/call"
+                && let Some(id) = id.clone()
+            {
+                self.write_response(id, json!({ "contentItems": [], "success": false }))?;
+                on_event(
+                    EventInput::new("error")
+                        .field(
+                            "message",
+                            "Codex dynamic tool call was declined because dynamic tools are not supported",
+                        )
+                        .field("fatal", false),
+                )
+                .map_err(|error| error.to_string())?;
+                continue;
+            }
+
             let params = msg.get("params").cloned().unwrap_or(Value::Null);
             // A sub-agent child thread's turn lifecycle must reach neither channel (#600): a
             // spawned skill's own turn/completed would otherwise end OUR turn. Item events still
@@ -1390,6 +1406,25 @@ mod tests {
             ),
             "{resumed:?}"
         );
+        session.finish(&mut |_| Ok(())).unwrap();
+    }
+
+    #[test]
+    fn dynamic_tool_calls_are_declined_with_the_expected_result_shape() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = node_config();
+        let run_spec = spec_for(dir.path(), "mock:dynamic-tool");
+        let mut session = open_codex_session(&config, run_spec, &BTreeMap::new()).unwrap();
+        let (outcome, events) = run_turn(&mut session);
+
+        assert!(outcome.is_ok());
+        assert!(events.iter().any(|event| {
+            event.event_type == "error"
+                && event.extra.get("message").and_then(Value::as_str)
+                    == Some(
+                        "Codex dynamic tool call was declined because dynamic tools are not supported",
+                    )
+        }));
         session.finish(&mut |_| Ok(())).unwrap();
     }
 

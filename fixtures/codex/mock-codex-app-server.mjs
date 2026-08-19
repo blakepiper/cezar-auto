@@ -47,6 +47,10 @@ rl.on('line', (line) => {
     emit(Array.isArray(write) && write[0] === '/repo' && msg.result.scope === 'session'
       ? { method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } }
       : { method: 'turn/failed', params: { turn: { id: 'turn_mock_1', status: 'failed' }, error: { message: 'permissions were not granted exactly' } } });
+  } else if (msg.id === 'dynamic-tool-1' && msg.result) {
+    emit(msg.result.success === false && Array.isArray(msg.result.contentItems) && msg.result.contentItems.length === 0
+      ? { method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } }
+      : { method: 'turn/failed', params: { turn: { id: 'turn_mock_1', status: 'failed' }, error: { message: 'dynamic tool was not declined' } } });
   } else if (msg.id === 'elicitation-1') {
     emit(msg.result?.action === 'decline'
       ? { method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } }
@@ -136,6 +140,13 @@ rl.on('line', (line) => {
       emit({ id: 'permissions-1', method: 'item/permissions/requestApproval', params: {
         threadId: 'th_mock_1', turnId: 'turn_mock_1',
         permissions: { fileSystem: { write: ['/repo'] } },
+      } });
+      return;
+    }
+    if (turnText.includes('mock:dynamic-tool')) {
+      emit({ id: 'dynamic-tool-1', method: 'item/tool/call', params: {
+        threadId: 'th_mock_1', turnId: 'turn_mock_1', callId: 'call_1',
+        namespace: 'tickets', tool: 'lookup', arguments: { id: 'ABC-123' },
       } });
       return;
     }
