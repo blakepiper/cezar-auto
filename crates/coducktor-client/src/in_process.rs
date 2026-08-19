@@ -6,7 +6,7 @@
 //! converted to the contract's degraded responses so optional GitHub tools, agent CLIs, and
 //! local integrations do not prevent the application from starting.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, RwLock};
@@ -57,8 +57,9 @@ use coducktor_core::paths::{
 use coducktor_core::skills::discover_skills;
 use coducktor_core::workflows::load::{WORKFLOWS_DIR, load_workflows};
 use coducktor_core::workflows::run::{
-    CheckExecutor, CheckResult, DiffInspector, EventInput, PromptImage, RunManager, RuntimeOptions,
-    SessionFactory, StartRunInput as CoreStartRunInput, review_gate_enabled,
+    CheckExecutor, CheckResult, DiffInspector, EventInput, PromptImage, RepositoryRootLease,
+    RunManager, RuntimeOptions, SessionFactory, StartRunInput as CoreStartRunInput,
+    WorkspaceSemaphore, review_gate_enabled,
 };
 use coducktor_core::workflows::types::{parse_workflow_file_doc, steps_issue};
 use coducktor_core::workspace::agent_accounts::{
@@ -102,12 +103,162 @@ pub struct InProcessEngine {
     live_events: broadcast::Sender<EngineEvent>,
     model_catalog: Arc<Mutex<Vec<CachedModelCatalog>>>,
     usage_cache: Arc<Mutex<Option<CachedWorkspaceUsage>>>,
+    workspace_admission: SharedWorkspaceAdmission,
+    repository_leases: Arc<Mutex<BTreeMap<PathBuf, SharedRepositoryLease>>>,
 }
 
 #[derive(Clone)]
 struct ProjectManager {
     root: PathBuf,
     manager: Arc<Mutex<RunManager>>,
+}
+
+/// Process-wide workspace admission. Each manager receives a cheap clone, while the held run
+/// ids live in exactly one mutex-protected set. This keeps a lazily opened project from bypassing
+/// the workspace setting by getting its own local semaphore.
+#[derive(Clone)]
+struct SharedWorkspaceAdmission {
+    state: Arc<Mutex<WorkspaceAdmissionState>>,
+}
+
+struct WorkspaceAdmissionState {
+    max_parallel: usize,
+    holders: BTreeSet<(String, String)>,
+}
+
+impl SharedWorkspaceAdmission {
+    fn new(max_parallel: usize) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(WorkspaceAdmissionState {
+                max_parallel: max_parallel.max(1),
+                holders: BTreeSet::new(),
+            })),
+        }
+    }
+
+    fn reconfigure(&self, max_parallel: usize) {
+        if let Ok(mut state) = self.state.lock() {
+            // Existing holders intentionally remain admitted. The new ceiling applies when a
+            // future run asks for a slot.
+            state.max_parallel = max_parallel.max(1);
+        }
+    }
+}
+
+impl WorkspaceSemaphore for SharedWorkspaceAdmission {
+    fn try_acquire(&mut self, run_id: &str, project_id: &str) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        let holder = (project_id.to_owned(), run_id.to_owned());
+        if state.holders.contains(&holder) {
+            return true;
+        }
+        if state.holders.len() >= state.max_parallel {
+            return false;
+        }
+        state.holders.insert(holder);
+        true
+    }
+
+    fn release(&mut self, run_id: &str, project_id: &str) {
+        if let Ok(mut state) = self.state.lock() {
+            state
+                .holders
+                .remove(&(project_id.to_owned(), run_id.to_owned()));
+        }
+    }
+
+    fn busy_slots(&self) -> usize {
+        self.state
+            .lock()
+            .map(|state| state.holders.len())
+            .unwrap_or(0)
+    }
+
+    fn max_parallel(&self) -> usize {
+        self.state
+            .lock()
+            .map(|state| state.max_parallel)
+            .unwrap_or(0)
+    }
+}
+
+/// A per-canonical-root lease shared by every in-place manager for that checkout.
+#[derive(Clone, Default)]
+struct SharedRepositoryLease {
+    state: Arc<Mutex<RepositoryLeaseState>>,
+}
+
+#[derive(Default)]
+struct RepositoryLeaseState {
+    owner: Option<String>,
+    waiters: std::collections::VecDeque<String>,
+}
+
+impl RepositoryRootLease for SharedRepositoryLease {
+    fn try_acquire(&mut self, run_id: &str) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        if state.owner.as_deref() == Some(run_id) {
+            return true;
+        }
+        if state.owner.is_some() {
+            if !state.waiters.iter().any(|waiter| waiter == run_id) {
+                state.waiters.push_back(run_id.to_owned());
+            }
+            return false;
+        }
+        if state.waiters.front().is_some_and(|waiter| waiter != run_id) {
+            return false;
+        }
+        state.waiters.retain(|waiter| waiter != run_id);
+        state.owner = Some(run_id.to_owned());
+        true
+    }
+
+    fn release(&mut self, run_id: &str) {
+        if let Ok(mut state) = self.state.lock() {
+            if state.owner.as_deref() == Some(run_id) {
+                state.owner = None;
+            }
+            state.waiters.retain(|waiter| waiter != run_id);
+        }
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+
+    #[test]
+    fn workspace_admission_is_shared_and_reconfiguration_only_affects_new_holders() {
+        let mut first = SharedWorkspaceAdmission::new(1);
+        let mut second = first.clone();
+        assert!(first.try_acquire("run-a", "project-a"));
+        assert!(!second.try_acquire("run-b", "project-b"));
+
+        first.reconfigure(2);
+        assert!(second.try_acquire("run-b", "project-b"));
+        first.reconfigure(1);
+        // Reducing the limit never revokes a live session, but prevents the next admission.
+        assert!(!first.try_acquire("run-c", "project-c"));
+        first.release("run-a", "project-a");
+        assert!(!second.try_acquire("run-c", "project-c"));
+        second.release("run-b", "project-b");
+        assert!(first.try_acquire("run-c", "project-c"));
+    }
+
+    #[test]
+    fn repository_lease_is_shared_per_root() {
+        let mut first = SharedRepositoryLease::default();
+        let mut second = first.clone();
+        assert!(first.try_acquire("run-a"));
+        assert!(!second.try_acquire("run-b"));
+        first.release("run-a");
+        assert!(second.try_acquire("run-b"));
+    }
 }
 
 /// RunManager owns a mutable SessionFactory. Sharing the factory behind a mutex lets lazily
@@ -341,6 +492,8 @@ fn configure_production_manager(
     state_home: &Path,
     workspace: &coducktor_core::workspace::config::WorkspaceConfig,
     project_id: &str,
+    workspace_admission: SharedWorkspaceAdmission,
+    repository_lease: SharedRepositoryLease,
 ) {
     let repo = load_config(
         &repo_config_path_at(repo_root, state_home),
@@ -353,6 +506,8 @@ fn configure_production_manager(
         std::env::var("DUCK_REVIEW_GATE").ok().as_deref(),
     ));
     manager.set_intelligent_context_refresh(workspace.resources.intelligent_context_refresh);
+    manager.set_workspace_semaphore(workspace_admission);
+    manager.set_repository_lease(repository_lease);
     manager.set_check_executor(ProductionCheckExecutor);
     manager.set_diff_inspector(ProductionDiffInspector {
         repo_root: repo_root.to_path_buf(),
@@ -428,6 +583,16 @@ impl InProcessEngine {
             .unwrap_or_else(|| project_state_dir(&repo_root, &ProcessEnv));
         let config = load_workspace_config(&workspace_config_path, &ProcessEnv);
         let boot_project_id = boot_project_id(&config, &repo_root);
+        let workspace_admission =
+            SharedWorkspaceAdmission::new(config.resources.max_parallel as usize);
+        let repository_leases = Arc::new(Mutex::new(BTreeMap::new()));
+        let boot_root = repo_root
+            .canonicalize()
+            .unwrap_or_else(|_| repo_root.clone());
+        let boot_repository_lease = SharedRepositoryLease::default();
+        if let Ok(mut leases) = repository_leases.lock() {
+            leases.insert(boot_root, boot_repository_lease.clone());
+        }
         let session_factory: Arc<Mutex<Box<dyn SessionFactory>>> =
             Arc::new(Mutex::new(Box::new(session_factory)));
         let mut manager = RunManager::with_session_factory_for_repo(
@@ -445,6 +610,8 @@ impl InProcessEngine {
             &state_home,
             &config,
             &boot_project_id,
+            workspace_admission.clone(),
+            boot_repository_lease,
         );
         if let Err(error) = manager.prune_stale_runs() {
             eprintln!("coducktor: could not apply run retention: {error}");
@@ -468,6 +635,8 @@ impl InProcessEngine {
             live_events,
             model_catalog: Arc::new(Mutex::new(Vec::new())),
             usage_cache: Arc::new(Mutex::new(None)),
+            workspace_admission,
+            repository_leases,
         };
         engine.attach_manager(boot_project_id, manager, engine.repo_root.clone());
         engine
@@ -489,6 +658,14 @@ impl InProcessEngine {
         self.wire_manager(&project_id, &manager);
         if let Ok(mut managers) = self.managers.lock() {
             managers.insert(project_id, ProjectManager { root, manager });
+        }
+    }
+
+    fn repository_lease_for(&self, root: &Path) -> SharedRepositoryLease {
+        let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        match self.repository_leases.lock() {
+            Ok(mut leases) => leases.entry(canonical).or_default().clone(),
+            Err(_) => SharedRepositoryLease::default(),
         }
     }
 
@@ -599,7 +776,15 @@ impl InProcessEngine {
             },
         );
         manager.set_project_id(project_id.clone());
-        configure_production_manager(&mut manager, &root, &self.state_home, &config, &project_id);
+        configure_production_manager(
+            &mut manager,
+            &root,
+            &self.state_home,
+            &config,
+            &project_id,
+            self.workspace_admission.clone(),
+            self.repository_lease_for(&root),
+        );
         if let Err(error) = manager.prune_stale_runs() {
             eprintln!("coducktor: could not apply run retention: {error}");
         }
@@ -622,6 +807,8 @@ impl InProcessEngine {
         &self,
         workspace: &coducktor_core::workspace::config::WorkspaceConfig,
     ) -> Result<(), EngineError> {
+        self.workspace_admission
+            .reconfigure(workspace.resources.max_parallel as usize);
         let managers = self.managers.lock().map_err(|_| lock_err())?;
         for (project_id, entry) in managers.iter() {
             let mut manager = entry.manager.lock().map_err(|_| lock_err())?;
@@ -631,6 +818,8 @@ impl InProcessEngine {
                 &self.state_home,
                 workspace,
                 project_id,
+                self.workspace_admission.clone(),
+                self.repository_lease_for(&entry.root),
             );
         }
         Ok(())
@@ -659,6 +848,8 @@ impl InProcessEngine {
             live_events: self.live_events.clone(),
             model_catalog: self.model_catalog.clone(),
             usage_cache: self.usage_cache.clone(),
+            workspace_admission: self.workspace_admission.clone(),
+            repository_leases: self.repository_leases.clone(),
         })
     }
 

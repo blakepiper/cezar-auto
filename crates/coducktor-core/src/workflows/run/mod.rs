@@ -2025,7 +2025,14 @@ impl RunManager {
                 self.workspace_holds.insert(run_id.to_owned());
             }
         }
-        if !self.repository_holds.contains(run_id) {
+        // A worktree has an independent checkout, so it must not be serialized with another
+        // worktree (or an in-place run) merely because both came from the same repository. The
+        // integration layer still installs the root lease for in-place runs, whose checkout is
+        // shared and therefore unsafe to mutate concurrently.
+        let needs_repository_lease = self
+            .get_run(run_id)
+            .is_none_or(|run| run.worktree_path.is_none());
+        if needs_repository_lease && !self.repository_holds.contains(run_id) {
             let acquired = self
                 .repository_lease
                 .as_mut()
