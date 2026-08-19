@@ -2,10 +2,12 @@
 //! Notifications, and a
 //! terminal-title update via `OSC 0` (`crossterm::terminal::SetTitle`) that is always on —
 //! the same way a favicon badge never asks permission. Both are best-effort: a missing
-//! notification daemon or a terminal that ignores title escapes must never crash or block
-//! the render loop.
+//! notification daemon, sound player, or terminal that ignores title escapes must never crash
+//! or block the render loop.
 
 use std::io::{Write, stdout};
+#[cfg(unix)]
+use std::process::{Command, Stdio};
 
 use crossterm::execute;
 use crossterm::terminal::SetTitle;
@@ -27,16 +29,50 @@ pub fn notify(enabled: bool, summary: &str, body: &str) {
         .show();
 }
 
-/// Ring the user's terminal bell, if notifications are enabled.
+/// Play the platform's task-complete sound, if notifications are enabled.
 ///
-/// This deliberately uses the terminal's native bell instead of adding an audio playback
-/// dependency. Terminals may choose their own sound, visual bell, or silence it entirely.
-pub fn bell(enabled: bool) {
-    if enabled {
-        let mut output = stdout();
-        let _ = output.write_all(b"\x07");
-        let _ = output.flush();
+/// Terminal bells are commonly disabled or configured as visual-only. Use the platform's
+/// event-sound player instead, reaping it on a short-lived background thread so playback never
+/// blocks the render loop. If a player is unavailable, retain the terminal bell as a best-effort
+/// fallback.
+pub fn play_sound(enabled: bool) {
+    if !enabled {
+        return;
     }
+
+    #[cfg(unix)]
+    {
+        let (program, args) = sound_command();
+        let child = Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        if let Ok(mut child) = child {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            return;
+        }
+    }
+
+    let mut output = stdout();
+    let _ = output.write_all(b"\x07");
+    let _ = output.flush();
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn sound_command() -> (&'static str, &'static [&'static str]) {
+    (
+        "canberra-gtk-play",
+        &["--id=complete", "--description=coducktor"],
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn sound_command() -> (&'static str, &'static [&'static str]) {
+    ("/usr/bin/afplay", &["/System/Library/Sounds/Glass.aiff"])
 }
 
 /// The always-on title, reflecting how many of the current project's tasks need the user —
@@ -46,5 +82,32 @@ pub fn title_for(needs_you: usize) -> String {
         "coducktor".to_owned()
     } else {
         format!("coducktor · {needs_you} needs you")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn completion_sound_uses_the_freedesktop_event_player() {
+        assert_eq!(
+            super::sound_command(),
+            (
+                "canberra-gtk-play",
+                ["--id=complete", "--description=coducktor"].as_slice()
+            )
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn completion_sound_uses_the_system_player() {
+        assert_eq!(
+            super::sound_command(),
+            (
+                "/usr/bin/afplay",
+                ["/System/Library/Sounds/Glass.aiff"].as_slice()
+            )
+        );
     }
 }

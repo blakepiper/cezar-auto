@@ -2075,7 +2075,7 @@ async fn run(
         }
         for (summary, body) in app.take_pending_notifications() {
             coducktor_tui::notify::notify(app.notifications_enabled, &summary, &body);
-            coducktor_tui::notify::bell(app.notifications_enabled);
+            coducktor_tui::notify::play_sound(app.notifications_enabled);
         }
         let needs_you = app.needs_you_count();
         if needs_you != last_needs_you {
