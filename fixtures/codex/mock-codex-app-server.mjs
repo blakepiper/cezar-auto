@@ -42,6 +42,11 @@ rl.on('line', (line) => {
     emit(msg.result.decision === 'accept'
       ? { method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } }
       : { method: 'turn/failed', params: { turn: { id: 'turn_mock_1', status: 'failed' }, error: { message: 'approval declined' } } });
+  } else if (msg.id === 'permissions-1' && msg.result) {
+    const write = msg.result.permissions?.fileSystem?.write;
+    emit(Array.isArray(write) && write[0] === '/repo' && msg.result.scope === 'session'
+      ? { method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } }
+      : { method: 'turn/failed', params: { turn: { id: 'turn_mock_1', status: 'failed' }, error: { message: 'permissions were not granted exactly' } } });
   } else if (msg.id === 'elicitation-1') {
     emit(msg.result?.action === 'decline'
       ? { method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } }
@@ -124,6 +129,13 @@ rl.on('line', (line) => {
       emit({ id: 'approval-1', method: 'item/commandExecution/requestApproval', params: {
         threadId: 'th_mock_1', turnId: 'turn_mock_1', itemId: 'item_command_1',
         command: 'cargo test', reason: 'run the test suite', startedAtMs: Date.now(),
+      } });
+      return;
+    }
+    if (turnText.includes('mock:permissions-approval')) {
+      emit({ id: 'permissions-1', method: 'item/permissions/requestApproval', params: {
+        threadId: 'th_mock_1', turnId: 'turn_mock_1',
+        permissions: { fileSystem: { write: ['/repo'] } },
       } });
       return;
     }

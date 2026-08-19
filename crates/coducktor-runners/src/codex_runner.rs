@@ -130,12 +130,14 @@ struct PendingUserInput {
 enum ApprovalKind {
     Command,
     FileChange,
+    Permissions,
 }
 
 struct PendingApproval {
     rpc_id: Value,
     request_id: String,
     kind: ApprovalKind,
+    requested_permissions: Option<Value>,
 }
 
 /// A live `codex app-server` session driving a single thread. Implements [`AgentSession`].
@@ -382,6 +384,7 @@ fn approval_request(
     let kind = match method {
         "item/commandExecution/requestApproval" => ApprovalKind::Command,
         "item/fileChange/requestApproval" => ApprovalKind::FileChange,
+        "item/permissions/requestApproval" => ApprovalKind::Permissions,
         _ => return None,
     };
     let request_id = rpc_id
@@ -389,6 +392,16 @@ fn approval_request(
         .map(ToOwned::to_owned)
         .or_else(|| rpc_id.as_u64().map(|id| id.to_string()))?;
     let item_id = params.get("itemId").and_then(Value::as_str);
+    let requested_permissions = match kind {
+        ApprovalKind::Permissions => {
+            let permissions = params.get("permissions")?.clone();
+            if !permissions.is_object() || permissions.to_string().len() > 16 * 1024 {
+                return None;
+            }
+            Some(permissions)
+        }
+        ApprovalKind::Command | ApprovalKind::FileChange => None,
+    };
     let subject = match kind {
         ApprovalKind::Command => params
             .get("command")
@@ -400,11 +413,13 @@ fn approval_request(
             .and_then(Value::as_str)
             .filter(|reason| !reason.trim().is_empty())
             .unwrap_or("Apply the requested file change"),
+        ApprovalKind::Permissions => "Grant the requested additional permissions",
     };
     let subject: String = subject.chars().take(300).collect();
     let title = match kind {
         ApprovalKind::Command => format!("Allow command: {subject}?"),
         ApprovalKind::FileChange => format!("Allow file change: {subject}?"),
+        ApprovalKind::Permissions => format!("Allow additional permissions: {subject}?"),
     };
     let event = EventInput::new("permission.requested")
         .field("requestId", &request_id)
@@ -423,12 +438,13 @@ fn approval_request(
             rpc_id,
             request_id,
             kind,
+            requested_permissions,
         },
         event,
     ))
 }
 
-fn approval_response(kind: ApprovalKind, text: &str) -> (&'static str, Value) {
+fn approval_response(pending: &PendingApproval, text: &str) -> (&'static str, Value) {
     let normalized = text.trim().to_ascii_lowercase();
     let (option_id, decision) =
         if normalized.contains("allow session") || normalized.contains("allow always") {
@@ -438,8 +454,23 @@ fn approval_response(kind: ApprovalKind, text: &str) -> (&'static str, Value) {
         } else {
             ("reject_once", "decline")
         };
-    let response = match kind {
+    let response = match pending.kind {
         ApprovalKind::Command | ApprovalKind::FileChange => json!({"decision": decision}),
+        ApprovalKind::Permissions => {
+            let permissions = if option_id == "reject_once" {
+                json!({})
+            } else {
+                pending
+                    .requested_permissions
+                    .clone()
+                    .unwrap_or_else(|| json!({}))
+            };
+            let mut response = json!({"permissions": permissions});
+            if option_id == "allow_session" {
+                response["scope"] = Value::String("session".to_owned());
+            }
+            response
+        }
     };
     (option_id, response)
 }
@@ -566,7 +597,7 @@ impl CodexSession {
                     self.pending_approval = Some(pending);
                     return Ok(StopReason::UserInputRequested);
                 }
-                let (_, response) = approval_response(pending.kind, "reject");
+                let (_, response) = approval_response(&pending, "reject");
                 self.write_response(pending.rpc_id, response)?;
                 continue;
             }
@@ -1027,7 +1058,7 @@ impl AgentSession for CodexSession {
             let answers = user_input_answers(&pending.questions, prompt);
             self.write_response(pending.rpc_id, json!({ "answers": answers }))?;
         } else if let Some(pending) = self.pending_approval.take() {
-            let (option_id, response) = approval_response(pending.kind, prompt);
+            let (option_id, response) = approval_response(&pending, prompt);
             self.write_response(pending.rpc_id, response)?;
             on_event(
                 EventInput::new("permission.resolved")
@@ -1162,18 +1193,18 @@ mod tests {
             Some("Allow command: cargo test?")
         );
         assert_eq!(
-            approval_response(ApprovalKind::Command, "Permission: Allow once").1,
+            approval_response(&pending, "Permission: Allow once").1,
             json!({"decision":"accept"})
         );
         assert_eq!(
-            approval_response(ApprovalKind::Command, "yes please").1,
+            approval_response(&pending, "yes please").1,
             json!({"decision":"decline"})
         );
     }
 
     #[test]
     fn file_approval_supports_session_scope() {
-        let (_, event) = approval_request(
+        let (pending, event) = approval_request(
             "item/fileChange/requestApproval",
             json!("approval-1"),
             &json!({"itemId":"item-2","reason":"write outside the workspace"}),
@@ -1184,8 +1215,30 @@ mod tests {
             Some("approval-1")
         );
         assert_eq!(
-            approval_response(ApprovalKind::FileChange, "Permission: Allow session").1,
+            approval_response(&pending, "Permission: Allow session").1,
             json!({"decision":"acceptForSession"})
+        );
+    }
+
+    #[test]
+    fn permission_profile_approval_only_grants_the_requested_subset() {
+        let (pending, event) = approval_request(
+            "item/permissions/requestApproval",
+            json!("permissions-1"),
+            &json!({"permissions":{"fileSystem":{"write":["/repo"]}}}),
+        )
+        .unwrap();
+        assert_eq!(
+            event.extra.get("title").and_then(Value::as_str),
+            Some("Allow additional permissions: Grant the requested additional permissions?")
+        );
+        assert_eq!(
+            approval_response(&pending, "Permission: Allow session").1,
+            json!({"scope":"session","permissions":{"fileSystem":{"write":["/repo"]}}})
+        );
+        assert_eq!(
+            approval_response(&pending, "reject").1,
+            json!({"permissions":{}})
         );
     }
 
@@ -1309,6 +1362,34 @@ mod tests {
                 && event.extra.get("message").and_then(Value::as_str)
                     == Some("Codex MCP elicitation was declined because its form is not supported")
         }));
+        session.finish(&mut |_| Ok(())).unwrap();
+    }
+
+    #[test]
+    fn permission_profile_approval_parks_and_grants_only_the_requested_subset() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = node_config();
+        let run_spec = spec_for(dir.path(), "mock:permissions-approval");
+        let mut env = BTreeMap::new();
+        env.insert("DUCK_APPROVAL_GATE".to_owned(), "1".to_owned());
+        let mut session = open_codex_session(&config, run_spec, &env).unwrap();
+        let (outcome, events) = run_turn(&mut session);
+        assert!(matches!(outcome, Ok(SessionOutcome::Waiting(_))));
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == "permission.requested")
+        );
+        let resumed = session
+            .send_message("Permission: Allow session", &[], &mut |_| Ok(()))
+            .unwrap();
+        assert!(
+            matches!(
+                resumed,
+                SessionOutcome::Waiting(_) | SessionOutcome::Completed(_)
+            ),
+            "{resumed:?}"
+        );
         session.finish(&mut |_| Ok(())).unwrap();
     }
 

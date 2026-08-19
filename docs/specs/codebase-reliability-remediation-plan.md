@@ -63,6 +63,8 @@ the larger coordinator rewrite:
   behavior when unavailable, instead of panicking during a provider turn.
 - Codex resume setup now binds the already-validated session ID directly, preserving the fresh
   session fallback without a second invariant-based unwrap.
+- Codex permission-profile approvals now park behind the existing durable permission flow and can
+  grant only the exact bounded permission subset requested by the app server.
 
 The critical coordinator work is not complete. Provider turns still need to move out of the
 project-manager critical section into bounded per-run workers before same-project parallelism and
@@ -330,20 +332,18 @@ Acceptance:
 - A table-driven conformance suite proves each contract/Settings field has a production consumer
   or an explicit unavailable state.
 
-### R8 — Runner protocol coverage has drifted behind installed CLIs (high)
+### R8 — Runner protocol coverage has drifted behind installed CLIs (high; partially implemented)
 
 Evidence:
 
-- the Codex 0.147.0 generated schema includes server requests for
-  `item/permissions/requestApproval` and `mcpServer/elicitation/request` in addition to the two
-  approval methods and `item/tool/requestUserInput` currently handled. Unknown requests currently
-  receive no general response; unsupported approval methods return a protocol error and keep the
-  provider turn moving without a recoverable user decision.
+- Codex handles command, file-change, and permission-profile approvals through the durable
+  permission flow. Permission-profile grants are limited to the exact requested object and a
+  16 KiB bound; malformed forms are declined. Unsupported MCP elicitations and every other
+  client-directed request receive explicit non-hanging declines.
 - the schema also exposes dynamic tool, MCP progress, terminal-interaction, and richer item shapes.
   The generic tool fallback retains some JSON, but parity fixtures do not prove these current
   shapes remain usable.
-- Claude 2.1.233 supports `--forward-subagent-text` for stream-json sessions. Coducktor does not
-  request it, so delegated child work cannot expose the provider's nested text/thinking stream.
+- Claude stream-json sessions request `--forward-subagent-text`, preserving nested activity.
 - the current Claude approval opt-in changes `dontAsk` to `acceptEdits`; it does not implement the
   durable request/answer contract described for recoverable approvals.
 
