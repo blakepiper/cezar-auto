@@ -694,4 +694,31 @@ mod tests {
         );
         assert_eq!(code, 1);
     }
+
+    #[test]
+    fn repair_runs_command_backs_up_and_repairs_a_corrupt_project_index() {
+        let repo = tempfile::tempdir().unwrap();
+        let state = project_state_dir(repo.path(), &ProcessEnv);
+        std::fs::create_dir_all(&state).unwrap();
+        let index = state.join("runs.json");
+        let corrupt = b"{broken";
+        std::fs::write(&index, corrupt).unwrap();
+
+        assert_eq!(repair_runs_command(repo.path()), 0);
+        assert_eq!(
+            coducktor_core::runs::store::load_run_index(&index, true).len(),
+            0
+        );
+        let backups = std::fs::read_dir(&state)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("corrupt-backup")
+            })
+            .count();
+        assert_eq!(backups, 1);
+    }
 }
