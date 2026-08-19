@@ -592,14 +592,18 @@ fn repo_snapshot(
 /// tasks and New Task data if it differs from the one `prime_app` already loaded —
 /// or leaves a clear notice if the directory isn't a registered project rather than silently
 /// staying put. `--workflow`/`--model` preselect the New Task screen.
-async fn apply_launch_args(engine: &dyn Engine, app: &mut App, cli: &Cli) {
+fn apply_launch_args(app: &mut App, cli: &Cli) {
     if let Some(repo) = &cli.repo {
         match cli::resolve_repo(&app.project_registry, repo) {
             Some(project) => {
                 if project != app.default_project {
                     app.default_project = project.clone();
-                    refresh_tasks(engine, app, &project).await;
-                    refresh_new_task(engine, app, &project).await;
+                    app.queue_pending(PendingAction::RefreshTasks {
+                        project: project.clone(),
+                    });
+                    app.queue_pending(PendingAction::RefreshNewTask {
+                        project: project.clone(),
+                    });
                 }
                 app.request_navigate(app::Route::Tasks { project });
             }
@@ -2375,52 +2379,6 @@ fn queue_global_index_refresh(app: &mut App) {
     }
 }
 
-async fn refresh_tasks(engine: &dyn Engine, app: &mut App, project: &str) {
-    let scope = Scope::Project(project.to_owned());
-    let generation = app.begin_task_request(project);
-    let result = engine.list_runs(&scope).await;
-    let error = result.as_ref().err().map(ToString::to_string);
-    app.apply_task_response(
-        project,
-        generation,
-        result.map_err(|error| error.to_string()),
-    );
-    if let Some(error) = error {
-        app.notice = Some(format!("refresh tasks failed: {error}"));
-    }
-}
-
-/// Load everything the New Task screen reads (§8.3), scoped to the active project.
-async fn refresh_new_task(engine: &dyn Engine, app: &mut App, project: &str) {
-    let scope = Scope::Project(project.to_owned());
-    if let Ok(config) = engine.config(&scope).await {
-        app.new_task_ui.data.config = Some(new_task_form::ComposerConfig::from_config(&config));
-    }
-    if let Ok(skills) = engine.skills(&scope).await {
-        app.new_task_ui.data.skills = skills;
-    }
-    if let Ok(workflows) = engine.workflows(&scope).await {
-        app.new_task_ui.data.workflows = workflows.workflows;
-    }
-    if let Ok(workspace_config) = engine.workspace_config().await {
-        app.new_task_ui.data.workspace_config = Some(workspace_config);
-    }
-    if let Ok(provider_status) = engine.provider_status().await {
-        app.new_task_ui.data.provider_status = Some(provider_status);
-    }
-    if let Ok(ui_state) = engine.ui_state(&scope).await {
-        app.new_task_ui.data.ui_state = Some(ui_state);
-    }
-    if let Ok(repo) = engine.repo(&scope).await {
-        let (info, branches) = repo_snapshot(repo);
-        app.new_task_ui.data.repo = info;
-        app.new_task_ui.data.branches = branches;
-    } else {
-        app.new_task_ui.data.repo = None;
-        app.new_task_ui.data.branches.clear();
-    }
-}
-
 async fn open_workspace_listener(
     engine: Arc<dyn Engine>,
     _project: String,
@@ -2527,7 +2485,7 @@ async fn run(
             }
         }
         if bootstrap_applied && !launch_args_applied {
-            apply_launch_args(engine.as_ref(), app, cli).await;
+            apply_launch_args(app, cli);
             launch_args_applied = true;
         }
         let mut pending_mouse = None;
@@ -2877,6 +2835,39 @@ mod tests {
         queue_global_index_refresh(&mut app);
 
         assert_eq!(app.pending, vec![PendingAction::RefreshIndex]);
+    }
+
+    #[test]
+    fn launch_repo_switch_queues_background_refreshes() {
+        let repo = tempfile::tempdir().unwrap();
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.set_project_registry(vec![coducktor_contract::ProjectListEntry {
+            id: "other".to_owned(),
+            root: repo.path().display().to_string(),
+            ..coducktor_contract::ProjectListEntry::default()
+        }]);
+        let cli = Cli {
+            command: None,
+            repo: Some(repo.path().to_owned()),
+            workflow: None,
+            model: None,
+        };
+
+        apply_launch_args(&mut app, &cli);
+
+        assert_eq!(app.default_project, "other");
+        assert!(matches!(app.route(), app::Route::Tasks { project } if project == "other"));
+        assert_eq!(
+            app.pending,
+            vec![
+                PendingAction::RefreshTasks {
+                    project: "other".to_owned()
+                },
+                PendingAction::RefreshNewTask {
+                    project: "other".to_owned()
+                },
+            ]
+        );
     }
 
     #[test]

@@ -191,6 +191,8 @@ Evidence:
   second inline wait after the completed durable mutation.
 - Compare variant selection now runs on the worker pool and queues the existing coalesced task
   refresh only after that mutation completes.
+- A `--repo` launch switch queues its task and New Task snapshots through those background paths
+  instead of awaiting either read while applying launch arguments.
 - Exact queued duplicates of the safe task/index/new-task/model refreshes coalesce before a frame;
   mutations retain their original FIFO order and are never collapsed.
 
