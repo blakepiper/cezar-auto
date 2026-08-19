@@ -95,10 +95,7 @@ fn with_machine_defaults(raw: &Value, machine: &WorkspaceAgentDefaults) -> Value
     if !own.contains_key("defaultRunner")
         && let Some(runner) = &machine.runner
     {
-        own.insert(
-            "defaultRunner".to_owned(),
-            serde_json::to_value(runner).expect("RunnerSelection always serializes"),
-        );
+        own.insert("defaultRunner".to_owned(), runner_selection_value(*runner));
     }
 
     let own_models = own
@@ -119,6 +116,19 @@ fn with_machine_defaults(raw: &Value, machine: &WorkspaceAgentDefaults) -> Value
     }
 
     Value::Object(own)
+}
+
+fn runner_selection_value(runner: RunnerSelection) -> Value {
+    Value::String(
+        match runner {
+            RunnerSelection::Claude => "claude",
+            RunnerSelection::Codex => "codex",
+            RunnerSelection::OpenCode => "opencode",
+            RunnerSelection::Pi => "pi",
+            RunnerSelection::Auto => "auto",
+        }
+        .to_owned(),
+    )
 }
 
 fn runner_models_to_map(models: &AgentDefaultModels) -> serde_json::Map<String, Value> {
@@ -266,7 +276,7 @@ fn default_with_machine(machine: &WorkspaceAgentDefaults) -> RepoConfig {
         &Value::Object(Default::default()),
         machine,
     ))
-    .expect("an all-default object always validates")
+    .unwrap_or_default()
 }
 
 /// Read a project's local Coducktor settings on demand — never cached, never throws.

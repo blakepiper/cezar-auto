@@ -45,6 +45,8 @@ the larger coordinator rewrite:
   instead of relying on a panic-only invariant.
 - project registration now reports an explicit I/O error if its durable mutation cannot produce a
   registry entry, rather than panicking on the internal result path.
+- repository defaults now use a direct contract-value mapping and a safe all-default fallback,
+  removing serialization and validation panics from config startup.
 
 The critical coordinator work is not complete. Provider turns still need to move out of the
 project-manager critical section into bounded per-run workers before same-project parallelism and
