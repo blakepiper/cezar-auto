@@ -983,6 +983,7 @@ impl InProcessEngine {
     /// Run the accepted queue on a worker so the engine loop can keep drawing and consuming the
     /// live broadcast emitted by the manager's event sink.
     pub fn activate_runs(&self) -> Result<(), EngineError> {
+        self.reap_finished_activation_workers()?;
         let mut workers = self.activation_workers.lock().map_err(|_| lock_err())?;
         if workers
             .get(&self.project_id)
@@ -1005,6 +1006,23 @@ impl InProcessEngine {
                 reason: format!("could not start the agent worker: {error}"),
             })?;
         workers.insert(self.project_id.clone(), worker);
+        Ok(())
+    }
+
+    /// Join completed activation workers irrespective of the project that started them. This
+    /// keeps a dormant project from retaining a finished thread until it is activated again.
+    fn reap_finished_activation_workers(&self) -> Result<(), EngineError> {
+        let mut workers = self.activation_workers.lock().map_err(|_| lock_err())?;
+        let finished = workers
+            .iter()
+            .filter(|(_, worker)| worker.is_finished())
+            .map(|(project, _)| project.clone())
+            .collect::<Vec<_>>();
+        for project in finished {
+            if let Some(worker) = workers.remove(&project) {
+                let _ = worker.join();
+            }
+        }
         Ok(())
     }
 
@@ -8616,6 +8634,36 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn completed_activation_workers_are_reaped_from_the_registry() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        engine
+            .enqueue_run(steps_input("complete on the worker"))
+            .await
+            .unwrap();
+        engine.activate_runs().unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let finished = engine
+                    .activation_workers
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .all(std::thread::JoinHandle::is_finished);
+                if finished {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        engine.reap_finished_activation_workers().unwrap();
+        assert!(engine.activation_workers.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

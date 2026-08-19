@@ -396,9 +396,9 @@ Evidence:
   removes the matching cancellation token on close, open failure, or drop.
 - a 1,000-cycle registration regression test proves dropped sessions return the cancellation
   registry to its baseline without retaining inactive tokens.
-- activation workers remain detached. TUI background threads now retain their handles and reap
-  completed workers between submissions and at loop exit, but still lack a concurrency cap,
-  cancellation registry, and bounded shutdown escalation.
+- activation workers coalesce per project and now globally reap completed handles; TUI background
+  threads likewise retain and reap completed handles between submissions and at loop exit. Both
+  paths still lack a concurrency cap, cancellation registry, and bounded shutdown escalation.
 - child stdout, stderr, and discard readers are owned by `ChildProcess`; termination reaps the
   child and joins readers after bounded escalation.
 
