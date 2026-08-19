@@ -673,7 +673,7 @@ fn apply_launch_args(app: &mut App, cli: &Cli) {
 
 /// Run one pending action against the engine and reconcile the app with the
 /// engine's answer. Failures surface as a toast rather than a crash.
-async fn execute_pending(
+fn execute_pending(
     engine: Arc<dyn Engine>,
     app: &mut App,
     background_sender: &BackgroundSender<BackgroundResult>,
@@ -784,6 +784,13 @@ async fn execute_pending(
                     background_sender,
                     async move { engine_for_task.runs_index().await },
                     move |result| BackgroundResult::RefreshIndex { generation, result },
+                );
+            }
+            PendingAction::RefreshProjectRegistry => {
+                queue_project_registry_refresh(
+                    engine.clone(),
+                    background_sender,
+                    background_handle,
                 );
             }
             PendingAction::StartRun { project, input } => {
@@ -1676,10 +1683,24 @@ async fn execute_pending(
                 );
             }
             PendingAction::SaveWorkflow { project } => {
-                save_or_export_workflow(engine.as_ref(), app, &project, false).await;
+                queue_save_or_export_workflow(
+                    engine.clone(),
+                    app,
+                    project,
+                    false,
+                    background_sender,
+                    background_handle,
+                );
             }
             PendingAction::ExportWorkflow { project } => {
-                save_or_export_workflow(engine.as_ref(), app, &project, true).await;
+                queue_save_or_export_workflow(
+                    engine.clone(),
+                    app,
+                    project,
+                    true,
+                    background_sender,
+                    background_handle,
+                );
             }
             PendingAction::DeleteWorkflow { project, name } => {
                 let scope = Scope::Project(project.clone());
@@ -1929,22 +1950,27 @@ async fn execute_pending(
             }
             PendingAction::SettingsRegisterProject { root } => {
                 let input = coducktor_contract::RegisterProjectInput { root };
-                match engine.register_project(&input).await {
-                    Ok(response) => {
-                        app.settings_ui.notice = Some(format!(
-                            "registered {} — {}",
-                            response.project.name, response.project.root
-                        ));
-                        queue_project_registry_refresh(
-                            engine.clone(),
-                            background_sender,
-                            background_handle,
-                        );
-                    }
-                    Err(error) => {
-                        app.settings_ui.notice = Some(format!("add repository failed: {error}"))
-                    }
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.register_project(&input).await },
+                    |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(response) => {
+                                app.settings_ui.notice = Some(format!(
+                                    "registered {} — {}",
+                                    response.project.name, response.project.root
+                                ));
+                                app.pending.push(PendingAction::RefreshProjectRegistry);
+                            }
+                            Err(error) => {
+                                app.settings_ui.notice =
+                                    Some(format!("add repository failed: {error}"))
+                            }
+                        }))
+                    },
+                );
             }
             PendingAction::SettingsReclaimWorktrees { project } => {
                 let scope = Scope::Project(project.clone());
@@ -1984,23 +2010,37 @@ async fn execute_pending(
                     },
                 );
             }
-            PendingAction::SettingsRemoveProject { id } => match engine.remove_project(&id).await {
-                Ok(_) => queue_project_registry_refresh(
-                    engine.clone(),
-                    background_sender,
+            PendingAction::SettingsRemoveProject { id } => {
+                let engine_for_task = engine.clone();
+                spawn_background(
                     background_handle,
-                ),
-                Err(error) => app.notice = Some(format!("remove project failed: {error}")),
-            },
+                    background_sender,
+                    async move { engine_for_task.remove_project(&id).await },
+                    |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(_) => app.pending.push(PendingAction::RefreshProjectRegistry),
+                            Err(error) => {
+                                app.notice = Some(format!("remove project failed: {error}"))
+                            }
+                        }))
+                    },
+                );
+            }
             PendingAction::SettingsUpdateProject { id, input } => {
-                match engine.update_project(&id, &input).await {
-                    Ok(_) => queue_project_registry_refresh(
-                        engine.clone(),
-                        background_sender,
-                        background_handle,
-                    ),
-                    Err(error) => app.notice = Some(format!("update project failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.update_project(&id, &input).await },
+                    |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(_) => app.pending.push(PendingAction::RefreshProjectRegistry),
+                            Err(error) => {
+                                app.notice = Some(format!("update project failed: {error}"))
+                            }
+                        }))
+                    },
+                );
             }
             PendingAction::Quit => {}
         }
@@ -3060,8 +3100,7 @@ async fn run(
                 app,
                 &background_sender,
                 &mut background_handle,
-            )
-            .await;
+            );
         }
         for (summary, body) in app.take_pending_notifications() {
             crate::notify::notify(app.notifications_enabled, &summary, &body);
@@ -3115,7 +3154,14 @@ async fn run(
 
 /// Save or export the workflows draft. The export path returns the file path it wrote. The body
 /// uses the compact `skills:` form when every step is a plain skill step and `steps:` otherwise.
-async fn save_or_export_workflow(engine: &dyn Engine, app: &mut App, project: &str, export: bool) {
+fn queue_save_or_export_workflow(
+    engine: Arc<dyn Engine>,
+    app: &mut App,
+    project: String,
+    export: bool,
+    sender: &BackgroundSender<BackgroundResult>,
+    workers: &mut BackgroundWorkers,
+) {
     let name = if app.workflows_ui.draft_name.trim().is_empty() {
         app.workflows_ui
             .workflows
@@ -3153,20 +3199,25 @@ async fn save_or_export_workflow(engine: &dyn Engine, app: &mut App, project: &s
             overwrite: Some(true),
         },
     };
-    let scope = Scope::Project(project.to_owned());
-    match engine.save_workflow(&scope, &input).await {
-        Ok(response) => {
-            app.notice = Some(if export {
-                format!("exported {} → {}", response.name, response.path)
-            } else {
-                format!("saved {} → {}", response.name, response.path)
-            });
-            app.pending.push(PendingAction::LoadWorkflows {
-                project: project.to_owned(),
-            });
-        }
-        Err(error) => app.notice = Some(format!("save failed: {error}")),
-    }
+    let scope = Scope::Project(project.clone());
+    spawn_background(
+        workers,
+        sender,
+        async move { engine.save_workflow(&scope, &input).await },
+        move |result| {
+            BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                Ok(response) => {
+                    app.notice = Some(if export {
+                        format!("exported {} → {}", response.name, response.path)
+                    } else {
+                        format!("saved {} → {}", response.name, response.path)
+                    });
+                    app.pending.push(PendingAction::LoadWorkflows { project });
+                }
+                Err(error) => app.notice = Some(format!("save failed: {error}")),
+            }))
+        },
+    );
 }
 
 fn current_epoch_seconds() -> i64 {

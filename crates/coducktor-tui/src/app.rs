@@ -646,6 +646,8 @@ pub enum PendingAction {
         project: String,
     },
     RefreshIndex,
+    /// Refresh the registered-project list after a registry mutation completes.
+    RefreshProjectRegistry,
     /// Start a new task with an already-assembled create-run body.
     StartRun {
         project: String,
