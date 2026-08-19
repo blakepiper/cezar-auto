@@ -1942,7 +1942,7 @@ async fn execute_pending(
                         );
                     }
                     Err(error) => {
-                        app.settings_ui.notice = Some(format!("add repository failed: {error}"));
+                        app.settings_ui.notice = Some(format!("add repository failed: {error}"))
                     }
                 }
             }
@@ -1985,24 +1985,20 @@ async fn execute_pending(
                 );
             }
             PendingAction::SettingsRemoveProject { id } => match engine.remove_project(&id).await {
-                Ok(_) => {
-                    queue_project_registry_refresh(
-                        engine.clone(),
-                        background_sender,
-                        background_handle,
-                    );
-                }
+                Ok(_) => queue_project_registry_refresh(
+                    engine.clone(),
+                    background_sender,
+                    background_handle,
+                ),
                 Err(error) => app.notice = Some(format!("remove project failed: {error}")),
             },
             PendingAction::SettingsUpdateProject { id, input } => {
                 match engine.update_project(&id, &input).await {
-                    Ok(_) => {
-                        queue_project_registry_refresh(
-                            engine.clone(),
-                            background_sender,
-                            background_handle,
-                        );
-                    }
+                    Ok(_) => queue_project_registry_refresh(
+                        engine.clone(),
+                        background_sender,
+                        background_handle,
+                    ),
                     Err(error) => app.notice = Some(format!("update project failed: {error}")),
                 }
             }
