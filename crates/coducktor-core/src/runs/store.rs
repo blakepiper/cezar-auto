@@ -106,6 +106,17 @@ pub fn list_runs_by_recency(runs: &[RunRecord]) -> Vec<&RunRecord> {
 /// Atomic owner-only write of the whole index through a collision-safe staging file. File data is
 /// synced before rename and the containing directory is synced best-effort after rename.
 pub fn write_run_index(index_path: &Path, runs: &[RunRecord]) -> io::Result<()> {
+    write_run_index_with_before_rename(index_path, runs, |_| Ok(()))
+}
+
+/// The staging boundary is isolated so the crash/failure invariant can be tested without
+/// depending on platform-specific permission or disk-full behavior: until the rename succeeds,
+/// the prior index remains authoritative.
+fn write_run_index_with_before_rename(
+    index_path: &Path,
+    runs: &[RunRecord],
+    before_rename: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<()> {
     let sorted = list_runs_by_recency(runs);
     let json = serde_json::to_vec_pretty(&sorted).map_err(io::Error::other)?;
     if let Some(parent) = index_path.parent() {
@@ -123,6 +134,7 @@ pub fn write_run_index(index_path: &Path, runs: &[RunRecord]) -> io::Result<()> 
         let mut file = options.open(&tmp_path)?;
         file.write_all(&json)?;
         file.sync_all()?;
+        before_rename(&tmp_path)?;
         fs::rename(&tmp_path, index_path)?;
         #[cfg(unix)]
         {
@@ -652,6 +664,38 @@ mod tests {
         write_run_index(&path, std::slice::from_ref(&run)).unwrap();
         let loaded = load_run_index(&path, true);
         assert_eq!(loaded, vec![run]);
+    }
+
+    #[test]
+    fn a_failure_before_rename_preserves_the_previous_index_and_cleans_its_staging_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = index_path(dir.path());
+        let previous = RunRecord {
+            id: "previous".into(),
+            created_at: "2026-01-01T00:00:00.000Z".into(),
+            ..Default::default()
+        };
+        write_run_index(&path, std::slice::from_ref(&previous)).unwrap();
+        let original = fs::read(&path).unwrap();
+
+        let next = RunRecord {
+            id: "next".into(),
+            created_at: "2026-01-02T00:00:00.000Z".into(),
+            ..Default::default()
+        };
+        let error = write_run_index_with_before_rename(&path, &[next], |_| {
+            Err(io::Error::other("injected pre-rename failure"))
+        })
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let staging_files = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(staging_files, 0);
     }
 
     #[test]
