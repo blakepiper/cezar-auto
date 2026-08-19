@@ -201,15 +201,14 @@ enum FrontmatterValue {
     // load-bearing: it's what makes `interactive: [true]` distinct from the scalar
     // `interactive: "true"` in `as_scalar`'s match below (see the `array.md` case in
     // `discover_skills`'s tests).
-    #[allow(dead_code)]
-    List(Vec<String>),
+    List,
 }
 
 impl FrontmatterValue {
     fn as_scalar(&self) -> Option<&str> {
         match self {
             FrontmatterValue::Scalar(s) => Some(s),
-            FrontmatterValue::List(_) => None,
+            FrontmatterValue::List => None,
         }
     }
 }
@@ -258,30 +257,20 @@ fn parse_frontmatter(raw: &str) -> (std::collections::HashMap<String, Frontmatte
         let rest = rest.trim();
 
         if rest.is_empty() {
-            let mut items = Vec::new();
             while i + 1 < lines.len() && is_list_item(lines[i + 1]) {
-                let item = lines[i + 1].trim_start();
-                let item = item.strip_prefix('-').unwrap_or(item).trim_start();
-                items.push(strip_quotes(item));
                 i += 1;
             }
-            frontmatter.insert(key, FrontmatterValue::List(items));
+            frontmatter.insert(key, FrontmatterValue::List);
             i += 1;
             continue;
         }
 
-        if let Some(inner) = rest.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-            let inner = inner.trim();
-            let items = if inner.is_empty() {
-                Vec::new()
-            } else {
-                inner
-                    .split(',')
-                    .map(|s| strip_quotes(s.trim()))
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            };
-            frontmatter.insert(key, FrontmatterValue::List(items));
+        if rest
+            .strip_prefix('[')
+            .and_then(|value| value.strip_suffix(']'))
+            .is_some()
+        {
+            frontmatter.insert(key, FrontmatterValue::List);
             i += 1;
             continue;
         }
