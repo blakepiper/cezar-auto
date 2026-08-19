@@ -1108,17 +1108,47 @@ async fn execute_pending(
                 message_id,
             } => {
                 let scope = Scope::Project(project.clone());
-                if let Err(error) = engine.remove_queued_message(&scope, &id, &message_id).await {
-                    app.notice = Some(format!("remove message failed: {error}"));
-                }
-                app.pending.push(PendingAction::LoadThread { project, id });
+                let engine_for_task = engine.clone();
+                let id_for_task = id.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move {
+                        engine_for_task
+                            .remove_queued_message(&scope, &id_for_task, &message_id)
+                            .await
+                    },
+                    move |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| {
+                            if let Err(error) = result {
+                                app.notice = Some(format!("remove message failed: {error}"));
+                            }
+                            app.pending.push(PendingAction::LoadThread { project, id });
+                        }))
+                    },
+                );
             }
             PendingAction::CancelAutoResume { project, id } => {
                 let scope = Scope::Project(project.clone());
-                if let Err(error) = engine.cancel_auto_resume(&scope, &id).await {
-                    app.notice = Some(format!("cancel auto-resume failed: {error}"));
-                }
-                app.pending.push(PendingAction::LoadThread { project, id });
+                let engine_for_task = engine.clone();
+                let id_for_task = id.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move {
+                        engine_for_task
+                            .cancel_auto_resume(&scope, &id_for_task)
+                            .await
+                    },
+                    move |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| {
+                            if let Err(error) = result {
+                                app.notice = Some(format!("cancel auto-resume failed: {error}"));
+                            }
+                            app.pending.push(PendingAction::LoadThread { project, id });
+                        }))
+                    },
+                );
             }
             PendingAction::LoadTaskGitChanges { project, id } => {
                 let generation = app.begin_task_git_request();
@@ -1653,25 +1683,46 @@ async fn execute_pending(
             }
             PendingAction::DeleteWorkflow { project, name } => {
                 let scope = Scope::Project(project.clone());
-                match engine.delete_workflow(&scope, &name).await {
-                    Ok(_) => {
-                        app.notice = Some(format!("deleted workflow {name}"));
-                        app.pending.push(PendingAction::LoadWorkflows { project });
-                    }
-                    Err(error) => app.notice = Some(format!("delete failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                let name_for_task = name.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move {
+                        engine_for_task
+                            .delete_workflow(&scope, &name_for_task)
+                            .await
+                    },
+                    move |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(_) => {
+                                app.notice = Some(format!("deleted workflow {name}"));
+                                app.pending.push(PendingAction::LoadWorkflows { project });
+                            }
+                            Err(error) => app.notice = Some(format!("delete failed: {error}")),
+                        }))
+                    },
+                );
             }
             PendingAction::ImportWorkflow { project, yaml } => {
                 let scope = Scope::Project(project.clone());
-                match engine.parse_workflow(&scope, &yaml).await {
-                    Ok(parsed) => {
-                        app.workflows_ui.selected_tab = app.workflows_ui.workflows.len();
-                        app.workflows_ui.draft_name = parsed.name;
-                        app.workflows_ui.draft_steps = parsed.steps;
-                        app.notice = Some("imported — review and save".to_owned());
-                    }
-                    Err(error) => app.notice = Some(format!("import failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.parse_workflow(&scope, &yaml).await },
+                    move |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(parsed) => {
+                                app.workflows_ui.selected_tab = app.workflows_ui.workflows.len();
+                                app.workflows_ui.draft_name = parsed.name;
+                                app.workflows_ui.draft_steps = parsed.steps;
+                                app.notice = Some("imported — review and save".to_owned());
+                            }
+                            Err(error) => app.notice = Some(format!("import failed: {error}")),
+                        }))
+                    },
+                );
             }
             PendingAction::LoadSettings { project } => {
                 let generation = app.begin_settings_request();
@@ -1697,29 +1748,53 @@ async fn execute_pending(
             }
             PendingAction::SettingsPutConfig { project, input } => {
                 let scope = Scope::Project(project.clone());
-                match engine.put_config(&scope, &input).await {
-                    Ok(config) => app.settings_ui.config = Some(config),
-                    Err(error) => app.notice = Some(format!("settings: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.put_config(&scope, &input).await },
+                    |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(config) => app.settings_ui.config = Some(config),
+                            Err(error) => app.notice = Some(format!("settings: {error}")),
+                        }))
+                    },
+                );
             }
             PendingAction::SettingsPutWorkspaceConfig { input } => {
-                match engine.put_workspace_config(&input).await {
-                    Ok(config) => app.settings_ui.workspace_config = Some(config),
-                    Err(error) => app.notice = Some(format!("settings: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.put_workspace_config(&input).await },
+                    |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(config) => app.settings_ui.workspace_config = Some(config),
+                            Err(error) => app.notice = Some(format!("settings: {error}")),
+                        }))
+                    },
+                );
             }
             PendingAction::SettingsPutWorkspaceUiState { input } => {
-                match engine.put_workspace_ui_state(&input).await {
-                    Ok(state) => {
-                        app.notifications_enabled = state
-                            .notifications
-                            .as_ref()
-                            .and_then(|notifications| notifications.enabled)
-                            .unwrap_or(false);
-                        app.settings_ui.workspace_ui_state = Some(state);
-                    }
-                    Err(error) => app.notice = Some(format!("settings: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.put_workspace_ui_state(&input).await },
+                    |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(state) => {
+                                app.notifications_enabled = state
+                                    .notifications
+                                    .as_ref()
+                                    .and_then(|notifications| notifications.enabled)
+                                    .unwrap_or(false);
+                                app.settings_ui.workspace_ui_state = Some(state);
+                            }
+                            Err(error) => app.notice = Some(format!("settings: {error}")),
+                        }))
+                    },
+                );
             }
             PendingAction::SettingsLoadConfigFile { project, id } => {
                 let scope = Scope::Project(project.clone());
@@ -1749,15 +1824,30 @@ async fn execute_pending(
             } => {
                 let scope = Scope::Project(project.clone());
                 let input = coducktor_contract::SetAgentConfigInput { content, version };
-                match engine.put_agent_config_file(&scope, &id, &input).await {
-                    Ok(file) => {
-                        app.settings_ui.file_editor.set_text(&file.content);
-                        app.settings_ui.open_file = Some(file);
-                        app.settings_ui.file_editing = false;
-                        app.pending.push(PendingAction::LoadSettings { project });
-                    }
-                    Err(error) => app.notice = Some(format!("agent config save failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                let id_for_task = id.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move {
+                        engine_for_task
+                            .put_agent_config_file(&scope, &id_for_task, &input)
+                            .await
+                    },
+                    move |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(file) => {
+                                app.settings_ui.file_editor.set_text(&file.content);
+                                app.settings_ui.open_file = Some(file);
+                                app.settings_ui.file_editing = false;
+                                app.pending.push(PendingAction::LoadSettings { project });
+                            }
+                            Err(error) => {
+                                app.notice = Some(format!("agent config save failed: {error}"))
+                            }
+                        }))
+                    },
+                );
             }
             PendingAction::SettingsCreateAgentProfile {
                 provider,
@@ -1768,44 +1858,74 @@ async fn execute_pending(
                     label: None,
                     config_dir,
                 };
-                match engine.create_agent_profile(&input).await {
-                    Ok(_) => {
-                        app.pending.push(PendingAction::LoadSettings {
-                            project: app.settings_ui.project.clone(),
-                        });
-                    }
-                    Err(error) => app.notice = Some(format!("add account failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.create_agent_profile(&input).await },
+                    |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(_) => app.pending.push(PendingAction::LoadSettings {
+                                project: app.settings_ui.project.clone(),
+                            }),
+                            Err(error) => app.notice = Some(format!("add account failed: {error}")),
+                        }))
+                    },
+                );
             }
             PendingAction::SettingsUpdateAgentProfile { id, input } => {
-                match engine.update_agent_profile(&id, &input).await {
-                    Ok(_) => {
-                        app.pending.push(PendingAction::LoadSettings {
-                            project: app.settings_ui.project.clone(),
-                        });
-                    }
-                    Err(error) => app.notice = Some(format!("rename account failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.update_agent_profile(&id, &input).await },
+                    |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(_) => app.pending.push(PendingAction::LoadSettings {
+                                project: app.settings_ui.project.clone(),
+                            }),
+                            Err(error) => {
+                                app.notice = Some(format!("rename account failed: {error}"))
+                            }
+                        }))
+                    },
+                );
             }
             PendingAction::SettingsRemoveAgentProfile { id } => {
-                match engine.remove_agent_profile(&id).await {
-                    Ok(_) => {
-                        app.pending.push(PendingAction::LoadSettings {
-                            project: app.settings_ui.project.clone(),
-                        });
-                    }
-                    Err(error) => app.notice = Some(format!("remove account failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.remove_agent_profile(&id).await },
+                    |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(_) => app.pending.push(PendingAction::LoadSettings {
+                                project: app.settings_ui.project.clone(),
+                            }),
+                            Err(error) => {
+                                app.notice = Some(format!("remove account failed: {error}"))
+                            }
+                        }))
+                    },
+                );
             }
             PendingAction::SettingsSelectAgentProfile { input } => {
-                match engine.select_agent_profile(&input).await {
-                    Ok(_) => {
-                        app.pending.push(PendingAction::LoadSettings {
-                            project: app.settings_ui.project.clone(),
-                        });
-                    }
-                    Err(error) => app.notice = Some(format!("select account failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.select_agent_profile(&input).await },
+                    |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(_) => app.pending.push(PendingAction::LoadSettings {
+                                project: app.settings_ui.project.clone(),
+                            }),
+                            Err(error) => {
+                                app.notice = Some(format!("select account failed: {error}"))
+                            }
+                        }))
+                    },
+                );
             }
             PendingAction::SettingsRegisterProject { root } => {
                 let input = coducktor_contract::RegisterProjectInput { root };
@@ -1828,23 +1948,41 @@ async fn execute_pending(
             }
             PendingAction::SettingsReclaimWorktrees { project } => {
                 let scope = Scope::Project(project.clone());
-                match engine.reclaim_worktrees(&scope).await {
-                    Ok(response) => {
-                        app.notice = Some(format!(
-                            "reclaimed {} worktree(s)",
-                            response.reclaimed.len()
-                        ));
-                        app.pending.push(PendingAction::LoadSettings { project });
-                    }
-                    Err(error) => app.notice = Some(format!("reclaim failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.reclaim_worktrees(&scope).await },
+                    move |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(response) => {
+                                app.notice = Some(format!(
+                                    "reclaimed {} worktree(s)",
+                                    response.reclaimed.len()
+                                ));
+                                app.pending.push(PendingAction::LoadSettings { project });
+                            }
+                            Err(error) => app.notice = Some(format!("reclaim failed: {error}")),
+                        }))
+                    },
+                );
             }
             PendingAction::SettingsRemoveWorktree { project, run_id } => {
                 let scope = Scope::Project(project.clone());
-                match engine.remove_run_worktree(&scope, &run_id).await {
-                    Ok(_) => app.pending.push(PendingAction::LoadSettings { project }),
-                    Err(error) => app.notice = Some(format!("remove worktree failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.remove_run_worktree(&scope, &run_id).await },
+                    move |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(_) => app.pending.push(PendingAction::LoadSettings { project }),
+                            Err(error) => {
+                                app.notice = Some(format!("remove worktree failed: {error}"))
+                            }
+                        }))
+                    },
+                );
             }
             PendingAction::SettingsRemoveProject { id } => match engine.remove_project(&id).await {
                 Ok(_) => {
