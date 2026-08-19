@@ -57,9 +57,9 @@ use coducktor_core::paths::{
 use coducktor_core::skills::discover_skills;
 use coducktor_core::workflows::load::{WORKFLOWS_DIR, load_workflows};
 use coducktor_core::workflows::run::{
-    CheckExecutor, CheckResult, DiffInspector, EventInput, PromptImage, RepositoryRootLease,
-    RunManager, RuntimeOptions, SessionFactory, StartRunInput as CoreStartRunInput,
-    WorkspaceSemaphore, review_gate_enabled,
+    CancellationToken, CheckExecutor, CheckResult, DiffInspector, EventInput, PromptImage,
+    RepositoryRootLease, RunManager, RuntimeOptions, SessionFactory,
+    StartRunInput as CoreStartRunInput, WorkspaceSemaphore, review_gate_enabled,
 };
 use coducktor_core::workflows::types::{parse_workflow_file_doc, steps_issue};
 use coducktor_core::workspace::agent_accounts::{
@@ -96,6 +96,7 @@ pub struct InProcessEngine {
     manager: Arc<Mutex<RunManager>>,
     managers: Arc<Mutex<BTreeMap<String, ProjectManager>>>,
     session_factory: Arc<Mutex<Box<dyn SessionFactory>>>,
+    cancellations: Arc<Mutex<BTreeMap<String, CancellationToken>>>,
     boot_project_id: String,
     project_id: String,
     run_snapshot: Arc<RwLock<BTreeMap<String, BTreeMap<String, coducktor_contract::RunRecord>>>>,
@@ -267,6 +268,9 @@ mod admission_tests {
 struct SharedSessionFactory {
     inner: Arc<Mutex<Box<dyn SessionFactory>>>,
     state_home: PathBuf,
+    /// Cancellation must remain reachable without waiting for an in-progress `open` call, which
+    /// can be blocked in provider/process setup.
+    cancellations: Arc<Mutex<BTreeMap<String, CancellationToken>>>,
 }
 
 impl SessionFactory for SharedSessionFactory {
@@ -274,6 +278,9 @@ impl SessionFactory for SharedSessionFactory {
         &mut self,
         mut request: coducktor_core::workflows::run::SessionRequest,
     ) -> Result<Box<dyn coducktor_core::workflows::run::AgentSession + Send>, String> {
+        if let Ok(mut cancellations) = self.cancellations.lock() {
+            cancellations.insert(request.run_id.clone(), request.cancellation.clone());
+        }
         if let Some(profile_id) = request
             .agent_profile
             .as_deref()
@@ -596,12 +603,14 @@ impl InProcessEngine {
         }
         let session_factory: Arc<Mutex<Box<dyn SessionFactory>>> =
             Arc::new(Mutex::new(Box::new(session_factory)));
+        let cancellations = Arc::new(Mutex::new(BTreeMap::new()));
         let mut manager = RunManager::with_session_factory_for_repo(
             repo_root.clone(),
             project_state_dir_in(&state_home, &repo_root),
             SharedSessionFactory {
                 inner: session_factory.clone(),
                 state_home: state_home.clone(),
+                cancellations: cancellations.clone(),
             },
         );
         manager.set_project_id(boot_project_id.clone());
@@ -629,6 +638,7 @@ impl InProcessEngine {
             manager: manager.clone(),
             managers: managers.clone(),
             session_factory,
+            cancellations,
             boot_project_id: boot_project_id.clone(),
             project_id: boot_project_id.clone(),
             run_snapshot,
@@ -774,6 +784,7 @@ impl InProcessEngine {
             SharedSessionFactory {
                 inner: self.session_factory.clone(),
                 state_home: self.state_home.clone(),
+                cancellations: self.cancellations.clone(),
             },
         );
         manager.set_project_id(project_id.clone());
@@ -839,6 +850,7 @@ impl InProcessEngine {
             manager: entry.manager,
             managers: self.managers.clone(),
             session_factory: self.session_factory.clone(),
+            cancellations: self.cancellations.clone(),
             boot_project_id: self.boot_project_id.clone(),
             project_id: match scope {
                 Scope::Project(id) if id != "default" => id.clone(),
@@ -1207,7 +1219,34 @@ impl InProcessEngine {
                 let _ = worker.join();
             }
         }
+        drop(workers);
+        self.prune_terminal_cancellations();
         Ok(())
+    }
+
+    /// Tokens belong to a live/parked session only. Worker reaping is the common terminal
+    /// boundary; retaining a token past it would turn ordinary completed runs into an unbounded
+    /// process-lifetime registry.
+    fn prune_terminal_cancellations(&self) {
+        let Ok(snapshot) = self.run_snapshot.read() else {
+            return;
+        };
+        let Ok(mut cancellations) = self.cancellations.lock() else {
+            return;
+        };
+        cancellations.retain(|run_id, _| {
+            snapshot.values().any(|runs| {
+                runs.get(run_id).is_some_and(|run| {
+                    !matches!(
+                        run.status,
+                        coducktor_contract::RunStatus::Done
+                            | coducktor_contract::RunStatus::Failed
+                            | coducktor_contract::RunStatus::Cancelled
+                            | coducktor_contract::RunStatus::Review
+                    )
+                })
+            })
+        });
     }
 
     pub async fn archive_run(&self, run_id: &str, archived: bool) -> Result<ApiRun, EngineError> {
@@ -1310,10 +1349,23 @@ impl InProcessEngine {
 
     pub async fn cancel_run(&self, run_id: &str) -> Result<CancelResponse, EngineError> {
         let signalled = self
-            .session_factory
+            .cancellations
             .lock()
-            .map(|mut factory| factory.request_cancel(run_id))
-            .unwrap_or(false);
+            .ok()
+            .and_then(|cancellations| cancellations.get(run_id).cloned())
+            .is_some_and(|cancellation| cancellation.request());
+        // Factories created before the token registry, or provider-specific child handles that
+        // outlive their turn token, still get their existing best-effort cancellation path. Do
+        // not take this mutex when the independent token has already reached the worker: `open`
+        // is allowed to block while the manager owns its transition lock.
+        let signalled = if signalled {
+            true
+        } else {
+            self.session_factory
+                .try_lock()
+                .map(|mut factory| factory.request_cancel(run_id))
+                .unwrap_or(false)
+        };
         let mut manager = match self.manager.try_lock() {
             Ok(manager) => manager,
             Err(std::sync::TryLockError::WouldBlock) if signalled => {
@@ -8571,6 +8623,7 @@ mod tests {
         AgentSession, CancellationToken, EventInput, SessionFactory, SessionRequest,
     };
     use std::io;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use tempfile::TempDir;
 
     /// A session that immediately completes with `DUCK:DONE` — enough to prove
@@ -8684,6 +8737,26 @@ mod tests {
                 .unwrap()
                 .get(run_id)
                 .is_some_and(CancellationToken::request)
+        }
+    }
+
+    /// Models a provider setup that is blocked before it can return an `AgentSession`. The
+    /// factory mutex remains held throughout `open`, so cancellation must use the token captured
+    /// by `SharedSessionFactory` before it entered the factory.
+    struct BlockingOpenFactory {
+        opened: Arc<AtomicBool>,
+    }
+
+    impl SessionFactory for BlockingOpenFactory {
+        fn open(
+            &mut self,
+            request: SessionRequest,
+        ) -> Result<Box<dyn AgentSession + Send>, String> {
+            self.opened.store(true, Ordering::Release);
+            while !request.cancellation.is_requested() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err("interrupted while opening session".to_owned())
         }
     }
 
@@ -8875,6 +8948,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancel_reaches_a_session_factory_blocked_during_open() {
+        let dir = TempDir::new().unwrap();
+        let opened = Arc::new(AtomicBool::new(false));
+        let engine = InProcessEngine::with_session_factory(
+            dir.path(),
+            "0.0.0-test",
+            BlockingOpenFactory {
+                opened: opened.clone(),
+            },
+        );
+        let scope = Scope::Project("default".to_owned());
+        let CreateRunResponse::Single(run) = <InProcessEngine as crate::Engine>::start_run(
+            &engine,
+            &scope,
+            steps_input("block while opening"),
+        )
+        .await
+        .unwrap() else {
+            panic!("expected one run");
+        };
+        <InProcessEngine as crate::Engine>::activate_runs(&engine, &scope)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !opened.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let started = Instant::now();
+        let response = <InProcessEngine as crate::Engine>::cancel_run(&engine, &scope, &run.id)
+            .await
+            .unwrap();
+        assert!(response.cancelled);
+        assert!(started.elapsed() < Duration::from_millis(100));
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let current = <InProcessEngine as crate::Engine>::get_run(&engine, &scope, &run.id)
+                    .await
+                    .unwrap();
+                if current.record.status == coducktor_contract::RunStatus::Cancelled {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
     async fn global_index_reads_the_snapshot_while_a_project_manager_is_busy() {
         let repo = TempDir::new().unwrap();
         let workspace = TempDir::new().unwrap();
@@ -8958,6 +9085,7 @@ mod tests {
         .unwrap();
         engine.reap_finished_activation_workers().unwrap();
         assert!(engine.activation_workers.lock().unwrap().is_empty());
+        assert!(engine.cancellations.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -9473,9 +9601,10 @@ mod tests {
 
     #[test]
     fn project_scope_resolves_the_registered_root() {
+        let directory = TempDir::new().unwrap();
         let project = coducktor_core::workspace::config::WorkspaceProject {
             id: "blarchy".to_owned(),
-            root: "/home/przvl/blarchy".to_owned(),
+            root: directory.path().to_string_lossy().into_owned(),
             name: "blarchy".to_owned(),
             added_at: String::new(),
             last_opened_at: String::new(),
@@ -9485,12 +9614,12 @@ mod tests {
             extra: Map::new(),
         };
         let root = resolve_scope_root(
-            Path::new("/home/przvl"),
+            directory.path(),
             &Scope::Project("blarchy".to_owned()),
             &[project],
         )
         .unwrap();
-        assert_eq!(root, PathBuf::from("/home/przvl/blarchy"));
+        assert_eq!(root, directory.path());
     }
 
     #[tokio::test]

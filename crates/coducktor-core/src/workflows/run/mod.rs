@@ -2436,6 +2436,10 @@ impl RunManager {
             let mut session = match opened {
                 Ok(session) => session,
                 Err(error) => {
+                    if cancellation.is_requested() {
+                        self.cancel_run_after_session(run_id, &step.id)?;
+                        return Ok(());
+                    }
                     if self.try_auto_failover(run_id, &step.id, concrete, &error, true)? {
                         pending_context_prompt = Some(retry_prompt);
                         initial_images_sent = false;
