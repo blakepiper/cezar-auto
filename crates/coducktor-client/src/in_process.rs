@@ -534,6 +534,7 @@ fn effective_runtime_options(
             .min(workspace.resources.max_parallel as usize)
             .max(1),
         max_monitoring_sessions: workspace.resources.max_monitoring_sessions as usize,
+        monitoring_wake_interval_minutes: workspace.resources.monitoring_wake_interval_minutes,
         review_gate: review_gate_enabled(repo.review_gate, review_gate_override),
         auto_resume_on_usage_limit: workspace.resources.auto_resume_on_usage_limit,
     }
@@ -9358,6 +9359,7 @@ mod tests {
                 "resources": {
                     "maxParallel": 1,
                     "maxMonitoringSessions": 1,
+                    "monitoringWakeIntervalMinutes": 5,
                     "autoResumeOnUsageLimit": false,
                     "intelligentContextRefresh": true
                 }
@@ -9374,6 +9376,10 @@ mod tests {
         let manager = engine.manager.lock().unwrap();
         assert_eq!(manager.runtime_options().max_parallel, 1);
         assert_eq!(manager.runtime_options().max_monitoring_sessions, 1);
+        assert_eq!(
+            manager.runtime_options().monitoring_wake_interval_minutes,
+            Some(5)
+        );
         assert!(!manager.runtime_options().auto_resume_on_usage_limit);
     }
 
@@ -9393,6 +9399,7 @@ mod tests {
                 resources: Some(coducktor_contract::WorkspaceResourcesPatch {
                     max_parallel: Some(1),
                     max_monitoring_sessions: Some(1),
+                    monitoring_wake_interval_minutes: Some(Some(5)),
                     auto_resume_on_usage_limit: Some(false),
                     ..Default::default()
                 }),
@@ -9404,6 +9411,10 @@ mod tests {
         let manager = engine.manager.lock().unwrap();
         assert_eq!(manager.runtime_options().max_parallel, 1);
         assert_eq!(manager.runtime_options().max_monitoring_sessions, 1);
+        assert_eq!(
+            manager.runtime_options().monitoring_wake_interval_minutes,
+            Some(5)
+        );
         assert!(!manager.runtime_options().auto_resume_on_usage_limit);
     }
 
@@ -9412,6 +9423,7 @@ mod tests {
         let mut workspace = WorkspaceConfig::default_for(&ProcessEnv);
         workspace.resources.max_parallel = 3;
         workspace.resources.max_monitoring_sessions = 1;
+        workspace.resources.monitoring_wake_interval_minutes = Some(5);
         workspace.resources.auto_resume_on_usage_limit = false;
         workspace
             .projects
@@ -9436,6 +9448,7 @@ mod tests {
 
         assert_eq!(options.max_parallel, 2);
         assert_eq!(options.max_monitoring_sessions, 1);
+        assert_eq!(options.monitoring_wake_interval_minutes, Some(5));
         assert!(!options.auto_resume_on_usage_limit);
         assert!(options.review_gate);
     }

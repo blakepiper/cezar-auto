@@ -47,7 +47,7 @@ use super::types;
 use crate::runs::events;
 use crate::runs::store;
 use crate::runs::task_markers::{self, TaskMarkers};
-use crate::time::{is_zod_datetime, now_iso8601};
+use crate::time::{is_zod_datetime, now_iso8601, now_plus_iso8601};
 
 const AUTONOMOUS_NUDGE: &str = "Your immediately preceding response may already have completed the user's original request, but it did not include the required completion marker. Do not begin new work, search for unrelated work, or expand the task. If the original request is fully complete, reply with exactly DUCK:DONE. Otherwise, continue only the original request. If you genuinely need user input, end normally without a marker.";
 
@@ -724,6 +724,9 @@ pub trait DiffInspector: Send {
 pub struct RuntimeOptions {
     pub max_parallel: usize,
     pub max_monitoring_sessions: usize,
+    /// A durable deadline for a parked monitoring turn. `None` deliberately disables timer
+    /// driven wake-up; callers can still deliver an explicit monitoring message.
+    pub monitoring_wake_interval_minutes: Option<u64>,
     pub review_gate: bool,
     pub auto_resume_on_usage_limit: bool,
 }
@@ -743,6 +746,7 @@ impl Default for RuntimeOptions {
         Self {
             max_parallel: 2,
             max_monitoring_sessions: 2,
+            monitoring_wake_interval_minutes: None,
             review_gate: false,
             auto_resume_on_usage_limit: true,
         }
@@ -2736,11 +2740,17 @@ impl RunManager {
             RunStatus::Waiting
         };
         let activity = monitoring.then_some(RunActivity::Monitoring);
+        let monitoring_wake_at = monitoring.then(|| {
+            self.runtime_options
+                .monitoring_wake_interval_minutes
+                .map(|minutes| now_plus_iso8601(Duration::from_secs(minutes.saturating_mul(60))))
+        });
         self.update_run(
             run_id,
             RunPatch::new()
                 .set("status", status)
-                .set("activity", activity),
+                .set("activity", activity)
+                .set("monitoringWakeAt", monitoring_wake_at.flatten()),
         )?;
         self.update_step(
             run_id,
@@ -5090,12 +5100,17 @@ mod tests {
             vec![cancelled_session()],
         );
         let mut manager = RunManager::with_session_factory(dir.path(), factory);
+        manager.set_runtime_options(RuntimeOptions {
+            monitoring_wake_interval_minutes: Some(5),
+            ..RuntimeOptions::default()
+        });
         let workflow = workflow_with_steps(vec![agent_workflow_step("work")]);
         let run = manager
             .start_run(&workflow, start_input("monitor"))
             .unwrap();
         assert_eq!(run.status, RunStatus::Running);
         assert_eq!(run.activity, Some(RunActivity::Monitoring));
+        assert!(run.monitoring_wake_at.is_some());
 
         assert!(
             manager

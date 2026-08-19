@@ -36,6 +36,17 @@ pub fn now_iso8601() -> String {
     format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}.{millis:03}Z")
 }
 
+/// A future instant using the same UTC ISO-8601 spelling as persisted state.  Runtime policy
+/// uses this for durable wake deadlines; keeping the conversion here avoids a second timestamp
+/// vocabulary in workflow state.
+pub fn now_plus_iso8601(duration: std::time::Duration) -> String {
+    let since_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .saturating_add(duration);
+    unix_seconds_iso8601(since_epoch.as_secs() as i64)
+}
+
 /// A Unix timestamp as the same UTC ISO-8601 spelling used by persisted Coducktor state.
 /// Provider protocols commonly report reset instants as whole epoch seconds.
 pub fn unix_seconds_iso8601(seconds: i64) -> String {
@@ -120,6 +131,13 @@ mod tests {
     fn unix_seconds_are_formatted_as_utc() {
         assert_eq!(unix_seconds_iso8601(0), "1970-01-01T00:00:00.000Z");
         assert_eq!(unix_seconds_iso8601(86_400), "1970-01-02T00:00:00.000Z");
+    }
+
+    #[test]
+    fn future_timestamps_keep_the_persisted_datetime_shape() {
+        assert!(is_zod_datetime(&now_plus_iso8601(
+            std::time::Duration::from_secs(60)
+        )));
     }
 
     #[test]
