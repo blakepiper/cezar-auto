@@ -275,6 +275,17 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    struct NoopSession;
+
+    impl AgentSession for NoopSession {
+        fn turn(
+            &mut self,
+            _on_event: &mut dyn FnMut(EventInput) -> std::io::Result<()>,
+        ) -> Result<SessionOutcome, String> {
+            Ok(SessionOutcome::Completed(Default::default()))
+        }
+    }
+
     fn factory_with_env(pairs: &[(&str, &str)]) -> DefaultSessionFactory {
         DefaultSessionFactory::with_env(
             pairs
@@ -448,5 +459,29 @@ mod tests {
         session.finish(&mut |_| Ok(())).unwrap();
         drop(session);
         assert!(factory.cancellations.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn registered_session_drop_returns_cancellation_registry_to_baseline_after_repeated_cycles() {
+        let cancellations = Arc::new(Mutex::new(BTreeMap::new()));
+        for index in 0..1_000 {
+            let run_id = format!("run-{index}");
+            let cancellation = CancellationToken::default();
+            cancellations
+                .lock()
+                .unwrap()
+                .insert(run_id.clone(), cancellation.clone());
+            let session = RegisteredSession {
+                run_id,
+                cancellation: cancellation.clone(),
+                cancellations: cancellations.clone(),
+                inner: Box::new(NoopSession),
+            };
+
+            drop(session);
+
+            assert!(cancellations.lock().unwrap().is_empty());
+            assert!(!cancellation.request());
+        }
     }
 }

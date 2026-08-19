@@ -383,6 +383,8 @@ Evidence:
 
 - `DefaultSessionFactory` now wraps opened sessions in an RAII registration that deactivates and
   removes the matching cancellation token on close, open failure, or drop.
+- a 1,000-cycle registration regression test proves dropped sessions return the cancellation
+  registry to its baseline without retaining inactive tokens.
 - activation workers and TUI background threads are detached. There is no central count, join,
   cancellation, or error reporting path.
 - child stdout, stderr, and discard readers are owned by `ChildProcess`; termination reaps the
