@@ -168,6 +168,9 @@ enum BackgroundResult {
         id: String,
         result: Result<coducktor_contract::CreatePrResponse, coducktor_client::EngineError>,
     },
+    OpenInCli {
+        result: Result<coducktor_contract::OpenInCliResponse, coducktor_client::EngineError>,
+    },
     Github {
         project: String,
         result: Result<coducktor_contract::GithubData, coducktor_client::EngineError>,
@@ -975,9 +978,13 @@ async fn execute_pending(
             }
             PendingAction::OpenInCli { project, id } => {
                 let scope = Scope::Project(project.clone());
-                if let Err(error) = engine.open_in_cli(&scope, &id).await {
-                    app.notice = Some(format!("open in terminal failed: {error}"));
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.open_in_cli(&scope, &id).await },
+                    |result| BackgroundResult::OpenInCli { result },
+                );
             }
             PendingAction::RemoveQueuedMessage {
                 project,
@@ -1765,6 +1772,11 @@ fn drain_background_results(
                     Err(error) => app.notice = Some(format!("draft PR failed: {error}")),
                 }
                 app.pending.push(PendingAction::LoadThread { project, id });
+            }
+            BackgroundResult::OpenInCli { result } => {
+                if let Err(error) = result {
+                    app.notice = Some(format!("open in terminal failed: {error}"));
+                }
             }
             BackgroundResult::Github { project, result } => {
                 if app.github_ui.project != project {
@@ -3049,6 +3061,28 @@ mod tests {
                 project: "main".to_owned(),
                 id: "run-1".to_owned(),
             }]
+        );
+    }
+
+    #[test]
+    fn failed_cli_handoff_reports_after_background_completion() {
+        let (sender, receiver) = channel();
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        let mut starts_in_flight = HashSet::new();
+
+        sender
+            .send(BackgroundResult::OpenInCli {
+                result: Err(coducktor_client::EngineError::Conflict {
+                    reason: "no terminal launcher".to_owned(),
+                }),
+            })
+            .unwrap();
+
+        drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("open in terminal failed: conflict: no terminal launcher")
         );
     }
 

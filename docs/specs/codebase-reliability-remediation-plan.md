@@ -195,6 +195,8 @@ Evidence:
   instead of awaiting either read while applying launch arguments.
 - Draft PR creation now runs on the worker pool and preserves the follow-up thread refresh after
   its completion.
+- CLI handoff terminal probing and launch now run on the worker pool; the existing failure notice
+  is applied from its completion.
 - Exact queued duplicates of the safe task/index/new-task/model refreshes coalesce before a frame;
   mutations retain their original FIFO order and are never collapsed.
 
