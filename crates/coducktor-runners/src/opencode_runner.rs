@@ -431,10 +431,10 @@ impl OpencodeSession {
         // selected model doesn't advertise. Retry once with the provider default instead of
         // turning a valid task into a hard failure.
         let result = match result {
-            Err(message)
-                if self.spec.reasoning_effort.is_some() && is_model_variant_error(&message) =>
-            {
-                let effort = self.spec.reasoning_effort.expect("checked above");
+            Err(message) if is_model_variant_error(&message) => {
+                let Some(effort) = self.spec.reasoning_effort else {
+                    return Err(message);
+                };
                 on_event(EventInput::new("note").field(
                     "message",
                     format!(

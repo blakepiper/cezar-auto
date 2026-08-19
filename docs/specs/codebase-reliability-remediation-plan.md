@@ -41,6 +41,8 @@ the larger coordinator rewrite:
   persistence boundary.
 - agent-process setup now turns an unexpectedly absent stdio pipe into a typed spawn error and
   reaps the just-started child before returning.
+- OpenCode's reasoning-variant fallback now validates its optional setting at the recovery point
+  instead of relying on a panic-only invariant.
 
 The critical coordinator work is not complete. Provider turns still need to move out of the
 project-manager critical section into bounded per-run workers before same-project parallelism and
