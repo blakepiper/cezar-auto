@@ -2,10 +2,9 @@ use std::env;
 
 use ratatui::style::Color;
 
-/// The three supported named themes. There is deliberately no system theme.
+/// The two supported named themes. There is deliberately no system or light theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeName {
-    Light,
     Dark,
     LazyVim,
 }
@@ -13,7 +12,6 @@ pub enum ThemeName {
 impl ThemeName {
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "light" => Some(Self::Light),
             "dark" => Some(Self::Dark),
             "lazyvim" | "lazy-vim" => Some(Self::LazyVim),
             _ => None,
@@ -22,7 +20,6 @@ impl ThemeName {
 
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Light => "light",
             Self::Dark => "dark",
             Self::LazyVim => "lazyvim",
         }
@@ -100,15 +97,6 @@ impl Theme {
 
     pub fn new(name: ThemeName, capability: ColorCapability) -> Self {
         let palette = match name {
-            ThemeName::Light => palette(
-                capability,
-                (248, 249, 250),
-                (255, 255, 255),
-                (210, 214, 220),
-                (32, 36, 42),
-                (100, 106, 115),
-                (108, 155, 30),
-            ),
             ThemeName::Dark => palette(
                 capability,
                 (20, 22, 25),
@@ -169,10 +157,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_only_the_three_named_themes() {
-        assert_eq!(ThemeName::parse("light"), Some(ThemeName::Light));
+    fn parses_only_the_two_named_themes() {
         assert_eq!(ThemeName::parse("dark"), Some(ThemeName::Dark));
         assert_eq!(ThemeName::parse("lazy-vim"), Some(ThemeName::LazyVim));
+        assert_eq!(ThemeName::parse("light"), None);
         assert_eq!(ThemeName::parse("system"), None);
     }
 

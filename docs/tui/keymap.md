@@ -57,7 +57,7 @@ an action opened from Tasks rather than a separate tab.
 | `:open <route>` | Navigate to a route (e.g. `:open /tasks`) |
 | `:back` | Same as `Ctrl+O` |
 | `:forward` | Same as `Ctrl+I` |
-| `:theme <light\|dark\|lazyvim>` | Switch theme |
+| `:theme <dark\|lazyvim>` | Switch theme |
 | `:new` | Same as `c` |
 | `:clear-scratchpad` | Clear the current scratchpad after confirmation |
 | `:help` | Same as `?` |

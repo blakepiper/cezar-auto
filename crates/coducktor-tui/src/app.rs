@@ -457,7 +457,7 @@ impl CommandId {
             Self::Open => ":open <route>",
             Self::Back => ":back",
             Self::Forward => ":forward",
-            Self::Theme => ":theme <light|dark|lazyvim>",
+            Self::Theme => ":theme <dark|lazyvim>",
             Self::New => ":new",
             Self::ClearScratchpad => ":clear-scratchpad",
             Self::Help => ":help",
@@ -2649,7 +2649,6 @@ impl App {
                         .and_then(|state| state.appearance.clone())
                         .unwrap_or_default();
                     appearance.theme = Some(match name {
-                        ThemeName::Light => coducktor_contract::ThemePreference::Light,
                         ThemeName::Dark => coducktor_contract::ThemePreference::Dark,
                         ThemeName::LazyVim => coducktor_contract::ThemePreference::Lazyvim,
                     });
@@ -2661,7 +2660,7 @@ impl App {
                             },
                         });
                 } else {
-                    self.notice = Some("theme must be light, dark, or lazyvim".to_owned());
+                    self.notice = Some("theme must be dark or lazyvim".to_owned());
                 }
             }
             CommandId::New => self.navigate(NavItem::NewTask),

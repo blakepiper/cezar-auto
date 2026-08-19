@@ -389,9 +389,6 @@ fn apply_prime_snapshot(app: &mut App, snapshot: PrimeSnapshot) {
             .and_then(|appearance| appearance.theme)
         {
             let name = match theme {
-                coducktor_contract::ThemePreference::Light => {
-                    coducktor_tui::theme::ThemeName::Light
-                }
                 coducktor_contract::ThemePreference::Dark => coducktor_tui::theme::ThemeName::Dark,
                 coducktor_contract::ThemePreference::Lazyvim => {
                     coducktor_tui::theme::ThemeName::LazyVim
