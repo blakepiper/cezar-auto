@@ -309,23 +309,6 @@ pub fn fifo_run_ids(runs: &[RunRecord]) -> Vec<String> {
     queued.into_iter().map(|run| run.id.clone()).collect()
 }
 
-/// Count occupied slots: ordinary waiting runs do not hold a slot, and only the configured number
-/// of monitoring sessions receive that same exemption.
-pub fn busy_slots(
-    active: usize,
-    starting: usize,
-    waiting: usize,
-    monitoring: usize,
-    max_monitoring_sessions: usize,
-) -> usize {
-    let ordinary_waiting = waiting.saturating_sub(monitoring);
-    let exempt_monitoring = monitoring.min(max_monitoring_sessions);
-    active
-        .saturating_add(starting)
-        .saturating_sub(ordinary_waiting)
-        .saturating_sub(exempt_monitoring)
-}
-
 /// Whether an unread badge should include this run. This is the same predicate used by
 /// `mark_all_read`, kept pure so the sweep and readers cannot silently diverge.
 pub fn is_unread(run: &RunRecord) -> bool {
@@ -4163,7 +4146,6 @@ mod tests {
         assert_eq!(queue.take_next().as_deref(), Some("a"));
         assert!(queue.is_starting("a"));
         assert_eq!(queue.take_next().as_deref(), Some("b"));
-        assert_eq!(busy_slots(4, 1, 2, 2, 1), 4);
         assert!(queue.finish_start("a"));
     }
 

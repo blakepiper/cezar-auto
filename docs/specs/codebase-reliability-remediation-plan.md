@@ -370,16 +370,16 @@ Acceptance:
 - Nested Codex and Claude subagent activity has stable parentage, bounded depth/output, and a final
   state even when a child fails.
 
-### R9 — Process and worker lifetime bookkeeping leaks or is unowned (high)
+### R9 — Process and worker lifetime bookkeeping leaks or is unowned (high; partially implemented)
 
 Evidence:
 
-- `DefaultSessionFactory.cancellations` inserts one token per opened run and never removes it.
+- `DefaultSessionFactory` now wraps opened sessions in an RAII registration that deactivates and
+  removes the matching cancellation token on close, open failure, or drop.
 - activation workers and TUI background threads are detached. There is no central count, join,
   cancellation, or error reporting path.
-- child stdout/discard threads are detached; `ChildProcess::Drop` kills without waiting/reaping,
-  and the stdout reader handle is not owned. These choices can accumulate threads/zombies under
-  repeated start/cancel cycles even when the child itself is killed.
+- child stdout, stderr, and discard readers are owned by `ChildProcess`; termination reaps the
+  child and joins readers after bounded escalation.
 
 Required correction:
 
