@@ -163,6 +163,9 @@ enum BackgroundResult {
         project: String,
         result: Result<coducktor_contract::CreateRunResponse, coducktor_client::EngineError>,
     },
+    ActivateRuns {
+        result: Result<(), coducktor_client::EngineError>,
+    },
     CreatePr {
         project: String,
         id: String,
@@ -732,9 +735,13 @@ async fn execute_pending(
             }
             PendingAction::ActivateRuns { project } => {
                 let scope = Scope::Project(project);
-                if let Err(error) = engine.activate_runs(&scope).await {
-                    app.notice = Some(format!("start failed: {error}"));
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.activate_runs(&scope).await },
+                    |result| BackgroundResult::ActivateRuns { result },
+                );
             }
             PendingAction::RefreshNewTask { project } => {
                 let project_for_task = project.clone();
@@ -1759,6 +1766,11 @@ fn drain_background_results(
         match result {
             BackgroundResult::StartRun { project, result } => {
                 apply_started_run(app, project, result, starts_in_flight);
+            }
+            BackgroundResult::ActivateRuns { result } => {
+                if let Err(error) = result {
+                    app.notice = Some(format!("start failed: {error}"));
+                }
             }
             BackgroundResult::CreatePr {
                 project,
@@ -3083,6 +3095,28 @@ mod tests {
         assert_eq!(
             app.notice.as_deref(),
             Some("open in terminal failed: conflict: no terminal launcher")
+        );
+    }
+
+    #[test]
+    fn failed_run_activation_reports_after_background_completion() {
+        let (sender, receiver) = channel();
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        let mut starts_in_flight = HashSet::new();
+
+        sender
+            .send(BackgroundResult::ActivateRuns {
+                result: Err(coducktor_client::EngineError::Unavailable {
+                    reason: "runner worker unavailable".to_owned(),
+                }),
+            })
+            .unwrap();
+
+        drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("start failed: service unavailable: runner worker unavailable")
         );
     }
 
