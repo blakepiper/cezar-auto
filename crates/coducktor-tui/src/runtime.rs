@@ -205,6 +205,9 @@ enum BackgroundResult {
         generation: u64,
         result: Result<coducktor_contract::RunsIndexResponse, coducktor_client::EngineError>,
     },
+    RefreshProjectRegistry {
+        result: Result<coducktor_contract::ProjectsResponse, coducktor_client::EngineError>,
+    },
     RefreshModels {
         runner: coducktor_contract::Runner,
         result:
@@ -1566,7 +1569,11 @@ async fn execute_pending(
                             "registered {} — {}",
                             response.project.name, response.project.root
                         ));
-                        refresh_project_registry(engine.as_ref(), app).await;
+                        queue_project_registry_refresh(
+                            engine.clone(),
+                            background_sender,
+                            background_handle,
+                        );
                     }
                     Err(error) => {
                         app.settings_ui.notice = Some(format!("add repository failed: {error}"));
@@ -1595,14 +1602,22 @@ async fn execute_pending(
             }
             PendingAction::SettingsRemoveProject { id } => match engine.remove_project(&id).await {
                 Ok(_) => {
-                    refresh_project_registry(engine.as_ref(), app).await;
+                    queue_project_registry_refresh(
+                        engine.clone(),
+                        background_sender,
+                        background_handle,
+                    );
                 }
                 Err(error) => app.notice = Some(format!("remove project failed: {error}")),
             },
             PendingAction::SettingsUpdateProject { id, input } => {
                 match engine.update_project(&id, &input).await {
                     Ok(_) => {
-                        refresh_project_registry(engine.as_ref(), app).await;
+                        queue_project_registry_refresh(
+                            engine.clone(),
+                            background_sender,
+                            background_handle,
+                        );
                     }
                     Err(error) => app.notice = Some(format!("update project failed: {error}")),
                 }
@@ -1829,6 +1844,11 @@ fn drain_background_results(
                 );
                 if let Some(error) = error {
                     app.notice = Some(format!("refresh all tasks failed: {error}"));
+                }
+            }
+            BackgroundResult::RefreshProjectRegistry { result } => {
+                if let Ok(projects) = result {
+                    apply_project_registry(app, projects);
                 }
             }
             BackgroundResult::RefreshModels { runner, result } => match result {
@@ -2207,10 +2227,20 @@ fn github_detail_matches(app: &App, project: &str, number: u64) -> bool {
             .is_some_and(|item| item.number == number)
 }
 
-async fn refresh_project_registry(engine: &dyn Engine, app: &mut App) {
-    let Ok(projects) = engine.projects().await else {
-        return;
-    };
+fn queue_project_registry_refresh(
+    engine: Arc<dyn Engine>,
+    sender: &BackgroundSender<BackgroundResult>,
+    workers: &mut BackgroundWorkers,
+) {
+    spawn_background(
+        workers,
+        sender,
+        async move { engine.projects().await },
+        |result| BackgroundResult::RefreshProjectRegistry { result },
+    );
+}
+
+fn apply_project_registry(app: &mut App, projects: coducktor_contract::ProjectsResponse) {
     app.set_projects(
         projects
             .projects

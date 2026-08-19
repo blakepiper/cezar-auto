@@ -183,6 +183,8 @@ Evidence:
   project-guarded completion model.
 - Settings agent-config file reads now carry the selected file ID through the background result,
   preventing a slower earlier selection from opening the wrong editor.
+- Post-registration project-registry refreshes are now best-effort background reads, rather than a
+  second inline wait after the completed durable mutation.
 - Exact queued duplicates of the safe task/index/new-task/model refreshes coalesce before a frame;
   mutations retain their original FIFO order and are never collapsed.
 
