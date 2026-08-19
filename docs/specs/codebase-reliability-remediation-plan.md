@@ -198,9 +198,9 @@ Evidence:
   the event.
 - Some runner streams can emit fine-grained deltas (pi emits text deltas directly; protocol mappers
   also expose tool/reasoning/output updates).
-- Each live `ThreadUi::push_event` calls `rebuild`, which reduces the complete event vector,
-  re-projects all turns, rebuilds all transcript items, and reconciles them. Repeating this once per
-  event is quadratic over a long stream even though final painting is virtualized.
+- `ThreadUi::push_events` receives the frame's live batch and rebuilds once after accepting it,
+  rather than rebuilding per event. A 1,000-event regression proves the batch performs one rebuild
+  while retaining every event and its final sequence watermark.
 - `runs_index` serially opens/locks every project and sorts up to 200 records from each on every
   refresh.
 

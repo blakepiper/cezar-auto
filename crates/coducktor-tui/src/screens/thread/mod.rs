@@ -107,6 +107,8 @@ pub struct ThreadUi {
     pub delivery_error: bool,
     pub cancel_pending: bool,
     pub project_root: Option<PathBuf>,
+    #[cfg(test)]
+    rebuild_count: usize,
 }
 
 impl Default for ThreadUi {
@@ -128,6 +130,8 @@ impl Default for ThreadUi {
             delivery_error: false,
             cancel_pending: false,
             project_root: None,
+            #[cfg(test)]
+            rebuild_count: 0,
         }
     }
 }
@@ -289,6 +293,10 @@ impl ThreadUi {
     }
 
     fn rebuild(&mut self) {
+        #[cfg(test)]
+        {
+            self.rebuild_count += 1;
+        }
         // The send request being accepted does not mean its user-message has reached the
         // transcript yet. Keep the optimistic prompt visible until the durable event arrives,
         // then let that event replace it without briefly hiding what the agent is working on.
@@ -1406,6 +1414,24 @@ mod tests {
             id: "run-1".to_owned(),
         });
         app
+    }
+
+    #[test]
+    fn a_large_live_batch_rebuilds_the_transcript_once() {
+        let mut app = app_with_run(RunStatus::Running);
+        app.thread_ui.rebuild_count = 0;
+
+        app.thread_ui.push_events((1..=1_000).map(|seq| {
+            let seq = f64::from(seq);
+            (
+                seq,
+                event(seq, "text", json!({"text": format!("chunk {seq}")})),
+            )
+        }));
+
+        assert_eq!(app.thread_ui.rebuild_count, 1);
+        assert_eq!(app.thread_ui.data.events.len(), 1_000);
+        assert_eq!(app.thread_ui.data.as_of_seq, 1_000.0);
     }
 
     #[test]
