@@ -864,7 +864,7 @@ async fn execute_pending(
                     }
                     Err(error) => app.notice = Some(format!("draft PR failed: {error}")),
                 }
-                refresh_thread_run(engine.as_ref(), app, &project, &id).await;
+                app.pending.push(PendingAction::LoadThread { project, id });
             }
             PendingAction::OpenInCli { project, id } => {
                 let scope = Scope::Project(project.clone());
@@ -881,14 +881,14 @@ async fn execute_pending(
                 if let Err(error) = engine.remove_queued_message(&scope, &id, &message_id).await {
                     app.notice = Some(format!("remove message failed: {error}"));
                 }
-                refresh_thread_run(engine.as_ref(), app, &project, &id).await;
+                app.pending.push(PendingAction::LoadThread { project, id });
             }
             PendingAction::CancelAutoResume { project, id } => {
                 let scope = Scope::Project(project.clone());
                 if let Err(error) = engine.cancel_auto_resume(&scope, &id).await {
                     app.notice = Some(format!("cancel auto-resume failed: {error}"));
                 }
-                refresh_thread_run(engine.as_ref(), app, &project, &id).await;
+                app.pending.push(PendingAction::LoadThread { project, id });
             }
             PendingAction::LoadTaskGitChanges { project, id } => {
                 let scope = Scope::Project(project.clone());
@@ -1870,18 +1870,6 @@ fn apply_settings_snapshot(app: &mut App, snapshot: SettingsSnapshot) {
     }
     if let Some(worktrees) = snapshot.worktrees {
         app.settings_ui.worktrees = Some(worktrees);
-    }
-}
-
-/// Every thread-mutating action re-fetches the run record so the header, actions, and dock reflect
-/// the current state immediately rather than waiting for the next workspace event.
-async fn refresh_thread_run(engine: &dyn Engine, app: &mut App, project: &str, id: &str) {
-    if app.thread_ui.data.project != project || app.thread_ui.data.run_id != id {
-        return;
-    }
-    let scope = Scope::Project(project.to_owned());
-    if let Ok(run) = engine.get_run(&scope, id).await {
-        app.thread_ui.set_run(run);
     }
 }
 
