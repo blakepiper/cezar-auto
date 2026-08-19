@@ -168,7 +168,8 @@ Evidence:
   refresh path rather than awaited inline. Settings now collects its route-scoped snapshot on a
   background worker and applies it only while the matching settings route remains active.
   Post-action thread refreshes likewise queue the existing background thread loader instead of
-  fetching a run inline.
+  fetching a run inline. The task-Git changes load now fetches its run and diff concurrently on a
+  background worker and discards results after navigation away from that task.
 - Exact queued duplicates of the safe task/index/new-task/model refreshes coalesce before a frame;
   mutations retain their original FIFO order and are never collapsed.
 

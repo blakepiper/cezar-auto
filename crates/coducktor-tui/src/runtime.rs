@@ -229,6 +229,12 @@ enum BackgroundResult {
         project: String,
         changes: Result<coducktor_contract::ChangesPayload, coducktor_client::EngineError>,
     },
+    LoadTaskGitChanges {
+        project: String,
+        id: String,
+        run: Result<coducktor_contract::ApiRun, coducktor_client::EngineError>,
+        changes: Result<coducktor_contract::ChangesPayload, coducktor_client::EngineError>,
+    },
     LoadRepoGitCommit {
         project: String,
         result: Result<coducktor_contract::RepoCommitPayload, coducktor_client::EngineError>,
@@ -892,17 +898,24 @@ async fn execute_pending(
             }
             PendingAction::LoadTaskGitChanges { project, id } => {
                 let scope = Scope::Project(project.clone());
-                let run = engine.get_run(&scope, &id).await;
-                let changes = engine.run_changes(&scope, &id).await;
-                match (run, changes) {
-                    (Ok(run), Ok(changes)) => {
-                        app.task_git_ui.run = Some(run);
-                        app.task_git_ui.changes = Some(changes);
-                    }
-                    (Err(error), _) | (_, Err(error)) => {
-                        app.notice = Some(format!("load changes failed: {error}"));
-                    }
-                }
+                let engine_for_task = engine.clone();
+                let id_for_task = id.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move {
+                        tokio::join!(
+                            engine_for_task.get_run(&scope, &id_for_task),
+                            engine_for_task.run_changes(&scope, &id_for_task),
+                        )
+                    },
+                    move |(run, changes)| BackgroundResult::LoadTaskGitChanges {
+                        project,
+                        id,
+                        run,
+                        changes,
+                    },
+                );
             }
             PendingAction::LoadTaskGitFiles { project, id, path } => {
                 let scope = Scope::Project(project.clone());
@@ -1748,6 +1761,29 @@ fn drain_background_results(
                 app.repo_git_ui.changes_loading = false;
                 if let Ok(changes) = changes {
                     app.repo_git_ui.repo_changes_files = changes.files;
+                }
+            }
+            BackgroundResult::LoadTaskGitChanges {
+                project,
+                id,
+                run,
+                changes,
+            } => {
+                if !matches!(
+                    app.route(),
+                    app::Route::TaskGit { project: route_project, id: route_id, .. }
+                        if route_project == &project && route_id == &id
+                ) {
+                    continue;
+                }
+                match (run, changes) {
+                    (Ok(run), Ok(changes)) => {
+                        app.task_git_ui.run = Some(run);
+                        app.task_git_ui.changes = Some(changes);
+                    }
+                    (Err(error), _) | (_, Err(error)) => {
+                        app.notice = Some(format!("load changes failed: {error}"));
+                    }
                 }
             }
             BackgroundResult::LoadRepoGitCommit { project, result } => {
