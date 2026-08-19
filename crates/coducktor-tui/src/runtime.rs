@@ -26,6 +26,8 @@ use crate::welcome::WelcomeAnimation;
 use crate::{cli, headless, new_task_form, screens, terminal};
 
 const FRAME_BUDGET: Duration = Duration::from_millis(33);
+const INPUT_ITEMS_PER_FRAME: usize = 64;
+const RECEIVER_ITEMS_PER_FRAME: usize = 256;
 
 #[tokio::main]
 pub async fn entry() -> io::Result<()> {
@@ -390,9 +392,7 @@ fn apply_prime_snapshot(app: &mut App, snapshot: PrimeSnapshot) {
         {
             let name = match theme {
                 coducktor_contract::ThemePreference::Dark => crate::theme::ThemeName::Dark,
-                coducktor_contract::ThemePreference::Lazyvim => {
-                    crate::theme::ThemeName::LazyVim
-                }
+                coducktor_contract::ThemePreference::Lazyvim => crate::theme::ThemeName::LazyVim,
             };
             app.theme = Theme::new(name, app.theme.capability);
         }
@@ -1487,7 +1487,10 @@ fn drain_background_results(
     app: &mut App,
     starts_in_flight: &mut HashSet<String>,
 ) {
-    while let Ok(result) = receiver.try_recv() {
+    for _ in 0..RECEIVER_ITEMS_PER_FRAME {
+        let Ok(result) = receiver.try_recv() else {
+            break;
+        };
         match result {
             BackgroundResult::StartRun { project, result } => {
                 apply_started_run(app, project, result, starts_in_flight);
@@ -1983,7 +1986,10 @@ async fn run(
         }
         let mut pending_mouse = None;
         let welcome_was_active = welcome.is_active();
-        while event::poll(Duration::ZERO)? {
+        for _ in 0..INPUT_ITEMS_PER_FRAME {
+            if !event::poll(Duration::ZERO)? {
+                break;
+            }
             match event::read()? {
                 Event::Mouse(mouse) if mouse.kind == MouseEventKind::Moved => {
                     pending_mouse = Some(Event::Mouse(mouse));
@@ -2007,7 +2013,10 @@ async fn run(
             }
         }
         if let Some(events) = workspace_events.as_deref_mut() {
-            while let Ok(event) = events.try_recv() {
+            for _ in 0..RECEIVER_ITEMS_PER_FRAME {
+                let Ok(event) = events.try_recv() else {
+                    break;
+                };
                 match event {
                     WorkspaceEvent::Run { project, run } => {
                         app.apply_workspace_event(WorkspaceEvent::Run { project, run });
@@ -2034,7 +2043,11 @@ async fn run(
             }
         }
         if let Some(listener) = thread_listener.as_mut() {
-            while let Ok(event) = listener.receiver.try_recv() {
+            let mut live_batch = Vec::new();
+            for _ in 0..RECEIVER_ITEMS_PER_FRAME {
+                let Ok(event) = listener.receiver.try_recv() else {
+                    break;
+                };
                 if event.data.get("type").and_then(serde_json::Value::as_str) != Some("run-event") {
                     continue;
                 }
@@ -2046,7 +2059,7 @@ async fn run(
                 if app.thread_ui.data.project == listener.project
                     && app.thread_ui.data.run_id == listener.id
                 {
-                    app.thread_ui.push_event(run_event.seq, run_event);
+                    live_batch.push((run_event.seq, run_event));
                 } else if matches!(
                     app.route(),
                     app::Route::Thread { project, id }
@@ -2057,6 +2070,7 @@ async fn run(
                     listener.pending_events.push(run_event);
                 }
             }
+            app.thread_ui.push_events(live_batch);
         }
         // Bracketed paste is enabled for the whole TUI so composers receive multiline clipboard
         // contents as one event, while the embedded Terminal tab forwards that same event to its
@@ -2066,9 +2080,10 @@ async fn run(
             && app.thread_ui.data.project == listener.project
             && app.thread_ui.data.run_id == listener.id
         {
-            for event in std::mem::take(&mut listener.pending_events) {
-                app.thread_ui.push_event(event.seq, event);
-            }
+            let pending = std::mem::take(&mut listener.pending_events)
+                .into_iter()
+                .map(|event| (event.seq, event));
+            app.thread_ui.push_events(pending);
         }
         if !app.pending.is_empty() {
             execute_pending(engine.clone(), app, &background_sender, &background_handle).await;
@@ -2110,7 +2125,7 @@ async fn run(
 
         let remaining = FRAME_BUDGET.saturating_sub(frame_started.elapsed());
         if !remaining.is_zero() {
-            thread::sleep(remaining);
+            let _ = event::poll(remaining)?;
         }
     }
     if let Some(listener) = thread_listener {

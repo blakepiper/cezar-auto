@@ -31,7 +31,7 @@ use actions::{is_run_active, last_session_id};
 use projection::ThreadViewModel;
 use reducer::{NoteTone, ThreadAsk, ThreadEntry, ThreadReduceOptions, ThreadState, reduce_thread};
 
-/// A thread-screen control — a header action, a dock toggle, an ask option, a review
+/// A thread-screen control — a header action, an ask option, a review
 /// button. Routed by `apply_hit` and mirrored by keyboard shortcuts in `handle_key`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ThreadAction {
@@ -44,8 +44,6 @@ pub enum ThreadAction {
     Cancel,
     Delete,
     ToggleStepRail,
-    TogglePlanDock,
-    ToggleAgentsDock,
     OpenSubagent(String),
     CloseSubagentSheet,
     AskOption {
@@ -98,8 +96,6 @@ pub struct ThreadUi {
     pub ask_selections: Vec<Vec<String>>,
     pub ask_focus: (usize, usize),
     pub subagent_sheet: Option<String>,
-    pub agents_collapsed: bool,
-    pub plan_collapsed: bool,
     pub steps_collapsed: bool,
     pub focus: ThreadFocus,
     /// The transcript's inner rectangle from the last render, used to keep mouse-wheel input
@@ -123,8 +119,6 @@ impl Default for ThreadUi {
             ask_selections: Vec::new(),
             ask_focus: (0, 0),
             subagent_sheet: None,
-            agents_collapsed: true,
-            plan_collapsed: false,
             steps_collapsed: true,
             focus: ThreadFocus::Transcript,
             transcript_area: None,
@@ -246,12 +240,24 @@ impl ThreadUi {
 
     /// Append one live run event and re-fold.
     pub fn push_event(&mut self, seq: f64, event: RunEvent) {
-        if seq <= self.data.as_of_seq {
-            return;
+        self.push_events(std::iter::once((seq, event)));
+    }
+
+    /// Append a frame-sized live batch and re-fold once. This keeps projection cost linear in
+    /// frames rather than rebuilding the complete transcript for every provider delta.
+    pub fn push_events(&mut self, events: impl IntoIterator<Item = (f64, RunEvent)>) {
+        let mut changed = false;
+        for (seq, event) in events {
+            if seq <= self.data.as_of_seq {
+                continue;
+            }
+            self.data.as_of_seq = seq;
+            self.data.events.push(event);
+            changed = true;
         }
-        self.data.as_of_seq = seq;
-        self.data.events.push(event);
-        self.rebuild();
+        if changed {
+            self.rebuild();
+        }
     }
 
     pub fn begin_load_earlier(&mut self) -> Option<String> {
@@ -1222,12 +1228,6 @@ pub fn apply_hit(app: &mut App, action: ThreadAction) {
         ThreadAction::ToggleStepRail => {
             app.thread_ui.steps_collapsed = !app.thread_ui.steps_collapsed
         }
-        ThreadAction::TogglePlanDock => {
-            app.thread_ui.plan_collapsed = !app.thread_ui.plan_collapsed
-        }
-        ThreadAction::ToggleAgentsDock => {
-            app.thread_ui.agents_collapsed = !app.thread_ui.agents_collapsed
-        }
         ThreadAction::FocusComposer => {
             app.thread_ui.focus = ThreadFocus::Composer;
             app.thread_ui.composer.focus();
@@ -1317,8 +1317,6 @@ fn apply_action(app: &mut App, action: ThreadAction) {
         | ThreadAction::OpenSubagent(_)
         | ThreadAction::CloseSubagentSheet
         | ThreadAction::ToggleStepRail
-        | ThreadAction::TogglePlanDock
-        | ThreadAction::ToggleAgentsDock
         | ThreadAction::FocusComposer
         | ThreadAction::FocusReviewNotes
         | ThreadAction::OpenGitTab(_) => {}
@@ -1375,6 +1373,7 @@ mod tests {
                     routing_decision: None,
                     routing_wait: None,
                     routing_attempts: None,
+                    extra: serde_json::Map::new(),
                 }],
                 ..RunRecord::default()
             },

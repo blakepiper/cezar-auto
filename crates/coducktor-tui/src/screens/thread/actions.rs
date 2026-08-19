@@ -179,6 +179,7 @@ mod tests {
                     routing_decision: None,
                     routing_wait: None,
                     routing_attempts: None,
+                    extra: serde_json::Map::new(),
                 }]
             })
             .unwrap_or_default();
