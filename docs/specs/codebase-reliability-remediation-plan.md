@@ -34,7 +34,9 @@ the larger coordinator rewrite:
 - Codex server requests receive explicit responses, Claude forwards subagent text, terminal CLI
   handoff uses structured arguments on Linux, macOS, and Windows, and Codex fixture coverage now
   proves unsupported MCP elicitation and unknown client requests cannot leave the provider
-  waiting; dead thread docks plus the duplicated binary test target were removed.
+  waiting; dead thread docks plus the duplicated binary test target were removed; and
+- forge cache-lock poisoning now resets only ephemeral cached state, while a poisoned merge guard
+  fails closed; optional GitHub refreshes cannot terminate the terminal process.
 
 The critical coordinator work is not complete. Provider turns still need to move out of the
 project-manager critical section into bounded per-run workers before same-project parallelism and

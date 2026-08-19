@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use coducktor_contract::{
@@ -28,6 +28,25 @@ use crate::normalize::{
     normalize_reviews, parse_owner_name, ref_status_ttl, rollup_to_checks, sanitize_ref_numbers,
     tail,
 };
+
+/// Forge cache locks protect only disposable data. A panic while one is held must not make GitHub
+/// integration take down the terminal; discard the possibly partial cache and continue uncached.
+fn recover_cache_lock<T: Default>(lock: &Mutex<T>) -> MutexGuard<'_, T> {
+    match lock.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            *guard = T::default();
+            guard
+        }
+    }
+}
+
+fn merge_guard_lock(
+    lock: &Mutex<std::collections::BTreeSet<u64>>,
+) -> Result<MutexGuard<'_, std::collections::BTreeSet<u64>>, ()> {
+    lock.lock().map_err(|_| ())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandOutput {
@@ -259,11 +278,7 @@ impl GithubDriver {
             return ForgeAvailability::available();
         }
         let now = Self::now_ms();
-        if let Some(entry) = self
-            .detect_cache
-            .lock()
-            .expect("detect cache poisoned")
-            .as_ref()
+        if let Some(entry) = recover_cache_lock(&self.detect_cache).as_ref()
             && now.saturating_sub(entry.at) < CACHE_MS
         {
             return entry.value.clone();
@@ -283,7 +298,7 @@ impl GithubDriver {
                 &result.stderr
             })),
         };
-        *self.detect_cache.lock().expect("detect cache poisoned") = Some(CacheEntry {
+        *recover_cache_lock(&self.detect_cache) = Some(CacheEntry {
             at: now,
             value: value.clone(),
         });
@@ -294,11 +309,7 @@ impl GithubDriver {
         if Self::dry_run() {
             return Some(ForgeAvailability::available());
         }
-        let cached = self
-            .detect_cache
-            .lock()
-            .expect("detect cache poisoned")
-            .clone();
+        let cached = recover_cache_lock(&self.detect_cache).clone();
         if cached
             .as_ref()
             .is_none_or(|entry| Self::now_ms().saturating_sub(entry.at) >= CACHE_MS)
@@ -318,11 +329,7 @@ impl GithubDriver {
         let limit = limit.clamp(1, GH_MAX_LIMIT);
         let now = Self::now_ms();
         if !refresh
-            && let Some(cache) = self
-                .list_cache
-                .lock()
-                .expect("list cache poisoned")
-                .as_ref()
+            && let Some(cache) = recover_cache_lock(&self.list_cache).as_ref()
             && now.saturating_sub(cache.at) < CACHE_MS
             && cache.limit >= limit
         {
@@ -330,7 +337,7 @@ impl GithubDriver {
         }
         let result = self.list_uncached(limit);
         if result.available {
-            *self.list_cache.lock().expect("list cache poisoned") = Some(ListCache {
+            *recover_cache_lock(&self.list_cache) = Some(ListCache {
                 at: Self::now_ms(),
                 limit,
                 data: result.clone(),
@@ -463,12 +470,7 @@ impl GithubDriver {
     }
 
     pub fn resolve_repo_handle(&self) -> Option<(String, String)> {
-        if let Some(cached) = self
-            .repo_handle_cache
-            .lock()
-            .expect("repo cache poisoned")
-            .clone()
-        {
+        if let Some(cached) = recover_cache_lock(&self.repo_handle_cache).clone() {
             return cached;
         }
         let Ok(value) = self.run_gh(
@@ -485,17 +487,12 @@ impl GithubDriver {
             return None;
         };
         let handle = parse_owner_name(&value);
-        *self.repo_handle_cache.lock().expect("repo cache poisoned") = Some(handle.clone());
+        *recover_cache_lock(&self.repo_handle_cache) = Some(handle.clone());
         handle
     }
 
     fn resolve_repo_handle_strict(&self) -> Result<Option<(String, String)>, String> {
-        if let Some(cached) = self
-            .repo_handle_cache
-            .lock()
-            .expect("repo cache poisoned")
-            .clone()
-        {
+        if let Some(cached) = recover_cache_lock(&self.repo_handle_cache).clone() {
             return Ok(cached);
         }
         let value = self.run_gh(
@@ -510,25 +507,16 @@ impl GithubDriver {
             Duration::from_secs(15),
         )?;
         let handle = parse_owner_name(&value);
-        *self.repo_handle_cache.lock().expect("repo cache poisoned") = Some(handle.clone());
+        *recover_cache_lock(&self.repo_handle_cache) = Some(handle.clone());
         Ok(handle)
     }
 
     pub fn clear_caches(&self) {
-        *self.list_cache.lock().expect("list cache poisoned") = None;
-        self.comments_cache
-            .lock()
-            .expect("comments cache poisoned")
-            .clear();
-        self.checks_cache
-            .lock()
-            .expect("checks cache poisoned")
-            .clear();
-        self.ref_cache.lock().expect("ref cache poisoned").clear();
-        self.merge_cache
-            .lock()
-            .expect("merge cache poisoned")
-            .clear();
+        *recover_cache_lock(&self.list_cache) = None;
+        recover_cache_lock(&self.comments_cache).clear();
+        recover_cache_lock(&self.checks_cache).clear();
+        recover_cache_lock(&self.ref_cache).clear();
+        recover_cache_lock(&self.merge_cache).clear();
     }
 
     pub fn comments(&self, kind: GithubItemKind, number: u64, refresh: bool) -> GithubCommentsData {
@@ -546,11 +534,7 @@ impl GithubDriver {
         );
         let now = Self::now_ms();
         if !refresh
-            && let Some(entry) = self
-                .comments_cache
-                .lock()
-                .expect("comments cache poisoned")
-                .get(&key)
+            && let Some(entry) = recover_cache_lock(&self.comments_cache).get(&key)
             && now.saturating_sub(entry.at) < CACHE_MS
         {
             return entry.value.clone();
@@ -690,7 +674,7 @@ impl GithubDriver {
     }
 
     fn store_comments(&self, key: String, data: GithubCommentsData) {
-        let mut cache = self.comments_cache.lock().expect("comments cache poisoned");
+        let mut cache = recover_cache_lock(&self.comments_cache);
         cache.insert(
             key,
             CacheEntry {
@@ -731,7 +715,7 @@ impl GithubDriver {
         let mut output = BTreeMap::new();
         let mut misses = Vec::new();
         {
-            let cache = self.checks_cache.lock().expect("checks cache poisoned");
+            let cache = recover_cache_lock(&self.checks_cache);
             for number in wanted {
                 if let Some(entry) = cache.get(&number)
                     && now.saturating_sub(entry.at) < CACHE_MS
@@ -755,7 +739,7 @@ impl GithubDriver {
             &misses,
             GH_CHECKS_MAX,
         );
-        let mut cache = self.checks_cache.lock().expect("checks cache poisoned");
+        let mut cache = recover_cache_lock(&self.checks_cache);
         for number in misses {
             let value = fetched.get(&number).copied().unwrap_or(None);
             output.insert(number, value);
@@ -788,7 +772,7 @@ impl GithubDriver {
         let mut entries = Vec::new();
         let mut misses = Vec::new();
         {
-            let cache = self.ref_cache.lock().expect("ref cache poisoned");
+            let cache = recover_cache_lock(&self.ref_cache);
             for number in &wanted {
                 if let Some(entry) = cache.get(number)
                     && now.saturating_sub(entry.at) < ref_status_ttl(entry.resolved.as_ref())
@@ -839,7 +823,7 @@ impl GithubDriver {
             .copied()
             .collect::<std::collections::BTreeSet<_>>();
         let stored_at = Self::now_ms();
-        let mut cache = self.ref_cache.lock().expect("ref cache poisoned");
+        let mut cache = recover_cache_lock(&self.ref_cache);
         for number in misses {
             if failed.contains(&number) {
                 continue;
@@ -881,10 +865,7 @@ impl GithubDriver {
     }
 
     pub fn forget_ref_status(&self, number: u64) {
-        self.ref_cache
-            .lock()
-            .expect("ref cache poisoned")
-            .remove(&number);
+        recover_cache_lock(&self.ref_cache).remove(&number);
     }
 
     pub fn read_cached_ref_statuses(
@@ -895,7 +876,7 @@ impl GithubDriver {
         BTreeMap<u64, ReferenceStatus>,
     ) {
         let now = Self::now_ms();
-        let cache = self.ref_cache.lock().expect("ref cache poisoned");
+        let cache = recover_cache_lock(&self.ref_cache);
         let mut prs = BTreeMap::new();
         let mut issues = BTreeMap::new();
         for number in numbers.iter().copied() {
@@ -1146,11 +1127,7 @@ impl GithubDriver {
         }
         let now = Self::now_ms();
         if !refresh
-            && let Some(entry) = self
-                .merge_cache
-                .lock()
-                .expect("merge cache poisoned")
-                .get(&number)
+            && let Some(entry) = recover_cache_lock(&self.merge_cache).get(&number)
             && now.saturating_sub(entry.at) < 15_000
         {
             return entry.value.clone();
@@ -1202,22 +1179,27 @@ impl GithubDriver {
                 reason: first_line(&reason),
             },
         };
-        self.merge_cache
-            .lock()
-            .expect("merge cache poisoned")
-            .insert(
-                number,
-                CacheEntry {
-                    at: Self::now_ms(),
-                    value: result.clone(),
-                },
-            );
+        recover_cache_lock(&self.merge_cache).insert(
+            number,
+            CacheEntry {
+                at: Self::now_ms(),
+                value: result.clone(),
+            },
+        );
         result
     }
 
     pub fn merge_pr(&self, number: u64, input: &ForgeMergeInput) -> ForgeMergeResult {
         {
-            let mut inflight = self.merge_inflight.lock().expect("merge lock poisoned");
+            let Ok(mut inflight) = merge_guard_lock(&self.merge_inflight) else {
+                return ForgeMergeResult::Rejected {
+                    status: 503,
+                    error: "Merge coordination is temporarily unavailable; retry after refreshing."
+                        .to_owned(),
+                    code: Some("unavailable".to_owned()),
+                    current: None,
+                };
+            };
             if !inflight.insert(number) {
                 return ForgeMergeResult::Rejected {
                     status: 409,
@@ -1228,10 +1210,9 @@ impl GithubDriver {
             }
         }
         let outcome = self.merge_pr_inner(number, input);
-        self.merge_inflight
-            .lock()
-            .expect("merge lock poisoned")
-            .remove(&number);
+        if let Ok(mut inflight) = merge_guard_lock(&self.merge_inflight) {
+            inflight.remove(&number);
+        }
         outcome
     }
 
@@ -2218,6 +2199,58 @@ mod tests {
                 .and_then(|colors| colors.get("bug")),
             Some(&"d73a4a".to_owned())
         );
+    }
+
+    #[test]
+    fn poisoned_forge_cache_degrades_to_an_uncached_request() {
+        let runner = Arc::new(FixtureRunner::default());
+        let driver = GithubDriver::with_runner(
+            "/repo/a",
+            Some(GithubRepoRef {
+                owner: "owner".into(),
+                repo: "demo".into(),
+            }),
+            runner.clone(),
+        );
+        let cache = driver.repo_handle_cache.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = cache.lock().unwrap();
+            panic!("poison fixture cache");
+        })
+        .join();
+
+        assert_eq!(
+            driver.resolve_repo_handle(),
+            Some(("owner".into(), "demo".into()))
+        );
+        assert_eq!(runner.calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn poisoned_merge_guard_fails_closed_before_starting_a_merge() {
+        let driver = GithubDriver::new("/repo/a", None);
+        let guard = driver.merge_inflight.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = guard.lock().unwrap();
+            panic!("poison fixture merge guard");
+        })
+        .join();
+
+        assert!(matches!(
+            driver.merge_pr(
+                7,
+                &ForgeMergeInput {
+                    method: GithubMergeMethod::Squash,
+                    expected_head_sha: "0123456789abcdef0123456789abcdef01234567".into(),
+                    override_rules: false,
+                },
+            ),
+            ForgeMergeResult::Rejected {
+                status: 503,
+                code: Some(code),
+                ..
+            } if code == "unavailable"
+        ));
     }
 
     #[test]
