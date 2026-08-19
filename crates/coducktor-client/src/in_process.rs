@@ -9600,6 +9600,98 @@ mod tests {
             .unwrap();
     }
 
+    /// R3's required refresh-at-scale case: a 300-run project (past the per-project index
+    /// truncation limit) plus several other registered projects, one of them blocked on a live
+    /// provider turn, must still refresh promptly — `runs_index` only ever reads
+    /// `run_snapshot`/registration, never a manager a blocked turn is holding.
+    #[tokio::test]
+    async fn a_three_hundred_run_project_refreshes_without_waiting_on_a_blocked_sibling() {
+        let large_repo = TempDir::new().unwrap();
+        let blocked_repo = TempDir::new().unwrap();
+        let sibling_b = TempDir::new().unwrap();
+        let sibling_c = TempDir::new().unwrap();
+        let workspace = TempDir::new().unwrap();
+        let config_path = workspace.path().join("config.json");
+        std::fs::write(
+            &config_path,
+            json!({
+                "projects": [
+                    {"id": "large", "root": large_repo.path(), "name": "Large"},
+                    {"id": "blocked", "root": blocked_repo.path(), "name": "Blocked"},
+                    {"id": "sibling-b", "root": sibling_b.path(), "name": "B"},
+                    {"id": "sibling-c", "root": sibling_c.path(), "name": "C"},
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let tokens = Arc::new(Mutex::new(BTreeMap::new()));
+        let engine = InProcessEngine::with_session_factory_at(
+            large_repo.path(),
+            "0.0.0-test",
+            BlockingFactory {
+                tokens: tokens.clone(),
+            },
+            config_path,
+        );
+
+        let large_scope = Scope::Project("large".to_owned());
+        for index in 0..300 {
+            <InProcessEngine as crate::Engine>::start_run(
+                &engine,
+                &large_scope,
+                steps_input(&format!("run {index}")),
+            )
+            .await
+            .unwrap();
+        }
+
+        let blocked_scope = Scope::Project("blocked".to_owned());
+        let CreateRunResponse::Single(run) = <InProcessEngine as crate::Engine>::start_run(
+            &engine,
+            &blocked_scope,
+            steps_input("block while the large project refreshes"),
+        )
+        .await
+        .unwrap() else {
+            panic!("expected one run");
+        };
+        <InProcessEngine as crate::Engine>::activate_runs(&engine, &blocked_scope)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if tokens.lock().unwrap().contains_key(&run.id) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let started = Instant::now();
+        let index = engine.runs_index().await.unwrap();
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "runs_index should not wait on the blocked sibling project's worker"
+        );
+        let large_count = index
+            .runs
+            .iter()
+            .filter(|entry| entry.project_id == "large")
+            .count();
+        assert_eq!(
+            large_count, 200,
+            "per-project truncation caps a 300-run project's entries at the limit"
+        );
+        assert!(index.truncated.iter().any(|id| id == "large"));
+
+        <InProcessEngine as crate::Engine>::cancel_run(&engine, &blocked_scope, &run.id)
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn completed_activation_workers_are_reaped_from_the_registry() {
         let dir = TempDir::new().unwrap();

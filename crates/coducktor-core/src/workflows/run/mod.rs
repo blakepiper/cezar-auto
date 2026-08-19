@@ -4421,7 +4421,21 @@ mod tests {
                 .unwrap();
         }
         manager.flush().unwrap();
-        assert_eq!(manager.read_events(&run.id).len(), 10_000);
+        let events = manager.read_events(&run.id);
+        assert_eq!(events.len(), 10_000);
+        // The exact final transcript, not just the right count: every delta present, in order,
+        // with its own content intact — debounced index notifications must never coalesce away
+        // or reorder the durable event log itself.
+        assert!(
+            events.windows(2).all(|pair| pair[0].seq < pair[1].seq),
+            "events must stay in strictly increasing seq order"
+        );
+        for (index, event) in events.iter().enumerate() {
+            assert_eq!(
+                event.extra.get("text").and_then(Value::as_str),
+                Some(format!("delta-{index}")).as_deref()
+            );
+        }
         let metrics = manager.runtime_metrics();
         assert_eq!(metrics.event_appends, 10_000);
         assert!(metrics.index_flushes >= 1);

@@ -1479,6 +1479,38 @@ mod tests {
         assert_eq!(large.rebuilt_events, 2_000);
     }
 
+    /// R3's required scaling assertion, made concrete: not just that one batch stays one rebuild
+    /// (the test above), but that the rebuild's actual work is near-linear in the events it
+    /// folds, not quadratic. Takes the fastest of several samples per size — the standard way to
+    /// filter scheduler noise out of a wall-clock micro-benchmark without hiding a real
+    /// algorithmic regression, since noise can only ever slow a sample down, never speed it up.
+    #[test]
+    fn doubling_accepted_events_does_not_quadruple_rebuild_time() {
+        fn fastest_rebuild_time(event_count: u64) -> Duration {
+            (0..5)
+                .map(|_| {
+                    let mut app = app_with_run(RunStatus::Running);
+                    app.thread_ui.push_events((1..=event_count).map(|seq| {
+                        let sequence = seq as f64;
+                        (sequence, event(sequence, "text", json!({"text": "delta"})))
+                    }));
+                    app.thread_ui.projection_metrics().rebuild_time
+                })
+                .min()
+                .expect("five samples were taken")
+        }
+
+        let small = fastest_rebuild_time(5_000);
+        let large = fastest_rebuild_time(10_000);
+        // Perfectly linear work doubles; quadratic work roughly quadruples. A 3x ceiling catches
+        // quadratic growth with room for noise around the true linear answer.
+        assert!(
+            large < small * 3,
+            "doubling accepted events from 5,000 to 10,000 took {large:?} against {small:?} for \
+             half as many — looks quadratic, not linear"
+        );
+    }
+
     #[test]
     fn mouse_wheel_scrolls_the_transcript() {
         let mut app = app_with_run(RunStatus::Running);
