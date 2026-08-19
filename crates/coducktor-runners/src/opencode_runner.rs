@@ -64,12 +64,10 @@ use crate::wire::json_string;
 
 const SERVER_START_TIMEOUT_MS: u64 = 30_000;
 
-static URL_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"https?://[\d.]+:\d+").expect("fixed pattern"));
-static VARIANT_ERROR_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)variant|reasoning|model.*(not found|invalid|unsupported)")
-        .expect("fixed pattern")
-});
+static URL_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"https?://[\d.]+:\d+"));
+static VARIANT_ERROR_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"(?i)variant|reasoning|model.*(not found|invalid|unsupported)"));
 
 /// Where to find the opencode binary. Production wiring resolves `program`/`prefix_args` from
 /// `DUCK_OPENCODE_BIN` is resolved by the session factory; tests point `program` at
@@ -115,7 +113,9 @@ fn pick_port() -> u16 {
 }
 
 fn is_model_variant_error(message: &str) -> bool {
-    VARIANT_ERROR_RE.is_match(message)
+    VARIANT_ERROR_RE
+        .as_ref()
+        .is_ok_and(|regex| regex.is_match(message))
 }
 
 /// A live `opencode serve` session driving a single server-side session. Implements
@@ -229,7 +229,7 @@ pub fn open_opencode_session(
 fn wait_for_server_url(process: &mut ChildProcess, fallback_port: u16) -> String {
     let deadline = Instant::now() + Duration::from_millis(SERVER_START_TIMEOUT_MS);
     while let Ok(NextLine::Line(line)) = process.next_line(Some(deadline)) {
-        if let Some(found) = URL_RE.find(&line) {
+        if let Some(found) = URL_RE.as_ref().ok().and_then(|regex| regex.find(&line)) {
             return found.as_str().to_owned();
         }
     }

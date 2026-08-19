@@ -59,6 +59,8 @@ the larger coordinator rewrite:
   preserving the raw transcript instead of panicking on provider output.
 - task-reference marker parsing and display stripping now likewise degrade to untouched raw text
   if a compatibility regex is unavailable.
+- OpenCode's server-URL and reasoning-variant matchers now degrade to their existing fallback
+  behavior when unavailable, instead of panicking during a provider turn.
 
 The critical coordinator work is not complete. Provider turns still need to move out of the
 project-manager critical section into bounded per-run workers before same-project parallelism and
