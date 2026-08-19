@@ -13,7 +13,7 @@ use coducktor_runners::opencode::{
 use coducktor_runners::pi::{
     PiUiMapperState, create_pi_ui_state, map_pi_rpc_message, pi_turn_started,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 
 const CLAUDE_FIXTURES: &[&str] = &[
     "text-turn",
@@ -75,6 +75,43 @@ fn capability_matrix_references_every_normalized_runner() {
             matrix.contains(fixture),
             "matrix must link fixture {fixture}"
         );
+    }
+}
+
+/// Protocol mappers must make forward-compatible degradation a bounded local operation: a
+/// provider adding an unrecognized frame cannot manufacture a normalized event or leave a
+/// replay harness waiting for a response from another runner.
+#[test]
+fn malformed_and_unknown_provider_frames_are_noops() {
+    let malformed = Value::String("not an object".to_owned());
+    let unknown = json!({"type": "future.provider.frame"});
+
+    let codex = create_codex_ui_state();
+    for value in [&malformed, &unknown] {
+        let mapped = map_codex_notification(value, &codex);
+        assert!(mapped.events.is_empty());
+        assert_eq!(mapped.state, codex);
+    }
+
+    let claude = create_claude_ui_state(None);
+    for value in [&malformed, &unknown] {
+        let mapped = map_claude_message(value, &claude);
+        assert!(mapped.events.is_empty());
+        assert_eq!(mapped.state, claude);
+    }
+
+    let opencode = create_opencode_ui_state();
+    for value in [&malformed, &unknown] {
+        let mapped = map_opencode_event(value, &opencode);
+        assert!(mapped.events.is_empty());
+        assert_eq!(mapped.state, opencode);
+    }
+
+    let pi = create_pi_ui_state();
+    for value in [&malformed, &unknown] {
+        let mapped = map_pi_rpc_message(value, &pi);
+        assert!(mapped.events.is_empty());
+        assert_eq!(mapped.state, pi);
     }
 }
 
