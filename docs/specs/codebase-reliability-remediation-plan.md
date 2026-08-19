@@ -216,16 +216,18 @@ Acceptance:
 - Appending N then 2N events demonstrates near-linear, not quadratic, projection cost.
 - A 300-run project plus several registered projects can refresh without blocking input.
 
-### R4 — Worktree mode is persisted but never executed (critical)
+### R4 — Worktree mode is persisted but never executed (critical; implemented)
 
 Evidence:
 
 - README and New Task advertise optional isolated worktrees and mandatory isolation for competing
   variants.
-- `CreateRunInput.worktree` reaches the run record, but production construction never calls
-  `git::worktree::create_worktree` or assigns `worktree_path`, `branch`, and `base_branch`.
-- `SessionRequest.cwd` is always `RunManager::repo_root()`. The worktree APIs in the client only
-  inspect or remove paths that some other path would already have created.
+- admitted worktree runs now persist `worktree_path`, branch, and base branch before execution;
+  the runner, checks, diff inspection, handoff, and repository actions use that directory.
+- temporary-Git integration coverage proves original-checkout isolation, runner cwd, variants,
+  continuation affinity, and cleanup/retention behavior.
+
+The correction and acceptance criteria below are retained as the completed audit trace.
 
 Required correction:
 
@@ -243,16 +245,16 @@ Acceptance:
 - A real temporary Git repository proves original-checkout isolation, branch spelling, runner cwd,
   parallel variants, continuation affinity, diff, commit, push seam, and cleanup/retention.
 
-### R5 — Workflow checks and the review gate have no production execution seams (critical)
+### R5 — Workflow checks and the review gate have no production execution seams (critical; implemented)
 
 Evidence:
 
 - README advertises shell `command` steps with bounded retry.
-- `RunManager` fails a command step with `check executor unavailable` unless a `CheckExecutor` is
-  injected; only tests inject one.
-- Review settlement requires an injected `DiffInspector`; only tests inject one. Production's
-  manager also keeps default `RuntimeOptions { review_gate: false }`. The client contains a special
-  review workaround only while picking a variant, not normal completion.
+- production configuration injects bounded worktree-aware check execution and diff inspection.
+- repository/environment review policy reaches `RuntimeOptions`, and normal run settlement uses
+  the shared review path.
+
+The correction and acceptance criteria below are retained as the completed audit trace.
 
 Required correction:
 
@@ -270,15 +272,17 @@ Acceptance:
 - A changed successful run enters Review only when the effective gate requires it; unchanged and
   autonomous runs follow the documented policy.
 
-### R6 — Selected agent accounts do not reach task processes (critical)
+### R6 — Selected agent accounts do not reach task processes (critical; implemented)
 
 Evidence:
 
 - account/profile CRUD, provider probes, project selections, and child-env tests exist.
-- a run stores `agent_profile`, but `SessionRequest` has no resolved profile environment and
-  `to_agent_run_spec` always gets an empty `env` map.
-- profile-specific `CLAUDE_CONFIG_DIR`/`CODEX_HOME` is only applied by status/model probes, not by
-  the task session factory. The persisted choice is therefore cosmetic during execution.
+- admission resolves the selected or project-default profile and passes only its provider-specific
+  home override to the task child environment.
+- focused concurrent-profile coverage proves task child processes observe their selected profile
+  directory without copying credentials into durable run state.
+
+The correction and acceptance criteria below are retained as the completed audit trace.
 
 Required correction:
 
@@ -301,8 +305,8 @@ Evidence:
 
 - workspace/project Settings expose `maxParallel`, `maxMonitoringSessions`, monitoring wake
   interval, auto-resume, intelligent context refresh, and memory limits.
-- production manager construction now applies runtime options, but the workspace scheduler,
-  repository lease, intelligent-context refresh, check executor, and diff inspector remain
+- production manager construction applies runtime options, intelligent-context refresh, the check
+  executor, and diff inspector; the cross-project workspace scheduler and repository lease remain
   unwired.
 - monitoring-session admission is enforced at runtime. Memory limits and monitoring wake
   configuration are still parsed and rendered with no runtime enforcement/scheduler in this
@@ -424,16 +428,16 @@ Acceptance:
 - unknown-key, one-bad-entry, truncated-file, permission, concurrent-writer, disk-full, and
   crash-between-write/rename fault tests pass without destroying the original state.
 
-### R11 — Dead thread UI and duplicated build targets should be removed (medium)
+### R11 — Dead thread UI and duplicated build targets should be removed (medium; implemented)
 
 Evidence:
 
-- `render_plan_dock`, `render_agents_dock`, and `collect_subagents` are hidden behind
-  `#[allow(dead_code)]`, but `ThreadAction::TogglePlanDock`/`ToggleAgentsDock` and associated state
-  remain reachable code with no rendered dock caller. The current task spec intentionally uses one
-  timeline, so this is superseded implementation, not a missing new view.
-- `coducktor` and `duck` point at the same `src/main.rs`, causing Cargo to compile and run the same
-  binary tests twice under `--all-targets`.
+- obsolete thread docks, toggles, state, and snapshots were reference-searched and removed; the
+  shipped thread view is a single timeline.
+- `coducktor` and `duck` are trivial wrappers around the shared library entry point, with the
+  short alias excluded from Cargo binary tests so all-target testing runs the suite once.
+
+The correction and acceptance criteria below are retained as the completed audit trace.
 - `in_process.rs` is about 10,900 lines, `app.rs` about 4,500, and `main.rs` about 2,460. This does
   not itself prove a runtime defect, but it obscures ownership boundaries exposed by R1/R2/R7 and
   makes dead wiring harder to detect.
@@ -455,14 +459,17 @@ Acceptance:
 - workspace all-target tests execute the binary test suite once; and
 - both installed command names report the same version and behavior.
 
-### R12 — Interactive CLI handoff is Linux-only (medium)
+### R12 — Interactive CLI handoff is Linux-only (medium; implementation complete, terminal verification ongoing)
 
 Evidence:
 
-- general project open-target support has macOS/Windows/Linux branches, but
-  `open_terminal_for_command`, used by task `open_in_cli`, immediately returns false off Linux.
-- this means the existing “open this task in its native agent CLI” action cannot work on two
-  supported desktop families even when a terminal is installed.
+- resume command construction uses the validated open-target abstraction on Linux, macOS, and
+  Windows, retaining command and session IDs as separate argument values.
+- fixture coverage characterizes those platform commands; real interactive results are recorded
+  as they are exercised in `docs/tui/terminals.md`.
+
+The code correction and argument-construction acceptance criterion are complete; terminal
+verification remains ongoing on available platforms.
 
 Required correction:
 
