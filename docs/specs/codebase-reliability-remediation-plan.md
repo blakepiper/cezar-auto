@@ -72,9 +72,11 @@ The critical coordinator work is not complete. Provider turns still need to move
 project-manager critical section into bounded per-run workers before same-project parallelism and
 all mutation latency requirements in R1 are satisfied. R2 still needs a general TUI command
 executor instead of action-specific background work. The remaining R7 policy controls, full R8
-protocol fixture matrix, bounded shutdown escalation in R9, explicit repair/retention work in R10,
-and real-terminal R12 verification also remain open. The findings and acceptance criteria below
-remain authoritative until each item is closed by its named tests and measurements.
+protocol fixture matrix, bounded shutdown escalation in R9, a user-facing recovery action in R10,
+and real-terminal R12 verification also remain open. R10's core persistence protections are now in
+place, but its recovery operation is not yet exposed through the product. The findings and
+acceptance criteria below remain authoritative until each item is closed by its named tests and
+measurements.
 
 ## Outcome
 
@@ -400,18 +402,23 @@ Acceptance:
 - 1,000 mocked open/cancel/finish cycles return cancellation, worker, reader, and child counts to
   baseline.
 
-### R10 — Run-state durability violates repository invariants (high)
+### R10 — Run-state durability violates repository invariants (high; partially implemented)
 
 Evidence:
 
-- malformed `runs.json` or one invalid entry loads as an indistinguishable empty list. The next
-  mutation can overwrite the corrupt file; there is no one-time warning or write quarantine.
-- `RunRecord` has no flattened unknown-field map, so a compatible read followed by any write drops
-  future top-level and step keys.
-- the index uses a fixed `.tmp` file and does not set `0600`, despite per-user project state and the
-  repository's atomic/private read-modify-write requirement.
-- `select_stale_run_ids` and run/event retention limits are tested but never invoked, compounding
-  index-write and load costs.
+- `RunIndexLoad` distinguishes missing, valid, per-entry-salvaged, and corrupt `runs.json` state.
+  Salvaged/corrupt state warns once at manager startup and quarantines mutations, preserving the
+  original bytes until an explicit repair.
+- `RunRecord` and nested step values preserve unknown JSON fields through a read-modify-write;
+  regression coverage proves both levels survive.
+- index writes use a collision-safe staging name, owner-only permissions, data sync before rename,
+  and a best-effort directory sync afterwards. Explicit repair copies the original bytes to an
+  owner-only backup before replacing the index.
+- production manager construction invokes terminal-record retention. It atomically removes only
+  inactive terminal records, then best-effort cleans matching NDJSON and handoff sidecars while
+  leaving worktrees recoverable.
+- `repair_quarantined_index` is currently a core-manager operation only; there is no Engine/TUI
+  recovery action that can present its backup path to a user.
 
 Required correction:
 
