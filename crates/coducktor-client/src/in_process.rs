@@ -360,7 +360,7 @@ fn configure_production_manager(
 }
 
 /// Resolve the policy used for future run admissions from every retained configuration layer.
-/// Running sessions keep their existing limits; callers rebuild managers before applying changes.
+/// Running sessions keep their existing limits; callers reconfigure only future admissions.
 fn effective_runtime_options(
     workspace: &WorkspaceConfig,
     repo: &RepoConfig,
@@ -613,6 +613,27 @@ impl InProcessEngine {
             },
         );
         Ok(ProjectManager { root, manager })
+    }
+
+    /// Refresh policy collaborators for managers that are already open. This deliberately keeps
+    /// their run/session state intact: changed limits govern subsequent admission, not a live
+    /// process whose environment, cwd, or reservation was already established.
+    fn reconfigure_open_managers(
+        &self,
+        workspace: &coducktor_core::workspace::config::WorkspaceConfig,
+    ) -> Result<(), EngineError> {
+        let managers = self.managers.lock().map_err(|_| lock_err())?;
+        for (project_id, entry) in managers.iter() {
+            let mut manager = entry.manager.lock().map_err(|_| lock_err())?;
+            configure_production_manager(
+                &mut manager,
+                &entry.root,
+                &self.state_home,
+                workspace,
+                project_id,
+            );
+        }
+        Ok(())
     }
 
     /// Build a view whose repository and manager are the selected project. Existing inherent
@@ -1831,9 +1852,13 @@ impl InProcessEngine {
         let repo_root = self.repo_root.clone();
         let state_home = self.state_home.clone();
         let input = input.clone();
-        tokio::task::spawn_blocking(move || update_repo_config(&repo_root, &state_home, &input))
-            .await
-            .map_err(|error| EngineError::Transport(error.to_string()))?
+        let response = tokio::task::spawn_blocking(move || {
+            update_repo_config(&repo_root, &state_home, &input)
+        })
+        .await
+        .map_err(|error| EngineError::Transport(error.to_string()))??;
+        self.reconfigure_open_managers(&self.loaded_workspace_config())?;
+        Ok(response)
     }
 
     // ---- diff engine: task git, repo git, compare -------------------------------------------
@@ -2896,6 +2921,7 @@ impl InProcessEngine {
             apply_workspace_config_input(config, &input);
         })
         .map_err(io_err)?;
+        self.reconfigure_open_managers(&saved)?;
         Ok(workspace_config_response(&saved))
     }
 
@@ -8999,6 +9025,36 @@ mod tests {
             FakeFactory,
             config_path,
         );
+        let manager = engine.manager.lock().unwrap();
+        assert_eq!(manager.runtime_options().max_parallel, 1);
+        assert_eq!(manager.runtime_options().max_monitoring_sessions, 1);
+        assert!(!manager.runtime_options().auto_resume_on_usage_limit);
+    }
+
+    #[tokio::test]
+    async fn workspace_resource_updates_reconfigure_open_managers_for_future_admission() {
+        let repo = TempDir::new().unwrap();
+        let state = TempDir::new().unwrap();
+        let engine = InProcessEngine::with_session_factory_at(
+            repo.path(),
+            "0.0.0-test",
+            FakeFactory,
+            state.path().join("config.json"),
+        );
+
+        engine
+            .put_workspace_config(&SetWorkspaceConfigInput {
+                resources: Some(coducktor_contract::WorkspaceResourcesPatch {
+                    max_parallel: Some(1),
+                    max_monitoring_sessions: Some(1),
+                    auto_resume_on_usage_limit: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
         let manager = engine.manager.lock().unwrap();
         assert_eq!(manager.runtime_options().max_parallel, 1);
         assert_eq!(manager.runtime_options().max_monitoring_sessions, 1);
