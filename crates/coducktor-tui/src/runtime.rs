@@ -283,6 +283,11 @@ enum BackgroundResult {
         project: String,
         result: Result<coducktor_contract::CreateRunResponse, coducktor_client::EngineError>,
     },
+    GithubPickers {
+        project: String,
+        workflows: Result<coducktor_contract::WorkflowsResponse, coducktor_client::EngineError>,
+        skills: Result<Vec<coducktor_contract::Skill>, coducktor_client::EngineError>,
+    },
     SessionMutation {
         action: SessionMutation,
         project: String,
@@ -1247,12 +1252,22 @@ async fn execute_pending(
             }
             PendingAction::LoadGithubPickers { project } => {
                 let scope = Scope::Project(project.clone());
-                if let Ok(workflows) = engine.workflows(&scope).await {
-                    app.github_ui.workflows = workflows.workflows;
-                }
-                if let Ok(skills) = engine.skills(&scope).await {
-                    app.github_ui.skills = skills;
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move {
+                        tokio::join!(
+                            engine_for_task.workflows(&scope),
+                            engine_for_task.skills(&scope),
+                        )
+                    },
+                    move |(workflows, skills)| BackgroundResult::GithubPickers {
+                        project,
+                        workflows,
+                        skills,
+                    },
+                );
             }
             PendingAction::LoadGithubComments {
                 project,
@@ -2045,6 +2060,23 @@ fn drain_background_results(
                     Err(error) => app.notice = Some(format!("start failed: {error}")),
                 }
             }
+            BackgroundResult::GithubPickers {
+                project,
+                workflows,
+                skills,
+            } => {
+                if !matches!(app.route(), app::Route::Github { project: route_project } if route_project == &project)
+                    || app.github_ui.project != project
+                {
+                    continue;
+                }
+                if let Ok(workflows) = workflows {
+                    app.github_ui.workflows = workflows.workflows;
+                }
+                if let Ok(skills) = skills {
+                    app.github_ui.skills = skills;
+                }
+            }
             BackgroundResult::SessionMutation {
                 action,
                 project,
@@ -2758,6 +2790,30 @@ mod tests {
 
         assert!(app.compare_ui.group.is_none());
         assert!(app.compare_ui.variant_diffs.is_empty());
+    }
+
+    #[test]
+    fn stale_github_picker_load_does_not_update_the_active_project() {
+        let (sender, receiver) = channel();
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        screens::github::open(&mut app, "main");
+        let mut starts_in_flight = HashSet::new();
+
+        sender
+            .send(BackgroundResult::GithubPickers {
+                project: "other".to_owned(),
+                workflows: Ok(coducktor_contract::WorkflowsResponse {
+                    workflows: Vec::new(),
+                    issues: Vec::new(),
+                }),
+                skills: Ok(Vec::new()),
+            })
+            .unwrap();
+
+        drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+
+        assert!(app.github_ui.workflows.is_empty());
+        assert!(app.github_ui.skills.is_empty());
     }
 
     #[tokio::test]

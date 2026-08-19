@@ -176,6 +176,8 @@ Evidence:
 - Scratchpad hydration also runs in the background and applies only to its still-active project.
 - Compare-group metadata and variant diffs likewise load in the background and reject stale
   project/group completions.
+- GitHub handoff workflow and skill pickers now fetch concurrently in the background and discard
+  a completion after leaving that project.
 - Exact queued duplicates of the safe task/index/new-task/model refreshes coalesce before a frame;
   mutations retain their original FIFO order and are never collapsed.
 
