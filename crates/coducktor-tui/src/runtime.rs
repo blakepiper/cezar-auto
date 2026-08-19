@@ -281,6 +281,10 @@ enum BackgroundResult {
         run_id: String,
         result: Result<coducktor_contract::ChangesPayload, coducktor_client::EngineError>,
     },
+    PickVariant {
+        project: String,
+        result: Result<(), coducktor_client::EngineError>,
+    },
     LoadRepoGitCommit {
         project: String,
         result: Result<coducktor_contract::RepoCommitPayload, coducktor_client::EngineError>,
@@ -1199,11 +1203,18 @@ async fn execute_pending(
             } => {
                 let scope = Scope::Project(project.clone());
                 let input = coducktor_contract::PickVariantRequest { run_id };
-                match engine.pick_variant(&scope, &group_id, &input).await {
-                    Ok(_) => app.notice = Some("variant picked".to_owned()),
-                    Err(error) => app.notice = Some(format!("pick failed: {error}")),
-                }
-                refresh_tasks(engine.as_ref(), app, &project).await;
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move {
+                        engine_for_task
+                            .pick_variant(&scope, &group_id, &input)
+                            .await
+                            .map(|_| ())
+                    },
+                    move |result| BackgroundResult::PickVariant { project, result },
+                );
             }
             PendingAction::LoadIdeDirectory { project, path } => {
                 let scope = Scope::Project(project.clone());
@@ -1979,6 +1990,13 @@ fn drain_background_results(
                     Err(error) => app.notice = Some(format!("load diff failed: {error}")),
                 }
             }
+            BackgroundResult::PickVariant { project, result } => match result {
+                Ok(()) => {
+                    app.notice = Some("variant picked".to_owned());
+                    app.queue_pending(PendingAction::RefreshTasks { project });
+                }
+                Err(error) => app.notice = Some(format!("pick failed: {error}")),
+            },
             BackgroundResult::LoadRepoGit { project, repo } => {
                 if app.repo_git_ui.project != project {
                     continue;
@@ -2962,6 +2980,30 @@ mod tests {
 
         assert!(app.compare_ui.group.is_none());
         assert!(app.compare_ui.variant_diffs.is_empty());
+    }
+
+    #[test]
+    fn picked_variant_queues_a_background_task_refresh() {
+        let (sender, receiver) = channel();
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        let mut starts_in_flight = HashSet::new();
+
+        sender
+            .send(BackgroundResult::PickVariant {
+                project: "main".to_owned(),
+                result: Ok(()),
+            })
+            .unwrap();
+
+        drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+
+        assert_eq!(app.notice.as_deref(), Some("variant picked"));
+        assert_eq!(
+            app.pending,
+            vec![PendingAction::RefreshTasks {
+                project: "main".to_owned()
+            }]
+        );
     }
 
     #[test]

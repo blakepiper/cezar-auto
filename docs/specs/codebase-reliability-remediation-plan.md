@@ -189,6 +189,8 @@ Evidence:
   preventing a slower earlier selection from opening the wrong editor.
 - Post-registration project-registry refreshes are now best-effort background reads, rather than a
   second inline wait after the completed durable mutation.
+- Compare variant selection now runs on the worker pool and queues the existing coalesced task
+  refresh only after that mutation completes.
 - Exact queued duplicates of the safe task/index/new-task/model refreshes coalesce before a frame;
   mutations retain their original FIFO order and are never collapsed.
 
