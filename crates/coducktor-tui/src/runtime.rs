@@ -4,7 +4,9 @@ use std::future::Future;
 use std::io;
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver as BackgroundReceiver, Sender as BackgroundSender, channel};
+use std::sync::mpsc::{
+    Receiver as BackgroundReceiver, Sender as BackgroundSender, SyncSender, channel, sync_channel,
+};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -32,6 +34,8 @@ const RECEIVER_ITEMS_PER_FRAME: usize = 256;
 const RECEIVER_TIME_BUDGET: Duration = Duration::from_millis(4);
 const PENDING_ACTIONS_PER_FRAME: usize = 16;
 const BACKGROUND_WORKER_COUNT: usize = 4;
+/// Native jobs can outlive a frame, but must never form an unbounded memory backlog.
+const BACKGROUND_QUEUE_CAPACITY: usize = 128;
 
 #[tokio::main]
 pub async fn entry() -> io::Result<()> {
@@ -368,14 +372,14 @@ type BackgroundJob = Box<dyn FnOnce(tokio::runtime::Handle) + Send>;
 /// move the freeze to another runtime worker and still leave shutdown waiting on an agent process.
 /// The pool is deliberately never joined: a confirmed quit must not wait for a live agent call.
 struct BackgroundWorkers {
-    sender: BackgroundSender<BackgroundJob>,
+    sender: SyncSender<BackgroundJob>,
     pending: Arc<AtomicUsize>,
     _handles: Vec<thread::JoinHandle<()>>,
 }
 
 impl BackgroundWorkers {
     fn new(runtime_handle: tokio::runtime::Handle) -> Self {
-        let (sender, receiver) = channel::<BackgroundJob>();
+        let (sender, receiver) = sync_channel::<BackgroundJob>(BACKGROUND_QUEUE_CAPACITY);
         let receiver = Arc::new(Mutex::new(receiver));
         let pending = Arc::new(AtomicUsize::new(0));
         let mut handles = Vec::with_capacity(BACKGROUND_WORKER_COUNT);
@@ -427,12 +431,16 @@ fn spawn_background<F, T, M>(
 {
     workers.pending.fetch_add(1, Ordering::Release);
     let sender = sender.clone();
+    let completion_sender = sender.clone();
     let job = Box::new(move |handle: tokio::runtime::Handle| {
         let result = handle.block_on(future);
-        let _ = sender.send(map(result));
+        let _ = completion_sender.send(map(result));
     });
-    if workers.sender.send(job).is_err() {
+    if workers.sender.try_send(job).is_err() {
         workers.pending.fetch_sub(1, Ordering::Release);
+        let _ = sender.send(BackgroundResult::AppUpdate(Box::new(|app| {
+            app.notice = Some("background command queue is full; please retry".to_owned());
+        })));
     }
 }
 
