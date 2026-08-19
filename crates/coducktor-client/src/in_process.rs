@@ -357,10 +357,33 @@ struct TurnDispatch {
 
 impl TurnDispatch {
     /// Spawn one worker per admitted turn. Safe to call with an empty list — the common case,
-    /// since most manager operations admit nothing new.
+    /// since most manager operations admit nothing new. Also reaps every finished worker still
+    /// sitting in the registry first: a run's own worker cannot safely remove itself (a
+    /// redispatch it triggers for the same run id can already have inserted a new handle under
+    /// that key before the old thread returns), so every dispatch point sweeps instead.
     fn dispatch(&self, admitted: Vec<AdmittedTurn>) {
+        self.reap_finished();
         for turn in admitted {
             self.spawn(turn);
+        }
+    }
+
+    /// Join and drop every worker handle that has already finished. Safe to call from any
+    /// dispatch point at any time — a worker only ever finishes after it has durably applied its
+    /// own terminal outcome, so joining it here does not race anything observable.
+    fn reap_finished(&self) {
+        let Ok(mut workers) = self.workers.lock() else {
+            return;
+        };
+        let finished = workers
+            .iter()
+            .filter(|(_, worker)| worker.is_finished())
+            .map(|(run_id, _)| run_id.clone())
+            .collect::<Vec<_>>();
+        for run_id in finished {
+            if let Some(worker) = workers.remove(&run_id) {
+                let _ = worker.join();
+            }
         }
     }
 
@@ -9478,6 +9501,82 @@ mod tests {
         engine.reap_finished_activation_workers().unwrap();
         assert!(engine.activation_workers.lock().unwrap().is_empty());
         assert!(engine.cancellations.lock().unwrap().is_empty());
+    }
+
+    /// R1/R9: `TurnDispatch` gives every admitted turn its own worker thread, so nothing else
+    /// reaps it. `TurnDispatch::dispatch` sweeps finished handles before spawning new ones, so a
+    /// later `activate_runs` call (with nothing new to admit) is enough to bring the registry back
+    /// to empty — proved here across several cycles, including one a worker only finishes because
+    /// it observed cancellation rather than completing normally (a worker that does not observe
+    /// cancellation, i.e. that ignores it entirely, has no bounded exit at all yet; that gap is
+    /// tracked in the plan as still-open R9 shutdown-escalation work, not covered by this test).
+    #[tokio::test]
+    async fn repeated_start_finish_and_cancel_cycles_return_turn_worker_counts_to_baseline() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        for iteration in 0..3 {
+            let CreateRunResponse::Single(run) = engine
+                .start_run(steps_input(&format!("cycle {iteration}")))
+                .await
+                .unwrap()
+            else {
+                panic!("expected one run");
+            };
+            activate_until_terminal(&engine, &run.id).await;
+            // Nothing new to admit, so this call's only effect is `TurnDispatch`'s reap sweep.
+            engine.activate_runs().unwrap();
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while !engine.turn_workers.lock().unwrap().is_empty() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("iteration {iteration}: turn worker not reaped"));
+            assert!(
+                engine.cancellations.lock().unwrap().is_empty(),
+                "iteration {iteration}: cancellation token not pruned"
+            );
+        }
+
+        let tokens = Arc::new(Mutex::new(BTreeMap::new()));
+        let cancel_engine = InProcessEngine::with_session_factory(
+            dir.path(),
+            "0.0.0-test",
+            BlockingFactory {
+                tokens: tokens.clone(),
+            },
+        );
+        for iteration in 0..2 {
+            let CreateRunResponse::Single(run) = cancel_engine
+                .start_run(steps_input(&format!("blocked {iteration}")))
+                .await
+                .unwrap()
+            else {
+                panic!("expected one run");
+            };
+            cancel_engine.activate_runs().unwrap();
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while !tokens.lock().unwrap().contains_key(&run.id) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            cancel_engine.cancel_run(&run.id).await.unwrap();
+            activate_until_terminal(&cancel_engine, &run.id).await;
+            cancel_engine.activate_runs().unwrap();
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while !cancel_engine.turn_workers.lock().unwrap().is_empty() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("cancel iteration {iteration}: turn worker not reaped"));
+            assert!(
+                cancel_engine.cancellations.lock().unwrap().is_empty(),
+                "cancel iteration {iteration}: cancellation token not pruned"
+            );
+        }
     }
 
     #[tokio::test]

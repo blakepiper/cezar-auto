@@ -34,7 +34,7 @@ verification, so this is not a percentage-complete release claim.
 | R6 selected account environment | complete | Do not redesign; preserve its integration coverage. |
 | R7 resource settings | partial, high | Wire process-wide workspace/repository leases and monitoring wake policy; keep memory limit visibly unavailable. |
 | R8 runner protocol drift | partial, high | Complete the fixture/capability matrix and non-hanging response coverage. |
-| R9 worker/process lifetime | partial, high | Give all workers cancellation, bounded queues, shutdown escalation, and leak checks. |
+| R9 worker/process lifetime | partial, high | `TurnDispatch`'s per-run worker registry is now leak-checked (see evidence); still missing shutdown escalation — no bounded-wait-then-force-terminate path exists for a worker whose session ignores cancellation. |
 | R10 durable run state | functionally complete | Complete the listed fault-injection coverage only. |
 | R11 dead UI/duplicate tests | primary correction complete | Extract oversized orchestration code only when needed by R1/R2; no standalone refactor. |
 | R12 cross-platform CLI handoff | code complete | Record real-terminal results where the platform is available; do not fabricate unavailable-platform evidence. |
@@ -87,6 +87,21 @@ Evidence checked during this rewrite and subsequent implementation:
   Cancellation reaching a session blocked in `open` (not just `pump`'s old lock) remains covered by
   the existing `cancel_reaches_a_session_factory_blocked_during_open` test, still passing unchanged
   against the new worker path.
+- `TurnDispatch::dispatch` initially left every finished `JoinHandle` in its per-run worker
+  registry forever (nothing reaped it, unlike `activation_workers`, which
+  `reap_finished_activation_workers` already swept). Fixed: `dispatch` now sweeps every finished
+  handle before spawning new ones, so any later dispatch call — including an `activate_runs` with
+  nothing new to admit — brings the registry back to empty. A worker cannot safely reap itself as
+  its last action (a redispatch it triggers for its own run id can already have inserted a new
+  handle under that key before the old thread returns), hence the sweep-on-every-dispatch design
+  instead. `repeated_start_finish_and_cancel_cycles_return_turn_worker_counts_to_baseline` proves
+  worker and cancellation-registry counts return to baseline across repeated start/finish and
+  start/cancel cycles. Not covered: a worker whose session never observes cancellation at all has
+  no bounded exit — there is still no shutdown-escalation path (graceful wait, then forced
+  termination) for that case, which is the remaining R9 shutdown-escalation gap. "Reader" and
+  "child" counts (pipe-reader threads, spawned child processes) are a `coducktor-runners`-layer
+  concern with their own existing coverage (e.g. `child_process::tests::drop_kills_and_reaps_a_live_child_with_its_pipe_readers`);
+  this session did not touch that layer.
 - `crates/coducktor-tui/src/runtime.rs` now dispatches normal engine/host operations through its
   fixed four-thread bounded worker pool; route generations reject stale results, input drains
   before receivers, and a receiver that exhausts its item/time budget wakes the next frame
