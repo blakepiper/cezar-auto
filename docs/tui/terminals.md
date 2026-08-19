@@ -8,8 +8,8 @@ records what is implemented and which terminal observations remain unverified.
 
 - **Color.** `ColorCapability::detect()` (`crates/coducktor-tui/src/theme.rs`) reads `COLORTERM` for
   `truecolor`/`24bit` → 24-bit RGB; else falls back to 256-color if `TERM` contains
-  `"256"`, else 16-color. Two named themes (`dark`/`lazyvim`), no `system` or `light`
-  theme, no separate accent picker. The chosen theme is persisted in
+  `"256"`, else 16-color. Three named themes (`dark`, `lazyvim`, and `lakes`), no `system`
+  theme and no separate accent picker. The chosen theme is persisted in
   `~/.coducktor/ui-state.json` and restored on later launches.
 - **Images.** `ImageSupport::detect()` (`crates/coducktor-tui/src/image.rs`) calls `ratatui-image`'s
   `Picker::from_query_stdio()`, which probes the terminal (kitty graphics protocol,

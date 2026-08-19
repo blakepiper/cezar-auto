@@ -457,7 +457,7 @@ impl CommandId {
             Self::Open => ":open <route>",
             Self::Back => ":back",
             Self::Forward => ":forward",
-            Self::Theme => ":theme <dark|lazyvim>",
+            Self::Theme => ":theme <dark|lazyvim|lakes>",
             Self::New => ":new",
             Self::ClearScratchpad => ":clear-scratchpad",
             Self::Help => ":help",
@@ -2774,6 +2774,7 @@ impl App {
                     appearance.theme = Some(match name {
                         ThemeName::Dark => coducktor_contract::ThemePreference::Dark,
                         ThemeName::LazyVim => coducktor_contract::ThemePreference::Lazyvim,
+                        ThemeName::Lakes => coducktor_contract::ThemePreference::Lakes,
                     });
                     self.pending
                         .push(PendingAction::SettingsPutWorkspaceUiState {
@@ -2783,7 +2784,7 @@ impl App {
                             },
                         });
                 } else {
-                    self.notice = Some("theme must be dark or lazyvim".to_owned());
+                    self.notice = Some("theme must be dark, lazyvim, or lakes".to_owned());
                 }
             }
             CommandId::New => self.navigate(NavItem::NewTask),

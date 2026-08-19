@@ -408,6 +408,7 @@ pub enum ThemePreference {
     Dark,
     #[serde(alias = "light")]
     Lazyvim,
+    Lakes,
 }
 
 /// Appearance accent.

@@ -617,6 +617,7 @@ fn apply_prime_snapshot(app: &mut App, snapshot: PrimeSnapshot) {
             let name = match theme {
                 coducktor_contract::ThemePreference::Dark => crate::theme::ThemeName::Dark,
                 coducktor_contract::ThemePreference::Lazyvim => crate::theme::ThemeName::LazyVim,
+                coducktor_contract::ThemePreference::Lakes => crate::theme::ThemeName::Lakes,
             };
             app.theme = Theme::new(name, app.theme.capability);
         }

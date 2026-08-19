@@ -33,7 +33,7 @@ use crate::widgets::editor::Editor;
 use crate::widgets::picker::{Picker, PickerEvent, PickerItem};
 
 const RUNNERS: [Runner; 4] = [Runner::Claude, Runner::Codex, Runner::OpenCode, Runner::Pi];
-const THEMES: [ThemeName; 2] = [ThemeName::Dark, ThemeName::LazyVim];
+const THEMES: [ThemeName; 3] = [ThemeName::Dark, ThemeName::LazyVim, ThemeName::Lakes];
 
 pub fn runner_label(runner: Runner) -> &'static str {
     match runner {
@@ -1392,6 +1392,7 @@ fn cycle_appearance(app: &mut App, row: usize, backward: bool) {
             appearance.theme = Some(match THEMES[next] {
                 ThemeName::Dark => coducktor_contract::ThemePreference::Dark,
                 ThemeName::LazyVim => coducktor_contract::ThemePreference::Lazyvim,
+                ThemeName::Lakes => coducktor_contract::ThemePreference::Lakes,
             });
             put_appearance(app, appearance);
         }
@@ -2382,12 +2383,12 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(current_section(&app), SettingsSection::Appearance);
         handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert_eq!(app.theme.name, ThemeName::Dark);
+        assert_eq!(app.theme.name, ThemeName::Lakes);
         assert!(app.pending.iter().any(|action| matches!(
             action,
             PendingAction::SettingsPutWorkspaceUiState { input }
                 if input.appearance.as_ref().and_then(|appearance| appearance.theme)
-                    == Some(coducktor_contract::ThemePreference::Dark)
+                    == Some(coducktor_contract::ThemePreference::Lakes)
         )));
     }
 

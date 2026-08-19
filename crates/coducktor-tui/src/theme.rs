@@ -2,11 +2,12 @@ use std::env;
 
 use ratatui::style::Color;
 
-/// The two supported named themes. There is deliberately no system or light theme.
+/// The supported named themes. There is deliberately no system theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeName {
     Dark,
     LazyVim,
+    Lakes,
 }
 
 impl ThemeName {
@@ -14,6 +15,7 @@ impl ThemeName {
         match value.trim().to_ascii_lowercase().as_str() {
             "dark" => Some(Self::Dark),
             "lazyvim" | "lazy-vim" => Some(Self::LazyVim),
+            "lakes" | "lakes-and-light" => Some(Self::Lakes),
             _ => None,
         }
     }
@@ -22,6 +24,7 @@ impl ThemeName {
         match self {
             Self::Dark => "dark",
             Self::LazyVim => "lazyvim",
+            Self::Lakes => "lakes",
         }
     }
 }
@@ -115,12 +118,34 @@ impl Theme {
                 (130, 139, 184),
                 (122, 162, 247),
             ),
+            ThemeName::Lakes => lakes_palette(capability),
         };
         Self {
             name,
             capability,
             palette,
         }
+    }
+}
+
+/// Lakes & Light's parchment and sepia palette, adapted from its Omarchy theme.
+fn lakes_palette(capability: ColorCapability) -> ThemePalette {
+    ThemePalette {
+        bg: capability.color((245, 228, 216), 224, 15),
+        surface: capability.color((246, 231, 220), 224, 15),
+        border: capability.color((184, 171, 162), 248, 8),
+        fg: capability.color((58, 25, 17), 52, 0),
+        soft_fg: capability.color((127, 121, 116), 243, 8),
+        accent: capability.color((128, 95, 54), 95, 3),
+        add: capability.color((139, 95, 15), 94, 2),
+        del: capability.color((86, 43, 0), 52, 1),
+        queued: capability.color((127, 121, 116), 243, 8),
+        running: capability.color((128, 95, 54), 95, 3),
+        waiting: capability.color((123, 85, 33), 94, 3),
+        review: capability.color((86, 56, 25), 52, 5),
+        done: capability.color((101, 62, 0), 58, 2),
+        failed: capability.color((86, 43, 0), 52, 1),
+        cancelled: capability.color((127, 121, 116), 243, 8),
     }
 }
 
@@ -157,11 +182,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_only_the_two_named_themes() {
+    fn parses_supported_named_themes() {
         assert_eq!(ThemeName::parse("dark"), Some(ThemeName::Dark));
         assert_eq!(ThemeName::parse("lazy-vim"), Some(ThemeName::LazyVim));
-        assert_eq!(ThemeName::parse("light"), None);
+        assert_eq!(ThemeName::parse("lakes-and-light"), Some(ThemeName::Lakes));
         assert_eq!(ThemeName::parse("system"), None);
+    }
+
+    #[test]
+    fn lakes_uses_the_source_parchment_and_umber_colors() {
+        let theme = Theme::new(ThemeName::Lakes, ColorCapability::TrueColor);
+        assert_eq!(theme.palette.bg, Color::Rgb(245, 228, 216));
+        assert_eq!(theme.palette.fg, Color::Rgb(58, 25, 17));
+        assert_eq!(theme.palette.accent, Color::Rgb(128, 95, 54));
     }
 
     #[test]
