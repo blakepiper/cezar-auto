@@ -728,6 +728,16 @@ pub struct RuntimeOptions {
     pub auto_resume_on_usage_limit: bool,
 }
 
+/// Sanitized local counters for diagnostics and scaling tests. They intentionally contain no
+/// prompt, credential, provider-payload, or transcript data.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RuntimeMetrics {
+    pub event_appends: usize,
+    pub index_flushes: usize,
+    pub active_sessions: usize,
+    pub queued_jobs: usize,
+}
+
 impl Default for RuntimeOptions {
     fn default() -> Self {
         Self {
@@ -796,8 +806,8 @@ pub struct RunManager {
     intelligent_context_refresh: bool,
     last_index_flush: Instant,
     write_quarantined: bool,
-    #[cfg(test)]
     index_write_count: usize,
+    event_append_count: usize,
 }
 
 impl RunManager {
@@ -875,8 +885,8 @@ impl RunManager {
             intelligent_context_refresh: false,
             last_index_flush: Instant::now(),
             write_quarantined,
-            #[cfg(test)]
             index_write_count: 0,
+            event_append_count: 0,
         }
     }
 
@@ -926,6 +936,15 @@ impl RunManager {
 
     pub fn runtime_options(&self) -> RuntimeOptions {
         self.runtime_options
+    }
+
+    pub fn runtime_metrics(&self) -> RuntimeMetrics {
+        RuntimeMetrics {
+            event_appends: self.event_append_count,
+            index_flushes: self.index_write_count,
+            active_sessions: self.active.len(),
+            queued_jobs: self.jobs.len(),
+        }
     }
 
     pub fn get_run(&self, run_id: &str) -> Option<&RunRecord> {
@@ -1043,10 +1062,7 @@ impl RunManager {
         fs::create_dir_all(self.data_dir.join("runs"))?;
         let records: Vec<RunRecord> = self.runs.values().cloned().collect();
         store::write_run_index(&store::index_path(&self.data_dir), &records)?;
-        #[cfg(test)]
-        {
-            self.index_write_count += 1;
-        }
+        self.index_write_count += 1;
         self.last_index_flush = Instant::now();
         Ok(())
     }
@@ -1492,6 +1508,7 @@ impl RunManager {
             extra: input.extra,
         };
         events::append_event(&path, &event)?;
+        self.event_append_count += 1;
         // Event append is meaningful activity. Keep read/unread and archive mutations on their
         // separate timestamps by stamping here instead of in the generic record replacement.
         let updated_run = if let Some(run) = self.runs.get_mut(run_id) {
@@ -4113,6 +4130,9 @@ mod tests {
         }
         manager.flush().unwrap();
         assert_eq!(manager.read_events(&run.id).len(), 10_000);
+        let metrics = manager.runtime_metrics();
+        assert_eq!(metrics.event_appends, 10_000);
+        assert!(metrics.index_flushes >= 1);
         assert!(notifications.load(Ordering::Relaxed) < 100);
         assert!(manager.index_write_count - writes_before_stream < 100);
     }
