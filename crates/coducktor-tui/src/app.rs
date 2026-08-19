@@ -1058,6 +1058,8 @@ pub struct App {
     /// Full composer snapshots retain clipboard image bytes and compact large-paste payloads.
     pub pending_start_composers: BTreeMap<String, crate::widgets::composer::Composer>,
     pub thread_ui: crate::screens::thread::ThreadUi,
+    /// Rejects an older full thread reload after a newer request for the active run.
+    pub thread_request_generation: u64,
     pub task_git_ui: crate::screens::task_git::TaskGitUi,
     /// Rejects an older Task Git aggregate load after returning to the same task.
     pub task_git_request_generation: u64,
@@ -1152,6 +1154,7 @@ impl App {
             pending_start_drafts: BTreeMap::new(),
             pending_start_composers: BTreeMap::new(),
             thread_ui: crate::screens::thread::ThreadUi::default(),
+            thread_request_generation: 0,
             task_git_ui: crate::screens::task_git::TaskGitUi::default(),
             task_git_request_generation: 0,
             repo_git_ui: crate::screens::repo_git::RepoGitUi::default(),
@@ -1356,6 +1359,11 @@ impl App {
     pub fn begin_task_git_request(&mut self) -> u64 {
         self.task_git_request_generation = self.task_git_request_generation.wrapping_add(1);
         self.task_git_request_generation
+    }
+
+    pub fn begin_thread_request(&mut self) -> u64 {
+        self.thread_request_generation = self.thread_request_generation.wrapping_add(1);
+        self.thread_request_generation
     }
 
     pub fn accepts_new_task_response(&self, project: &str, generation: u64) -> bool {

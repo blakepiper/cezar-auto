@@ -208,6 +208,7 @@ enum BackgroundResult {
     LoadThread {
         project: String,
         id: String,
+        generation: u64,
         run: Result<coducktor_contract::ApiRun, coducktor_client::EngineError>,
         history: Result<coducktor_contract::RunHistoryPage, coducktor_client::EngineError>,
     },
@@ -856,6 +857,7 @@ async fn execute_pending(
                 }
             }
             PendingAction::LoadThread { project, id } => {
+                let generation = app.begin_thread_request();
                 let scope = Scope::Project(project.clone());
                 let engine_for_task = engine.clone();
                 let id_for_task = id.clone();
@@ -871,6 +873,7 @@ async fn execute_pending(
                     move |(run, history)| BackgroundResult::LoadThread {
                         project,
                         id,
+                        generation,
                         run,
                         history,
                     },
@@ -1934,6 +1937,7 @@ fn drain_background_results(
             BackgroundResult::LoadThread {
                 project,
                 id,
+                generation,
                 run,
                 history,
             } => {
@@ -1943,7 +1947,8 @@ fn drain_background_results(
                         project: route_project,
                         id: route_id,
                     } if route_project == &project && route_id == &id
-                ) {
+                ) || app.thread_request_generation != generation
+                {
                     continue;
                 }
                 match (run, history) {
@@ -3178,6 +3183,38 @@ mod tests {
         drain_background_results(&receiver, &mut app, &mut starts_in_flight);
 
         assert_eq!(app.task_git_request_generation, current_generation);
+        assert!(app.notice.is_none());
+    }
+
+    #[test]
+    fn stale_thread_refresh_failures_are_rejected() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.navigate_route(app::Route::Thread {
+            project: "main".to_owned(),
+            id: "run".to_owned(),
+        });
+        let stale_generation = app.begin_thread_request();
+        let current_generation = app.begin_thread_request();
+        let (sender, receiver) = channel();
+        let mut starts_in_flight = HashSet::new();
+
+        sender
+            .send(BackgroundResult::LoadThread {
+                project: "main".to_owned(),
+                id: "run".to_owned(),
+                generation: stale_generation,
+                run: Err(coducktor_client::EngineError::Unavailable {
+                    reason: "stale request".to_owned(),
+                }),
+                history: Err(coducktor_client::EngineError::Unavailable {
+                    reason: "stale request".to_owned(),
+                }),
+            })
+            .unwrap();
+
+        drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+
+        assert_eq!(app.thread_request_generation, current_generation);
         assert!(app.notice.is_none());
     }
 
