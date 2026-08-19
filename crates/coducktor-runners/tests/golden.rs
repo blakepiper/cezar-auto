@@ -64,13 +64,12 @@ fn capability_matrix_references_every_normalized_runner() {
     for runner in ["Codex", "Claude", "OpenCode", "pi"] {
         assert!(matrix.contains(runner), "matrix must cover {runner}");
     }
-    for fixture in [
-        "text-turn",
-        "command-lifecycle",
-        "bash-and-screenshot",
-        "tool-lifecycle",
-        "rpc-lifecycle",
-    ] {
+    for fixture in CLAUDE_FIXTURES
+        .iter()
+        .chain(CODEX_FIXTURES)
+        .chain(OPENCODE_FIXTURES)
+        .chain(PI_FIXTURES)
+    {
         assert!(
             matrix.contains(fixture),
             "matrix must link fixture {fixture}"
