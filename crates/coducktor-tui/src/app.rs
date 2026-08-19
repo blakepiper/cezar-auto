@@ -3650,6 +3650,8 @@ mod tests {
         app.queue_pending(PendingAction::RefreshTasks {
             project: "main".to_owned(),
         });
+        app.queue_pending(PendingAction::RefreshProjectRegistry);
+        app.queue_pending(PendingAction::RefreshProjectRegistry);
         app.queue_pending(PendingAction::RefreshTasks {
             project: "main".to_owned(),
         });
@@ -3670,6 +3672,7 @@ mod tests {
                 PendingAction::RefreshTasks {
                     project: "main".to_owned(),
                 },
+                PendingAction::RefreshProjectRegistry,
                 PendingAction::Archive {
                     project: "main".to_owned(),
                     id: "one".to_owned(),
