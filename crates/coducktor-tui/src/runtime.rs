@@ -2225,14 +2225,31 @@ async fn refresh_project_registry(engine: &dyn Engine, app: &mut App) {
 /// re-trigger a fetch.
 async fn load_settings_snapshot(engine: Arc<dyn Engine>, project: &str) -> SettingsSnapshot {
     let scope = Scope::Project(project.to_owned());
+    let (
+        config,
+        workspace_config,
+        workspace_ui_state,
+        ui_state,
+        agent_config,
+        agent_profiles,
+        worktrees,
+    ) = tokio::join!(
+        engine.config(&scope),
+        engine.workspace_config(),
+        engine.workspace_ui_state(),
+        engine.ui_state(&scope),
+        engine.agent_config(&scope),
+        engine.agent_profiles(),
+        engine.worktrees(&scope),
+    );
     SettingsSnapshot {
-        config: engine.config(&scope).await.ok(),
-        workspace_config: engine.workspace_config().await.ok(),
-        workspace_ui_state: engine.workspace_ui_state().await.ok(),
-        ui_state: engine.ui_state(&scope).await.ok(),
-        agent_config: engine.agent_config(&scope).await.ok(),
-        agent_profiles: engine.agent_profiles().await.ok(),
-        worktrees: engine.worktrees(&scope).await.ok(),
+        config: config.ok(),
+        workspace_config: workspace_config.ok(),
+        workspace_ui_state: workspace_ui_state.ok(),
+        ui_state: ui_state.ok(),
+        agent_config: agent_config.ok(),
+        agent_profiles: agent_profiles.ok(),
+        worktrees: worktrees.ok(),
     }
 }
 

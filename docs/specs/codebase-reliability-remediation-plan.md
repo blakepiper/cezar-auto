@@ -166,7 +166,8 @@ Evidence:
   later frames. Individual actions still await engine and host work in the frame task, but their
   post-mutation global-index refresh is now queued into the backgrounded, generation-checked
   refresh path rather than awaited inline. Settings now collects its route-scoped snapshot on a
-  background worker and applies it only while the matching settings route remains active.
+  background worker, fetches its independent sources concurrently, and applies it only while the
+  matching settings route remains active.
   Post-action thread refreshes likewise queue the existing background thread loader instead of
   fetching a run inline. The task-Git changes load now fetches its run and diff concurrently on a
   background worker and discards results after navigation away from that task; task-Git file-tree
