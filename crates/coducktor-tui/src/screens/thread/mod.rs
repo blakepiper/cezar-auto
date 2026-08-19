@@ -6,6 +6,7 @@
 //! and the task Git tabs provide Changes, Files, and Commits navigation.
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 pub mod actions;
 pub mod presenters;
@@ -88,6 +89,17 @@ pub struct ThreadData {
     pub view_model: ThreadViewModel,
 }
 
+/// Sanitized local accounting for thread projection work. It intentionally records only counts
+/// and elapsed time, never prompts, provider payloads, or transcript contents.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ThreadProjectionMetrics {
+    pub rebuilds: usize,
+    /// Number of durable events folded across all rebuilds. This makes accidental quadratic
+    /// re-folding visible without retaining any event data.
+    pub rebuilt_events: usize,
+    pub rebuild_time: Duration,
+}
+
 pub struct ThreadUi {
     pub data: ThreadData,
     pub transcript: Transcript,
@@ -107,8 +119,7 @@ pub struct ThreadUi {
     pub delivery_error: bool,
     pub cancel_pending: bool,
     pub project_root: Option<PathBuf>,
-    #[cfg(test)]
-    rebuild_count: usize,
+    projection_metrics: ThreadProjectionMetrics,
 }
 
 impl Default for ThreadUi {
@@ -130,13 +141,17 @@ impl Default for ThreadUi {
             delivery_error: false,
             cancel_pending: false,
             project_root: None,
-            #[cfg(test)]
-            rebuild_count: 0,
+            projection_metrics: ThreadProjectionMetrics::default(),
         }
     }
 }
 
 impl ThreadUi {
+    /// Return local projection accounting for diagnostics and scaling tests.
+    pub fn projection_metrics(&self) -> ThreadProjectionMetrics {
+        self.projection_metrics
+    }
+
     /// Called on thread entry, from a fresh run record and the first history page.
     pub fn load(
         &mut self,
@@ -293,10 +308,7 @@ impl ThreadUi {
     }
 
     fn rebuild(&mut self) {
-        #[cfg(test)]
-        {
-            self.rebuild_count += 1;
-        }
+        let started = Instant::now();
         // The send request being accepted does not mean its user-message has reached the
         // transcript yet. Keep the optimistic prompt visible until the durable event arrives,
         // then let that event replace it without briefly hiding what the agent is working on.
@@ -319,28 +331,30 @@ impl ThreadUi {
             .as_ref()
             .is_some_and(|run| run.record.status == RunStatus::Running);
         self.data.state = reduce_thread(&self.data.events, ThreadReduceOptions { active_turn });
-        let Some(run) = &self.data.run else {
-            return;
-        };
-        self.data.view_model = projection::project_thread_with_root(
-            run,
-            &self.data.state,
-            self.project_root.as_deref(),
-        );
-        self.transcript.reconcile(build_transcript_items(
-            run,
-            &self.data.state,
-            &self.data.view_model,
-            self.data.older_cursor.is_some(),
-            self.data.older_loading,
-            self.data.older_error.as_deref(),
-            self.pending_prompt.as_deref(),
-        ));
-        // A resolved ask, or a fresh one under a different id, clears any stale in-progress
-        // selections — a leftover partial answer must never attach to the NEXT question.
-        if pending_ask(&self.data.state).is_none() {
-            self.ask_selections.clear();
+        if let Some(run) = &self.data.run {
+            self.data.view_model = projection::project_thread_with_root(
+                run,
+                &self.data.state,
+                self.project_root.as_deref(),
+            );
+            self.transcript.reconcile(build_transcript_items(
+                run,
+                &self.data.state,
+                &self.data.view_model,
+                self.data.older_cursor.is_some(),
+                self.data.older_loading,
+                self.data.older_error.as_deref(),
+                self.pending_prompt.as_deref(),
+            ));
+            // A resolved ask, or a fresh one under a different id, clears any stale in-progress
+            // selections — a leftover partial answer must never attach to the NEXT question.
+            if pending_ask(&self.data.state).is_none() {
+                self.ask_selections.clear();
+            }
         }
+        self.projection_metrics.rebuilds += 1;
+        self.projection_metrics.rebuilt_events += self.data.events.len();
+        self.projection_metrics.rebuild_time += started.elapsed();
     }
 }
 
@@ -1419,7 +1433,7 @@ mod tests {
     #[test]
     fn a_large_live_batch_rebuilds_the_transcript_once() {
         let mut app = app_with_run(RunStatus::Running);
-        app.thread_ui.rebuild_count = 0;
+        let metrics_before = app.thread_ui.projection_metrics();
 
         app.thread_ui.push_events((1..=1_000).map(|seq| {
             let seq = f64::from(seq);
@@ -1429,9 +1443,40 @@ mod tests {
             )
         }));
 
-        assert_eq!(app.thread_ui.rebuild_count, 1);
+        let metrics = app.thread_ui.projection_metrics();
+        assert_eq!(metrics.rebuilds - metrics_before.rebuilds, 1);
+        assert_eq!(
+            metrics.rebuilt_events - metrics_before.rebuilt_events,
+            1_000
+        );
+        assert!(metrics.rebuild_time >= metrics_before.rebuild_time);
         assert_eq!(app.thread_ui.data.events.len(), 1_000);
         assert_eq!(app.thread_ui.data.as_of_seq, 1_000.0);
+    }
+
+    #[test]
+    fn batched_projection_work_scales_linearly_with_accepted_events() {
+        fn projection_work(event_count: u64) -> ThreadProjectionMetrics {
+            let mut app = app_with_run(RunStatus::Running);
+            let before = app.thread_ui.projection_metrics();
+            app.thread_ui.push_events((1..=event_count).map(|seq| {
+                let sequence = seq as f64;
+                (sequence, event(sequence, "text", json!({"text": "delta"})))
+            }));
+            let after = app.thread_ui.projection_metrics();
+            ThreadProjectionMetrics {
+                rebuilds: after.rebuilds - before.rebuilds,
+                rebuilt_events: after.rebuilt_events - before.rebuilt_events,
+                rebuild_time: after.rebuild_time.saturating_sub(before.rebuild_time),
+            }
+        }
+
+        let small = projection_work(1_000);
+        let large = projection_work(2_000);
+        assert_eq!(small.rebuilds, 1);
+        assert_eq!(large.rebuilds, 1);
+        assert_eq!(small.rebuilt_events, 1_000);
+        assert_eq!(large.rebuilt_events, 2_000);
     }
 
     #[test]
