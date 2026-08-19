@@ -260,6 +260,10 @@ enum BackgroundResult {
         path: String,
         result: Result<coducktor_contract::IdeFileResponse, coducktor_client::EngineError>,
     },
+    LoadScratchpad {
+        project: String,
+        result: Result<coducktor_contract::Scratchpad, coducktor_client::EngineError>,
+    },
     LoadRepoGitCommit {
         project: String,
         result: Result<coducktor_contract::RepoCommitPayload, coducktor_client::EngineError>,
@@ -669,18 +673,13 @@ async fn execute_pending(
             }
             PendingAction::LoadScratchpad { project } => {
                 let scope = Scope::Project(project.clone());
-                match engine.scratchpad(&scope).await {
-                    Ok(scratchpad) if app.scratchpad_ui.project == project => {
-                        app.scratchpad_ui.editor.set_text(&scratchpad.content);
-                        app.scratchpad_ui.loaded = true;
-                        app.scratchpad_ui.saving = false;
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        app.scratchpad_ui.loaded = true;
-                        app.notice = Some(format!("scratchpad: {error}"));
-                    }
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.scratchpad(&scope).await },
+                    move |result| BackgroundResult::LoadScratchpad { project, result },
+                );
             }
             PendingAction::ClearScratchpad { project } => {
                 let scope = Scope::Project(project.clone());
@@ -1808,6 +1807,26 @@ fn drain_background_results(
                 }
                 apply_settings_snapshot(app, snapshot);
             }
+            BackgroundResult::LoadScratchpad { project, result } => {
+                if !matches!(
+                    app.route(),
+                    app::Route::Scratchpad { project: route_project } if route_project == &project
+                ) || app.scratchpad_ui.project != project
+                {
+                    continue;
+                }
+                match result {
+                    Ok(scratchpad) => {
+                        app.scratchpad_ui.editor.set_text(&scratchpad.content);
+                        app.scratchpad_ui.loaded = true;
+                        app.scratchpad_ui.saving = false;
+                    }
+                    Err(error) => {
+                        app.scratchpad_ui.loaded = true;
+                        app.notice = Some(format!("scratchpad: {error}"));
+                    }
+                }
+            }
             BackgroundResult::LoadRepoGit { project, repo } => {
                 if app.repo_git_ui.project != project {
                     continue;
@@ -2614,6 +2633,28 @@ mod tests {
 
         assert!(app.ide_ui.entries.is_none());
         assert_eq!(app.ide_ui.editor.text, "current");
+    }
+
+    #[test]
+    fn stale_scratchpad_load_does_not_hydrate_another_project() {
+        let (sender, receiver) = channel();
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        screens::scratchpad::open(&mut app, "main");
+        let mut starts_in_flight = HashSet::new();
+
+        sender
+            .send(BackgroundResult::LoadScratchpad {
+                project: "other".to_owned(),
+                result: Ok(coducktor_contract::Scratchpad {
+                    content: "stale notes".to_owned(),
+                }),
+            })
+            .unwrap();
+
+        drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+
+        assert!(!app.scratchpad_ui.loaded);
+        assert!(app.scratchpad_ui.editor.text.is_empty());
     }
 
     #[tokio::test]
