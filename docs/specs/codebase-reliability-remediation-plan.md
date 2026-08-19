@@ -57,6 +57,8 @@ the larger coordinator rewrite:
   an unnecessary lazy regex initialization from the Git reader path.
 - AskUser marker parsing and stripping now treat an unavailable compatibility regex as no marker,
   preserving the raw transcript instead of panicking on provider output.
+- task-reference marker parsing and display stripping now likewise degrade to untouched raw text
+  if a compatibility regex is unavailable.
 
 The critical coordinator work is not complete. Provider turns still need to move out of the
 project-manager critical section into bounded per-run workers before same-project parallelism and

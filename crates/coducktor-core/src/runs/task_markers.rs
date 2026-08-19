@@ -27,51 +27,60 @@ pub struct TaskMarkers {
 // canonicalizes both the current and legacy prefixes before the narrower parsers below run,
 // so in-flight sessions and unrewritten skills keep working without letting old spelling leak
 // into newly emitted prompts.
-static MARKER_PREFIX_RE: LazyLock<Regex> = LazyLock::new(|| {
+static MARKER_PREFIX_RE: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
     Regex::new(
         r"(?P<prefix>CEZ|DUCK):(?P<kind>DONE|MONITORING|ASK|PR|ISSUE|TITLE)(?P<separator>=|[ \t]+)?",
     )
-    .expect("fixed marker compatibility pattern")
 });
+
+fn available_regex(pattern: &LazyLock<Result<Regex, regex::Error>>) -> Option<&Regex> {
+    pattern.as_ref().ok()
+}
 
 /// Convert either marker prefix to the writer's current spelling. The replacement deliberately
 /// keeps the payload untouched, including a multi-line ask JSON payload.
 pub fn canonicalize_markers(text: &str) -> String {
-    MARKER_PREFIX_RE
-        .replace_all(text, |caps: &regex::Captures<'_>| {
-            format!(
-                "DUCK:{}{}",
-                &caps["kind"],
-                caps.name("separator").map_or("", |match_| match_.as_str())
-            )
-        })
-        .into_owned()
+    available_regex(&MARKER_PREFIX_RE).map_or_else(
+        || text.to_owned(),
+        |regex| {
+            regex
+                .replace_all(text, |caps: &regex::Captures<'_>| {
+                    format!(
+                        "DUCK:{}{}",
+                        &caps["kind"],
+                        caps.name("separator").map_or("", |match_| match_.as_str())
+                    )
+                })
+                .into_owned()
+        },
+    )
 }
 
-static PR_MARKER_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^DUCK:PR=(\d+)\s*$").unwrap());
-static ISSUE_MARKER_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^DUCK:ISSUE=(\d+)\s*$").unwrap());
-static TITLE_MARKER_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^DUCK:TITLE=(.+)$").unwrap());
+static PR_MARKER_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"(?m)^DUCK:PR=(\d+)\s*$"));
+static ISSUE_MARKER_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"(?m)^DUCK:ISSUE=(\d+)\s*$"));
+static TITLE_MARKER_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"(?m)^DUCK:TITLE=(.+)$"));
 
 // Report-tier reference lines: the human-friendly chaining lines pipeline skills end their
 // reports with — `PR: #12 (link: https://…/pull/12)`
 // — plus the legacy env-style markers older skill versions printed. Same trust boundary as
 // marker lines (parsed from the agent's own turn text only), one notch below in precedence: an
 // explicit DUCK:PR / DUCK:ISSUE in the same turn wins.
-static REPORT_PR_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^PR: #(\d+) \(link: \S+\)\s*$").unwrap());
-static REPORT_ISSUE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^Issue: #(\d+) \(link: \S+\)\s*$").unwrap());
-static LEGACY_PR_NUMBER_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^PR_NUMBER=(\d+)\s*$").unwrap());
-static LEGACY_PR_URL_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^PR_URL=\S*/pull/(\d+)\s*$").unwrap());
-static LEGACY_ISSUE_NUMBER_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^ISSUE_NUMBER=(\d+)\s*$").unwrap());
+static REPORT_PR_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"(?m)^PR: #(\d+) \(link: \S+\)\s*$"));
+static REPORT_ISSUE_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"(?m)^Issue: #(\d+) \(link: \S+\)\s*$"));
+static LEGACY_PR_NUMBER_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"(?m)^PR_NUMBER=(\d+)\s*$"));
+static LEGACY_PR_URL_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"(?m)^PR_URL=\S*/pull/(\d+)\s*$"));
+static LEGACY_ISSUE_NUMBER_RE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"(?m)^ISSUE_NUMBER=(\d+)\s*$"));
 
-fn last_number(text: &str, re: &Regex) -> Option<i64> {
+fn last_number(text: &str, re: Option<&Regex>) -> Option<i64> {
+    let re = re?;
     let mut value = None;
     for caps in re.captures_iter(text) {
         if let Ok(n) = caps[1].parse::<i64>()
@@ -89,25 +98,27 @@ fn last_number(text: &str, re: &Regex) -> Option<i64> {
 /// declaration outranks a report-tier line, which outranks the legacy env-style markers.
 pub fn parse_task_markers(text: &str) -> TaskMarkers {
     let text = canonicalize_markers(text);
-    let pr = last_number(&text, &PR_MARKER_RE)
-        .or_else(|| last_number(&text, &REPORT_PR_RE))
-        .or_else(|| last_number(&text, &LEGACY_PR_NUMBER_RE))
-        .or_else(|| last_number(&text, &LEGACY_PR_URL_RE));
-    let issue = last_number(&text, &ISSUE_MARKER_RE)
-        .or_else(|| last_number(&text, &REPORT_ISSUE_RE))
-        .or_else(|| last_number(&text, &LEGACY_ISSUE_NUMBER_RE));
+    let pr = last_number(&text, available_regex(&PR_MARKER_RE))
+        .or_else(|| last_number(&text, available_regex(&REPORT_PR_RE)))
+        .or_else(|| last_number(&text, available_regex(&LEGACY_PR_NUMBER_RE)))
+        .or_else(|| last_number(&text, available_regex(&LEGACY_PR_URL_RE)));
+    let issue = last_number(&text, available_regex(&ISSUE_MARKER_RE))
+        .or_else(|| last_number(&text, available_regex(&REPORT_ISSUE_RE)))
+        .or_else(|| last_number(&text, available_regex(&LEGACY_ISSUE_NUMBER_RE)));
     let mut title = None;
-    for caps in TITLE_MARKER_RE.captures_iter(&text) {
-        let t = caps[1].trim();
-        if !t.is_empty() {
-            title = Some(t.to_owned());
+    if let Some(regex) = available_regex(&TITLE_MARKER_RE) {
+        for caps in regex.captures_iter(&text) {
+            let t = caps[1].trim();
+            if !t.is_empty() {
+                title = Some(t.to_owned());
+            }
         }
     }
     TaskMarkers { pr, issue, title }
 }
 
-static MARKER_LINE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^DUCK:(?:PR=\d+|ISSUE=\d+|TITLE=.+)\s*$").unwrap());
+static MARKER_LINE: LazyLock<Result<Regex, regex::Error>> =
+    LazyLock::new(|| Regex::new(r"^DUCK:(?:PR=\d+|ISSUE=\d+|TITLE=.+)\s*$"));
 
 /// Remove complete marker lines from display text — the `stripDoneMarker` precedent. Only
 /// control lines (`DUCK:*` and the legacy spelling) are stripped: the report-tier
@@ -118,7 +129,7 @@ pub fn strip_task_markers(text: &str) -> String {
         return text.to_owned();
     }
     text.split('\n')
-        .filter(|line| !MARKER_LINE.is_match(line))
+        .filter(|line| !available_regex(&MARKER_LINE).is_some_and(|regex| regex.is_match(line)))
         .collect::<Vec<_>>()
         .join("\n")
 }
