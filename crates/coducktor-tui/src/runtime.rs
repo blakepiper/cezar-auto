@@ -243,8 +243,40 @@ enum SessionMutation {
 /// synchronous run/session seams, so a Tokio task alone would only move the freeze to another
 /// runtime worker and still leave shutdown waiting on an agent process. A plain worker thread lets
 /// the cockpit keep polling input and lets a confirmed quit return without joining a live agent.
+struct BackgroundWorkers {
+    runtime_handle: tokio::runtime::Handle,
+    handles: Vec<thread::JoinHandle<()>>,
+}
+
+impl BackgroundWorkers {
+    fn new(runtime_handle: tokio::runtime::Handle) -> Self {
+        Self {
+            runtime_handle,
+            handles: Vec::new(),
+        }
+    }
+
+    /// Reap only completed workers. A live provider call must not delay a confirmed TUI quit.
+    fn reap_finished(&mut self) {
+        let mut live = Vec::with_capacity(self.handles.len());
+        for handle in std::mem::take(&mut self.handles) {
+            if handle.is_finished() {
+                let _ = handle.join();
+            } else {
+                live.push(handle);
+            }
+        }
+        self.handles = live;
+    }
+
+    #[cfg(test)]
+    fn retained_count(&self) -> usize {
+        self.handles.len()
+    }
+}
+
 fn spawn_background<F, T, M>(
-    handle: &tokio::runtime::Handle,
+    workers: &mut BackgroundWorkers,
     sender: &BackgroundSender<BackgroundResult>,
     future: F,
     map: M,
@@ -253,12 +285,13 @@ fn spawn_background<F, T, M>(
     T: Send + 'static,
     M: FnOnce(T) -> BackgroundResult + Send + 'static,
 {
-    let handle = handle.clone();
+    workers.reap_finished();
+    let handle = workers.runtime_handle.clone();
     let sender = sender.clone();
-    thread::spawn(move || {
+    workers.handles.push(thread::spawn(move || {
         let result = handle.block_on(future);
         let _ = sender.send(map(result));
-    });
+    }));
 }
 
 /// Load the data that makes the first screen useful without holding up the first frame. The
@@ -490,7 +523,7 @@ async fn execute_pending(
     engine: Arc<dyn Engine>,
     app: &mut App,
     background_sender: &BackgroundSender<BackgroundResult>,
-    background_handle: &tokio::runtime::Handle,
+    background_handle: &mut BackgroundWorkers,
 ) {
     for action in app.take_pending_up_to(PENDING_ACTIONS_PER_FRAME) {
         match action {
@@ -1959,7 +1992,7 @@ async fn run(
     let mut thread_listener: Option<ThreadListener> = None;
     let mut bootstrap: Option<(JoinHandle<()>, UnboundedReceiver<PrimeSnapshot>)> = None;
     let (background_sender, background_receiver) = channel();
-    let background_handle = tokio::runtime::Handle::current();
+    let mut background_handle = BackgroundWorkers::new(tokio::runtime::Handle::current());
     let mut starts_in_flight = HashSet::new();
     let mut welcome = WelcomeAnimation::new();
     let mut last_needs_you = usize::MAX;
@@ -2090,7 +2123,13 @@ async fn run(
             app.thread_ui.push_events(pending);
         }
         if !app.pending.is_empty() {
-            execute_pending(engine.clone(), app, &background_sender, &background_handle).await;
+            execute_pending(
+                engine.clone(),
+                app,
+                &background_sender,
+                &mut background_handle,
+            )
+            .await;
         }
         for (summary, body) in app.take_pending_notifications() {
             crate::notify::notify(app.notifications_enabled, &summary, &body);
@@ -2138,6 +2177,7 @@ async fn run(
     if let Some((handle, _)) = bootstrap {
         handle.abort();
     }
+    background_handle.reap_finished();
 
     Ok(())
 }
@@ -2311,6 +2351,42 @@ fn parse_editor_command(raw: &str) -> io::Result<(String, Vec<String>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn completed_background_workers_are_reaped() {
+        let (sender, receiver) = channel();
+        let mut workers = BackgroundWorkers::new(tokio::runtime::Handle::current());
+        spawn_background(&mut workers, &sender, async {}, |_| {
+            BackgroundResult::LoadSettingsUsage {
+                result: Err(coducktor_client::EngineError::Unavailable {
+                    reason: "test worker".to_owned(),
+                }),
+            }
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if receiver.try_recv().is_ok() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                workers.reap_finished();
+                if workers.retained_count() == 0 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(workers.retained_count(), 0);
+    }
 
     #[test]
     fn in_process_workspace_events_decode_shell_badges() {
