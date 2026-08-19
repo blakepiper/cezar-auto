@@ -35,7 +35,7 @@ verification, so this is not a percentage-complete release claim.
 | R7 resource settings | complete except memory limit | Workspace/repository leases and monitoring wake policy are both wired end-to-end now (see evidence); `memory_limit_mb` remains saved-but-honestly-unavailable, which is the intended final state, not a gap. |
 | R8 runner protocol drift | partial, high | Complete the fixture/capability matrix and non-hanging response coverage. |
 | R9 worker/process lifetime | partial, high | `TurnDispatch`'s per-run worker registry is now leak-checked (see evidence); still missing shutdown escalation — no bounded-wait-then-force-terminate path exists for a worker whose session ignores cancellation. |
-| R10 durable run state | functionally complete | Complete the listed fault-injection coverage only. |
+| R10 durable run state | fault matrix complete | Every named scenario in the original fault matrix (unknown nested keys, one bad entry, truncated index, permissions, concurrent writer conflict, disk-full, pre-rename crash, post-rename/directory-sync failure, repair-replacement failure) now has a dedicated or pre-existing regression test — see evidence. |
 | R11 dead UI/duplicate tests | primary correction complete | Extract oversized orchestration code only when needed by R1/R2; no standalone refactor. |
 | R12 cross-platform CLI handoff | code complete | Record real-terminal results where the platform is available; do not fabricate unavailable-platform evidence. |
 
@@ -143,6 +143,30 @@ Evidence checked during this rewrite and subsequent implementation:
 - Not attempted: true mid-flight cancellation of a job already handed to a worker thread (native
   threads running `handle.block_on(future)` to completion have no cancellation seam today — only
   pre-dispatch coalescing was addressed this pass).
+- R10's fault matrix is now fully covered in `crates/coducktor-core/src/runs/store.rs`. Most of it
+  was already there under other names (unknown nested keys —
+  `unknown_run_and_step_keys_survive_a_read_modify_write` already covers a step-level unknown
+  field, not just a top-level one; one bad entry —
+  `one_invalid_record_salvages_its_sibling_and_quarantines_the_file`; truncated/corrupt index —
+  several `a_malformed_*`/`Corrupt` tests plus the explicit-repair pair; permissions —
+  `run_index_is_owner_only` proved the mode bits, though not a denied-write fault; pre-rename
+  crash — `a_failure_before_rename_preserves_the_previous_index_and_cleans_its_staging_file`;
+  repair-replacement failure —
+  `failed_repair_replacement_preserves_the_corrupt_index_and_its_backup`). Three scenarios had no
+  test at all: concurrent writer conflict, disk-full, and post-rename/directory-sync failure. The
+  write path's single `before_rename` test seam became `write_run_index_with_hooks`, adding a
+  matching `after_rename` hook (production wires the real best-effort `directory_sync`, unchanged
+  in behavior) so a test can inject a failure on either side of the atomic rename.
+  `disk_full_during_write_preserves_the_previous_index` pins the specific `ErrorKind::StorageFull`
+  case (the general "any pre-rename failure" invariant already existed, but the fault matrix names
+  disk-full as its own scenario). `a_directory_sync_failure_after_rename_does_not_fail_the_write`
+  proves a failed post-rename sync — already best-effort in production — cannot turn a committed
+  write into a reported failure. `denied_write_permission_preserves_the_previous_index` chmods the
+  containing directory read-only and proves the previous index survives untouched.
+  `concurrent_writers_to_the_same_index_never_produce_corrupted_bytes` runs two real writers
+  against the same path from separate threads and proves the result is always one writer's whole,
+  valid content — never a torn/merged mix — relying on `atomic_tmp_path`'s per-writer collision-safe
+  staging name and POSIX rename's atomicity.
 - Production manager wiring now installs one shared workspace admission instance and canonical
   repository-root leases. Monitoring wake deadlines now have an owned scheduler:
   `RunManager::due_monitoring_wakes` (a thin filter over the new, pure

@@ -106,16 +106,20 @@ pub fn list_runs_by_recency(runs: &[RunRecord]) -> Vec<&RunRecord> {
 /// Atomic owner-only write of the whole index through a collision-safe staging file. File data is
 /// synced before rename and the containing directory is synced best-effort after rename.
 pub fn write_run_index(index_path: &Path, runs: &[RunRecord]) -> io::Result<()> {
-    write_run_index_with_before_rename(index_path, runs, |_| Ok(()))
+    write_run_index_with_hooks(index_path, runs, |_| Ok(()), |_| directory_sync(index_path))
 }
 
 /// The staging boundary is isolated so the crash/failure invariant can be tested without
 /// depending on platform-specific permission or disk-full behavior: until the rename succeeds,
-/// the prior index remains authoritative.
-fn write_run_index_with_before_rename(
+/// the prior index remains authoritative. `after_rename` isolates the same invariant on the other
+/// side of it — the rename has already durably committed the new index, so nothing past that
+/// point (directory-sync durability hardening) may turn a successful write into a reported
+/// failure; production wires the real best-effort sync, a test can wire an injected one instead.
+fn write_run_index_with_hooks(
     index_path: &Path,
     runs: &[RunRecord],
     before_rename: impl FnOnce(&Path) -> io::Result<()>,
+    after_rename: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<()> {
     let sorted = list_runs_by_recency(runs);
     let json = serde_json::to_vec_pretty(&sorted).map_err(io::Error::other)?;
@@ -141,17 +145,23 @@ fn write_run_index_with_before_rename(
             use std::os::unix::fs::PermissionsExt as _;
             fs::set_permissions(index_path, fs::Permissions::from_mode(0o600))?;
         }
-        if let Some(parent) = index_path.parent()
-            && let Ok(directory) = fs::File::open(parent)
-        {
-            let _ = directory.sync_all();
-        }
+        // Best-effort: the rename above already committed the new index durably as far as the
+        // filesystem's own ordering guarantees go. A failure here only means the directory
+        // entry's own durability hardening did not happen, not that the write failed.
+        let _ = after_rename(index_path);
         Ok(())
     })();
     if result.is_err() {
         let _ = fs::remove_file(&tmp_path);
     }
     result
+}
+
+fn directory_sync(index_path: &Path) -> io::Result<()> {
+    if let Some(parent) = index_path.parent() {
+        fs::File::open(parent)?.sync_all()?;
+    }
+    Ok(())
 }
 
 /// Explicitly repair a quarantined index. The original bytes are first copied to an owner-only,
@@ -691,9 +701,12 @@ mod tests {
             created_at: "2026-01-02T00:00:00.000Z".into(),
             ..Default::default()
         };
-        let error = write_run_index_with_before_rename(&path, &[next], |_| {
-            Err(io::Error::other("injected pre-rename failure"))
-        })
+        let error = write_run_index_with_hooks(
+            &path,
+            &[next],
+            |_| Err(io::Error::other("injected pre-rename failure")),
+            |_| Ok(()),
+        )
         .unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::Other);
@@ -821,5 +834,143 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(backups.len(), 1);
         assert_eq!(fs::read(backups[0].path()).unwrap(), corrupt);
+    }
+
+    /// R10: the disk-full instance of the same invariant
+    /// `a_failure_before_rename_preserves_the_previous_index_and_cleans_its_staging_file` proves
+    /// generically — pinned separately, with the specific `ErrorKind` a real out-of-space write
+    /// would surface, since the fault matrix names it as its own scenario.
+    #[test]
+    fn disk_full_during_write_preserves_the_previous_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = index_path(dir.path());
+        let previous = RunRecord {
+            id: "previous".into(),
+            created_at: "2026-01-01T00:00:00.000Z".into(),
+            ..Default::default()
+        };
+        write_run_index(&path, std::slice::from_ref(&previous)).unwrap();
+        let original = fs::read(&path).unwrap();
+
+        let next = RunRecord {
+            id: "next".into(),
+            created_at: "2026-01-02T00:00:00.000Z".into(),
+            ..Default::default()
+        };
+        let error = write_run_index_with_hooks(
+            &path,
+            std::slice::from_ref(&next),
+            |_| Err(io::Error::from(io::ErrorKind::StorageFull)),
+            |_| Ok(()),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+        assert_eq!(fs::read(&path).unwrap(), original);
+    }
+
+    /// R10: the rename has already durably committed the new index by the time the best-effort
+    /// directory sync runs, so a failure there must not be reported as a write failure, and must
+    /// not leave the new content unreadable.
+    #[test]
+    fn a_directory_sync_failure_after_rename_does_not_fail_the_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = index_path(dir.path());
+        let run = RunRecord {
+            id: "run".into(),
+            created_at: "2026-01-01T00:00:00.000Z".into(),
+            ..Default::default()
+        };
+
+        write_run_index_with_hooks(
+            &path,
+            std::slice::from_ref(&run),
+            |_| Ok(()),
+            |_| Err(io::Error::other("injected directory-sync failure")),
+        )
+        .unwrap();
+
+        assert_eq!(load_run_index(&path, true), vec![run]);
+    }
+
+    /// R10: `atomic_tmp_path` gives every writer its own collision-safe staging file, and rename
+    /// is atomic, so two concurrent writers to the same index never interleave — the file on disk
+    /// after both complete is always one writer's whole, valid content, never a corrupt mix.
+    #[test]
+    fn concurrent_writers_to_the_same_index_never_produce_corrupted_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = index_path(dir.path());
+        let first = RunRecord {
+            id: "first".into(),
+            created_at: "2026-01-01T00:00:00.000Z".into(),
+            ..Default::default()
+        };
+        let second = RunRecord {
+            id: "second".into(),
+            created_at: "2026-01-02T00:00:00.000Z".into(),
+            ..Default::default()
+        };
+
+        let path_a = path.clone();
+        let first_for_thread = first.clone();
+        let handle_a = std::thread::spawn(move || {
+            write_run_index(&path_a, std::slice::from_ref(&first_for_thread))
+        });
+        let path_b = path.clone();
+        let second_for_thread = second.clone();
+        let handle_b = std::thread::spawn(move || {
+            write_run_index(&path_b, std::slice::from_ref(&second_for_thread))
+        });
+        handle_a.join().unwrap().unwrap();
+        handle_b.join().unwrap().unwrap();
+
+        let loaded = load_run_index(&path, true);
+        assert_eq!(
+            loaded.len(),
+            1,
+            "a torn/merged write would show as more or fewer records"
+        );
+        assert!(
+            loaded[0] == first || loaded[0] == second,
+            "the surviving record must be one writer's whole content, not a mix"
+        );
+    }
+
+    /// R10: a write that cannot even create its staging file (no permission on the containing
+    /// directory) must leave the previous index exactly as it was.
+    #[cfg(unix)]
+    #[test]
+    fn denied_write_permission_preserves_the_previous_index() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = index_path(dir.path());
+        let previous = RunRecord {
+            id: "previous".into(),
+            created_at: "2026-01-01T00:00:00.000Z".into(),
+            ..Default::default()
+        };
+        write_run_index(&path, std::slice::from_ref(&previous)).unwrap();
+        let original = fs::read(&path).unwrap();
+
+        let mut denied = fs::metadata(dir.path()).unwrap().permissions();
+        denied.set_mode(0o500);
+        fs::set_permissions(dir.path(), denied).unwrap();
+
+        let next = RunRecord {
+            id: "next".into(),
+            created_at: "2026-01-02T00:00:00.000Z".into(),
+            ..Default::default()
+        };
+        let result = write_run_index(&path, std::slice::from_ref(&next));
+
+        // Restore before any assertion can panic, so the tempdir's own cleanup on drop can still
+        // remove it.
+        let mut restored = fs::metadata(dir.path()).unwrap().permissions();
+        restored.set_mode(0o700);
+        fs::set_permissions(dir.path(), restored).unwrap();
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
     }
 }
