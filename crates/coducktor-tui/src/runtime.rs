@@ -163,6 +163,11 @@ enum BackgroundResult {
         project: String,
         result: Result<coducktor_contract::CreateRunResponse, coducktor_client::EngineError>,
     },
+    CreatePr {
+        project: String,
+        id: String,
+        result: Result<coducktor_contract::CreatePrResponse, coducktor_client::EngineError>,
+    },
     Github {
         project: String,
         result: Result<coducktor_contract::GithubData, coducktor_client::EngineError>,
@@ -955,13 +960,18 @@ async fn execute_pending(
             }
             PendingAction::CreatePr { project, id } => {
                 let scope = Scope::Project(project.clone());
-                match engine.create_pr(&scope, &id).await {
-                    Ok(response) => {
-                        app.notice = Some(format!("draft PR created — {}", response.url))
-                    }
-                    Err(error) => app.notice = Some(format!("draft PR failed: {error}")),
-                }
-                app.pending.push(PendingAction::LoadThread { project, id });
+                let engine_for_task = engine.clone();
+                let id_for_task = id.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.create_pr(&scope, &id_for_task).await },
+                    move |result| BackgroundResult::CreatePr {
+                        project,
+                        id,
+                        result,
+                    },
+                );
             }
             PendingAction::OpenInCli { project, id } => {
                 let scope = Scope::Project(project.clone());
@@ -1742,6 +1752,19 @@ fn drain_background_results(
         match result {
             BackgroundResult::StartRun { project, result } => {
                 apply_started_run(app, project, result, starts_in_flight);
+            }
+            BackgroundResult::CreatePr {
+                project,
+                id,
+                result,
+            } => {
+                match result {
+                    Ok(response) => {
+                        app.notice = Some(format!("draft PR created — {}", response.url));
+                    }
+                    Err(error) => app.notice = Some(format!("draft PR failed: {error}")),
+                }
+                app.pending.push(PendingAction::LoadThread { project, id });
             }
             BackgroundResult::Github { project, result } => {
                 if app.github_ui.project != project {
@@ -2993,6 +3016,38 @@ mod tests {
             app.pending,
             vec![PendingAction::RefreshTasks {
                 project: "main".to_owned()
+            }]
+        );
+    }
+
+    #[test]
+    fn created_pr_queues_a_thread_refresh_after_completion() {
+        let (sender, receiver) = channel();
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        let mut starts_in_flight = HashSet::new();
+
+        sender
+            .send(BackgroundResult::CreatePr {
+                project: "main".to_owned(),
+                id: "run-1".to_owned(),
+                result: Ok(coducktor_contract::CreatePrResponse {
+                    url: "https://example.test/pr/1".to_owned(),
+                    dry_run: false,
+                }),
+            })
+            .unwrap();
+
+        drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("draft PR created — https://example.test/pr/1")
+        );
+        assert_eq!(
+            app.pending,
+            vec![PendingAction::LoadThread {
+                project: "main".to_owned(),
+                id: "run-1".to_owned(),
             }]
         );
     }

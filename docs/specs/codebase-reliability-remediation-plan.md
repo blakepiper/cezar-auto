@@ -193,6 +193,8 @@ Evidence:
   refresh only after that mutation completes.
 - A `--repo` launch switch queues its task and New Task snapshots through those background paths
   instead of awaiting either read while applying launch arguments.
+- Draft PR creation now runs on the worker pool and preserves the follow-up thread refresh after
+  its completion.
 - Exact queued duplicates of the safe task/index/new-task/model refreshes coalesce before a frame;
   mutations retain their original FIFO order and are never collapsed.
 
