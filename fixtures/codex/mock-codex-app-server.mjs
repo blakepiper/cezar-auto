@@ -59,6 +59,10 @@ rl.on('line', (line) => {
     emit(msg.error?.code === -32601
       ? { method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } }
       : { method: 'turn/failed', params: { turn: { id: 'turn_mock_1', status: 'failed' }, error: { message: 'unknown request was not declined' } } });
+  } else if (msg.id === 'malformed-ask-1') {
+    emit(msg.error?.code === -32602
+      ? { method: 'turn/completed', params: { turn: { id: 'turn_mock_1', status: 'completed' } } }
+      : { method: 'turn/failed', params: { turn: { id: 'turn_mock_1', status: 'failed' }, error: { message: 'malformed ask was not rejected' } } });
   } else if (msg.method === 'initialize') {
     emit({ id: msg.id, result: { userAgent: 'mock-codex/0.0.0' } });
   } else if (msg.method === 'thread/start' || msg.method === 'thread/resume') {
@@ -126,6 +130,12 @@ rl.on('line', (line) => {
       emit({ id: 'ask-1', method: 'item/tool/requestUserInput', params: {
         threadId: 'th_mock_1', turnId: 'turn_mock_1', itemId: 'item_ask_1', autoResolutionMs: null,
         questions,
+      } });
+      return;
+    }
+    if (turnText.includes('mock:malformed-native-codex-ask')) {
+      emit({ id: 'malformed-ask-1', method: 'item/tool/requestUserInput', params: {
+        threadId: 'th_mock_1', turnId: 'turn_mock_1', itemId: 'item_ask_bad', questions: [{}],
       } });
       return;
     }

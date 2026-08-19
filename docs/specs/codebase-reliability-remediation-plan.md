@@ -354,6 +354,8 @@ Evidence:
   16 KiB bound; malformed forms are declined. Unsupported MCP elicitations and dynamic-tool calls
   receive their required explicit decline shapes; every other client-directed request receives a
   non-hanging JSON-RPC error.
+- A mock malformed native `requestUserInput` request now proves the adapter returns `-32602`, emits
+  a normalized non-fatal error, and allows the provider turn to settle rather than waiting forever.
 - the schema also exposes dynamic tool, MCP progress, terminal-interaction, and richer item shapes.
   The generic tool fallback retains some JSON, but parity fixtures do not prove these current
   shapes remain usable.

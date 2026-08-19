@@ -580,6 +580,15 @@ impl CodexSession {
                             -32602,
                             "unsupported or malformed requestUserInput payload",
                         )?;
+                        on_event(
+                            EventInput::new("error")
+                                .field(
+                                    "message",
+                                    "unsupported or malformed Codex requestUserInput payload",
+                                )
+                                .field("fatal", false),
+                        )
+                        .map_err(|error| error.to_string())?;
                         continue;
                     }
                 }
@@ -1381,6 +1390,23 @@ mod tests {
             outcome,
             SessionOutcome::Waiting(_) | SessionOutcome::Completed(_)
         ));
+        session.finish(&mut |_| Ok(())).unwrap();
+    }
+
+    #[test]
+    fn malformed_native_ask_requests_receive_an_error_without_blocking_the_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = node_config();
+        let run_spec = spec_for(dir.path(), "mock:malformed-native-codex-ask");
+        let mut session = open_codex_session(&config, run_spec, &BTreeMap::new()).unwrap();
+        let (outcome, events) = run_turn(&mut session);
+
+        assert!(outcome.is_ok());
+        assert!(events.iter().any(|event| {
+            event.event_type == "error"
+                && event.extra.get("message").and_then(Value::as_str)
+                    == Some("unsupported or malformed Codex requestUserInput payload")
+        }));
         session.finish(&mut |_| Ok(())).unwrap();
     }
 
