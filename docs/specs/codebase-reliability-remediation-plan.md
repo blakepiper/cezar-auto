@@ -32,7 +32,7 @@ verification, so this is not a percentage-complete release claim.
 | R4 worktree execution | complete | Do not redesign; preserve its integration coverage. |
 | R5 checks and review gate | complete | Do not redesign; preserve its integration coverage. |
 | R6 selected account environment | complete | Do not redesign; preserve its integration coverage. |
-| R7 resource settings | partial, high | Wire process-wide workspace/repository leases and monitoring wake policy; keep memory limit visibly unavailable. |
+| R7 resource settings | complete except memory limit | Workspace/repository leases and monitoring wake policy are both wired end-to-end now (see evidence); `memory_limit_mb` remains saved-but-honestly-unavailable, which is the intended final state, not a gap. |
 | R8 runner protocol drift | partial, high | Complete the fixture/capability matrix and non-hanging response coverage. |
 | R9 worker/process lifetime | partial, high | `TurnDispatch`'s per-run worker registry is now leak-checked (see evidence); still missing shutdown escalation — no bounded-wait-then-force-terminate path exists for a worker whose session ignores cancellation. |
 | R10 durable run state | functionally complete | Complete the listed fault-injection coverage only. |
@@ -109,8 +109,24 @@ Evidence checked during this rewrite and subsequent implementation:
   remaining R2 work is the typed executor's cancellation/supersession ownership and complete
   request-key coverage, not another direct await in the frame task.
 - Production manager wiring now installs one shared workspace admission instance and canonical
-  repository-root leases. Monitoring wake deadlines are durable, but there is no owned scheduler
-  to reconcile them yet, so the Settings UI correctly presents that control as unavailable.
+  repository-root leases. Monitoring wake deadlines now have an owned scheduler:
+  `RunManager::due_monitoring_wakes` (a thin filter over the new, pure
+  `workflows::run::monitoring::is_due`, mirroring `auto_resume`'s shape) is polled by
+  `InProcessEngine`'s new `coducktor-monitor` background thread on a bounded 15-second interval —
+  not a tight/busy loop, and immaterial slack against a user-configured interval denominated in
+  minutes. A due session is detached from `self.active` via the new `begin_monitoring_wake`
+  (marking it `in_flight` so `RunManager::cancel` cannot race the eventual report, exactly like an
+  admitted turn) and driven through the existing `TurnDispatch`/`apply_active_turn` machinery from
+  R1 — a monitoring check-in is a `send_message` turn like any other nudge, just dispatched fresh
+  instead of continuing an in-flight worker's own loop. The scheduler is started only from
+  `InProcessEngine::new` (the one production construction path), never from the
+  `with_session_factory`/`with_session_factory_at` test seams, so the test suite does not
+  accumulate one sleeping thread per constructed engine.
+  `a_parked_monitoring_session_is_woken_once_its_deadline_passes` proves the whole path end to end
+  (with the interval shortened for the test via `spawn_monitoring_scheduler_with_interval`). The
+  Settings UI's "unavailable · no owned scheduler" label was removed along with its two test
+  assertions — the control is genuinely wired now, matching the workspace-config value it already
+  displayed.
 - Durable run metrics now report event appends, index flushes/bytes, and thread projection
   rebuild count/work. A truncated index is covered end-to-end: boot degrades, writes quarantine,
   and explicit repair makes a backup before replacing the index.

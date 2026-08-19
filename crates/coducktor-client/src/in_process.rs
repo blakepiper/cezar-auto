@@ -58,9 +58,9 @@ use coducktor_core::skills::discover_skills;
 use coducktor_core::workflows::load::{WORKFLOWS_DIR, load_workflows};
 use coducktor_core::workflows::run::{
     AUTONOMOUS_NUDGE, AdmittedTurn, CancellationToken, CheckExecutor, CheckResult, DiffInspector,
-    EventInput, PromptImage, RepositoryRootLease, RunManager, RuntimeActive, RuntimeOptions,
-    SessionFactory, StartRunInput as CoreStartRunInput, TurnStep, WorkspaceSemaphore,
-    review_gate_enabled,
+    EventInput, MONITORING_WAKE_PROMPT, PromptImage, RepositoryRootLease, RunManager,
+    RuntimeActive, RuntimeOptions, SessionFactory, StartRunInput as CoreStartRunInput, TurnStep,
+    WorkspaceSemaphore, review_gate_enabled,
 };
 use coducktor_core::workflows::types::{parse_workflow_file_doc, steps_issue};
 use coducktor_core::workspace::agent_accounts::{
@@ -508,6 +508,66 @@ impl TurnDispatch {
         };
         self.dispatch(admitted);
     }
+
+    /// Dispatch a monitoring check-in `RunManager::begin_monitoring_wake` already detached from
+    /// `self.active`. A `RuntimeActive` in hand means the manager already marked the run
+    /// `in_flight`, so — unlike `spawn`'s `AdmittedTurn` path — a failed thread spawn cannot just
+    /// report a failure by run id; the still-live session must go somewhere, or it leaks. It is
+    /// kept in a cell reachable from both the spawn closure and this call so whichever one
+    /// actually runs (never both) can retrieve it.
+    fn wake(&self, run_id: String, active: RuntimeActive) {
+        let cell = Arc::new(Mutex::new(Some(active)));
+        let dispatch = self.clone();
+        let thread_cell = cell.clone();
+        let thread_run_id = run_id.clone();
+        let spawned = std::thread::Builder::new()
+            .name("coducktor-monitor-wake".to_owned())
+            .spawn(move || {
+                if let Some(active) = thread_cell.lock().ok().and_then(|mut cell| cell.take()) {
+                    dispatch.run_wake(thread_run_id, active);
+                }
+            });
+        match spawned {
+            Ok(handle) => {
+                if let Ok(mut workers) = self.workers.lock() {
+                    workers.insert(run_id, handle);
+                }
+            }
+            Err(_) => {
+                if let Some(active) = cell.lock().ok().and_then(|mut cell| cell.take())
+                    && let Ok(mut manager) = self.manager.lock()
+                {
+                    manager.abandon_monitoring_wake(&run_id, active);
+                }
+            }
+        }
+    }
+
+    fn run_wake(&self, run_id: String, mut active: RuntimeActive) {
+        let step_id = active.step_id().to_owned();
+        let send_result =
+            active
+                .session_mut()
+                .send_message(MONITORING_WAKE_PROMPT, &[], &mut |event| {
+                    self.apply_event(&run_id, &step_id, event)
+                });
+        let mut step = match self.manager.lock() {
+            // A monitoring wake has no independent cancellation token the way an admitted turn's
+            // request does — `cancel_run` reaches it the same way it reaches any other parked
+            // session, through `RunManager::cancel`'s `self.active`/`in_flight` handling, not a
+            // signal this worker itself observes.
+            Ok(mut manager) => manager.apply_active_turn(&run_id, active, send_result, false),
+            Err(_) => return,
+        };
+        loop {
+            let active = match step {
+                Ok(TurnStep::Done) | Err(_) => break,
+                Ok(TurnStep::Nudge(active)) => active,
+            };
+            step = self.run_nudge(&run_id, &step_id, active, &CancellationToken::default());
+        }
+        self.redispatch();
+    }
 }
 
 /// A 5-minute TTL cache so a slow or failing model probe does not re-run on every picker update.
@@ -734,7 +794,9 @@ impl InProcessEngine {
     /// Build a manager over `repo_root` wired with the real [`DefaultSessionFactory`]. Events
     /// are published through an in-process broadcast channel.
     pub fn new(repo_root: impl Into<PathBuf>, version: impl Into<String>) -> Self {
-        Self::with_session_factory(repo_root, version, DefaultSessionFactory::new())
+        let engine = Self::with_session_factory(repo_root, version, DefaultSessionFactory::new());
+        engine.spawn_monitoring_scheduler();
+        engine
     }
 
     /// Same as [`Self::new`], but over an explicit [`SessionFactory`] — the seam a test (or a
@@ -1389,13 +1451,85 @@ impl InProcessEngine {
     /// Build a handle any per-run turn can be dispatched through — cheap, since every field is
     /// an `Arc` clone or owned small value.
     fn turn_dispatch(&self) -> TurnDispatch {
+        self.turn_dispatch_for(self.manager.clone())
+    }
+
+    /// Same, but against an explicit manager rather than this engine's own scoped one — the
+    /// monitoring scheduler dispatches across every currently open project's manager while every
+    /// other field (the session factory, state home, cancellation registry, worker registry) is
+    /// shared engine-wide, not per-project.
+    fn turn_dispatch_for(&self, manager: Arc<Mutex<RunManager>>) -> TurnDispatch {
         TurnDispatch {
-            manager: self.manager.clone(),
+            manager,
             session_factory: self.session_factory.clone(),
             state_home: self.state_home.clone(),
             cancellations: self.cancellations.clone(),
             workers: self.turn_workers.clone(),
         }
+    }
+
+    /// How often the monitoring scheduler wakes to check every currently open project's managers
+    /// for a due monitoring session. Real due wakes are dispatched the moment this notices them;
+    /// this is the coarse-grained bound on that latency, not a busy/tight loop — the durable wake
+    /// interval a user configures is denominated in minutes, so a few seconds of slack against it
+    /// is immaterial.
+    const MONITORING_SCHEDULER_INTERVAL: Duration = Duration::from_secs(15);
+
+    /// Start the one process-wide background thread that reconciles monitoring wake deadlines.
+    /// Only called from [`Self::new`] — every test and embedding constructor
+    /// (`with_session_factory`/`with_session_factory_at`) intentionally does not start it, so a
+    /// test suite that builds hundreds of engines never accumulates hundreds of sleeping threads.
+    fn spawn_monitoring_scheduler(&self) {
+        self.spawn_monitoring_scheduler_with_interval(Self::MONITORING_SCHEDULER_INTERVAL);
+    }
+
+    /// The actual scheduler, parameterized so a test can use a short interval instead of waiting
+    /// out the real one.
+    fn spawn_monitoring_scheduler_with_interval(&self, interval: Duration) {
+        let managers = self.managers.clone();
+        let session_factory = self.session_factory.clone();
+        let state_home = self.state_home.clone();
+        let cancellations = self.cancellations.clone();
+        let workers = self.turn_workers.clone();
+        let _ = std::thread::Builder::new()
+            .name("coducktor-monitor".to_owned())
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(interval);
+                    let now = coducktor_core::time::now_iso8601();
+                    let snapshot: Vec<Arc<Mutex<RunManager>>> = match managers.lock() {
+                        Ok(managers) => managers
+                            .values()
+                            .map(|entry| entry.manager.clone())
+                            .collect(),
+                        Err(_) => continue,
+                    };
+                    for manager in snapshot {
+                        let due = match manager.lock() {
+                            Ok(manager) => manager.due_monitoring_wakes(&now),
+                            Err(_) => continue,
+                        };
+                        if due.is_empty() {
+                            continue;
+                        }
+                        let dispatch = TurnDispatch {
+                            manager: manager.clone(),
+                            session_factory: session_factory.clone(),
+                            state_home: state_home.clone(),
+                            cancellations: cancellations.clone(),
+                            workers: workers.clone(),
+                        };
+                        for run_id in due {
+                            let active = manager.lock().ok().and_then(|mut manager| {
+                                manager.begin_monitoring_wake(&run_id).ok().flatten()
+                            });
+                            if let Some(active) = active {
+                                dispatch.wake(run_id, active);
+                            }
+                        }
+                    }
+                }
+            });
     }
 
     /// Join completed activation workers irrespective of the project that started them. This
@@ -9577,6 +9711,109 @@ mod tests {
                 "cancel iteration {iteration}: cancellation token not pruned"
             );
         }
+    }
+
+    struct MonitoringSession {
+        sent: Arc<AtomicUsize>,
+    }
+
+    impl AgentSession for MonitoringSession {
+        fn turn(
+            &mut self,
+            _on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
+        ) -> Result<SessionOutcome, String> {
+            Ok(SessionOutcome::Waiting(
+                coducktor_core::workflows::run::SessionReport {
+                    decision: Some(coducktor_core::workflows::run::TurnMarkerDecision::Monitoring),
+                    ..Default::default()
+                },
+            ))
+        }
+
+        fn send_message(
+            &mut self,
+            _prompt: &str,
+            _images: &[PromptImage],
+            _on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
+        ) -> Result<SessionOutcome, String> {
+            self.sent.fetch_add(1, Ordering::SeqCst);
+            Ok(SessionOutcome::Completed(
+                coducktor_core::workflows::run::SessionReport::default(),
+            ))
+        }
+    }
+
+    struct MonitoringFactory {
+        sent: Arc<AtomicUsize>,
+    }
+
+    impl SessionFactory for MonitoringFactory {
+        fn open(
+            &mut self,
+            _request: SessionRequest,
+        ) -> Result<Box<dyn AgentSession + Send>, String> {
+            Ok(Box::new(MonitoringSession {
+                sent: self.sent.clone(),
+            }))
+        }
+    }
+
+    /// R7 end-to-end: a session that parks for monitoring gets a real check-in nudge once its
+    /// durable `monitoringWakeAt` deadline passes, with nothing polling in a tight loop — the
+    /// scheduler only wakes on its own bounded interval (here shortened for the test) and does
+    /// nothing on cycles with no due session.
+    #[tokio::test]
+    async fn a_parked_monitoring_session_is_woken_once_its_deadline_passes() {
+        let dir = TempDir::new().unwrap();
+        let sent = Arc::new(AtomicUsize::new(0));
+        let engine = InProcessEngine::with_session_factory(
+            dir.path(),
+            "0.0.0-test",
+            MonitoringFactory { sent: sent.clone() },
+        );
+        {
+            let mut manager = engine.manager.lock().unwrap();
+            let mut options = manager.runtime_options();
+            // A zero-minute interval means the deadline is already due the instant it parks —
+            // deterministic without needing to wait out a real interval.
+            options.monitoring_wake_interval_minutes = Some(0);
+            manager.set_runtime_options(options);
+        }
+        let CreateRunResponse::Single(run) =
+            engine.start_run(steps_input("watch it")).await.unwrap()
+        else {
+            panic!("expected one run");
+        };
+        engine.activate_runs().unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let current = engine.get_run(&run.id).await.unwrap();
+                if current.record.activity == Some(coducktor_contract::RunActivity::Monitoring) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("session should park for monitoring");
+        assert_eq!(
+            sent.load(Ordering::SeqCst),
+            0,
+            "not woken before the scheduler runs"
+        );
+
+        engine.spawn_monitoring_scheduler_with_interval(Duration::from_millis(20));
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while sent.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the monitoring session should have received a check-in nudge");
+
+        activate_until_terminal(&engine, &run.id).await;
     }
 
     #[tokio::test]

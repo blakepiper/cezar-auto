@@ -701,11 +701,8 @@ fn rows_resources(app: &App) -> Vec<Row> {
             resources.max_monitoring_sessions.to_string(),
         ),
         row(
-            "Monitoring wake interval (min) · unavailable",
-            format!(
-                "{} · no owned scheduler",
-                opt_num(resources.monitoring_wake_interval_minutes)
-            ),
+            "Monitoring wake interval (min)",
+            opt_num(resources.monitoring_wake_interval_minutes),
         ),
         row(
             "Auto-resume on usage limit",
@@ -2348,7 +2345,7 @@ mod tests {
         assert!(content.contains("Codex · default"));
         assert!(content.contains("Weekly window"));
         assert!(content.contains("0% used"));
-        assert!(content.contains("Monitoring wake interval (min) · unavailable"));
+        assert!(content.contains("Monitoring wake interval (min)"));
         assert!(content.contains("Memory limit (MB) · unavailable"));
         assert!(!content.contains("100% available"));
     }
@@ -2365,7 +2362,7 @@ mod tests {
             ("Auto-resume on usage limit", false),
             ("Intelligent context refresh", false),
             ("Default worktree retention", false),
-            ("Monitoring wake interval (min) · unavailable", true),
+            ("Monitoring wake interval (min)", false),
             ("Memory limit (MB) · unavailable", true),
         ] {
             assert!(

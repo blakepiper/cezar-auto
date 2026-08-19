@@ -11,6 +11,7 @@
 pub mod auto_resume;
 pub mod context_refresh;
 pub mod lifecycle;
+pub mod monitoring;
 pub mod quota;
 pub mod recovery;
 pub mod review_gate;
@@ -54,6 +55,11 @@ use crate::time::{is_zod_datetime, now_iso8601, now_plus_iso8601};
 /// per-run worker) sends byte-for-byte the same prompt this module's own synchronous resume path
 /// uses.
 pub const AUTONOMOUS_NUDGE: &str = "Your immediately preceding response may already have completed the user's original request, but it did not include the required completion marker. Do not begin new work, search for unrelated work, or expand the task. If the original request is fully complete, reply with exactly DUCK:DONE. Otherwise, continue only the original request. If you genuinely need user input, end normally without a marker.";
+
+/// Sent to a parked monitoring session once its durable `monitoringWakeAt` deadline passes.
+/// `pub` for the same reason as `AUTONOMOUS_NUDGE`: the caller that actually sends it
+/// (`RunManager::begin_monitoring_wake`'s caller, outside any lock) needs the exact text.
+pub const MONITORING_WAKE_PROMPT: &str = "Periodic monitoring check-in: reassess whatever you are watching for and report back. If the condition you were waiting for is now met, finish and reply with exactly DUCK:DONE. Otherwise, do not begin new work — just note the current state and continue waiting.";
 
 /// A patch represented with the same camelCase keys as the persisted contract.
 ///
@@ -811,6 +817,13 @@ impl RuntimeActive {
     /// it directly (never through the manager lock), then hand the same [`RuntimeActive`] back.
     pub fn session_mut(&mut self) -> &mut (dyn AgentSession + Send) {
         self.session.as_mut()
+    }
+
+    /// The step this turn belongs to — a caller sending a message against it (an autonomous
+    /// nudge, a monitoring wake) needs this to tag durable events with the same step the manager
+    /// itself will look for when it applies the result.
+    pub fn step_id(&self) -> &str {
+        &self.workflow.steps[self.step_index].id
     }
 }
 
@@ -2747,6 +2760,49 @@ impl RunManager {
             },
         };
         self.continue_active_turn(run_id, active, outcome)
+    }
+
+    /// Every currently live-in-process monitoring session whose durable `monitoringWakeAt`
+    /// deadline has passed. Read-only and cheap — a caller (a dedicated scheduler, not this
+    /// manager's own admission loop) polls this on a bounded interval and dispatches each one
+    /// through [`Self::begin_monitoring_wake`] the same way it would an [`AdmittedTurn`].
+    pub fn due_monitoring_wakes(&self, now: &str) -> Vec<String> {
+        self.runs
+            .values()
+            .filter(|run| self.active.contains_key(&run.id))
+            .filter(|run| monitoring::is_due(run, now))
+            .map(|run| run.id.clone())
+            .collect()
+    }
+
+    /// Detach a due monitoring session from `self.active` so its check-in turn can run outside
+    /// this manager's lock, exactly like a freshly admitted turn. Re-validates against the
+    /// current durable record rather than trusting an earlier `due_monitoring_wakes` call, since
+    /// state can change between planning and dispatch (a real user message, a cancel). Counts as
+    /// `in_flight` for the same reason an admitted turn does: `RunManager::cancel` must not race
+    /// the caller's eventual `apply_active_turn` report by settling the run out from under it.
+    pub fn begin_monitoring_wake(&mut self, run_id: &str) -> io::Result<Option<RuntimeActive>> {
+        if self.get_run(run_id).and_then(|run| run.activity) != Some(RunActivity::Monitoring) {
+            return Ok(None);
+        }
+        if !self.active.contains_key(run_id) {
+            return Ok(None);
+        }
+        self.append_event(
+            run_id,
+            EventInput::new("note").field("message", "monitoring check-in"),
+        )?;
+        self.in_flight.insert(run_id.to_owned());
+        Ok(self.active.remove(run_id))
+    }
+
+    /// A monitoring wake's worker could not even be started (e.g. the OS refused a new thread).
+    /// Put the still-live session back exactly as `park_session` would have left it, rather than
+    /// leaking it as permanently `in_flight` with no session anywhere to resolve it — the next
+    /// scheduler pass, or an explicit cancel/message, can still reach it normally.
+    pub fn abandon_monitoring_wake(&mut self, run_id: &str, active: RuntimeActive) {
+        self.in_flight.remove(run_id);
+        self.active.insert(run_id.to_owned(), active);
     }
 
     fn apply_session_report(
