@@ -53,6 +53,8 @@ the larger coordinator rewrite:
   last persistence-boundary panic path.
 - child-environment credential filtering now fails closed if its fixed regex cannot initialize,
   preserving the no-host-secret-leak guarantee without a startup panic.
+- task-branch compatibility detection now uses its two exact retained prefixes directly, removing
+  an unnecessary lazy regex initialization from the Git reader path.
 
 The critical coordinator work is not complete. Provider turns still need to move out of the
 project-manager critical section into bounded per-run workers before same-project parallelism and

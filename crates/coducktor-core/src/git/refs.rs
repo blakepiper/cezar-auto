@@ -1,9 +1,5 @@
 //! Ref-safety and task-branch readers.
 
-use std::sync::LazyLock;
-
-use regex::Regex;
-
 /// Reject option-like git revision arguments (#431). A `-`/`--`-prefixed base/from ref is
 /// git argument injection: `git diff --output=/path` writes an arbitrary file,
 /// `--upload-pack=<cmd>` runs a command, etc. Every ref coducktor feeds to git is already
@@ -18,11 +14,8 @@ pub fn is_safe_git_ref(ref_: &str) -> bool {
 // Task branches written with the current name use `duck/`, while
 // existing repositories may still contain the legacy prefix. Writers never call this helper;
 // readers use it so old worktrees remain discoverable.
-static TASK_BRANCH_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(?:cez|duck)/").expect("fixed task branch pattern"));
-
 pub fn is_task_branch(branch: &str) -> bool {
-    TASK_BRANCH_RE.is_match(branch)
+    branch.starts_with("duck/") || branch.starts_with("cez/")
 }
 
 #[cfg(test)]
