@@ -179,7 +179,8 @@ Evidence:
 - IDE explorer and file reads now use that same route- and path-guarded background path, so
   out-of-order navigation completions cannot overwrite the selected directory or open draft.
 - Repository Git aggregate, changes, and commit-detail loads now likewise require their active
-  repository-Git route before they can update state or report an error.
+  repository-Git route before they can update state or report an error; revisits also supersede
+  earlier aggregate requests with a generation.
 - Scratchpad hydration also runs in the background and applies only to its still-active project
   and request generation.
 - Compare-group metadata and variant diffs likewise load in the background and reject stale

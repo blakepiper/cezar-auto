@@ -249,10 +249,12 @@ enum BackgroundResult {
     },
     LoadRepoGit {
         project: String,
+        generation: u64,
         repo: Result<coducktor_contract::RepoResponse, coducktor_client::EngineError>,
     },
     LoadRepoGitChanges {
         project: String,
+        generation: u64,
         changes: Result<coducktor_contract::ChangesPayload, coducktor_client::EngineError>,
     },
     LoadTaskGitChanges {
@@ -309,6 +311,7 @@ enum BackgroundResult {
     },
     LoadRepoGitCommit {
         project: String,
+        generation: u64,
         result: Result<coducktor_contract::RepoCommitPayload, coducktor_client::EngineError>,
     },
     GithubHandToAgent {
@@ -1141,6 +1144,7 @@ async fn execute_pending(
                 }
             }
             PendingAction::LoadRepoGit { project } => {
+                let generation = app.begin_repo_git_request();
                 let scope = Scope::Project(project.clone());
                 let repo_scope = scope.clone();
                 let changes_scope = scope;
@@ -1152,6 +1156,7 @@ async fn execute_pending(
                     async move { repo_engine.repo(&repo_scope).await },
                     move |repo| BackgroundResult::LoadRepoGit {
                         project: repo_project,
+                        generation,
                         repo,
                     },
                 );
@@ -1163,28 +1168,39 @@ async fn execute_pending(
                     async move { changes_engine.repo_changes(&changes_scope).await },
                     move |changes| BackgroundResult::LoadRepoGitChanges {
                         project: changes_project,
+                        generation,
                         changes,
                     },
                 );
             }
             PendingAction::LoadRepoGitCommits { project } => {
+                let generation = app.begin_repo_git_request();
                 let scope = Scope::Project(project.clone());
                 let engine_for_task = engine.clone();
                 spawn_background(
                     background_handle,
                     background_sender,
                     async move { engine_for_task.repo(&scope).await },
-                    move |repo| BackgroundResult::LoadRepoGit { project, repo },
+                    move |repo| BackgroundResult::LoadRepoGit {
+                        project,
+                        generation,
+                        repo,
+                    },
                 );
             }
             PendingAction::LoadRepoGitCommitDiff { project, sha } => {
+                let generation = app.repo_git_request_generation;
                 let scope = Scope::Project(project.clone());
                 let engine_for_task = engine.clone();
                 spawn_background(
                     background_handle,
                     background_sender,
                     async move { engine_for_task.repo_commit(&scope, &sha).await },
-                    move |result| BackgroundResult::LoadRepoGitCommit { project, result },
+                    move |result| BackgroundResult::LoadRepoGitCommit {
+                        project,
+                        generation,
+                        result,
+                    },
                 );
             }
             PendingAction::RepoGitBranch {
@@ -2137,9 +2153,14 @@ fn drain_background_results(
                 }
                 Err(error) => app.notice = Some(format!("pick failed: {error}")),
             },
-            BackgroundResult::LoadRepoGit { project, repo } => {
+            BackgroundResult::LoadRepoGit {
+                project,
+                generation,
+                repo,
+            } => {
                 if !matches!(app.route(), app::Route::RepoGit { project: route_project, .. } if route_project == &project)
                     || app.repo_git_ui.project != project
+                    || app.repo_git_request_generation != generation
                 {
                     continue;
                 }
@@ -2148,9 +2169,14 @@ fn drain_background_results(
                     Err(error) => app.notice = Some(format!("load repo failed: {error}")),
                 }
             }
-            BackgroundResult::LoadRepoGitChanges { project, changes } => {
+            BackgroundResult::LoadRepoGitChanges {
+                project,
+                generation,
+                changes,
+            } => {
                 if !matches!(app.route(), app::Route::RepoGit { project: route_project, .. } if route_project == &project)
                     || app.repo_git_ui.project != project
+                    || app.repo_git_request_generation != generation
                 {
                     continue;
                 }
@@ -2270,12 +2296,17 @@ fn drain_background_results(
                     Err(error) => app.ide_ui.file_error = Some(error.to_string()),
                 }
             }
-            BackgroundResult::LoadRepoGitCommit { project, result } => {
+            BackgroundResult::LoadRepoGitCommit {
+                project,
+                generation,
+                result,
+            } => {
                 if !matches!(
                     app.route(),
                     app::Route::RepoGit { project: route_project, tab: app::RepoGitTab::Commits }
                         if route_project == &project
                 ) || app.repo_git_ui.project != project
+                    || app.repo_git_request_generation != generation
                 {
                     continue;
                 }
@@ -3092,6 +3123,31 @@ mod tests {
     }
 
     #[test]
+    fn stale_repo_git_refresh_failures_are_rejected() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        screens::repo_git::open(&mut app, "main", app::RepoGitTab::Changes);
+        let stale_generation = app.begin_repo_git_request();
+        let current_generation = app.begin_repo_git_request();
+        let (sender, receiver) = channel();
+        let mut starts_in_flight = HashSet::new();
+
+        sender
+            .send(BackgroundResult::LoadRepoGit {
+                project: "main".to_owned(),
+                generation: stale_generation,
+                repo: Err(coducktor_client::EngineError::Unavailable {
+                    reason: "stale request".to_owned(),
+                }),
+            })
+            .unwrap();
+
+        drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+
+        assert_eq!(app.repo_git_request_generation, current_generation);
+        assert!(app.notice.is_none());
+    }
+
+    #[test]
     fn launch_repo_switch_queues_background_refreshes() {
         let repo = tempfile::tempdir().unwrap();
         let mut app = App::new("main", Theme::detect(), Keymap::default());
@@ -3201,6 +3257,7 @@ mod tests {
         sender
             .send(BackgroundResult::LoadRepoGit {
                 project: "main".to_owned(),
+                generation: 0,
                 repo: Err(coducktor_client::EngineError::Unavailable {
                     reason: "stale request".to_owned(),
                 }),

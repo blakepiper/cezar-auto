@@ -1060,6 +1060,8 @@ pub struct App {
     pub thread_ui: crate::screens::thread::ThreadUi,
     pub task_git_ui: crate::screens::task_git::TaskGitUi,
     pub repo_git_ui: crate::screens::repo_git::RepoGitUi,
+    /// Rejects an older repository Git refresh after revisiting the same project.
+    pub repo_git_request_generation: u64,
     pub compare_ui: crate::screens::compare::CompareUi,
     /// Rejects a stale aggregate compare load after returning to a group.
     pub compare_request_generation: u64,
@@ -1150,6 +1152,7 @@ impl App {
             thread_ui: crate::screens::thread::ThreadUi::default(),
             task_git_ui: crate::screens::task_git::TaskGitUi::default(),
             repo_git_ui: crate::screens::repo_git::RepoGitUi::default(),
+            repo_git_request_generation: 0,
             compare_ui: crate::screens::compare::CompareUi::default(),
             compare_request_generation: 0,
             ide_ui: crate::screens::ide::IdeUi::default(),
@@ -1340,6 +1343,11 @@ impl App {
     pub fn begin_compare_request(&mut self) -> u64 {
         self.compare_request_generation = self.compare_request_generation.wrapping_add(1);
         self.compare_request_generation
+    }
+
+    pub fn begin_repo_git_request(&mut self) -> u64 {
+        self.repo_git_request_generation = self.repo_git_request_generation.wrapping_add(1);
+        self.repo_git_request_generation
     }
 
     pub fn accepts_new_task_response(&self, project: &str, generation: u64) -> bool {
