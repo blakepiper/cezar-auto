@@ -85,6 +85,13 @@ records what is implemented and which terminal observations remain unverified.
 
 ## Task experience smoke test
 
+- **80×24 pseudo-terminal, 2026-08-18 (completed-task follow-up).** Built and launched the real
+  `duck` binary against an isolated temporary Git repository and a seeded completed dry-run
+  Claude session. Opened the completed task, typed `second prompt mock:done`, and pressed Enter.
+  The exact prompt appeared as the next turn, `Sending…` cleared as soon as the durable
+  `user-message` arrived, the mock agent's response streamed beneath it, and the task returned to
+  `done`. `q` restored the alternate screen.
+
 - **120×40 pseudo-terminal, 2026-08-18 (follow-up prompt visibility).** Built and launched the
   real `duck` binary against an isolated temporary Git repository and mock Claude session. After
   the initial turn parked for input, submitted `confirm prompt visibility mock:slow mock:done` and

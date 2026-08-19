@@ -3117,15 +3117,7 @@ impl RunManager {
             return Ok(false);
         };
         let step_id = active.workflow.steps[active.step_index].id.clone();
-        let image_urls = images.iter().map(PromptImage::data_url).collect::<Vec<_>>();
-        self.append_event(
-            run_id,
-            EventInput::new("user-message")
-                .step(step_id.clone())
-                .field("text", prompt.clone())
-                .field("imageCount", image_urls.len())
-                .field("images", image_urls),
-        )?;
+        self.append_user_message(run_id, &step_id, &prompt, &images)?;
         let Some(mut active) = self.active.remove(run_id) else {
             return Ok(false);
         };
@@ -3265,6 +3257,7 @@ impl RunManager {
                     String::new()
                 }
             });
+        self.append_user_message(run_id, &step_id, &prompt, &options.images)?;
         let model = self.get_run(run_id).and_then(|run| run.model.clone());
         let mut continuation_workflow = workflow;
         continuation_workflow
@@ -3308,6 +3301,24 @@ impl RunManager {
         self.enqueue(run_id.to_owned());
         self.pump()?;
         Ok(ContinueResult::ok())
+    }
+
+    fn append_user_message(
+        &mut self,
+        run_id: &str,
+        step_id: &str,
+        prompt: &str,
+        images: &[PromptImage],
+    ) -> io::Result<RunEvent> {
+        let image_urls = images.iter().map(PromptImage::data_url).collect::<Vec<_>>();
+        self.append_event(
+            run_id,
+            EventInput::new("user-message")
+                .step(step_id.to_owned())
+                .field("text", prompt)
+                .field("imageCount", image_urls.len())
+                .field("images", image_urls),
+        )
     }
 
     /// Apply parsed agent-owned PR/issue markers to a record. URL candidate discovery remains a
@@ -5292,5 +5303,63 @@ mod tests {
                 |step| step.id == "continue-1" && step.session_id.as_deref() == Some("resumed")
             )
         );
+    }
+
+    #[test]
+    fn continuation_persists_the_follow_up_before_starting_the_agent() {
+        let dir = tempdir().unwrap();
+        let image = PromptImage {
+            media_type: "image/png".to_owned(),
+            data: "AQID".to_owned(),
+        };
+        let (factory, _requests) =
+            fake_factory(vec![completed_session("old"), completed_session("resumed")]);
+        let mut manager = RunManager::with_session_factory(dir.path(), factory);
+        let workflow = workflow_with_steps(vec![agent_workflow_step("work")]);
+        let run = manager
+            .start_run(&workflow, start_input("first prompt"))
+            .unwrap();
+
+        let result = manager
+            .continue_run(
+                &run.id,
+                ContinueOptions {
+                    text: Some("second prompt".to_owned()),
+                    images: vec![image.clone()],
+                    ..ContinueOptions::default()
+                },
+            )
+            .unwrap();
+
+        assert!(result.ok);
+        let events = manager.read_events(&run.id);
+        let follow_up = events
+            .iter()
+            .find(|event| event.event_type == "user-message")
+            .unwrap();
+        assert_eq!(follow_up.step_id.as_deref(), Some("continue-1"));
+        assert_eq!(
+            follow_up.extra.get("text").and_then(Value::as_str),
+            Some("second prompt")
+        );
+        assert_eq!(
+            follow_up.extra.get("imageCount").and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            follow_up.extra.get("images"),
+            Some(&json!([image.data_url()]))
+        );
+        let follow_up_index = events
+            .iter()
+            .position(|event| event.event_type == "user-message")
+            .unwrap();
+        let continuation_start_index = events
+            .iter()
+            .position(|event| {
+                event.event_type == "step-start" && event.step_id.as_deref() == Some("continue-1")
+            })
+            .unwrap();
+        assert!(follow_up_index < continuation_start_index);
     }
 }
