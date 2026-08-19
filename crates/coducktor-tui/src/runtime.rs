@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::env;
 use std::future::Future;
 use std::io;
@@ -129,6 +129,42 @@ fn parse_workspace_event(event: EngineEvent, fallback_project: &str) -> Option<W
             usage: None,
         },
     })
+}
+
+/// Apply one bounded workspace receiver batch. Repeated whole-record updates for the same run
+/// are last-update-wins within a frame; lifecycle deletes and other event kinds retain their
+/// ordering by flushing the pending records before they apply.
+fn apply_workspace_event_batch(
+    app: &mut App,
+    events: impl IntoIterator<Item = WorkspaceEvent>,
+) -> usize {
+    let mut pending_runs = BTreeMap::<(String, String), ApiRun>::new();
+    let mut coalesced = 0;
+    for event in events {
+        match event {
+            WorkspaceEvent::Run { project, run } => {
+                let key = (project, run.record.id.clone());
+                if pending_runs.insert(key, run).is_some() {
+                    coalesced += 1;
+                }
+            }
+            event => {
+                flush_workspace_run_updates(app, &mut pending_runs);
+                app.apply_workspace_event(event);
+            }
+        }
+    }
+    flush_workspace_run_updates(app, &mut pending_runs);
+    coalesced
+}
+
+fn flush_workspace_run_updates(
+    app: &mut App,
+    pending_runs: &mut BTreeMap<(String, String), ApiRun>,
+) {
+    for ((project, _), run) in std::mem::take(pending_runs) {
+        app.apply_workspace_event(WorkspaceEvent::Run { project, run });
+    }
 }
 
 struct PrimeSnapshot {
@@ -3020,6 +3056,7 @@ async fn run(
         let mut receiver_backlog = false;
         if let Some(events) = workspace_events.as_deref_mut() {
             let started = Instant::now();
+            let mut frame_events = Vec::new();
             for index in 0..RECEIVER_ITEMS_PER_FRAME {
                 if started.elapsed() >= RECEIVER_TIME_BUDGET {
                     receiver_backlog = true;
@@ -3028,16 +3065,12 @@ async fn run(
                 let Ok(event) = events.try_recv() else {
                     break;
                 };
-                match event {
-                    WorkspaceEvent::Run { project, run } => {
-                        app.apply_workspace_event(WorkspaceEvent::Run { project, run });
-                    }
-                    other => app.apply_workspace_event(other),
-                }
+                frame_events.push(event);
                 if index + 1 == RECEIVER_ITEMS_PER_FRAME {
                     receiver_backlog = true;
                 }
             }
+            apply_workspace_event_batch(app, frame_events);
         }
         receiver_backlog |=
             drain_background_results(&background_receiver, app, &mut starts_in_flight);
@@ -3357,6 +3390,45 @@ mod tests {
         queue_global_index_refresh(&mut app);
 
         assert_eq!(app.pending, vec![PendingAction::RefreshIndex]);
+    }
+
+    #[test]
+    fn repeated_workspace_run_updates_are_coalesced_per_frame() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        let run = |status| ApiRun {
+            record: coducktor_contract::RunRecord {
+                id: "run-1".to_owned(),
+                title: "Stream safely".to_owned(),
+                status,
+                ..coducktor_contract::RunRecord::default()
+            },
+            usage: None,
+        };
+
+        let coalesced = apply_workspace_event_batch(
+            &mut app,
+            [
+                WorkspaceEvent::Run {
+                    project: "main".to_owned(),
+                    run: run(coducktor_contract::RunStatus::Queued),
+                },
+                WorkspaceEvent::Run {
+                    project: "main".to_owned(),
+                    run: run(coducktor_contract::RunStatus::Running),
+                },
+                WorkspaceEvent::Run {
+                    project: "main".to_owned(),
+                    run: run(coducktor_contract::RunStatus::Done),
+                },
+            ],
+        );
+
+        assert_eq!(coalesced, 2);
+        assert_eq!(app.tasks.len(), 1);
+        assert_eq!(
+            app.tasks[0].record.status,
+            coducktor_contract::RunStatus::Done
+        );
     }
 
     #[test]
