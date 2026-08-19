@@ -1259,6 +1259,26 @@ mod tests {
     }
 
     #[test]
+    fn permission_profile_approval_rejects_non_object_and_oversized_requests() {
+        assert!(
+            approval_request(
+                "item/permissions/requestApproval",
+                json!("permissions-1"),
+                &json!({"permissions":["/repo"]}),
+            )
+            .is_none()
+        );
+        assert!(
+            approval_request(
+                "item/permissions/requestApproval",
+                json!("permissions-1"),
+                &json!({"permissions":{"fileSystem":{"write":"x".repeat(16 * 1024)}}}),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
     fn a_first_turn_streams_the_expected_events_and_parks_waiting() {
         let dir = tempfile::tempdir().unwrap();
         let config = node_config();
