@@ -327,11 +327,13 @@ enum BackgroundResult {
     LoadIdeDirectory {
         project: String,
         path: Option<String>,
+        generation: u64,
         result: Result<coducktor_contract::IdeDirectoryResponse, coducktor_client::EngineError>,
     },
     LoadIdeFile {
         project: String,
         path: String,
+        generation: u64,
         result: Result<coducktor_contract::IdeFileResponse, coducktor_client::EngineError>,
     },
     LoadScratchpad {
@@ -1495,6 +1497,7 @@ fn execute_pending(
                 // point queues a root listing, GoUp/Enter queue a subdirectory, and the state
                 // must converge on the same path the header renders.
                 app.ide_ui.directory_path = path.clone().unwrap_or_default();
+                let generation = app.ide_ui.begin_directory_request();
                 let engine_for_task = engine.clone();
                 let path_for_task = path.clone();
                 spawn_background(
@@ -1508,12 +1511,14 @@ fn execute_pending(
                     move |result| BackgroundResult::LoadIdeDirectory {
                         project,
                         path,
+                        generation,
                         result,
                     },
                 );
             }
             PendingAction::LoadIdeFile { project, path } => {
                 let scope = Scope::Project(project.clone());
+                let generation = app.ide_ui.begin_file_request();
                 let engine_for_task = engine.clone();
                 let path_for_task = path.clone();
                 spawn_background(
@@ -1523,6 +1528,7 @@ fn execute_pending(
                     move |result| BackgroundResult::LoadIdeFile {
                         project,
                         path,
+                        generation,
                         result,
                     },
                 );
@@ -2629,10 +2635,12 @@ fn drain_background_results(
             BackgroundResult::LoadIdeDirectory {
                 project,
                 path,
+                generation,
                 result,
             } => {
                 if !matches!(app.route(), app::Route::Ide { project: route_project } if route_project == &project)
                     || app.ide_ui.directory_path != path.unwrap_or_default()
+                    || app.ide_ui.directory_generation != generation
                 {
                     continue;
                 }
@@ -2647,10 +2655,12 @@ fn drain_background_results(
             BackgroundResult::LoadIdeFile {
                 project,
                 path,
+                generation,
                 result,
             } => {
                 if !matches!(app.route(), app::Route::Ide { project: route_project } if route_project == &project)
                     || app.ide_ui.file_path.as_deref() != Some(path.as_str())
+                    || app.ide_ui.file_generation != generation
                 {
                     continue;
                 }
@@ -3714,6 +3724,7 @@ mod tests {
             .send(BackgroundResult::LoadIdeDirectory {
                 project: "main".to_owned(),
                 path: Some("old".to_owned()),
+                generation: 0,
                 result: Ok(coducktor_contract::IdeDirectoryResponse {
                     path: "old".to_owned(),
                     entries: Vec::new(),
@@ -3725,6 +3736,7 @@ mod tests {
             .send(BackgroundResult::LoadIdeFile {
                 project: "main".to_owned(),
                 path: "src/old.rs".to_owned(),
+                generation: 0,
                 result: Ok(coducktor_contract::IdeFileResponse {
                     path: "src/old.rs".to_owned(),
                     content: "stale".to_owned(),
@@ -3737,6 +3749,70 @@ mod tests {
 
         assert!(app.ide_ui.entries.is_none());
         assert_eq!(app.ide_ui.editor.text, "current");
+    }
+
+    /// R2's route-round-trip required case, for the IDE's file/path selections specifically:
+    /// path-matching alone (what the mismatched-path test above exercises) cannot catch a stale
+    /// response for the *same* path a later request also targets. Reopening `a.rs` (A → B → A)
+    /// dispatches a second load for the identical path; the slow first load's answer must lose to
+    /// whatever the second one settles on, not silently win just because the path matches again.
+    #[test]
+    fn slow_a_to_b_to_a_ide_file_reopen_never_overwrites_the_later_load() {
+        let (sender, receiver) = channel();
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.navigate_route(app::Route::Ide {
+            project: "main".to_owned(),
+        });
+        let mut starts_in_flight = HashSet::new();
+
+        // A: open a.rs — the slow request that will arrive late.
+        app.ide_ui.file_path = Some("a.rs".to_owned());
+        let stale_generation = app.ide_ui.begin_file_request();
+
+        // B: open b.rs instead.
+        app.ide_ui.file_path = Some("b.rs".to_owned());
+        let _ = app.ide_ui.begin_file_request();
+
+        // A again: reopen a.rs — a fresh request for the same path as the stale one.
+        app.ide_ui.file_path = Some("a.rs".to_owned());
+        let current_generation = app.ide_ui.begin_file_request();
+        assert_ne!(stale_generation, current_generation);
+
+        // The first (stale) a.rs load finally answers, well after the reopen.
+        sender
+            .send(BackgroundResult::LoadIdeFile {
+                project: "main".to_owned(),
+                path: "a.rs".to_owned(),
+                generation: stale_generation,
+                result: Ok(coducktor_contract::IdeFileResponse {
+                    path: "a.rs".to_owned(),
+                    content: "stale content from the first visit".to_owned(),
+                    size: 5,
+                }),
+            })
+            .unwrap();
+
+        drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+
+        // The stale same-path response must not have touched the editor.
+        assert!(app.ide_ui.file_error.is_none());
+        assert_eq!(app.ide_ui.editor.text, "");
+
+        // The reopen's own (current-generation) answer still applies normally.
+        sender
+            .send(BackgroundResult::LoadIdeFile {
+                project: "main".to_owned(),
+                path: "a.rs".to_owned(),
+                generation: current_generation,
+                result: Ok(coducktor_contract::IdeFileResponse {
+                    path: "a.rs".to_owned(),
+                    content: "current content".to_owned(),
+                    size: 7,
+                }),
+            })
+            .unwrap();
+        drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+        assert_eq!(app.ide_ui.editor.text, "current content");
     }
 
     #[test]
@@ -4143,6 +4219,75 @@ mod tests {
             receiver.try_recv().is_err(),
             "1,000 identical submissions across separate frames should coalesce to exactly one \
              dispatched job, not one per frame"
+        );
+    }
+
+    /// R2's other required scaling case: a 10,000-result burst must drain across many bounded
+    /// frames (`RECEIVER_ITEMS_PER_FRAME`/`RECEIVER_TIME_BUDGET`), not one unbounded pass, while
+    /// every item still eventually arrives intact. Each individual call staying well under the
+    /// frame budget is what "quit and cancel are processed promptly" rests on in the real loop —
+    /// `run()` drains input and dispatches `execute_pending` every frame regardless of how much
+    /// background-result backlog remains, so a bounded-duration drain call is what keeps a huge
+    /// burst from starving that on any single frame.
+    #[test]
+    fn a_ten_thousand_result_burst_drains_across_bounded_frames_without_losing_any() {
+        const BURST: usize = 10_000;
+        let (sender, receiver) = channel();
+        for _ in 0..BURST {
+            sender
+                .send(BackgroundResult::ActivateRuns { result: Ok(()) })
+                .unwrap();
+        }
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        let mut starts_in_flight = HashSet::new();
+
+        let mut frames = 0;
+        loop {
+            let frame_started = Instant::now();
+            let backlog = drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+            frames += 1;
+            assert!(
+                frame_started.elapsed() < Duration::from_millis(50),
+                "frame {frames}: a single drain call took too long — the burst would have \
+                 stalled input handling and drawing on this frame"
+            );
+            if !backlog {
+                break;
+            }
+            assert!(frames <= BURST, "drain never reported backlog cleared");
+        }
+        assert_eq!(
+            frames,
+            BURST.div_ceil(RECEIVER_ITEMS_PER_FRAME),
+            "a burst this size should need many bounded frames, not one unbounded pass"
+        );
+        assert!(
+            receiver.try_recv().is_err(),
+            "every item in the burst should have been drained, none dropped"
+        );
+    }
+
+    /// R2's remaining scaling case: dispatching a deliberately slow engine call must not delay
+    /// the frame that dispatches it. `spawn_background` never awaits the future it queues — it
+    /// hands ownership to a native worker thread and returns immediately — so this holds
+    /// regardless of which action (archive/delete/settings/Git/…) is slow; they all go through
+    /// this same primitive.
+    #[tokio::test]
+    async fn spawning_a_slow_background_job_never_delays_the_dispatching_frame() {
+        let (sender, _receiver) = channel();
+        let mut workers = BackgroundWorkers::new(tokio::runtime::Handle::current());
+        let started = Instant::now();
+        spawn_background(
+            &mut workers,
+            &sender,
+            async {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            },
+            |()| BackgroundResult::ActivateRuns { result: Ok(()) },
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "spawn_background must return before the future it queued completes"
         );
     }
 

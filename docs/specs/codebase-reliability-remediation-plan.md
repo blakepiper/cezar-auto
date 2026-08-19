@@ -27,7 +27,7 @@ verification, so this is not a percentage-complete release claim.
 | Finding | Current state | What remains |
 | --- | --- | --- |
 | R1 provider turn monopolizes a manager | core defect fixed | Concurrent same-project turns and non-blocking admission are in place (see evidence). `SessionFactory::open` still holds one process-wide `Mutex` for its whole call, so concurrent *opens* still serialize even though concurrent *turns* no longer do — narrowing the trait to `&self` would need every implementor updated across three crates; not attempted here. |
-| R2 TUI awaits normal actions | partial, critical | Dispatch-time coalescing for idempotent refreshes now covers both `pending`-queue and cross-frame in-flight duplicates (see evidence). Remaining: the 10,000-event-burst, slow-A→B→A-route, and 100ms-slow-mutation required tests are not yet written (mechanics they'd exercise — route generations, per-frame budgets, input draining — are already in place per earlier evidence, but unverified by a dedicated test); true mid-flight cancellation of an in-flight background job is not attempted (`BackgroundWorkers` jobs run a native thread to completion once dispatched — only *pre-dispatch* duplicates are now avoided). |
+| R2 TUI awaits normal actions | required tests complete except true cancellation | All four required scaling/staleness tests now exist and pass (see evidence), including a real bug the A→B→A test caught and fixed: the IDE's file/directory loads had no generation guard at all. Remaining, deliberately not attempted: true mid-flight cancellation of a job already handed to a worker thread — `BackgroundWorkers` runs `handle.block_on(future)` to completion on a native thread once dispatched, with no cancellation seam; only pre-dispatch coalescing (closed this session) avoids redundant work. |
 | R3 stream amplification | partial | Add the remaining coalescing/metrics/fault assertions; retain the implemented batched index and transcript paths. |
 | R4 worktree execution | complete | Do not redesign; preserve its integration coverage. |
 | R5 checks and review gate | complete | Do not redesign; preserve its integration coverage. |
@@ -118,12 +118,31 @@ Evidence checked during this rewrite and subsequent implementation:
   and each of the five `BackgroundResult` arms calls `finish_coalescable_dispatch` once its result
   arrives. `a_thousand_identical_refresh_submissions_across_frames_stay_bounded` proves 1,000
   submissions across 1,000 separate simulated frames collapse to exactly one dispatched job, not
-  one per frame — the required R2 scaling case for idempotent loads. Still open: the
-  10,000-event-burst, slow-A→B→A-route, and 100ms-slow-mutation required tests (the mechanics they
-  would exercise already exist per the bullet above, just not yet pinned by a dedicated test), and
-  true mid-flight cancellation of a job already handed to a worker thread (native threads running
-  `handle.block_on(future)` to completion have no cancellation seam today — only pre-dispatch
-  coalescing was addressed this pass).
+  one per frame — the required R2 scaling case for idempotent loads.
+- The other three required R2 tests are now written and pass too, closing out the required list
+  from the original section 2 spec except true cancellation:
+  `a_ten_thousand_result_burst_drains_across_bounded_frames_without_losing_any` proves
+  `drain_background_results` needs `10_000.div_ceil(RECEIVER_ITEMS_PER_FRAME)` calls (many bounded
+  frames, not one unbounded pass) and every individual call stays under 50ms, with all 10,000
+  items eventually delivered intact.
+  `spawning_a_slow_background_job_never_delays_the_dispatching_frame` proves `spawn_background`
+  returns before a 5-second future it queued has even started, since it hands the future to a
+  worker thread and never awaits it in the caller — the property every archive/delete/settings/Git
+  dispatch relies on to keep a slow one from delaying that frame's draw.
+  `slow_a_to_b_to_a_ide_file_reopen_never_overwrites_the_later_load` is the literal A→B→A required
+  case, and it caught a real, previously-unguarded bug: `BackgroundResult::LoadIdeDirectory`/
+  `LoadIdeFile` staled-result rejection only compared the response's path against the screen's
+  current path, with no generation counter — every other generation-guarded screen
+  (thread/settings/github/compare/repo-git/task-git/scratchpad) already had one, but reopening the
+  *same* IDE file or directory (A → B → A landing back on A) meant a still-outstanding first load
+  and the fresh reopen's load shared an identical path, so a slow first answer arriving after the
+  reopen would have silently overwritten newer content with stale bytes. Fixed by adding
+  `IdeUi::directory_generation`/`file_generation` (`begin_directory_request`/`begin_file_request`),
+  mirroring every other screen's existing pattern, and checking them alongside the path in both
+  result arms.
+- Not attempted: true mid-flight cancellation of a job already handed to a worker thread (native
+  threads running `handle.block_on(future)` to completion have no cancellation seam today — only
+  pre-dispatch coalescing was addressed this pass).
 - Production manager wiring now installs one shared workspace admission instance and canonical
   repository-root leases. Monitoring wake deadlines now have an owned scheduler:
   `RunManager::due_monitoring_wakes` (a thin filter over the new, pure

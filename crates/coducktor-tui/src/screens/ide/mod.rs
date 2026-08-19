@@ -33,10 +33,20 @@ pub struct IdeUi {
     pub entries: Option<IdeDirectoryResponse>,
     pub tree_selected: usize,
     pub focus: IdeFocus,
+    /// Bumped by every directory load dispatch. Matching `directory_path` alone cannot tell a
+    /// slow, superseded load of the *same* directory (a re-entered folder, or a round trip
+    /// through another one and back) from the current one — background results arrive off a
+    /// multi-worker pool with no ordering guarantee, so an older request for an identical path
+    /// can complete after a newer one.
+    pub directory_generation: u64,
 
     /// The open file. `None` means the editor pane is idle.
     pub file_path: Option<String>,
     pub file_size: u64,
+    /// Bumped by every file load dispatch — the file analog of `directory_generation`, needed
+    /// for the same reason: reopening the same path (directly, or via A → B → A navigation)
+    /// dispatches a new load whose result must win over a still-outstanding older one.
+    pub file_generation: u64,
     /// The reason a file could not be opened (too large / binary / symlink /
     /// missing) — rendered verbatim, then the pane explains the cap.
     pub file_error: Option<String>,
@@ -64,14 +74,30 @@ impl Default for IdeUi {
             entries: None,
             tree_selected: 0,
             focus: IdeFocus::Tree,
+            directory_generation: 0,
             file_path: None,
             file_size: 0,
+            file_generation: 0,
             file_error: None,
             editor: Editor::default(),
             dirty: false,
             last_viewport: 20,
             highlighter: Highlighter::new(true),
         }
+    }
+}
+
+impl IdeUi {
+    /// Start a new directory load, invalidating any still-outstanding one for the same path.
+    pub fn begin_directory_request(&mut self) -> u64 {
+        self.directory_generation = self.directory_generation.wrapping_add(1);
+        self.directory_generation
+    }
+
+    /// Start a new file load, invalidating any still-outstanding one for the same path.
+    pub fn begin_file_request(&mut self) -> u64 {
+        self.file_generation = self.file_generation.wrapping_add(1);
+        self.file_generation
     }
 }
 
