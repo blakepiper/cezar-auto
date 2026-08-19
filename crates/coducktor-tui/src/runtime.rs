@@ -144,6 +144,16 @@ struct PrimeNewTaskSnapshot {
     branches: Vec<String>,
 }
 
+struct SettingsSnapshot {
+    config: Option<coducktor_contract::ConfigResponse>,
+    workspace_config: Option<coducktor_contract::WorkspaceConfigResponse>,
+    workspace_ui_state: Option<coducktor_contract::WorkspaceUiState>,
+    ui_state: Option<coducktor_contract::UiState>,
+    agent_config: Option<coducktor_contract::AgentConfigListing>,
+    agent_profiles: Option<coducktor_contract::AgentProfilesResponse>,
+    worktrees: Option<coducktor_contract::WorktreesResponse>,
+}
+
 #[allow(clippy::large_enum_variant)]
 enum BackgroundResult {
     StartRun {
@@ -206,6 +216,10 @@ enum BackgroundResult {
     },
     LoadSettingsUsage {
         result: Result<coducktor_contract::WorkspaceUsageResponse, coducktor_client::EngineError>,
+    },
+    LoadSettings {
+        project: String,
+        snapshot: SettingsSnapshot,
     },
     LoadRepoGit {
         project: String,
@@ -1293,13 +1307,20 @@ async fn execute_pending(
             }
             PendingAction::LoadSettings { project } => {
                 let engine_for_task = engine.clone();
+                let project_for_task = project.clone();
                 spawn_background(
                     background_handle,
                     background_sender,
                     async move { engine_for_task.workspace_usage().await },
                     |result| BackgroundResult::LoadSettingsUsage { result },
                 );
-                load_settings(engine.as_ref(), app, &project).await;
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { load_settings_snapshot(engine_for_task, &project_for_task).await },
+                    move |snapshot| BackgroundResult::LoadSettings { project, snapshot },
+                );
             }
             PendingAction::SettingsPutConfig { project, input } => {
                 let scope = Scope::Project(project.clone());
@@ -1701,6 +1722,16 @@ fn drain_background_results(
                 Ok(usage) => app.settings_ui.workspace_usage = Some(usage),
                 Err(error) => app.notice = Some(format!("load provider usage failed: {error}")),
             },
+            BackgroundResult::LoadSettings { project, snapshot } => {
+                if !matches!(
+                    app.route(),
+                    app::Route::Settings { project: route_project } if route_project == &project
+                ) && !matches!(app.route(), app::Route::GlobalSettings)
+                {
+                    continue;
+                }
+                apply_settings_snapshot(app, snapshot);
+            }
             BackgroundResult::LoadRepoGit { project, repo } => {
                 if app.repo_git_ui.project != project {
                     continue;
@@ -1800,15 +1831,27 @@ async fn refresh_project_registry(engine: &dyn Engine, app: &mut App) {
 /// Every Settings data source, in one place — the section list needs all of it at once
 /// rather than per-section lazy loads, since Tab cycling between sections must not each
 /// re-trigger a fetch.
-async fn load_settings(engine: &dyn Engine, app: &mut App, project: &str) {
+async fn load_settings_snapshot(engine: Arc<dyn Engine>, project: &str) -> SettingsSnapshot {
     let scope = Scope::Project(project.to_owned());
-    if let Ok(config) = engine.config(&scope).await {
+    SettingsSnapshot {
+        config: engine.config(&scope).await.ok(),
+        workspace_config: engine.workspace_config().await.ok(),
+        workspace_ui_state: engine.workspace_ui_state().await.ok(),
+        ui_state: engine.ui_state(&scope).await.ok(),
+        agent_config: engine.agent_config(&scope).await.ok(),
+        agent_profiles: engine.agent_profiles().await.ok(),
+        worktrees: engine.worktrees(&scope).await.ok(),
+    }
+}
+
+fn apply_settings_snapshot(app: &mut App, snapshot: SettingsSnapshot) {
+    if let Some(config) = snapshot.config {
         app.settings_ui.config = Some(config);
     }
-    if let Ok(config) = engine.workspace_config().await {
+    if let Some(config) = snapshot.workspace_config {
         app.settings_ui.workspace_config = Some(config);
     }
-    if let Ok(state) = engine.workspace_ui_state().await {
+    if let Some(state) = snapshot.workspace_ui_state {
         app.notifications_enabled = state
             .notifications
             .as_ref()
@@ -1816,16 +1859,16 @@ async fn load_settings(engine: &dyn Engine, app: &mut App, project: &str) {
             .unwrap_or(false);
         app.settings_ui.workspace_ui_state = Some(state);
     }
-    if let Ok(state) = engine.ui_state(&scope).await {
+    if let Some(state) = snapshot.ui_state {
         app.settings_ui.ui_state = Some(state);
     }
-    if let Ok(listing) = engine.agent_config(&scope).await {
+    if let Some(listing) = snapshot.agent_config {
         app.settings_ui.agent_config = Some(listing);
     }
-    if let Ok(profiles) = engine.agent_profiles().await {
+    if let Some(profiles) = snapshot.agent_profiles {
         app.settings_ui.agent_profiles = Some(profiles);
     }
-    if let Ok(worktrees) = engine.worktrees(&scope).await {
+    if let Some(worktrees) = snapshot.worktrees {
         app.settings_ui.worktrees = Some(worktrees);
     }
 }
