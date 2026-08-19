@@ -1202,33 +1202,56 @@ async fn execute_pending(
                 let input = coducktor_contract::GitCommitInput {
                     message: app.task_git_ui.commit_message.clone(),
                 };
-                match engine.git_commit(&scope, &id, input).await {
-                    Ok(response) => {
-                        app.notice = Some(format!(
-                            "committed {}",
-                            &response.sha[..response.sha.len().min(7)]
-                        ));
-                    }
-                    Err(error) => app.notice = Some(format!("commit failed: {error}")),
-                }
-                app.pending
-                    .push(PendingAction::LoadTaskGitChanges { project, id });
+                let engine_for_task = engine.clone();
+                let id_for_task = id.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move {
+                        engine_for_task
+                            .git_commit(&scope, &id_for_task, input)
+                            .await
+                    },
+                    move |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| {
+                            match result {
+                                Ok(response) => {
+                                    app.notice = Some(format!(
+                                        "committed {}",
+                                        &response.sha[..response.sha.len().min(7)]
+                                    ))
+                                }
+                                Err(error) => app.notice = Some(format!("commit failed: {error}")),
+                            }
+                            app.pending
+                                .push(PendingAction::LoadTaskGitChanges { project, id });
+                        }))
+                    },
+                );
             }
             PendingAction::TaskGitPush { project, id } => {
                 let scope = Scope::Project(project.clone());
-                match engine.git_push(&scope, &id).await {
-                    Ok(response) => {
-                        app.notice = Some(if response.upstream_set {
-                            format!(
-                                "pushed {} to {} (upstream set)",
-                                response.branch, response.remote
-                            )
-                        } else {
-                            format!("pushed {} to {}", response.branch, response.remote)
-                        });
-                    }
-                    Err(error) => app.notice = Some(format!("push failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.git_push(&scope, &id).await },
+                    move |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(response) => {
+                                app.notice = Some(if response.upstream_set {
+                                    format!(
+                                        "pushed {} to {} (upstream set)",
+                                        response.branch, response.remote
+                                    )
+                                } else {
+                                    format!("pushed {} to {}", response.branch, response.remote)
+                                })
+                            }
+                            Err(error) => app.notice = Some(format!("push failed: {error}")),
+                        }))
+                    },
+                );
             }
             PendingAction::LoadRepoGit { project } => {
                 let generation = app.begin_repo_git_request();
@@ -1297,21 +1320,31 @@ async fn execute_pending(
             } => {
                 let scope = Scope::Project(project.clone());
                 let input = coducktor_contract::RepoBranchRequest { name, from };
-                match engine.repo_branch(&scope, &input).await {
-                    Ok(response) => {
-                        app.notice = Some(format!(
-                            "branch {} {}",
-                            response.branch,
-                            if response.created {
-                                "created"
-                            } else {
-                                "switched"
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.repo_branch(&scope, &input).await },
+                    move |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| {
+                            match result {
+                                Ok(response) => {
+                                    app.notice = Some(format!(
+                                        "branch {} {}",
+                                        response.branch,
+                                        if response.created {
+                                            "created"
+                                        } else {
+                                            "switched"
+                                        }
+                                    ))
+                                }
+                                Err(error) => app.notice = Some(format!("branch failed: {error}")),
                             }
-                        ));
-                    }
-                    Err(error) => app.notice = Some(format!("branch failed: {error}")),
-                }
-                app.pending.push(PendingAction::LoadRepoGit { project });
+                            app.pending.push(PendingAction::LoadRepoGit { project });
+                        }))
+                    },
+                );
             }
             PendingAction::LoadCompare { project, group_id } => {
                 let generation = app.begin_compare_request();
@@ -1411,14 +1444,27 @@ async fn execute_pending(
             PendingAction::SaveIdeFile { project, path } => {
                 let scope = Scope::Project(project.clone());
                 let content = app.ide_ui.editor.text.clone();
-                match engine.ide_save(&scope, &path, &content).await {
-                    Ok(file) => {
-                        app.ide_ui.dirty = false;
-                        app.ide_ui.file_size = file.size;
-                        app.notice = Some(format!("saved {path}"));
-                    }
-                    Err(error) => app.notice = Some(format!("save failed: {error}")),
-                }
+                let engine_for_task = engine.clone();
+                let path_for_task = path.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move {
+                        engine_for_task
+                            .ide_save(&scope, &path_for_task, &content)
+                            .await
+                    },
+                    move |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| match result {
+                            Ok(file) => {
+                                app.ide_ui.dirty = false;
+                                app.ide_ui.file_size = file.size;
+                                app.notice = Some(format!("saved {path}"));
+                            }
+                            Err(error) => app.notice = Some(format!("save failed: {error}")),
+                        }))
+                    },
+                );
             }
             PendingAction::OpenIdeInEditor { project, path } => {
                 // Prefer the registry entry (the root the user added), then the
