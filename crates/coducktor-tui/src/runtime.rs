@@ -238,6 +238,7 @@ enum BackgroundResult {
         snapshot: PrimeNewTaskSnapshot,
     },
     LoadSettingsUsage {
+        generation: u64,
         result: Result<coducktor_contract::WorkspaceUsageResponse, coducktor_client::EngineError>,
     },
     LoadSettings {
@@ -1516,7 +1517,7 @@ async fn execute_pending(
                     background_handle,
                     background_sender,
                     async move { engine_for_task.workspace_usage().await },
-                    |result| BackgroundResult::LoadSettingsUsage { result },
+                    move |result| BackgroundResult::LoadSettingsUsage { result, generation },
                 );
                 let engine_for_task = engine.clone();
                 spawn_background(
@@ -2001,10 +2002,22 @@ fn drain_background_results(
                     apply_new_task_snapshot(app, snapshot);
                 }
             }
-            BackgroundResult::LoadSettingsUsage { result } => match result {
-                Ok(usage) => app.settings_ui.workspace_usage = Some(usage),
-                Err(error) => app.notice = Some(format!("load provider usage failed: {error}")),
-            },
+            BackgroundResult::LoadSettingsUsage { generation, result } => {
+                if app.settings_request_generation != generation
+                    || !matches!(
+                        app.route(),
+                        app::Route::Settings { .. } | app::Route::GlobalSettings
+                    )
+                {
+                    continue;
+                }
+                match result {
+                    Ok(usage) => app.settings_ui.workspace_usage = Some(usage),
+                    Err(error) => {
+                        app.notice = Some(format!("load provider usage failed: {error}"));
+                    }
+                }
+            }
             BackgroundResult::LoadSettings {
                 project,
                 generation,
@@ -2941,6 +2954,30 @@ mod tests {
     }
 
     #[test]
+    fn stale_settings_usage_failures_are_rejected() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.navigate_route(app::Route::GlobalSettings);
+        let stale_generation = app.begin_settings_request();
+        let current_generation = app.begin_settings_request();
+        let (sender, receiver) = channel();
+        let mut starts_in_flight = HashSet::new();
+
+        sender
+            .send(BackgroundResult::LoadSettingsUsage {
+                generation: stale_generation,
+                result: Err(coducktor_client::EngineError::Unavailable {
+                    reason: "stale request".to_owned(),
+                }),
+            })
+            .unwrap();
+
+        drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+
+        assert_eq!(app.settings_request_generation, current_generation);
+        assert!(app.notice.is_none());
+    }
+
+    #[test]
     fn launch_repo_switch_queues_background_refreshes() {
         let repo = tempfile::tempdir().unwrap();
         let mut app = App::new("main", Theme::detect(), Keymap::default());
@@ -3312,6 +3349,7 @@ mod tests {
         for _ in 0..1_000 {
             spawn_background(&mut workers, &sender, async {}, |_| {
                 BackgroundResult::LoadSettingsUsage {
+                    generation: 0,
                     result: Err(coducktor_client::EngineError::Unavailable {
                         reason: "test worker".to_owned(),
                     }),

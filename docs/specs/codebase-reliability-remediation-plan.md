@@ -195,7 +195,8 @@ Evidence:
   instead of awaiting either read while applying launch arguments.
 - New Task snapshots now carry a per-project generation, so an A → B → A navigation cycle cannot
   hydrate A from the first request after the second request supersedes it.
-- Settings snapshots now likewise apply only from the most recently queued settings request.
+- Settings snapshots and provider-usage loads now likewise apply only from the most recently
+  queued settings request.
 - Draft PR creation now runs on the worker pool and preserves the follow-up thread refresh after
   its completion.
 - CLI handoff terminal probing and launch now run on the worker pool; the existing failure notice
