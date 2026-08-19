@@ -1191,7 +1191,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         && app.new_task_ui.data.models_requested_for != Some(effective.display_runner)
     {
         app.new_task_ui.data.models_requested_for = Some(effective.display_runner);
-        app.pending.push(PendingAction::RefreshModels {
+        app.queue_pending(PendingAction::RefreshModels {
             runner: effective.display_runner,
         });
     }

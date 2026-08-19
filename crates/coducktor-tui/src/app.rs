@@ -946,6 +946,18 @@ pub enum PendingAction {
     Quit,
 }
 
+impl PendingAction {
+    fn is_coalescable_refresh(&self) -> bool {
+        matches!(
+            self,
+            Self::RefreshTasks { .. }
+                | Self::RefreshIndex
+                | Self::RefreshNewTask { .. }
+                | Self::RefreshModels { .. }
+        )
+    }
+}
+
 /// A blocking question rendered over the shell; confirmed with `y`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfirmRequest {
@@ -1403,6 +1415,15 @@ impl App {
 
     pub fn take_pending(&mut self) -> Vec<PendingAction> {
         std::mem::take(&mut self.pending)
+    }
+
+    /// Queue an action, collapsing an exact duplicate of a safe refresh already awaiting a frame.
+    /// Mutations remain ordered and are never coalesced.
+    pub fn queue_pending(&mut self, action: PendingAction) {
+        if action.is_coalescable_refresh() && self.pending.iter().any(|queued| queued == &action) {
+            return;
+        }
+        self.pending.push(action);
     }
 
     /// Drain at most `limit` queued actions, retaining the FIFO tail for a later frame.
@@ -2683,7 +2704,7 @@ impl App {
             ActionId::Tasks => self.navigate(NavItem::Tasks),
             ActionId::GlobalTasks => {
                 self.request_navigate(Route::GlobalTasks);
-                self.pending.push(PendingAction::RefreshIndex);
+                self.queue_pending(PendingAction::RefreshIndex);
             }
             ActionId::NewTask => self.navigate(NavItem::NewTask),
             ActionId::Ide => self.navigate(NavItem::Ide),
@@ -2715,7 +2736,7 @@ impl App {
             HitAction::Tasks => self.navigate(NavItem::Tasks),
             HitAction::GlobalTasks => {
                 self.request_navigate(Route::GlobalTasks);
-                self.pending.push(PendingAction::RefreshIndex);
+                self.queue_pending(PendingAction::RefreshIndex);
             }
             HitAction::GlobalSettings => crate::screens::settings::open_global(self),
             HitAction::NewTask => self.navigate(NavItem::NewTask),
@@ -2863,13 +2884,13 @@ impl App {
                 self.request_navigate(Route::Tasks {
                     project: project.clone(),
                 });
-                self.pending.push(PendingAction::RefreshTasks { project });
+                self.queue_pending(PendingAction::RefreshTasks { project });
             }
             NavItem::NewTask => {
                 self.request_navigate(Route::NewTask {
                     project: project.clone(),
                 });
-                self.pending.push(PendingAction::RefreshNewTask { project });
+                self.queue_pending(PendingAction::RefreshNewTask { project });
                 // The hero auto-focuses the composer.
                 self.new_task_ui.composer_focused = true;
                 self.new_task_ui.composer.focus();
@@ -2929,10 +2950,10 @@ impl App {
         if let Some(index) = self.projects.iter().position(|entry| entry.id == project) {
             self.sidebar_selected = index;
         }
-        self.pending.push(PendingAction::RefreshTasks {
+        self.queue_pending(PendingAction::RefreshTasks {
             project: project.clone(),
         });
-        self.pending.push(PendingAction::RefreshNewTask { project });
+        self.queue_pending(PendingAction::RefreshNewTask { project });
         self.notice = None;
     }
 
@@ -3142,7 +3163,7 @@ impl App {
                     SidebarRow::GlobalTasks => {
                         self.sidebar_focus = false;
                         self.request_navigate(Route::GlobalTasks);
-                        self.pending.push(PendingAction::RefreshIndex);
+                        self.queue_pending(PendingAction::RefreshIndex);
                     }
                     SidebarRow::GlobalSettings => {
                         self.sidebar_focus = false;
@@ -3547,6 +3568,46 @@ mod tests {
             ]
         );
         assert_eq!(app.take_pending(), vec![PendingAction::RefreshIndex]);
+    }
+
+    #[test]
+    fn duplicate_refreshes_coalesce_but_mutations_remain_ordered() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.queue_pending(PendingAction::RefreshTasks {
+            project: "main".to_owned(),
+        });
+        app.queue_pending(PendingAction::RefreshTasks {
+            project: "main".to_owned(),
+        });
+        app.queue_pending(PendingAction::Archive {
+            project: "main".to_owned(),
+            id: "one".to_owned(),
+            archived: true,
+        });
+        app.queue_pending(PendingAction::Archive {
+            project: "main".to_owned(),
+            id: "one".to_owned(),
+            archived: true,
+        });
+
+        assert_eq!(
+            app.take_pending(),
+            vec![
+                PendingAction::RefreshTasks {
+                    project: "main".to_owned(),
+                },
+                PendingAction::Archive {
+                    project: "main".to_owned(),
+                    id: "one".to_owned(),
+                    archived: true,
+                },
+                PendingAction::Archive {
+                    project: "main".to_owned(),
+                    id: "one".to_owned(),
+                    archived: true,
+                },
+            ]
+        );
     }
 
     #[test]

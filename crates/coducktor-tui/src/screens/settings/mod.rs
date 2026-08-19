@@ -1565,7 +1565,7 @@ fn open_model_picker(app: &mut App, scope: ModelScope, runner: Runner) {
         picker,
     });
     if runner_discovers_models(runner) {
-        app.pending.push(PendingAction::RefreshModels { runner });
+        app.queue_pending(PendingAction::RefreshModels { runner });
     }
 }
 

@@ -377,10 +377,10 @@ fn apply_prime_snapshot(app: &mut App, snapshot: PrimeSnapshot) {
             });
             // Keep the startup interaction model: the first Ctrl+Right should enter Tasks.
             app.focus_sidebar();
-            app.pending.push(PendingAction::RefreshTasks {
+            app.queue_pending(PendingAction::RefreshTasks {
                 project: boot_project.clone(),
             });
-            app.pending.push(PendingAction::RefreshNewTask {
+            app.queue_pending(PendingAction::RefreshNewTask {
                 project: boot_project,
             });
         }
@@ -1471,11 +1471,11 @@ fn apply_started_run(
                 project: project.clone(),
             });
             screens::new_task::clear_draft(app);
-            app.pending.push(PendingAction::RefreshTasks {
+            app.queue_pending(PendingAction::RefreshTasks {
                 project: project.clone(),
             });
             if matches!(app.route(), app::Route::GlobalTasks) {
-                app.pending.push(PendingAction::RefreshIndex);
+                app.queue_pending(PendingAction::RefreshIndex);
             }
         }
         Err(error) => {
@@ -1707,7 +1707,7 @@ fn drain_background_results(
                         app.pending.push(PendingAction::ActivateRuns {
                             project: project.clone(),
                         });
-                        app.pending.push(PendingAction::RefreshTasks { project });
+                        app.queue_pending(PendingAction::RefreshTasks { project });
                     }
                     Err(error) => app.notice = Some(format!("start failed: {error}")),
                 }
