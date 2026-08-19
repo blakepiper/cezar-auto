@@ -1061,6 +1061,8 @@ pub struct App {
     pub compare_ui: crate::screens::compare::CompareUi,
     pub ide_ui: crate::screens::ide::IdeUi,
     pub github_ui: crate::screens::github::GithubUi,
+    /// Rejects an older GitHub aggregate refresh after the screen is reopened.
+    pub github_request_generation: u64,
     pub terminal_ui: crate::screens::terminal::TerminalUi,
     pub skills_ui: crate::screens::skills::SkillsUi,
     pub workflows_ui: crate::screens::workflows::WorkflowsUi,
@@ -1146,6 +1148,7 @@ impl App {
             compare_ui: crate::screens::compare::CompareUi::default(),
             ide_ui: crate::screens::ide::IdeUi::default(),
             github_ui: crate::screens::github::GithubUi::default(),
+            github_request_generation: 0,
             terminal_ui: crate::screens::terminal::TerminalUi::default(),
             skills_ui: crate::screens::skills::SkillsUi::default(),
             workflows_ui: crate::screens::workflows::WorkflowsUi::default(),
@@ -1316,6 +1319,11 @@ impl App {
     pub fn begin_settings_request(&mut self) -> u64 {
         self.settings_request_generation = self.settings_request_generation.wrapping_add(1);
         self.settings_request_generation
+    }
+
+    pub fn begin_github_request(&mut self) -> u64 {
+        self.github_request_generation = self.github_request_generation.wrapping_add(1);
+        self.github_request_generation
     }
 
     pub fn accepts_new_task_response(&self, project: &str, generation: u64) -> bool {

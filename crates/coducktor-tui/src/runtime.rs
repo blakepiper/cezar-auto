@@ -181,6 +181,7 @@ enum BackgroundResult {
     },
     Github {
         project: String,
+        generation: u64,
         result: Result<coducktor_contract::GithubData, coducktor_client::EngineError>,
     },
     GithubComments {
@@ -1338,13 +1339,18 @@ async fn execute_pending(
             PendingAction::IdeDiscardThenForward => unreachable!("resolved in app.rs"),
             PendingAction::SwitchProject(_) => unreachable!("resolved in app.rs"),
             PendingAction::LoadGithub { project } => {
+                let generation = app.begin_github_request();
                 let scope = Scope::Project(project.clone());
                 let engine_for_task = engine.clone();
                 spawn_background(
                     background_handle,
                     background_sender,
                     async move { engine_for_task.github(&scope).await },
-                    move |result| BackgroundResult::Github { project, result },
+                    move |result| BackgroundResult::Github {
+                        project,
+                        generation,
+                        result,
+                    },
                 );
             }
             PendingAction::LoadGithubPickers { project } => {
@@ -1826,8 +1832,15 @@ fn drain_background_results(
                     }
                 }
             }
-            BackgroundResult::Github { project, result } => {
-                if app.github_ui.project != project {
+            BackgroundResult::Github {
+                project,
+                generation,
+                result,
+            } => {
+                if !matches!(app.route(), app::Route::Github { project: route_project } if route_project == &project)
+                    || app.github_ui.project != project
+                    || app.github_request_generation != generation
+                {
                     continue;
                 }
                 match result {
@@ -2974,6 +2987,31 @@ mod tests {
         drain_background_results(&receiver, &mut app, &mut starts_in_flight);
 
         assert_eq!(app.settings_request_generation, current_generation);
+        assert!(app.notice.is_none());
+    }
+
+    #[test]
+    fn stale_github_refresh_failures_are_rejected() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        crate::screens::github::open(&mut app, "main");
+        let stale_generation = app.begin_github_request();
+        let current_generation = app.begin_github_request();
+        let (sender, receiver) = channel();
+        let mut starts_in_flight = HashSet::new();
+
+        sender
+            .send(BackgroundResult::Github {
+                project: "main".to_owned(),
+                generation: stale_generation,
+                result: Err(coducktor_client::EngineError::Unavailable {
+                    reason: "stale request".to_owned(),
+                }),
+            })
+            .unwrap();
+
+        drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+
+        assert_eq!(app.github_request_generation, current_generation);
         assert!(app.notice.is_none());
     }
 

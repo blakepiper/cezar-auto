@@ -197,6 +197,8 @@ Evidence:
   hydrate A from the first request after the second request supersedes it.
 - Settings snapshots and provider-usage loads now likewise apply only from the most recently
   queued settings request.
+- GitHub aggregate refreshes now also carry a generation, so reopening the same project's screen
+  cannot let an earlier request replace a newer snapshot.
 - Draft PR creation now runs on the worker pool and preserves the follow-up thread refresh after
   its completion.
 - CLI handoff terminal probing and launch now run on the worker pool; the existing failure notice
