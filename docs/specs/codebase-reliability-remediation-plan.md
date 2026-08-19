@@ -61,6 +61,8 @@ the larger coordinator rewrite:
   if a compatibility regex is unavailable.
 - OpenCode's server-URL and reasoning-variant matchers now degrade to their existing fallback
   behavior when unavailable, instead of panicking during a provider turn.
+- Codex resume setup now binds the already-validated session ID directly, preserving the fresh
+  session fallback without a second invariant-based unwrap.
 
 The critical coordinator work is not complete. Provider turns still need to move out of the
 project-manager critical section into bounded per-run workers before same-project parallelism and

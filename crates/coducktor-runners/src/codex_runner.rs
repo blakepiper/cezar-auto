@@ -826,28 +826,26 @@ impl CodexSession {
             }),
         );
 
-        let result = if self.spec.resume && self.spec.session_id.is_some() {
-            let mut params = overrides;
-            params.insert(
-                "threadId".to_owned(),
-                json!(self.spec.session_id.clone().unwrap()),
-            );
-            self.call_rpc(
-                "thread/resume",
-                Value::Object(params),
-                deadline,
-                turn,
-                on_event,
-            )?
-        } else {
-            self.call_rpc(
-                "thread/start",
-                Value::Object(overrides),
-                deadline,
-                turn,
-                on_event,
-            )?
-        };
+        let result =
+            if let (true, Some(session_id)) = (self.spec.resume, self.spec.session_id.as_ref()) {
+                let mut params = overrides;
+                params.insert("threadId".to_owned(), json!(session_id));
+                self.call_rpc(
+                    "thread/resume",
+                    Value::Object(params),
+                    deadline,
+                    turn,
+                    on_event,
+                )?
+            } else {
+                self.call_rpc(
+                    "thread/start",
+                    Value::Object(overrides),
+                    deadline,
+                    turn,
+                    on_event,
+                )?
+            };
         self.thread_id = thread_id_of(&result).or_else(|| self.spec.session_id.clone());
 
         if let Some(thread_id) = self.thread_id.clone() {
