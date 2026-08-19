@@ -37,6 +37,8 @@ pub struct ChildProcess {
     child: Child,
     stdin: Option<ChildStdin>,
     stdout_rx: Receiver<String>,
+    stdout_handle: Option<JoinHandle<()>>,
+    stdout_discard_handle: Option<JoinHandle<()>>,
     stderr_handle: Option<JoinHandle<String>>,
     eof_term_grace: Duration,
     eof_kill_grace: Duration,
@@ -84,7 +86,7 @@ impl ChildProcess {
         let stderr = child.stderr.take().expect("stderr was piped");
 
         let (tx, rx) = mpsc::channel();
-        thread::spawn(move || {
+        let stdout_handle = thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
                 match line {
@@ -108,6 +110,8 @@ impl ChildProcess {
             child,
             stdin: Some(stdin),
             stdout_rx: rx,
+            stdout_handle: Some(stdout_handle),
+            stdout_discard_handle: None,
             stderr_handle: Some(stderr_handle),
             eof_term_grace: config.eof_term_grace,
             eof_kill_grace: config.eof_kill_grace,
@@ -151,7 +155,7 @@ impl ChildProcess {
     /// output.
     pub fn discard_stdout(&mut self) {
         let rx = std::mem::replace(&mut self.stdout_rx, mpsc::channel().1);
-        thread::spawn(move || while rx.recv().is_ok() {});
+        self.stdout_discard_handle = Some(thread::spawn(move || while rx.recv().is_ok() {}));
     }
 
     /// Block for the next stdout line, honoring an optional deadline. `Ok(NextLine::Closed)`
@@ -239,7 +243,7 @@ impl ChildProcess {
         let Some(handle) = self.stderr_handle.take() else {
             return String::new();
         };
-        let raw = handle.join().unwrap_or_default();
+        let raw: String = handle.join().unwrap_or_default();
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             return String::new();
@@ -281,19 +285,35 @@ impl ChildProcess {
         }
         self.wait_for_exit();
     }
+
+    fn join_readers(&mut self) {
+        if let Some(handle) = self.stdout_handle.take() {
+            let _ = handle.join();
+        }
+        if let Some(handle) = self.stdout_discard_handle.take() {
+            let _ = handle.join();
+        }
+        let _ = self.take_stderr_tail();
+    }
 }
 
 impl Drop for ChildProcess {
     /// A best-effort safety net, not a substitute for a backend's own `finish()`/`cancel()`: if
     /// this value is dropped while the child is still running — a panic unwinding past a normal
     /// teardown call being the main way that happens — request a hard kill so the process doesn't
-    /// outlive the session that owned it. Never blocks waiting for it to actually exit.
+    /// outlive the session that owned it. Once the child exits, reap it and join both pipe-reader
+    /// threads so repeated lifecycle churn cannot accumulate detached readers.
     fn drop(&mut self) {
         if let Some(cancellation) = &self.cancellation {
             cancellation.deactivate();
         }
         if !self.has_exited() {
             self.signal_kill();
+            let _ = self.wait_exited_within(Duration::from_millis(250));
+        }
+        if self.has_exited() {
+            let _ = self.wait_for_exit();
+            self.join_readers();
         }
     }
 }
@@ -356,6 +376,32 @@ mod tests {
         assert!(proc.next_line(Some(deadline)).is_err());
         proc.signal_kill();
         proc.wait_for_exit();
+    }
+
+    #[test]
+    fn drop_kills_and_reaps_a_live_child_with_its_pipe_readers() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = SpawnConfig {
+            program: "node".to_owned(),
+            args: vec![
+                "-e".to_owned(),
+                "setInterval(() => console.log('still running'), 1000)".to_owned(),
+            ],
+            eof_term_grace: Duration::from_millis(50),
+            eof_kill_grace: Duration::from_millis(50),
+            kill_grace: Duration::from_millis(50),
+        };
+        let started = Instant::now();
+        let process = ChildProcess::spawn(
+            &config,
+            Runner::Claude,
+            dir.path(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        drop(process);
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]
