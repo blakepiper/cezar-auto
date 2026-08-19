@@ -16,7 +16,9 @@ path = "src/main.rs"
 # a second competing abbreviation). `cargo install` lands both on PATH from one build.
 [[bin]]
 name = "duck"
-path = "src/main.rs"
+path = "src/bin/duck.rs"
+test = false
+bench = false
 
 [dependencies]
 arboard.workspace = true
