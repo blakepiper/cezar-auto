@@ -28,6 +28,7 @@ use crate::{cli, headless, new_task_form, screens, terminal};
 const FRAME_BUDGET: Duration = Duration::from_millis(33);
 const INPUT_ITEMS_PER_FRAME: usize = 64;
 const RECEIVER_ITEMS_PER_FRAME: usize = 256;
+const PENDING_ACTIONS_PER_FRAME: usize = 16;
 
 #[tokio::main]
 pub async fn entry() -> io::Result<()> {
@@ -491,7 +492,7 @@ async fn execute_pending(
     background_sender: &BackgroundSender<BackgroundResult>,
     background_handle: &tokio::runtime::Handle,
 ) {
-    for action in app.take_pending() {
+    for action in app.take_pending_up_to(PENDING_ACTIONS_PER_FRAME) {
         match action {
             PendingAction::Archive {
                 project,

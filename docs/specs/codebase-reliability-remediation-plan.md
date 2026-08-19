@@ -162,6 +162,8 @@ Evidence:
 - workspace events, background results, and thread events are each bounded by
   `RECEIVER_ITEMS_PER_FRAME`; thread events are collected into one batch before projection. The
   terminal loop still lacks time-budgeting, backlog wake accounting, and input-priority scheduling.
+- Pending actions now drain FIFO in batches of `PENDING_ACTIONS_PER_FRAME`, retaining the tail for
+  later frames. Individual actions still await engine and host work in the frame task.
 
 Required correction:
 

@@ -1405,6 +1405,12 @@ impl App {
         std::mem::take(&mut self.pending)
     }
 
+    /// Drain at most `limit` queued actions, retaining the FIFO tail for a later frame.
+    pub fn take_pending_up_to(&mut self, limit: usize) -> Vec<PendingAction> {
+        let count = limit.min(self.pending.len());
+        self.pending.drain(..count).collect()
+    }
+
     pub fn take_pending_notifications(&mut self) -> Vec<(String, String)> {
         std::mem::take(&mut self.pending_notifications)
     }
@@ -3517,6 +3523,31 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use super::*;
+
+    #[test]
+    fn taking_a_bounded_pending_batch_preserves_the_fifo_tail() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.pending.push(PendingAction::RefreshTasks {
+            project: "first".to_owned(),
+        });
+        app.pending.push(PendingAction::RefreshTasks {
+            project: "second".to_owned(),
+        });
+        app.pending.push(PendingAction::RefreshIndex);
+
+        assert_eq!(
+            app.take_pending_up_to(2),
+            vec![
+                PendingAction::RefreshTasks {
+                    project: "first".to_owned(),
+                },
+                PendingAction::RefreshTasks {
+                    project: "second".to_owned(),
+                },
+            ]
+        );
+        assert_eq!(app.take_pending(), vec![PendingAction::RefreshIndex]);
+    }
 
     #[test]
     fn route_history_supports_back_and_forward() {
