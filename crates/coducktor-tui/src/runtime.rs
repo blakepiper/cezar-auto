@@ -2112,14 +2112,15 @@ fn drain_background_results(
     receiver: &BackgroundReceiver<BackgroundResult>,
     app: &mut App,
     starts_in_flight: &mut HashSet<String>,
-) {
+) -> bool {
     let started = Instant::now();
     for _ in 0..RECEIVER_ITEMS_PER_FRAME {
         if started.elapsed() >= RECEIVER_TIME_BUDGET {
-            break;
+            return true;
         }
-        let Ok(result) = receiver.try_recv() else {
-            break;
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(_) => return false,
         };
         match result {
             BackgroundResult::AppUpdate(update) => update(app),
@@ -2753,6 +2754,9 @@ fn drain_background_results(
             }
         }
     }
+    // Reaching the item budget may be an exact fit, but treating it as backlog is harmless and
+    // avoids inserting a 33 ms sleep in the common burst case.
+    true
 }
 
 fn github_detail_matches(app: &App, project: &str, number: u64) -> bool {
@@ -3013,10 +3017,12 @@ async fn run(
                 starts_in_flight.insert(project.clone());
             }
         }
+        let mut receiver_backlog = false;
         if let Some(events) = workspace_events.as_deref_mut() {
             let started = Instant::now();
-            for _ in 0..RECEIVER_ITEMS_PER_FRAME {
+            for index in 0..RECEIVER_ITEMS_PER_FRAME {
                 if started.elapsed() >= RECEIVER_TIME_BUDGET {
+                    receiver_backlog = true;
                     break;
                 }
                 let Ok(event) = events.try_recv() else {
@@ -3028,9 +3034,13 @@ async fn run(
                     }
                     other => app.apply_workspace_event(other),
                 }
+                if index + 1 == RECEIVER_ITEMS_PER_FRAME {
+                    receiver_backlog = true;
+                }
             }
         }
-        drain_background_results(&background_receiver, app, &mut starts_in_flight);
+        receiver_backlog |=
+            drain_background_results(&background_receiver, app, &mut starts_in_flight);
         let desired_thread = match app.route() {
             app::Route::Thread { project, id } => Some((project.clone(), id.clone())),
             _ => None,
@@ -3050,8 +3060,9 @@ async fn run(
         if let Some(listener) = thread_listener.as_mut() {
             let mut live_batch = Vec::new();
             let started = Instant::now();
-            for _ in 0..RECEIVER_ITEMS_PER_FRAME {
+            for index in 0..RECEIVER_ITEMS_PER_FRAME {
                 if started.elapsed() >= RECEIVER_TIME_BUDGET {
+                    receiver_backlog = true;
                     break;
                 }
                 let Ok(event) = listener.receiver.try_recv() else {
@@ -3077,6 +3088,9 @@ async fn run(
                     // The durable history read can race the first live events. Keep them until
                     // `ThreadUi::load` establishes its sequence watermark, then fold them below.
                     listener.pending_events.push(run_event);
+                }
+                if index + 1 == RECEIVER_ITEMS_PER_FRAME {
+                    receiver_backlog = true;
                 }
             }
             app.thread_ui.push_events(live_batch);
@@ -3138,7 +3152,7 @@ async fn run(
         }
 
         let remaining = FRAME_BUDGET.saturating_sub(frame_started.elapsed());
-        if !remaining.is_zero() {
+        if !receiver_backlog && !remaining.is_zero() {
             let _ = event::poll(remaining)?;
         }
     }
@@ -3343,6 +3357,29 @@ mod tests {
         queue_global_index_refresh(&mut app);
 
         assert_eq!(app.pending, vec![PendingAction::RefreshIndex]);
+    }
+
+    #[test]
+    fn a_full_background_receiver_batch_requests_an_immediate_next_frame() {
+        let (sender, receiver) = channel();
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        let mut starts_in_flight = HashSet::new();
+        for _ in 0..RECEIVER_ITEMS_PER_FRAME {
+            sender
+                .send(BackgroundResult::AppUpdate(Box::new(|_| {})))
+                .unwrap();
+        }
+
+        assert!(drain_background_results(
+            &receiver,
+            &mut app,
+            &mut starts_in_flight
+        ));
+        assert!(!drain_background_results(
+            &receiver,
+            &mut app,
+            &mut starts_in_flight
+        ));
     }
 
     #[test]
