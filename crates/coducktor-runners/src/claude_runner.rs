@@ -45,6 +45,7 @@ pub fn build_claude_args(spec: &AgentRunSpec, env: &BTreeMap<String, String>) ->
         "--output-format".to_owned(),
         "stream-json".to_owned(),
         "--verbose".to_owned(),
+        "--forward-subagent-text".to_owned(),
         "--permission-mode".to_owned(),
         if env.get("DUCK_APPROVAL_GATE").map(String::as_str) == Some("1") {
             "acceptEdits".to_owned()
@@ -646,6 +647,16 @@ mod tests {
         };
         let args = build_claude_args(&spec, &BTreeMap::new());
         assert!(!args.iter().any(|arg| arg == "--append-system-prompt"));
+    }
+
+    #[test]
+    fn build_claude_args_forwards_nested_agent_text() {
+        let spec = AgentRunSpec {
+            user_prompt: "delegate it".to_owned(),
+            ..Default::default()
+        };
+        let args = build_claude_args(&spec, &BTreeMap::new());
+        assert!(args.iter().any(|arg| arg == "--forward-subagent-text"));
     }
 
     #[test]

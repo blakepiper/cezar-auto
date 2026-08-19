@@ -590,6 +590,22 @@ impl CodexSession {
                 continue;
             }
 
+            if method == "mcpServer/elicitation/request"
+                && let Some(id) = id.clone()
+            {
+                self.write_response(id, json!({ "action": "decline" }))?;
+                on_event(
+                    EventInput::new("error")
+                        .field(
+                            "message",
+                            "Codex MCP elicitation was declined because its form is not supported",
+                        )
+                        .field("fatal", false),
+                )
+                .map_err(|error| error.to_string())?;
+                continue;
+            }
+
             let params = msg.get("params").cloned().unwrap_or(Value::Null);
             // A sub-agent child thread's turn lifecycle must reach neither channel (#600): a
             // spawned skill's own turn/completed would otherwise end OUR turn. Item events still
@@ -599,6 +615,22 @@ impl CodexSession {
                 "turn/started" | "turn/completed" | "turn/failed"
             ) && self.is_foreign_thread_turn(&params)
             {
+                continue;
+            }
+            // Every client-directed request must receive a response. Notifications have no id;
+            // an unknown method carrying one is explicitly declined so the provider cannot wait
+            // forever on a capability this adapter does not implement.
+            if let Some(id) = id.clone() {
+                self.write_response_error(id, -32601, "unsupported client request")?;
+                on_event(
+                    EventInput::new("error")
+                        .field(
+                            "message",
+                            format!("unsupported Codex client request: {method}"),
+                        )
+                        .field("fatal", false),
+                )
+                .map_err(|error| error.to_string())?;
                 continue;
             }
             let ended = self.handle_notification(&method, &params, turn, on_event)?;

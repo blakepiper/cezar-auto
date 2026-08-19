@@ -116,6 +116,8 @@ pub struct StepState {
     pub routing_wait: Option<RoutingWait>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing_attempts: Option<Vec<RoutingAttempt>>,
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// The agent/check discriminator in a step state.
@@ -284,6 +286,8 @@ pub struct RunRecord {
     pub workflow_def: Option<WorkflowDef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing_intent: Option<RoutingIntent>,
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// The title provenance enum.

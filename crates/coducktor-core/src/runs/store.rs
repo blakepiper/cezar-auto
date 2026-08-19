@@ -6,8 +6,8 @@
 //! the normalization rules that a plain `#[derive(Deserialize)]` cannot express — see
 //! [`normalize_run_record_value`].
 
-use std::fs;
-use std::io;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
@@ -16,6 +16,7 @@ use coducktor_contract::runs::RunRecord;
 use coducktor_contract::{RunStatus, StepStatus};
 
 use crate::time::{is_zod_datetime, now_iso8601};
+use crate::workspace::config::atomic_tmp_path;
 
 /// The legacy
 /// spelling of `claude`, still accepted on the way IN and folded to `claude` on the way
@@ -37,35 +38,62 @@ pub fn index_path(data_dir: &Path) -> PathBuf {
 /// Read `runs.json` on demand — never cached. `keep_live` retains active records instead of
 /// marking them interrupted; see [`reconcile_loaded_run`].
 ///
-/// A missing file, unreadable file, malformed JSON, non-array JSON, or **any** element that
-/// fails validation all degrade to an empty list. A single parse of the whole array means one bad
-/// record does not salvage its siblings; the whole file is treated as if it never loaded.
-/// This is deliberately unlike the per-entry `safeParse` salvage other persisted arrays in
-/// this codebase use for other persisted arrays — `runs.json` is re-derived from
-/// this same parse on every save (`saveNow`), so a single genuinely corrupt record here is
-/// safer left completely alone on disk than silently rewritten with that record missing.
-pub fn load_run_index(index_path: &Path, keep_live: bool) -> Vec<RunRecord> {
-    let Ok(raw) = fs::read_to_string(index_path) else {
-        return Vec::new();
+/// Missing, valid, partially salvageable, and corrupt files are distinguished by
+/// [`load_run_index_outcome`]. Valid siblings survive one malformed entry, while callers can
+/// quarantine writes so the original bytes are never silently replaced by the salvaged subset.
+#[derive(Debug)]
+pub enum RunIndexLoad {
+    Missing,
+    Valid(Vec<RunRecord>),
+    ValidWithSalvage(Vec<RunRecord>),
+    Corrupt,
+}
+
+impl RunIndexLoad {
+    pub fn records(&self) -> &[RunRecord] {
+        match self {
+            Self::Valid(records) | Self::ValidWithSalvage(records) => records,
+            Self::Missing | Self::Corrupt => &[],
+        }
+    }
+
+    pub fn write_quarantined(&self) -> bool {
+        matches!(self, Self::ValidWithSalvage(_) | Self::Corrupt)
+    }
+}
+
+pub fn load_run_index_outcome(index_path: &Path, keep_live: bool) -> RunIndexLoad {
+    let raw = match fs::read_to_string(index_path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return RunIndexLoad::Missing,
+        Err(_) => return RunIndexLoad::Corrupt,
     };
     let Ok(value) = serde_json::from_str::<Value>(&raw) else {
-        return Vec::new();
+        return RunIndexLoad::Corrupt;
     };
     let Some(array) = value.as_array() else {
-        return Vec::new();
+        return RunIndexLoad::Corrupt;
     };
 
     let mut records = Vec::with_capacity(array.len());
+    let mut salvaged = false;
     for item in array {
-        let Some(record) = try_parse_run_record(item.clone()) else {
-            return Vec::new();
-        };
-        records.push(record);
+        match try_parse_run_record(item.clone()) {
+            Some(record) => records.push(reconcile_loaded_run(record, keep_live)),
+            None => salvaged = true,
+        }
     }
-    records
-        .into_iter()
-        .map(|record| reconcile_loaded_run(record, keep_live))
-        .collect()
+    if salvaged {
+        RunIndexLoad::ValidWithSalvage(records)
+    } else {
+        RunIndexLoad::Valid(records)
+    }
+}
+
+pub fn load_run_index(index_path: &Path, keep_live: bool) -> Vec<RunRecord> {
+    load_run_index_outcome(index_path, keep_live)
+        .records()
+        .to_vec()
 }
 
 /// Every run currently in `runs`, newest-`createdAt`-first — mirrors `RunStore.listRuns`.
@@ -75,22 +103,43 @@ pub fn list_runs_by_recency(runs: &[RunRecord]) -> Vec<&RunRecord> {
     sorted
 }
 
-/// Atomic write of the whole index — mirrors `RunStore`'s private `saveNow`: a fixed
-/// `<path>.tmp` staging file (not the per-writer random suffix `workspace::config` uses,
-/// since exactly one process owns a given project's `runs.json` at a time — see that
-/// module's `atomic_tmp_path` doc for why a shared file needs the random suffix and this one
-/// does not) and no permission changes (`saveNow` never `chmod`s; only the `~/.coducktor/`
-/// writers do). `runs` is re-sorted newest-first before writing, matching `saveNow` writing
-/// `this.listRuns()` rather than insertion order.
+/// Atomic owner-only write of the whole index through a collision-safe staging file. File data is
+/// synced before rename and the containing directory is synced best-effort after rename.
 pub fn write_run_index(index_path: &Path, runs: &[RunRecord]) -> io::Result<()> {
     let sorted = list_runs_by_recency(runs);
-    let mut tmp = index_path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp_path = PathBuf::from(tmp);
-    let json = serde_json::to_string_pretty(&sorted).expect("RunRecord always serializes");
-    fs::write(&tmp_path, json)?;
-    fs::rename(&tmp_path, index_path)?;
-    Ok(())
+    let json = serde_json::to_vec_pretty(&sorted).map_err(io::Error::other)?;
+    if let Some(parent) = index_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp_path = atomic_tmp_path(index_path);
+    let result = (|| {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp_path)?;
+        file.write_all(&json)?;
+        file.sync_all()?;
+        fs::rename(&tmp_path, index_path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(index_path, fs::Permissions::from_mode(0o600))?;
+        }
+        if let Some(parent) = index_path.parent()
+            && let Ok(directory) = fs::File::open(parent)
+        {
+            let _ = directory.sync_all();
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp_path);
+    }
+    result
 }
 
 /// Reconcile one record just read off disk with the fact that whichever process wrote it is
@@ -285,10 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn one_invalid_record_drops_the_whole_array_not_just_itself() {
-        // The regression test guards directly: the loader parses the WHOLE
-        // array, so one bad record must not silently evict its siblings from the file NOR
-        // salvage itself — the entire load aborts.
+    fn one_invalid_record_salvages_its_sibling_and_quarantines_the_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_index(
             dir.path(),
@@ -297,7 +343,10 @@ mod tests {
                 legacy_run(json!({ "id": "bad-status", "status": "not-a-status" })),
             ]),
         );
-        assert!(load_run_index(&path, false).is_empty());
+        let outcome = load_run_index_outcome(&path, false);
+        assert!(outcome.write_quarantined());
+        assert_eq!(outcome.records().len(), 1);
+        assert_eq!(outcome.records()[0].id, "legacy-1");
     }
 
     #[test]
@@ -498,6 +547,7 @@ mod tests {
                 routing_decision: None,
                 routing_wait: None,
                 routing_attempts: None,
+                extra: Map::new(),
             }],
             ..Default::default()
         };
@@ -580,6 +630,41 @@ mod tests {
         write_run_index(&path, std::slice::from_ref(&run)).unwrap();
         let loaded = load_run_index(&path, true);
         assert_eq!(loaded, vec![run]);
+    }
+
+    #[test]
+    fn unknown_run_and_step_keys_survive_a_read_modify_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_index(
+            dir.path(),
+            json!([legacy_run(json!({
+                "futureRunField": {"kept": true},
+                "steps": [{
+                    "id": "task", "name": "Task", "kind": "agent", "status": "done",
+                    "iterations": 1, "tokensUsed": 0, "futureStepField": [1, 2, 3]
+                }]
+            }))]),
+        );
+        let mut runs = load_run_index(&path, true);
+        runs[0].title = "changed".to_owned();
+        write_run_index(&path, &runs).unwrap();
+        let raw: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw[0]["futureRunField"], json!({"kept": true}));
+        assert_eq!(raw[0]["steps"][0]["futureStepField"], json!([1, 2, 3]));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_index_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = index_path(dir.path());
+        write_run_index(&path, &[]).unwrap();
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[test]

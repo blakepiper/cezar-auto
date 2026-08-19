@@ -33,7 +33,7 @@ pub fn append_event(path: &Path, event: &RunEvent) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    let line = serde_json::to_string(event).expect("RunEvent always serializes");
+    let line = serde_json::to_string(event).map_err(io::Error::other)?;
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     writeln!(file, "{line}")
 }

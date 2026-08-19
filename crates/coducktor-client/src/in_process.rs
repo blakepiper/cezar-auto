@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use coducktor_contract::{
@@ -57,13 +57,13 @@ use coducktor_core::paths::{
 use coducktor_core::skills::discover_skills;
 use coducktor_core::workflows::load::{WORKFLOWS_DIR, load_workflows};
 use coducktor_core::workflows::run::{
-    EventInput, PromptImage, RunManager, SessionFactory, StartRunInput as CoreStartRunInput,
-    review_gate_enabled,
+    CheckExecutor, CheckResult, DiffInspector, EventInput, PromptImage, RunManager, RuntimeOptions,
+    SessionFactory, StartRunInput as CoreStartRunInput, review_gate_enabled,
 };
 use coducktor_core::workflows::types::{parse_workflow_file_doc, steps_issue};
 use coducktor_core::workspace::agent_accounts::{
-    AgentAccount, has_control_chars, is_valid_account_id, merge_write_agent_accounts,
-    supports_profiles,
+    AgentAccount, has_control_chars, is_valid_account_id, load_agent_accounts,
+    merge_write_agent_accounts, supports_profiles,
 };
 use coducktor_core::workspace::config::{
     PROVIDER_IDS, load_workspace_config, merge_write_workspace_config,
@@ -96,6 +96,9 @@ pub struct InProcessEngine {
     managers: Arc<Mutex<BTreeMap<String, ProjectManager>>>,
     session_factory: Arc<Mutex<Box<dyn SessionFactory>>>,
     boot_project_id: String,
+    project_id: String,
+    run_snapshot: Arc<RwLock<BTreeMap<String, BTreeMap<String, coducktor_contract::RunRecord>>>>,
+    activation_workers: Arc<Mutex<BTreeMap<String, std::thread::JoinHandle<()>>>>,
     live_events: broadcast::Sender<EngineEvent>,
     model_catalog: Arc<Mutex<Vec<CachedModelCatalog>>>,
     usage_cache: Arc<Mutex<Option<CachedWorkspaceUsage>>>,
@@ -112,13 +115,55 @@ struct ProjectManager {
 /// configuration or requiring a cloneable runner factory.
 struct SharedSessionFactory {
     inner: Arc<Mutex<Box<dyn SessionFactory>>>,
+    state_home: PathBuf,
 }
 
 impl SessionFactory for SharedSessionFactory {
     fn open(
         &mut self,
-        request: coducktor_core::workflows::run::SessionRequest,
+        mut request: coducktor_core::workflows::run::SessionRequest,
     ) -> Result<Box<dyn coducktor_core::workflows::run::AgentSession + Send>, String> {
+        if let Some(profile_id) = request
+            .agent_profile
+            .as_deref()
+            .filter(|profile| *profile != coducktor_contract::DEFAULT_AGENT_ACCOUNT_ID)
+        {
+            let provider = runner_selection_provider(request.runner)
+                .ok_or_else(|| "Auto runner reached profile resolution".to_owned())?;
+            let store = load_agent_accounts(&self.state_home.join("agent-accounts.json"));
+            let account = store
+                .accounts
+                .iter()
+                .find(|account| account.id == profile_id)
+                .ok_or_else(|| format!("agent profile {profile_id} no longer exists"))?;
+            if account.provider != provider {
+                return Err(format!(
+                    "agent profile {profile_id} belongs to {}, not {}",
+                    provider_label(account.provider),
+                    provider_label(provider)
+                ));
+            }
+            let path = expand_tilde(&account.config_dir, &ProcessEnv);
+            if !path.is_dir() {
+                return Err(format!(
+                    "agent profile {profile_id} is unavailable at {}",
+                    path.display()
+                ));
+            }
+            let key = match provider {
+                Runner::Claude => "CLAUDE_CONFIG_DIR",
+                Runner::Codex => "CODEX_HOME",
+                Runner::OpenCode | Runner::Pi => {
+                    return Err(format!(
+                        "{} does not support alternate profiles",
+                        provider_label(provider)
+                    ));
+                }
+            };
+            request
+                .env
+                .insert(key.to_owned(), path.to_string_lossy().into_owned());
+        }
         self.inner
             .lock()
             .map_err(|_| "session factory unavailable".to_owned())?
@@ -156,6 +201,125 @@ const MAX_DISCOVERED_MODELS: usize = 500;
 const OPENCODE_GO_USAGE_URL: &str = "https://opencode.ai/zen/go/v1/usage";
 const MAX_OPENCODE_AUTH_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_OPENCODE_USAGE_BYTES: usize = 256 * 1024;
+const MAX_CHECK_OUTPUT_BYTES: usize = 512 * 1024;
+const CHECK_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+struct ProductionCheckExecutor;
+
+impl CheckExecutor for ProductionCheckExecutor {
+    fn run(&mut self, command: &str, cwd: &Path) -> Result<CheckResult, String> {
+        if command.is_empty() || command.len() > 100_000 {
+            return Err("check command is empty or exceeds 100,000 bytes".to_owned());
+        }
+        let mut process = if cfg!(windows) {
+            let mut process = Command::new("cmd.exe");
+            process.args(["/D", "/S", "/C", command]);
+            process
+        } else {
+            let mut process = Command::new("sh");
+            process.args(["-lc", command]);
+            process
+        };
+        let mut child = process
+            .current_dir(cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("could not start check: {error}"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .map(|pipe| std::thread::spawn(move || read_bounded_output(pipe)));
+        let stderr = child
+            .stderr
+            .take()
+            .map(|pipe| std::thread::spawn(move || read_bounded_output(pipe)));
+        let started = Instant::now();
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if started.elapsed() < CHECK_TIMEOUT => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = join_check_output(stdout);
+                    let _ = join_check_output(stderr);
+                    return Err(format!(
+                        "check timed out after {} seconds",
+                        CHECK_TIMEOUT.as_secs()
+                    ));
+                }
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = join_check_output(stdout);
+                    let _ = join_check_output(stderr);
+                    return Err(format!("could not wait for check: {error}"));
+                }
+            }
+        };
+        let stdout = join_check_output(stdout);
+        let stderr = join_check_output(stderr);
+        let output = match (stdout.trim().is_empty(), stderr.trim().is_empty()) {
+            (false, false) => format!("{stdout}\n{stderr}"),
+            (false, true) => stdout,
+            (true, false) => stderr,
+            (true, true) => String::new(),
+        };
+        Ok(CheckResult {
+            success: status.success(),
+            exit_code: status.code().unwrap_or(-1),
+            output,
+        })
+    }
+}
+
+fn read_bounded_output(mut reader: impl std::io::Read) -> String {
+    let mut retained = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    let mut truncated = false;
+    while let Ok(read) = reader.read(&mut buffer) {
+        if read == 0 {
+            break;
+        }
+        let remaining = MAX_CHECK_OUTPUT_BYTES.saturating_sub(retained.len());
+        retained.extend_from_slice(&buffer[..read.min(remaining)]);
+        truncated |= read > remaining;
+    }
+    let mut output = String::from_utf8_lossy(&retained).into_owned();
+    if truncated {
+        output.push_str("\n[output truncated by coducktor]");
+    }
+    output
+}
+
+fn join_check_output(handle: Option<std::thread::JoinHandle<String>>) -> String {
+    handle
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default()
+}
+
+struct ProductionDiffInspector {
+    repo_root: PathBuf,
+}
+
+impl DiffInspector for ProductionDiffInspector {
+    fn has_diff(&mut self, run: &coducktor_contract::RunRecord) -> bool {
+        if let Some(path) = run.worktree_path.as_deref() {
+            let diff = coducktor_core::git::worktree::worktree_diff(
+                Path::new(path),
+                run.base_branch.as_deref().unwrap_or("HEAD"),
+                1_000_000,
+            );
+            return !diff.trim().is_empty() && !diff.starts_with("(diff failed");
+        }
+        git_capture(&self.repo_root, &["status", "--porcelain"])
+            .is_ok_and(|status| !status.trim().is_empty())
+    }
+}
 
 fn data_dir(repo_root: &Path) -> PathBuf {
     project_state_dir(repo_root, &ProcessEnv)
@@ -169,6 +333,40 @@ fn lock_err() -> EngineError {
 
 fn io_err(error: std::io::Error) -> EngineError {
     EngineError::Transport(error.to_string())
+}
+
+fn configure_production_manager(
+    manager: &mut RunManager,
+    repo_root: &Path,
+    state_home: &Path,
+    workspace: &coducktor_core::workspace::config::WorkspaceConfig,
+    project_id: &str,
+) {
+    let repo = load_config(
+        &repo_config_path_at(repo_root, state_home),
+        &workspace.agent_defaults,
+    );
+    let project_limit = workspace
+        .projects
+        .iter()
+        .find(|project| project.id == project_id)
+        .and_then(|project| project.max_parallel)
+        .map(|value| value as usize)
+        .unwrap_or(repo.max_parallel as usize);
+    manager.set_runtime_options(RuntimeOptions {
+        max_parallel: project_limit
+            .min(workspace.resources.max_parallel as usize)
+            .max(1),
+        review_gate: review_gate_enabled(
+            repo.review_gate,
+            std::env::var("DUCK_REVIEW_GATE").ok().as_deref(),
+        ),
+    });
+    manager.set_intelligent_context_refresh(workspace.resources.intelligent_context_refresh);
+    manager.set_check_executor(ProductionCheckExecutor);
+    manager.set_diff_inspector(ProductionDiffInspector {
+        repo_root: repo_root.to_path_buf(),
+    });
 }
 
 /// Build a lifecycle event without repeating the full `EventInput` construction at each site.
@@ -222,12 +420,21 @@ impl InProcessEngine {
             project_state_dir_in(&state_home, &repo_root),
             SharedSessionFactory {
                 inner: session_factory.clone(),
+                state_home: state_home.clone(),
             },
         );
         manager.set_project_id(boot_project_id.clone());
+        configure_production_manager(
+            &mut manager,
+            &repo_root,
+            &state_home,
+            &config,
+            &boot_project_id,
+        );
         let (live_events, _) = broadcast::channel(512);
         let manager = Arc::new(Mutex::new(manager));
         let managers = Arc::new(Mutex::new(BTreeMap::new()));
+        let run_snapshot = Arc::new(RwLock::new(BTreeMap::new()));
         let engine = Self {
             repo_root,
             state_home,
@@ -237,6 +444,9 @@ impl InProcessEngine {
             managers: managers.clone(),
             session_factory,
             boot_project_id: boot_project_id.clone(),
+            project_id: boot_project_id.clone(),
+            run_snapshot,
+            activation_workers: Arc::new(Mutex::new(BTreeMap::new())),
             live_events,
             model_catalog: Arc::new(Mutex::new(Vec::new())),
             usage_cache: Arc::new(Mutex::new(None)),
@@ -268,6 +478,18 @@ impl InProcessEngine {
     /// lock use this helper so two concurrent first uses cannot replace one another's live
     /// manager after sessions have been opened.
     fn wire_manager(&self, project_id: &str, manager: &Arc<Mutex<RunManager>>) {
+        if let Ok(manager_guard) = manager.lock()
+            && let Ok(mut snapshot) = self.run_snapshot.write()
+        {
+            snapshot.insert(
+                project_id.to_owned(),
+                manager_guard
+                    .list_runs()
+                    .into_iter()
+                    .map(|run| (run.id.clone(), run))
+                    .collect(),
+            );
+        }
         let event_sender = self.live_events.clone();
         let topic_project = project_id.to_owned();
         if let Ok(mut manager_guard) = manager.lock() {
@@ -285,8 +507,15 @@ impl InProcessEngine {
         }
         let run_sender = self.live_events.clone();
         let event_project = project_id.to_owned();
+        let run_snapshot = self.run_snapshot.clone();
         if let Ok(mut manager_guard) = manager.lock() {
             manager_guard.subscribe_runs(move |run| {
+                if let Ok(mut snapshot) = run_snapshot.write() {
+                    snapshot
+                        .entry(event_project.clone())
+                        .or_default()
+                        .insert(run.id.clone(), run.clone());
+                }
                 let data = json!({
                     "type": "run",
                     "projectId": event_project,
@@ -348,9 +577,11 @@ impl InProcessEngine {
             self.project_data_dir(&root),
             SharedSessionFactory {
                 inner: self.session_factory.clone(),
+                state_home: self.state_home.clone(),
             },
         );
         manager.set_project_id(project_id.clone());
+        configure_production_manager(&mut manager, &root, &self.state_home, &config, &project_id);
         let manager = Arc::new(Mutex::new(manager));
         self.wire_manager(&project_id, &manager);
         managers.insert(
@@ -377,6 +608,12 @@ impl InProcessEngine {
             managers: self.managers.clone(),
             session_factory: self.session_factory.clone(),
             boot_project_id: self.boot_project_id.clone(),
+            project_id: match scope {
+                Scope::Project(id) if id != "default" => id.clone(),
+                Scope::Workspace | Scope::Project(_) => self.boot_project_id.clone(),
+            },
+            run_snapshot: self.run_snapshot.clone(),
+            activation_workers: self.activation_workers.clone(),
             live_events: self.live_events.clone(),
             model_catalog: self.model_catalog.clone(),
             usage_cache: self.usage_cache.clone(),
@@ -412,14 +649,24 @@ impl InProcessEngine {
     // ---- runs ------------------------------------------------------------------------------
 
     pub async fn list_runs(&self) -> Result<Vec<ApiRun>, EngineError> {
-        let manager = self.manager.lock().map_err(|_| lock_err())?;
-        Ok(manager.list_runs().into_iter().map(api_run).collect())
+        let snapshot = self.run_snapshot.read().map_err(|_| lock_err())?;
+        let records = snapshot
+            .get(&self.project_id)
+            .map(|runs| runs.values().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        Ok(coducktor_core::runs::store::list_runs_by_recency(&records)
+            .into_iter()
+            .cloned()
+            .map(api_run)
+            .collect())
     }
 
     pub async fn get_run(&self, run_id: &str) -> Result<ApiRun, EngineError> {
-        let manager = self.manager.lock().map_err(|_| lock_err())?;
-        manager
-            .get_run(run_id)
+        self.run_snapshot
+            .read()
+            .map_err(|_| lock_err())?
+            .get(&self.project_id)
+            .and_then(|runs| runs.get(run_id))
             .cloned()
             .map(api_run)
             .ok_or(EngineError::NotFound)
@@ -508,6 +755,12 @@ impl InProcessEngine {
         } else {
             None
         };
+        let profile_provider = resolved_runner
+            .or_else(|| requested_runner.and_then(runner_selection_provider))
+            .ok_or_else(|| EngineError::Unavailable {
+                reason: "run provider could not be resolved".to_owned(),
+            })?;
+        let agent_profile = self.resolve_run_profile(profile_provider, input.agent_profile)?;
         let images = prompt_images(input.images.unwrap_or_default());
         if images.len() > 4 {
             return Err(EngineError::Conflict {
@@ -522,7 +775,7 @@ impl InProcessEngine {
             runner: requested_runner,
             resolved_runner,
             auto_runner_candidates,
-            agent_profile: input.agent_profile,
+            agent_profile: Some(agent_profile),
             system_prompt: input.system_prompt,
             autonomous: input.autonomous,
             worktree: input.worktree,
@@ -533,32 +786,184 @@ impl InProcessEngine {
                 reason: "variants must be an integer from 1 to 3".to_owned(),
             });
         }
-        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        let created = {
+            let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+            if variants > 1.0 {
+                manager
+                    .enqueue_variants(&workflow, core_input, variants as usize)
+                    .map_err(io_err)?
+            } else {
+                vec![manager.enqueue_run(&workflow, core_input).map_err(io_err)?]
+            }
+        };
+        let runs = self.materialize_worktrees(created)?;
         if variants > 1.0 {
-            let runs = manager
-                .enqueue_variants(&workflow, core_input, variants as usize)
-                .map_err(io_err)?;
-            return Ok(CreateRunResponse::Group { runs });
+            Ok(CreateRunResponse::Group { runs })
+        } else {
+            let run = runs
+                .into_iter()
+                .next()
+                .ok_or_else(|| EngineError::Unavailable {
+                    reason: "run admission produced no record".to_owned(),
+                })?;
+            Ok(CreateRunResponse::Single(Box::new(run)))
         }
-        let run = manager.enqueue_run(&workflow, core_input).map_err(io_err)?;
-        Ok(CreateRunResponse::Single(Box::new(run)))
+    }
+
+    fn resolve_run_profile(
+        &self,
+        provider: Runner,
+        explicit: Option<String>,
+    ) -> Result<String, EngineError> {
+        let store = load_agent_accounts(&self.state_home.join("agent-accounts.json"));
+        let canonical_root = self
+            .repo_root
+            .canonicalize()
+            .unwrap_or_else(|_| self.repo_root.clone());
+        let selected = explicit
+            .or_else(|| {
+                store
+                    .selection_for(Some(&canonical_root.to_string_lossy()), provider)
+                    .map(ToOwned::to_owned)
+            })
+            .unwrap_or_else(|| coducktor_contract::DEFAULT_AGENT_ACCOUNT_ID.to_owned());
+        if selected == coducktor_contract::DEFAULT_AGENT_ACCOUNT_ID {
+            return Ok(selected);
+        }
+        let account = store
+            .accounts
+            .iter()
+            .find(|account| account.id == selected)
+            .ok_or_else(|| EngineError::Conflict {
+                reason: format!("agent profile {selected} was not found"),
+            })?;
+        if account.provider != provider {
+            return Err(EngineError::Conflict {
+                reason: format!(
+                    "agent profile {selected} belongs to {}, not {}",
+                    provider_label(account.provider),
+                    provider_label(provider)
+                ),
+            });
+        }
+        let path = expand_tilde(&account.config_dir, &ProcessEnv);
+        if !path.is_dir() {
+            return Err(EngineError::Conflict {
+                reason: format!(
+                    "agent profile {selected} is unavailable at {}",
+                    path.display()
+                ),
+            });
+        }
+        Ok(selected)
+    }
+
+    /// Materialize isolation before activation. Git work happens without the manager lock; the
+    /// resulting cwd and branch affinity are then persisted together before a worker can start.
+    fn materialize_worktrees(
+        &self,
+        created: Vec<coducktor_contract::RunRecord>,
+    ) -> Result<Vec<coducktor_contract::RunRecord>, EngineError> {
+        let workspace = self.loaded_workspace_config();
+        let repo_config = load_config(
+            &repo_config_path_at(&self.repo_root, &self.state_home),
+            &workspace.agent_defaults,
+        );
+        let configured_base = repo_config.base_branch.as_deref().unwrap_or("HEAD");
+        let base =
+            coducktor_core::git::worktree::resolve_base_ref(&self.repo_root, configured_base)
+                .unwrap_or_else(|| "HEAD".to_owned());
+        let mut materialized = Vec::with_capacity(created.len());
+        let mut created_worktrees = Vec::new();
+
+        for run in &created {
+            if run.worktree == Some(false) {
+                materialized.push(run.clone());
+                continue;
+            }
+            let info = match coducktor_core::git::worktree::create_worktree(
+                &self.repo_root,
+                &run.id,
+                &base,
+            ) {
+                Ok(info) => info,
+                Err(reason) => {
+                    self.rollback_admission(&created, &created_worktrees);
+                    return Err(EngineError::Conflict { reason });
+                }
+            };
+            created_worktrees.push((PathBuf::from(&info.path), Some(info.branch.clone())));
+            let update_result = (|| {
+                let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+                manager
+                    .update_run_value(
+                        &run.id,
+                        json!({
+                            "worktreePath": info.path,
+                            "branch": info.branch,
+                            "baseBranch": info.base_branch,
+                        }),
+                    )
+                    .map_err(io_err)?
+                    .ok_or(EngineError::NotFound)
+            })();
+            let updated = match update_result {
+                Ok(updated) => updated,
+                Err(error) => {
+                    self.rollback_admission(&created, &created_worktrees);
+                    return Err(error);
+                }
+            };
+            materialized.push(updated);
+        }
+        Ok(materialized)
+    }
+
+    fn rollback_admission(
+        &self,
+        runs: &[coducktor_contract::RunRecord],
+        worktrees: &[(PathBuf, Option<String>)],
+    ) {
+        for (path, branch) in worktrees.iter().rev() {
+            coducktor_core::git::worktree::remove_worktree(
+                &self.repo_root,
+                path,
+                branch.as_deref(),
+            );
+        }
+        if let Ok(mut manager) = self.manager.lock() {
+            for run in runs {
+                let _ = manager.remove_run(&run.id);
+            }
+        }
     }
 
     /// Run the accepted queue on a worker so the engine loop can keep drawing and consuming the
     /// live broadcast emitted by the manager's event sink.
     pub fn activate_runs(&self) -> Result<(), EngineError> {
+        let mut workers = self.activation_workers.lock().map_err(|_| lock_err())?;
+        if workers
+            .get(&self.project_id)
+            .is_some_and(|worker| !worker.is_finished())
+        {
+            return Ok(());
+        }
+        if let Some(finished) = workers.remove(&self.project_id) {
+            let _ = finished.join();
+        }
         let manager = self.manager.clone();
-        std::thread::Builder::new()
+        let worker = std::thread::Builder::new()
             .name("coducktor-runner".to_owned())
             .spawn(move || {
                 if let Ok(mut manager) = manager.lock() {
                     let _ = manager.pump();
                 }
             })
-            .map(|_| ())
             .map_err(|error| EngineError::Unavailable {
                 reason: format!("could not start the agent worker: {error}"),
-            })
+            })?;
+        workers.insert(self.project_id.clone(), worker);
+        Ok(())
     }
 
     pub async fn archive_run(&self, run_id: &str, archived: bool) -> Result<ApiRun, EngineError> {
@@ -581,6 +986,13 @@ impl InProcessEngine {
             });
         }
         let deleted = manager.remove_run(run_id).map_err(io_err)?;
+        drop(manager);
+        if deleted
+            && let Ok(mut snapshot) = self.run_snapshot.write()
+            && let Some(runs) = snapshot.get_mut(&self.project_id)
+        {
+            runs.remove(run_id);
+        }
         Ok(DeleteRunResponse { deleted })
     }
 
@@ -1406,9 +1818,11 @@ impl InProcessEngine {
     // ---- diff engine: task git, repo git, compare -------------------------------------------
 
     fn run_record(&self, run_id: &str) -> Result<coducktor_contract::RunRecord, EngineError> {
-        let manager = self.manager.lock().map_err(|_| lock_err())?;
-        manager
-            .get_run(run_id)
+        self.run_snapshot
+            .read()
+            .map_err(|_| lock_err())?
+            .get(&self.project_id)
+            .and_then(|runs| runs.get(run_id))
             .cloned()
             .ok_or(EngineError::NotFound)
     }
@@ -3158,19 +3572,19 @@ impl InProcessEngine {
 
     pub async fn open_in_cli(&self, run_id: &str) -> Result<OpenInCliResponse, EngineError> {
         let run = self.run_record(run_id)?;
-        let Some(command) = run_resume_command(&run) else {
+        let Some((program, args)) = run_resume_invocation(&run) else {
             return Err(EngineError::Conflict {
                 reason: "no agent session to resume".to_owned(),
             });
         };
+        let command = std::iter::once(program.as_str())
+            .chain(args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ");
         let directory = run_worktree_of(&run).unwrap_or_else(|| self.repo_root.clone());
-        let launch = format!(
-            "cd {} && {command}",
-            shell_quote(&directory.to_string_lossy())
-        );
-        if !open_terminal_for_command(&launch) {
+        if !open_terminal_for_command(&directory, &program, &args) {
             return Err(EngineError::Conflict {
-                reason: "no terminal emulator found".to_owned(),
+                reason: "no supported terminal launcher found".to_owned(),
             });
         }
         Ok(OpenInCliResponse {
@@ -3224,13 +3638,9 @@ impl InProcessEngine {
                     });
                 }
             };
-            let launch = format!(
-                "cd {} && {command}",
-                shell_quote(&directory.to_string_lossy())
-            );
-            if !open_terminal_for_command(&launch) {
+            if !open_terminal_for_command(&directory, command, &[]) {
                 return Err(EngineError::Conflict {
-                    reason: "no terminal emulator found".to_owned(),
+                    reason: "no supported terminal launcher found".to_owned(),
                 });
             }
             return Ok(json!({ "opened": true, "path": directory, "command": command }));
@@ -3412,7 +3822,7 @@ fn collect_run_commits(root: &Path, base: &str) -> Result<Vec<RunCommit>, String
         .collect())
 }
 
-fn run_resume_command(run: &coducktor_contract::RunRecord) -> Option<String> {
+fn run_resume_invocation(run: &coducktor_contract::RunRecord) -> Option<(String, Vec<String>)> {
     let session_id = run
         .steps
         .iter()
@@ -3422,10 +3832,22 @@ fn run_resume_command(run: &coducktor_contract::RunRecord) -> Option<String> {
         return None;
     }
     Some(match run.runner {
-        Some(Runner::Codex) => format!("codex resume {session_id}"),
-        Some(Runner::OpenCode) => format!("opencode --session {session_id}"),
-        Some(Runner::Pi) => format!("pi --session {session_id}"),
-        Some(Runner::Claude) | None => format!("claude --resume {session_id}"),
+        Some(Runner::Codex) => (
+            "codex".to_owned(),
+            vec!["resume".to_owned(), session_id.to_owned()],
+        ),
+        Some(Runner::OpenCode) => (
+            "opencode".to_owned(),
+            vec!["--session".to_owned(), session_id.to_owned()],
+        ),
+        Some(Runner::Pi) => (
+            "pi".to_owned(),
+            vec!["--session".to_owned(), session_id.to_owned()],
+        ),
+        Some(Runner::Claude) | None => (
+            "claude".to_owned(),
+            vec!["--resume".to_owned(), session_id.to_owned()],
+        ),
     })
 }
 
@@ -3441,62 +3863,93 @@ fn safe_session_id(value: &str) -> bool {
         })
 }
 
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
+#[derive(Clone, Copy)]
+enum DesktopPlatform {
+    Linux,
+    MacOs,
+    Windows,
 }
 
-fn open_terminal_for_command(command: &str) -> bool {
-    if cfg!(target_os = "linux") {
-        let Some((program, mut args)) = linux_terminal_command(Path::new(".")) else {
-            return false;
-        };
-        match program.as_str() {
-            "x-terminal-emulator" | "konsole" => {
-                args.extend([
-                    "-e".to_owned(),
-                    "sh".to_owned(),
-                    "-lc".to_owned(),
-                    command.to_owned(),
-                ]);
-            }
-            "xterm" => {
-                args = vec![
-                    "-e".to_owned(),
-                    "sh".to_owned(),
-                    "-lc".to_owned(),
-                    command.to_owned(),
-                ];
-            }
-            "gnome-terminal" | "xfce4-terminal" | "alacritty" | "foot" => {
-                args.extend([
-                    "--".to_owned(),
-                    "sh".to_owned(),
-                    "-lc".to_owned(),
-                    command.to_owned(),
-                ]);
-            }
-            "kitty" => {
-                args.extend(["sh".to_owned(), "-lc".to_owned(), command.to_owned()]);
-            }
-            "wezterm" => {
-                args.extend([
-                    "--".to_owned(),
-                    "sh".to_owned(),
-                    "-lc".to_owned(),
-                    command.to_owned(),
-                ]);
-            }
-            _ => return false,
+fn terminal_launch_command(
+    platform: DesktopPlatform,
+    directory: &Path,
+    executable: &str,
+    command_args: &[String],
+    linux_terminal: Option<(String, Vec<String>)>,
+) -> Option<(String, Vec<String>)> {
+    match platform {
+        DesktopPlatform::MacOs => {
+            const SCRIPT: &str = r#"on run argv
+set commandText to "cd " & quoted form of item 1 of argv & " && exec"
+repeat with argumentIndex from 2 to count of argv
+set commandText to commandText & " " & quoted form of item argumentIndex of argv
+end repeat
+tell application "Terminal"
+activate
+do script commandText
+end tell
+end run"#;
+            let mut args = vec![
+                "-e".to_owned(),
+                SCRIPT.to_owned(),
+                "--".to_owned(),
+                directory.to_string_lossy().into_owned(),
+                executable.to_owned(),
+            ];
+            args.extend_from_slice(command_args);
+            Some(("osascript".to_owned(), args))
         }
-        return Command::new(program)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .is_ok();
+        DesktopPlatform::Windows => {
+            let mut args = vec![
+                "-d".to_owned(),
+                directory.to_string_lossy().into_owned(),
+                executable.to_owned(),
+            ];
+            args.extend_from_slice(command_args);
+            Some(("wt.exe".to_owned(), args))
+        }
+        DesktopPlatform::Linux => {
+            let (program, mut args) = linux_terminal?;
+            match program.as_str() {
+                "x-terminal-emulator" | "konsole" | "xterm" => args.push("-e".to_owned()),
+                "gnome-terminal" | "xfce4-terminal" | "alacritty" | "foot" | "wezterm" => {
+                    args.push("--".to_owned())
+                }
+                "kitty" => {}
+                _ => return None,
+            }
+            args.push(executable.to_owned());
+            args.extend_from_slice(command_args);
+            Some((program, args))
+        }
     }
-    false
+}
+
+fn open_terminal_for_command(directory: &Path, executable: &str, args: &[String]) -> bool {
+    let platform = if cfg!(target_os = "macos") {
+        DesktopPlatform::MacOs
+    } else if cfg!(target_os = "windows") {
+        DesktopPlatform::Windows
+    } else if cfg!(target_os = "linux") {
+        DesktopPlatform::Linux
+    } else {
+        return false;
+    };
+    let linux_terminal = matches!(platform, DesktopPlatform::Linux)
+        .then(|| linux_terminal_command(directory))
+        .flatten();
+    let Some((program, launch_args)) =
+        terminal_launch_command(platform, directory, executable, args, linux_terminal)
+    else {
+        return false;
+    };
+    Command::new(program)
+        .args(launch_args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .is_ok()
 }
 
 fn is_history_boundary(event: &RunEvent) -> bool {
@@ -3879,6 +4332,16 @@ fn provider_label(provider: Runner) -> &'static str {
         Runner::Codex => "Codex",
         Runner::OpenCode => "OpenCode",
         Runner::Pi => "pi",
+    }
+}
+
+fn runner_selection_provider(selection: RunnerSelection) -> Option<Runner> {
+    match selection {
+        RunnerSelection::Auto => None,
+        RunnerSelection::Claude => Some(Runner::Claude),
+        RunnerSelection::Codex => Some(Runner::Codex),
+        RunnerSelection::OpenCode => Some(Runner::OpenCode),
+        RunnerSelection::Pi => Some(Runner::Pi),
     }
 }
 
@@ -7908,6 +8371,20 @@ mod tests {
         }
     }
 
+    struct ProfileRecordingFactory {
+        envs: Arc<Mutex<Vec<BTreeMap<String, String>>>>,
+    }
+
+    impl SessionFactory for ProfileRecordingFactory {
+        fn open(
+            &mut self,
+            request: SessionRequest,
+        ) -> Result<Box<dyn AgentSession + Send>, String> {
+            self.envs.lock().unwrap().push(request.env);
+            Ok(Box::new(FakeSession))
+        }
+    }
+
     struct BlockingFactory {
         tokens: Arc<Mutex<BTreeMap<String, CancellationToken>>>,
     }
@@ -8060,6 +8537,17 @@ mod tests {
         })
         .await
         .unwrap();
+
+        let read_started = Instant::now();
+        let current = <InProcessEngine as crate::Engine>::get_run(&engine, &scope, &run.id)
+            .await
+            .unwrap();
+        assert_eq!(current.record.id, run.id);
+        let listed = <InProcessEngine as crate::Engine>::list_runs(&engine, &scope)
+            .await
+            .unwrap();
+        assert!(listed.iter().any(|candidate| candidate.record.id == run.id));
+        assert!(read_started.elapsed() < std::time::Duration::from_millis(100));
 
         let started = Instant::now();
         let response = <InProcessEngine as crate::Engine>::cancel_run(&engine, &scope, &run.id)
@@ -8410,6 +8898,86 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn explicit_profile_reaches_the_task_process_environment() {
+        let repo = TempDir::new().unwrap();
+        let state = TempDir::new().unwrap();
+        let profile = state.path().join("claude-work");
+        std::fs::create_dir(&profile).unwrap();
+        std::fs::write(
+            state.path().join("agent-accounts.json"),
+            json!({
+                "accounts": [{
+                    "id": "work",
+                    "provider": "claude",
+                    "configDir": profile,
+                    "label": "Work",
+                    "addedAt": "2026-08-18T00:00:00.000Z"
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let envs = Arc::new(Mutex::new(Vec::new()));
+        let engine = InProcessEngine::with_session_factory_at(
+            repo.path(),
+            "0.0.0-test",
+            ProfileRecordingFactory { envs: envs.clone() },
+            state.path().join("config.json"),
+        );
+        let scope = Scope::Project("default".to_owned());
+        let mut input = steps_input("use the work login");
+        input.agent_profile = Some("work".to_owned());
+        <InProcessEngine as crate::Engine>::start_run(&engine, &scope, input)
+            .await
+            .unwrap();
+        <InProcessEngine as crate::Engine>::activate_runs(&engine, &scope)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !envs.lock().unwrap().is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            envs.lock().unwrap()[0]
+                .get("CLAUDE_CONFIG_DIR")
+                .map(String::as_str),
+            Some(profile.to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
+    fn production_manager_consumes_workspace_runtime_limits() {
+        let repo = TempDir::new().unwrap();
+        let state = TempDir::new().unwrap();
+        let config_path = state.path().join("config.json");
+        std::fs::write(
+            &config_path,
+            json!({
+                "resources": {
+                    "maxParallel": 1,
+                    "intelligentContextRefresh": true
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let engine = InProcessEngine::with_session_factory_at(
+            repo.path(),
+            "0.0.0-test",
+            FakeFactory,
+            config_path,
+        );
+        let manager = engine.manager.lock().unwrap();
+        assert_eq!(manager.runtime_options().max_parallel, 1);
     }
 
     #[tokio::test]
@@ -9276,6 +9844,54 @@ mod tests {
                 .unwrap()
                 .success()
         );
+    }
+
+    #[tokio::test]
+    async fn admitted_worktree_is_persisted_and_used_as_the_runner_cwd() {
+        let repo = fixture_repo();
+        let state = TempDir::new().unwrap();
+        let config_path = state.path().join("config.json");
+        let cwds = Arc::new(Mutex::new(Vec::new()));
+        let engine = InProcessEngine::with_session_factory_at(
+            repo.path(),
+            "0.0.0-test",
+            RecordingFactory { cwds: cwds.clone() },
+            config_path,
+        );
+        let scope = Scope::Project("default".to_owned());
+        let mut input = steps_input("write only in the isolated checkout");
+        input.worktree = None;
+        let CreateRunResponse::Single(accepted) =
+            <InProcessEngine as crate::Engine>::start_run(&engine, &scope, input)
+                .await
+                .unwrap()
+        else {
+            panic!("expected one run");
+        };
+        let worktree = accepted
+            .worktree_path
+            .as_deref()
+            .map(PathBuf::from)
+            .unwrap();
+        assert!(worktree.is_dir());
+        assert_ne!(worktree, repo.path());
+        let expected_branch = format!("duck/{}", &accepted.id[..8]);
+        assert_eq!(accepted.branch.as_deref(), Some(expected_branch.as_str()));
+
+        <InProcessEngine as crate::Engine>::activate_runs(&engine, &scope)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !cwds.lock().unwrap().is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(cwds.lock().unwrap().as_slice(), &[worktree]);
     }
 
     #[tokio::test]
@@ -10542,8 +11158,68 @@ mod tests {
     }
 
     #[test]
-    fn shell_quote_escapes_embedded_single_quotes() {
-        assert_eq!(shell_quote("it's fine"), "'it'\\''s fine'");
+    fn terminal_resume_commands_keep_the_cwd_and_session_in_separate_arguments() {
+        let directory = Path::new("/tmp/a project/it's-safe");
+        let command_args = vec!["resume".to_owned(), "session-123".to_owned()];
+
+        let (mac_program, mac_args) = terminal_launch_command(
+            DesktopPlatform::MacOs,
+            directory,
+            "codex",
+            &command_args,
+            None,
+        )
+        .unwrap();
+        assert_eq!(mac_program, "osascript");
+        assert_eq!(mac_args[3], directory.to_string_lossy());
+        assert_eq!(&mac_args[4..], ["codex", "resume", "session-123"]);
+
+        let (windows_program, windows_args) = terminal_launch_command(
+            DesktopPlatform::Windows,
+            directory,
+            "codex",
+            &command_args,
+            None,
+        )
+        .unwrap();
+        assert_eq!(windows_program, "wt.exe");
+        assert_eq!(windows_args[1], directory.to_string_lossy());
+        assert_eq!(&windows_args[2..], ["codex", "resume", "session-123"]);
+
+        let (linux_program, linux_args) = terminal_launch_command(
+            DesktopPlatform::Linux,
+            directory,
+            "codex",
+            &command_args,
+            Some((
+                "alacritty".to_owned(),
+                vec![
+                    "--working-directory".to_owned(),
+                    directory.to_string_lossy().into_owned(),
+                ],
+            )),
+        )
+        .unwrap();
+        assert_eq!(linux_program, "alacritty");
+        assert_eq!(&linux_args[3..], ["codex", "resume", "session-123"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn production_check_executor_uses_the_run_cwd_and_preserves_exit_status() {
+        let directory = TempDir::new().unwrap();
+        let mut executor = ProductionCheckExecutor;
+        let result = executor
+            .run("pwd; printf 'check failed' >&2; exit 7", directory.path())
+            .unwrap();
+        assert!(!result.success);
+        assert_eq!(result.exit_code, 7);
+        assert!(
+            result
+                .output
+                .contains(directory.path().to_string_lossy().as_ref())
+        );
+        assert!(result.output.contains("check failed"));
     }
 
     #[test]

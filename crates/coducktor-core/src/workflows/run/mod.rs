@@ -32,6 +32,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use coducktor_contract::events::RunEvent;
 use coducktor_contract::runs::{
@@ -621,8 +622,11 @@ pub struct SessionRequest {
     pub model: Option<String>,
     pub session_id: Option<String>,
     pub continuation: bool,
-    /// The directory the agent should run in. The current manager passes the configured
-    /// repository root; worktree selection is handled by higher-level orchestration.
+    /// Concrete durable profile affinity. Integration resolves its minimal environment without
+    /// exposing credentials to core.
+    pub agent_profile: Option<String>,
+    pub env: BTreeMap<String, String>,
+    /// The admitted worktree when isolation is enabled, otherwise the repository root.
     pub cwd: PathBuf,
     /// From `step.allowed_tools`, falling back to `workflows::types::DEFAULT_ALLOWED_TOOLS`
     /// using the workflow's default allowed tools when the step omits them.
@@ -717,13 +721,14 @@ pub trait SessionFactory: Send {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckResult {
     pub success: bool,
+    pub exit_code: i32,
     pub output: String,
 }
 
 /// Check execution is injected for the same reason as sessions: core owns workflow semantics, not
 /// a shell/process policy.
 pub trait CheckExecutor: Send {
-    fn run(&mut self, command: &str) -> Result<CheckResult, String>;
+    fn run(&mut self, command: &str, cwd: &Path) -> Result<CheckResult, String>;
 }
 
 /// Review settlement asks an injected diff reader whether the run has changes. This keeps Git
@@ -802,6 +807,8 @@ pub struct RunManager {
     pending_context_prompts: BTreeMap<String, String>,
     auto_routes: BTreeMap<String, Vec<Runner>>,
     intelligent_context_refresh: bool,
+    last_index_flush: Instant,
+    write_quarantined: bool,
 }
 
 impl RunManager {
@@ -838,7 +845,16 @@ impl RunManager {
     pub fn open_with_keep_live(data_dir: impl Into<PathBuf>, keep_live: bool) -> Self {
         let data_dir = data_dir.into();
         let _ = fs::create_dir_all(data_dir.join("runs"));
-        let loaded = store::load_run_index(&store::index_path(&data_dir), keep_live);
+        let index_path = store::index_path(&data_dir);
+        let load = store::load_run_index_outcome(&index_path, keep_live);
+        let write_quarantined = load.write_quarantined();
+        if write_quarantined {
+            eprintln!(
+                "coducktor: {} contains corrupt run state; preserving it and quarantining writes",
+                index_path.display()
+            );
+        }
+        let loaded = load.records().to_vec();
         let runs = loaded
             .into_iter()
             .map(|run| (run.id.clone(), run))
@@ -868,6 +884,8 @@ impl RunManager {
             pending_context_prompts: BTreeMap::new(),
             auto_routes: BTreeMap::new(),
             intelligent_context_refresh: false,
+            last_index_flush: Instant::now(),
+            write_quarantined,
         }
     }
 
@@ -981,15 +999,23 @@ impl RunManager {
         self.next_observer_id
     }
 
-    fn persist(&self) -> io::Result<()> {
+    fn persist(&mut self) -> io::Result<()> {
+        if self.write_quarantined {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "runs.json is quarantined because existing state could not be fully loaded",
+            ));
+        }
         fs::create_dir_all(self.data_dir.join("runs"))?;
         let records: Vec<RunRecord> = self.runs.values().cloned().collect();
-        store::write_run_index(&store::index_path(&self.data_dir), &records)
+        store::write_run_index(&store::index_path(&self.data_dir), &records)?;
+        self.last_index_flush = Instant::now();
+        Ok(())
     }
 
     /// Flush is kept explicit for callers that want a named shutdown boundary. Mutations are
     /// already written synchronously before they return.
-    pub fn flush(&self) -> io::Result<()> {
+    pub fn flush(&mut self) -> io::Result<()> {
         self.persist()
     }
 
@@ -1422,11 +1448,12 @@ impl RunManager {
         } else {
             None
         };
-        if updated_run.is_some() {
+        let flush_index = self.last_index_flush.elapsed() >= Duration::from_millis(250);
+        if updated_run.is_some() && flush_index {
             self.persist()?;
         }
         self.seqs.insert(run_id.to_owned(), seq);
-        if let Some(run) = &updated_run {
+        if flush_index && let Some(run) = &updated_run {
             self.notify_run(run);
         }
         let notification = RunEventNotification {
@@ -2089,14 +2116,20 @@ impl RunManager {
             self.append_step_event(run_id, &step, "step-start", iteration)?;
 
             if let Some(command) = step.command.as_deref() {
+                let cwd = self
+                    .get_run(run_id)
+                    .and_then(|run| run.worktree_path.as_deref())
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| self.repo_root());
                 let result = match self.check_executor.as_mut() {
-                    Some(executor) => executor.run(command),
+                    Some(executor) => executor.run(command, &cwd),
                     None => Err("check executor unavailable".to_owned()),
                 };
                 let result = match result {
                     Ok(result) => result,
                     Err(error) => CheckResult {
                         success: false,
+                        exit_code: 1,
                         output: error,
                     },
                 };
@@ -2106,7 +2139,7 @@ impl RunManager {
                         .step(step.id.clone())
                         .field("command", command)
                         .field("text", result.output.clone())
-                        .field("exitCode", if result.success { 0 } else { 1 }),
+                        .field("exitCode", result.exit_code),
                 )?;
                 if result.success {
                     self.complete_step(run_id, &step.id, None)?;
@@ -2259,7 +2292,15 @@ impl RunManager {
                 model,
                 session_id,
                 continuation: continuation_step,
-                cwd: self.repo_root(),
+                agent_profile: self
+                    .get_run(run_id)
+                    .and_then(|run| run.agent_profile.clone()),
+                env: BTreeMap::new(),
+                cwd: self
+                    .get_run(run_id)
+                    .and_then(|run| run.worktree_path.as_deref())
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| self.repo_root()),
                 allowed_tools,
                 bash_allowlist,
                 system_prompt,
@@ -2283,6 +2324,12 @@ impl RunManager {
             let mut step_affinity = StepPatch::new().set("requestedRunner", requested_runner);
             if let Some(backend) = concrete_runner(runner) {
                 step_affinity = step_affinity.set("backend", backend);
+            }
+            if let Some(profile_id) = self
+                .get_run(run_id)
+                .and_then(|run| run.agent_profile.clone())
+            {
+                step_affinity = step_affinity.set("profileId", profile_id);
             }
             self.update_step(run_id, &step.id, step_affinity)?;
             let concrete = concrete_runner(runner).unwrap_or(Runner::Claude);
@@ -3657,6 +3704,7 @@ fn step_from_seed(seed: StepSeed) -> StepState {
         routing_decision: None,
         routing_wait: None,
         routing_attempts: None,
+        extra: Map::new(),
     }
 }
 
@@ -3925,6 +3973,29 @@ mod tests {
                 .seq,
             3.0
         );
+    }
+
+    #[test]
+    fn streaming_events_debounce_run_index_notifications() {
+        let dir = tempdir().unwrap();
+        let mut manager = RunManager::open(dir.path());
+        let run = manager.create_run(create_input()).unwrap();
+        let notifications = Arc::new(AtomicU64::new(0));
+        let observed = notifications.clone();
+        manager.subscribe_runs(move |_| {
+            observed.fetch_add(1, Ordering::Relaxed);
+        });
+        for index in 0..10_000 {
+            manager
+                .append_event(
+                    &run.id,
+                    EventInput::new("text").field("text", format!("delta-{index}")),
+                )
+                .unwrap();
+        }
+        manager.flush().unwrap();
+        assert_eq!(manager.read_events(&run.id).len(), 10_000);
+        assert!(notifications.load(Ordering::Relaxed) < 100);
     }
 
     #[test]
@@ -4202,7 +4273,7 @@ mod tests {
     }
 
     impl CheckExecutor for FakeChecks {
-        fn run(&mut self, _command: &str) -> Result<CheckResult, String> {
+        fn run(&mut self, _command: &str, _cwd: &Path) -> Result<CheckResult, String> {
             self.results
                 .lock()
                 .unwrap()
@@ -4385,6 +4456,7 @@ mod tests {
         let checks = Arc::new(Mutex::new(std::collections::VecDeque::from([
             CheckResult {
                 success: true,
+                exit_code: 0,
                 output: "ok".to_owned(),
             },
         ])));
@@ -4680,10 +4752,12 @@ mod tests {
         let checks = Arc::new(Mutex::new(std::collections::VecDeque::from([
             CheckResult {
                 success: false,
+                exit_code: 7,
                 output: "bad".to_owned(),
             },
             CheckResult {
                 success: true,
+                exit_code: 0,
                 output: "fixed".to_owned(),
             },
         ])));

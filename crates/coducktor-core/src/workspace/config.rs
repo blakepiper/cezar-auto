@@ -942,13 +942,8 @@ pub fn atomic_write_json_sync(path: &Path, value: &Value) -> io::Result<()> {
         set_mode(dir, 0o700)?;
     }
     let tmp = atomic_tmp_path(path);
-    fs::write(
-        &tmp,
-        format!(
-            "{}\n",
-            serde_json::to_string_pretty(value).expect("Value always serializes")
-        ),
-    )?;
+    let json = serde_json::to_string_pretty(value).map_err(io::Error::other)?;
+    fs::write(&tmp, format!("{json}\n"))?;
     set_mode(&tmp, 0o600)?;
     fs::rename(&tmp, path)?;
     let _ = set_mode(path, 0o600); // best-effort — ignored on some filesystems
