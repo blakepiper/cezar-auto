@@ -5,7 +5,7 @@
 //! in. The review panel exposes its banner, notes box, and Send back / Draft PR / Accept actions;
 //! task Git tab navigation is registered by `render_header`.
 
-use coducktor_contract::{ApiRun, RunStatus};
+use coducktor_contract::{ApiRun, RunRecord, StepKind};
 use coducktor_protocol::UiItem;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -18,7 +18,7 @@ use crate::screens::runs_util::{attention, run_title};
 use crate::theme::Theme;
 
 use super::ThreadAction;
-use super::actions::{finish_title, resume_hint, run_action_flags};
+use super::actions::{resume_hint, run_action_flags};
 use super::reducer::{ThreadAsk, ThreadEntry, ThreadState};
 
 /// The header: title, status pill, meta row, tabs, action bar. Returns the height it used.
@@ -52,10 +52,17 @@ pub fn render_header(
     }
     let mut lines = vec![Line::from(title_line)];
 
-    let mut meta = vec![Span::styled(
+    let mut meta = Vec::new();
+    if let Some(agent) = agent_metadata(record) {
+        meta.push(Span::styled(
+            format!("{agent}  "),
+            Style::default().fg(theme.palette.soft_fg),
+        ));
+    }
+    meta.push(Span::styled(
         format!("{}  ", record.workflow),
         Style::default().fg(theme.palette.soft_fg),
-    )];
+    ));
     if let Some(branch) = &record.branch {
         meta.push(Span::styled(
             format!("{branch}  "),
@@ -195,6 +202,58 @@ pub fn render_header(
         }
     }
     height
+}
+
+fn agent_metadata(record: &RunRecord) -> Option<String> {
+    let step = record
+        .steps
+        .iter()
+        .find(|step| {
+            step.kind == StepKind::Agent
+                && matches!(
+                    step.status,
+                    coducktor_contract::StepStatus::Running
+                        | coducktor_contract::StepStatus::Waiting
+                )
+        })
+        .or_else(|| {
+            record.steps.iter().rev().find(|step| {
+                step.kind == StepKind::Agent
+                    && (step.backend.is_some()
+                        || step.model_identity.is_some()
+                        || step.reasoning_effort.is_some())
+            })
+        });
+    let runner = step
+        .and_then(|step| step.backend)
+        .or(record.runner)
+        .map(|runner| format!("runner {}", format!("{runner:?}").to_ascii_lowercase()))
+        .or_else(|| {
+            record
+                .requested_runner
+                .map(|runner| format!("runner {}", format!("{runner:?}").to_ascii_lowercase()))
+        });
+    let model = step
+        .and_then(|step| step.model_identity.as_deref())
+        .or(record.model_identity.as_deref())
+        .or(record.model.as_deref())
+        .map(|model| format!("model {model}"));
+    let reasoning = step
+        .and_then(|step| step.reasoning_effort)
+        .map(|effort| format!("reasoning {}", format!("{effort:?}").to_ascii_lowercase()))
+        .or_else(|| {
+            record
+                .reasoning_effort
+                .map(|effort| format!("reasoning {}", format!("{effort:?}").to_ascii_lowercase()))
+        });
+    [runner, model, reasoning]
+        .into_iter()
+        .flatten()
+        .reduce(|mut all, value| {
+            all.push_str(" · ");
+            all.push_str(&value);
+            all
+        })
 }
 
 /// The workflow step rail: one collapsed summary line, or the full per-step list when expanded.
@@ -471,7 +530,6 @@ pub fn render_review_panel(
             Rect::new(area.x, actions_row, area.width, 1),
         );
     }
-    let _ = finish_title(RunStatus::Review);
     3.min(area.height)
 }
 
@@ -598,5 +656,25 @@ pub(super) fn queue_hint(is_queued: bool) -> &'static str {
         "Messages you add now are folded into the prompt before the run starts."
     } else {
         ""
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::agent_metadata;
+    use coducktor_contract::{ReasoningEffort, RunRecord, Runner};
+
+    #[test]
+    fn agent_metadata_shows_runner_model_and_reasoning() {
+        let record = RunRecord {
+            runner: Some(Runner::Codex),
+            model: Some("gpt-5.4".to_owned()),
+            reasoning_effort: Some(ReasoningEffort::High),
+            ..RunRecord::default()
+        };
+        assert_eq!(
+            agent_metadata(&record).as_deref(),
+            Some("runner codex · model gpt-5.4 · reasoning high")
+        );
     }
 }

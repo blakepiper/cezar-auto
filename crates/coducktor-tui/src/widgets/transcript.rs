@@ -735,6 +735,10 @@ impl Transcript {
             self.restore_anchor = false;
         } else {
             self.scroll_offset = self.scroll_offset.min(max_scroll);
+            if self.scroll_offset == max_scroll {
+                self.sticky_bottom = true;
+                self.unseen = 0;
+            }
         }
         let top = self.scroll_offset;
         let bottom = top + viewport;
@@ -1032,6 +1036,32 @@ mod tests {
         transcript.jump_to_bottom();
         let content = render_to_string(&mut transcript, 40, 5);
         assert!(content.contains("note 49"));
+    }
+
+    #[test]
+    fn reaching_the_bottom_with_manual_scrolling_resumes_following_live_output() {
+        let mut transcript = Transcript::new();
+        for index in 0..20 {
+            transcript.push(TranscriptItem::Note(NoteItem::new(
+                format!("n{index}"),
+                format!("note {index}"),
+                NoteTone::Dim,
+            )));
+        }
+        transcript.scroll_by(-1_000_000);
+        let _ = render_to_string(&mut transcript, 40, 5);
+
+        transcript.scroll_by(1_000_000);
+        let content = render_to_string(&mut transcript, 40, 5);
+        assert!(content.contains("note 19"));
+
+        transcript.push(TranscriptItem::Note(NoteItem::new(
+            "live",
+            "live output",
+            NoteTone::Dim,
+        )));
+        let content = render_to_string(&mut transcript, 40, 5);
+        assert!(content.contains("live output"));
     }
 
     #[test]
