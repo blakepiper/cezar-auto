@@ -6152,6 +6152,15 @@ fn git_capture(root: &Path, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
         .current_dir(root)
         .args(args)
+        // A credential or host-key prompt must fail fast, never block on the TUI's raw-mode
+        // terminal: `output()` inherits stdin by default, and git would otherwise sit reading
+        // a tty it can never get a usable answer from — this is what turned automatic
+        // (unattended) commits/pushes into an uncancellable, uninterruptible hang.
+        .stdin(Stdio::null())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "")
+        .env("SSH_ASKPASS", "")
+        .env_remove("SSH_ASKPASS_REQUIRE")
         .output()
         .map_err(|error| error.to_string())?;
     if output.status.success() {
@@ -11503,6 +11512,28 @@ mod tests {
                 .status()
                 .unwrap()
                 .success()
+        );
+    }
+
+    #[tokio::test]
+    async fn git_capture_never_hangs_on_a_command_that_would_read_stdin() {
+        // `git hash-object --stdin` blocks waiting for input on an inherited terminal/pipe.
+        // If `git_capture` ever stopped setting `Stdio::null()` on stdin, this would hang the
+        // test (and, in production, hang an unattended automatic commit/push uncancellably).
+        let dir = fixture_repo();
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio::task::spawn_blocking(move || {
+                git_capture(dir.path(), &["hash-object", "--stdin"])
+            }),
+        )
+        .await
+        .expect("git_capture must not block on stdin")
+        .unwrap();
+        // Closed stdin reads as empty input — the hash of the empty blob — not an error.
+        assert_eq!(
+            result.unwrap().trim(),
+            "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
         );
     }
 
