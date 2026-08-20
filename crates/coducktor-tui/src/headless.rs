@@ -653,6 +653,9 @@ mod tests {
     fn dry_run_factory() -> DefaultSessionFactory {
         let mut env = BTreeMap::new();
         env.insert("DUCK_DRY_RUN".to_owned(), "1".to_owned());
+        if let Ok(path) = std::env::var("PATH") {
+            env.insert("PATH".to_owned(), path);
+        }
         DefaultSessionFactory::with_env(env)
     }
 

@@ -40,6 +40,10 @@ jobs:
 
       - name: Run Rust tests
         run: cargo test --workspace --all-targets
+        env:
+          # Snapshot baselines exercise the true-color palette; make that capability explicit
+          # instead of inheriting whichever terminal environment the runner happens to expose.
+          COLORTERM: truecolor
 
       - name: Run Rust clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
