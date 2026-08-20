@@ -703,10 +703,10 @@ pub trait AgentSession: Send {
 
 /// Factory seam for session creation. It is injected by the CLI/engine integration layer or by a
 /// deterministic test fake; no backend-specific runner type crosses this boundary.
-pub trait SessionFactory: Send {
-    fn open(&mut self, request: SessionRequest) -> Result<Box<dyn AgentSession + Send>, String>;
+pub trait SessionFactory: Send + Sync {
+    fn open(&self, request: SessionRequest) -> Result<Box<dyn AgentSession + Send>, String>;
 
-    fn request_cancel(&mut self, _run_id: &str) -> bool {
+    fn request_cancel(&self, _run_id: &str) -> bool {
         false
     }
 }
@@ -4694,10 +4694,7 @@ mod tests {
     }
 
     impl SessionFactory for FakeFactory {
-        fn open(
-            &mut self,
-            request: SessionRequest,
-        ) -> Result<Box<dyn AgentSession + Send>, String> {
+        fn open(&self, request: SessionRequest) -> Result<Box<dyn AgentSession + Send>, String> {
             self.requests.lock().unwrap().push(request);
             let outcome = self
                 .outcomes
@@ -5083,14 +5080,13 @@ mod tests {
         }
     }
 
-    struct StreamingFactory(Option<StreamingSession>);
+    struct StreamingFactory(Mutex<Option<StreamingSession>>);
 
     impl SessionFactory for StreamingFactory {
-        fn open(
-            &mut self,
-            _request: SessionRequest,
-        ) -> Result<Box<dyn AgentSession + Send>, String> {
+        fn open(&self, _request: SessionRequest) -> Result<Box<dyn AgentSession + Send>, String> {
             self.0
+                .lock()
+                .unwrap()
                 .take()
                 .map(|session| Box::new(session) as Box<dyn AgentSession + Send>)
                 .ok_or_else(|| "streaming factory already opened its one session".to_owned())
@@ -5100,7 +5096,7 @@ mod tests {
     #[test]
     fn a_session_that_streams_several_events_mid_turn_persists_each_one_live() {
         let dir = tempdir().unwrap();
-        let factory = StreamingFactory(Some(StreamingSession {
+        let factory = StreamingFactory(Mutex::new(Some(StreamingSession {
             chunks: vec![
                 EventInput::new("text").field("text", "Looking at the code…"),
                 EventInput::new("tool-call")
@@ -5117,7 +5113,7 @@ mod tests {
                 turn_text: "Looking at the code…\nDone. DUCK:DONE".to_owned(),
                 ..SessionReport::default()
             })),
-        }));
+        })));
         let mut manager = RunManager::with_session_factory(dir.path(), factory);
         let workflow = workflow_with_steps(vec![agent_workflow_step("work")]);
 

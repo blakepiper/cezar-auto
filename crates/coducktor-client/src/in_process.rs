@@ -96,7 +96,7 @@ pub struct InProcessEngine {
     version: String,
     manager: Arc<Mutex<RunManager>>,
     managers: Arc<Mutex<BTreeMap<String, ProjectManager>>>,
-    session_factory: Arc<Mutex<Box<dyn SessionFactory>>>,
+    session_factory: Arc<dyn SessionFactory>,
     cancellations: Arc<Mutex<BTreeMap<String, CancellationToken>>>,
     boot_project_id: String,
     project_id: String,
@@ -266,11 +266,10 @@ mod admission_tests {
     }
 }
 
-/// RunManager owns a mutable SessionFactory. Sharing the factory behind a mutex lets lazily
-/// opened project managers use the same production/test backend seam without splitting its
-/// configuration or requiring a cloneable runner factory.
+/// Lazily opened project managers share one factory without splitting its configuration. Factory
+/// methods use shared access, so provider setup for distinct runs can proceed concurrently.
 struct SharedSessionFactory {
-    inner: Arc<Mutex<Box<dyn SessionFactory>>>,
+    inner: Arc<dyn SessionFactory>,
     state_home: PathBuf,
     /// Cancellation must remain reachable without waiting for an in-progress `open` call, which
     /// can be blocked in provider/process setup.
@@ -279,7 +278,7 @@ struct SharedSessionFactory {
 
 impl SessionFactory for SharedSessionFactory {
     fn open(
-        &mut self,
+        &self,
         mut request: coducktor_core::workflows::run::SessionRequest,
     ) -> Result<Box<dyn coducktor_core::workflows::run::AgentSession + Send>, String> {
         if let Ok(mut cancellations) = self.cancellations.lock() {
@@ -326,17 +325,11 @@ impl SessionFactory for SharedSessionFactory {
                 .env
                 .insert(key.to_owned(), path.to_string_lossy().into_owned());
         }
-        self.inner
-            .lock()
-            .map_err(|_| "session factory unavailable".to_owned())?
-            .open(request)
+        self.inner.open(request)
     }
 
-    fn request_cancel(&mut self, run_id: &str) -> bool {
-        self.inner
-            .lock()
-            .map(|mut factory| factory.request_cancel(run_id))
-            .unwrap_or(false)
+    fn request_cancel(&self, run_id: &str) -> bool {
+        self.inner.request_cancel(run_id)
     }
 }
 
@@ -349,7 +342,7 @@ impl SessionFactory for SharedSessionFactory {
 #[derive(Clone)]
 struct TurnDispatch {
     manager: Arc<Mutex<RunManager>>,
-    session_factory: Arc<Mutex<Box<dyn SessionFactory>>>,
+    session_factory: Arc<dyn SessionFactory>,
     state_home: PathBuf,
     cancellations: Arc<Mutex<BTreeMap<String, CancellationToken>>>,
     workers: Arc<Mutex<BTreeMap<String, std::thread::JoinHandle<()>>>>,
@@ -434,7 +427,7 @@ impl TurnDispatch {
         let run_id = admitted.run_id.clone();
         let step_id = admitted.step_id.clone();
         let cancellation = admitted.request.cancellation.clone();
-        let mut factory = SharedSessionFactory {
+        let factory = SharedSessionFactory {
             inner: self.session_factory.clone(),
             state_home: self.state_home.clone(),
             cancellations: self.cancellations.clone(),
@@ -837,8 +830,7 @@ impl InProcessEngine {
         if let Ok(mut leases) = repository_leases.lock() {
             leases.insert(boot_root, boot_repository_lease.clone());
         }
-        let session_factory: Arc<Mutex<Box<dyn SessionFactory>>> =
-            Arc::new(Mutex::new(Box::new(session_factory)));
+        let session_factory: Arc<dyn SessionFactory> = Arc::new(session_factory);
         let cancellations = Arc::new(Mutex::new(BTreeMap::new()));
         let mut manager = RunManager::with_session_factory_for_repo(
             repo_root.clone(),
@@ -1733,10 +1725,7 @@ impl InProcessEngine {
         let signalled = if signalled {
             true
         } else {
-            self.session_factory
-                .try_lock()
-                .map(|mut factory| factory.request_cancel(run_id))
-                .unwrap_or(false)
+            self.session_factory.request_cancel(run_id)
         };
         let mut manager = match self.manager.try_lock() {
             Ok(manager) => manager,
@@ -9046,10 +9035,7 @@ mod tests {
 
     struct FakeFactory;
     impl SessionFactory for FakeFactory {
-        fn open(
-            &mut self,
-            _request: SessionRequest,
-        ) -> Result<Box<dyn AgentSession + Send>, String> {
+        fn open(&self, _request: SessionRequest) -> Result<Box<dyn AgentSession + Send>, String> {
             Ok(Box::new(FakeSession))
         }
     }
@@ -9059,10 +9045,7 @@ mod tests {
     }
 
     impl SessionFactory for RecordingFactory {
-        fn open(
-            &mut self,
-            request: SessionRequest,
-        ) -> Result<Box<dyn AgentSession + Send>, String> {
+        fn open(&self, request: SessionRequest) -> Result<Box<dyn AgentSession + Send>, String> {
             if let Ok(mut cwds) = self.cwds.lock() {
                 cwds.push(request.cwd);
             }
@@ -9075,10 +9058,7 @@ mod tests {
     }
 
     impl SessionFactory for ProfileRecordingFactory {
-        fn open(
-            &mut self,
-            request: SessionRequest,
-        ) -> Result<Box<dyn AgentSession + Send>, String> {
+        fn open(&self, request: SessionRequest) -> Result<Box<dyn AgentSession + Send>, String> {
             self.envs.lock().unwrap().push(request.env);
             Ok(Box::new(FakeSession))
         }
@@ -9105,10 +9085,7 @@ mod tests {
     }
 
     impl SessionFactory for BlockingFactory {
-        fn open(
-            &mut self,
-            request: SessionRequest,
-        ) -> Result<Box<dyn AgentSession + Send>, String> {
+        fn open(&self, request: SessionRequest) -> Result<Box<dyn AgentSession + Send>, String> {
             self.tokens
                 .lock()
                 .unwrap()
@@ -9118,7 +9095,7 @@ mod tests {
             }))
         }
 
-        fn request_cancel(&mut self, run_id: &str) -> bool {
+        fn request_cancel(&self, run_id: &str) -> bool {
             self.tokens
                 .lock()
                 .unwrap()
@@ -9127,18 +9104,15 @@ mod tests {
         }
     }
 
-    /// Models a provider setup that is blocked before it can return an `AgentSession`. The
-    /// factory mutex remains held throughout `open`, so cancellation must use the token captured
-    /// by `SharedSessionFactory` before it entered the factory.
+    /// Models a provider setup that is blocked before it can return an `AgentSession`.
+    /// Cancellation must use the token captured by `SharedSessionFactory` before it entered the
+    /// factory.
     struct BlockingOpenFactory {
         opened: Arc<AtomicBool>,
     }
 
     impl SessionFactory for BlockingOpenFactory {
-        fn open(
-            &mut self,
-            request: SessionRequest,
-        ) -> Result<Box<dyn AgentSession + Send>, String> {
+        fn open(&self, request: SessionRequest) -> Result<Box<dyn AgentSession + Send>, String> {
             self.opened.store(true, Ordering::Release);
             while !request.cancellation.is_requested() {
                 std::thread::sleep(Duration::from_millis(5));
@@ -9367,16 +9341,87 @@ mod tests {
     }
 
     impl SessionFactory for RendezvousFactory {
-        fn open(
-            &mut self,
-            _request: SessionRequest,
-        ) -> Result<Box<dyn AgentSession + Send>, String> {
+        fn open(&self, _request: SessionRequest) -> Result<Box<dyn AgentSession + Send>, String> {
             Ok(Box::new(RendezvousSession {
                 barrier: self.barrier.clone(),
                 reached: self.reached.clone(),
                 release: self.release.clone(),
             }))
         }
+    }
+
+    struct BlockingOpenRendezvousFactory {
+        opened: Arc<AtomicUsize>,
+        release: Arc<AtomicBool>,
+    }
+
+    impl SessionFactory for BlockingOpenRendezvousFactory {
+        fn open(&self, _request: SessionRequest) -> Result<Box<dyn AgentSession + Send>, String> {
+            self.opened.fetch_add(1, Ordering::SeqCst);
+            while !self.release.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok(Box::new(FakeSession))
+        }
+    }
+
+    /// Opening a provider session is potentially slow process I/O too. The two opens must reach
+    /// their shared gate before either completes; this catches accidentally restoring a mutex
+    /// around `SessionFactory::open`, which would serialize them before their turns begin.
+    #[tokio::test]
+    async fn two_same_project_session_opens_run_concurrently() {
+        let dir = TempDir::new().unwrap();
+        let opened = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(AtomicBool::new(false));
+        let engine = InProcessEngine::with_session_factory(
+            dir.path(),
+            "0.0.0-test",
+            BlockingOpenRendezvousFactory {
+                opened: opened.clone(),
+                release: release.clone(),
+            },
+        );
+        let CreateRunResponse::Single(first) =
+            engine.start_run(steps_input("first")).await.unwrap()
+        else {
+            panic!("expected one run");
+        };
+        let CreateRunResponse::Single(second) =
+            engine.start_run(steps_input("second")).await.unwrap()
+        else {
+            panic!("expected one run");
+        };
+        {
+            let mut manager = engine.manager.lock().unwrap();
+            manager
+                .update_run_value(
+                    &first.id,
+                    json!({"worktreePath": dir.path().join("wt-first").to_string_lossy()}),
+                )
+                .unwrap();
+            manager
+                .update_run_value(
+                    &second.id,
+                    json!({"worktreePath": dir.path().join("wt-second").to_string_lossy()}),
+                )
+                .unwrap();
+        }
+        engine.activate_runs().unwrap();
+
+        let both_opened = tokio::time::timeout(Duration::from_secs(1), async {
+            while opened.load(Ordering::SeqCst) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok();
+        release.store(true, Ordering::Release);
+        activate_until_terminal(&engine, &first.id).await;
+        activate_until_terminal(&engine, &second.id).await;
+        assert!(
+            both_opened,
+            "the second session open waited behind the first"
+        );
     }
 
     /// R1's central regression test: two runs admitted from the same project must actually
@@ -9870,10 +9915,7 @@ mod tests {
     struct IgnoresCancellationFactory;
 
     impl SessionFactory for IgnoresCancellationFactory {
-        fn open(
-            &mut self,
-            _request: SessionRequest,
-        ) -> Result<Box<dyn AgentSession + Send>, String> {
+        fn open(&self, _request: SessionRequest) -> Result<Box<dyn AgentSession + Send>, String> {
             Ok(Box::new(IgnoresCancellationSession))
         }
     }
@@ -9947,10 +9989,7 @@ mod tests {
     }
 
     impl SessionFactory for MonitoringFactory {
-        fn open(
-            &mut self,
-            _request: SessionRequest,
-        ) -> Result<Box<dyn AgentSession + Send>, String> {
+        fn open(&self, _request: SessionRequest) -> Result<Box<dyn AgentSession + Send>, String> {
             Ok(Box::new(MonitoringSession {
                 sent: self.sent.clone(),
             }))

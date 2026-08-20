@@ -34,7 +34,7 @@ percentage-complete release claim.
 
 | Finding | Current state | What remains |
 | --- | --- | --- |
-| R1 provider turn monopolizes a manager | core defect fixed | Concurrent same-project turns and non-blocking admission are in place (see evidence). `SessionFactory::open` still holds one process-wide `Mutex` for its whole call, so concurrent *opens* still serialize even though concurrent *turns* no longer do — narrowing the trait to `&self` would need every implementor updated across three crates; not attempted here. |
+| R1 provider turn monopolizes a manager | complete | Concurrent same-project opens and turns run without a manager or factory mutex; non-blocking admission remains in place (see evidence). |
 | R2 TUI awaits normal actions | required tests complete except true cancellation | All four required scaling/staleness tests now exist and pass (see evidence), including a real bug the A→B→A test caught and fixed: the IDE's file/directory loads had no generation guard at all. Remaining, deliberately not attempted: true mid-flight cancellation of a job already handed to a worker thread — `BackgroundWorkers` runs `handle.block_on(future)` to completion on a native thread once dispatched, with no cancellation seam; only pre-dispatch coalescing (closed this session) avoids redundant work. |
 | R3 stream amplification | required scaling assertions complete | All three required assertions now exist and pass (see evidence): 10,000 deltas retain the exact final transcript with a bounded number of index rewrites; doubling accepted events does not quadruple projection rebuild time; a 300-run project plus several sibling projects (one blocked) refreshes promptly. Noted, not fixed: `ThreadUi::rebuild` re-folds the *entire* accumulated event history on every call, so cumulative cost across many small live-delta batches (rather than one large batch) is the caller's frame-batching discipline to preserve, not a guarantee the projection itself enforces — see evidence. |
 | R4 worktree execution | complete | Do not redesign; preserve its integration coverage. |
@@ -79,15 +79,14 @@ Evidence checked during this rewrite and subsequent implementation:
   `activate_runs`'s existing per-project background thread and worker-registry reaping are
   unchanged in shape — it just does admission (fast) and dispatch (spawns the real workers) instead
   of running a turn itself.
-- Not fixed: `SharedSessionFactory::open` still locks the one process-wide
-  `Arc<Mutex<Box<dyn SessionFactory>>>` for the entire `open` call (unchanged from before this
-  session), because `SessionFactory::open` takes `&mut self`. Two runs opening concurrently on
-  different providers still serialize on that mutex before their (now genuinely concurrent) turns
-  begin. The real fix — narrowing `open`/`request_cancel` to `&self`, since no implementation
-  actually needs exclusive access beyond an already-interior-mutable cancellation map — touches
-  the trait and every implementor (`DefaultSessionFactory`, `SharedSessionFactory`, and every test
-  fake across `coducktor-core`, `coducktor-client`, and `coducktor-runners`). Left for a dedicated
-  follow-up rather than folded into this session's diff.
+- `SessionFactory` now requires `Send + Sync` and exposes `open`/`request_cancel` through `&self`.
+  `DefaultSessionFactory` already stores its only mutable state (the cancellation registry) behind
+  an `Arc<Mutex<_>>`; the test factories were likewise made interior-mutable where necessary.
+  `InProcessEngine` now shares `Arc<dyn SessionFactory>` directly, so `SharedSessionFactory` no
+  longer holds a process-wide mutex across provider setup. The dedicated
+  `two_same_project_session_opens_run_concurrently` regression holds two opens at a gate and
+  proves both enter before either completes; its two independent worktree paths ensure the
+  repository lease is not the thing serializing them.
 - Two blocking mock sessions on separate worktree paths in the same project both reach their first
   streamed event without waiting on each other (max_parallel 2); on max_parallel 1 the second run
   observably stays `Queued` and its session factory is never invoked while the first is blocked —

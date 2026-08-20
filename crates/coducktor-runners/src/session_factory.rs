@@ -209,7 +209,7 @@ fn to_agent_run_spec(request: &SessionRequest) -> AgentRunSpec {
 }
 
 impl SessionFactory for DefaultSessionFactory {
-    fn open(&mut self, request: SessionRequest) -> Result<Box<dyn AgentSession + Send>, String> {
+    fn open(&self, request: SessionRequest) -> Result<Box<dyn AgentSession + Send>, String> {
         if let Ok(mut cancellations) = self.cancellations.lock() {
             cancellations.insert(request.run_id.clone(), request.cancellation.clone());
         }
@@ -259,7 +259,7 @@ impl SessionFactory for DefaultSessionFactory {
         }))
     }
 
-    fn request_cancel(&mut self, run_id: &str) -> bool {
+    fn request_cancel(&self, run_id: &str) -> bool {
         let Ok(cancellations) = self.cancellations.lock() else {
             return false;
         };
@@ -423,7 +423,7 @@ mod tests {
             .join("../..")
             .canonicalize()
             .unwrap();
-        let mut factory = factory_with_env(&[("DUCK_DRY_RUN", "1")]);
+        let factory = factory_with_env(&[("DUCK_DRY_RUN", "1")]);
         let request = SessionRequest {
             cancellation: CancellationToken::default(),
             images: Vec::new(),
