@@ -644,7 +644,7 @@ mod tests {
 
     fn node_config() -> PiSpawnConfig {
         PiSpawnConfig {
-            program: "node".to_owned(),
+            program: crate::test_node_program(),
             prefix_args: vec![mock_script()],
             ..Default::default()
         }

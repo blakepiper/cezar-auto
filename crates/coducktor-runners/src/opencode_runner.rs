@@ -936,7 +936,7 @@ mod tests {
 
     fn node_config() -> OpencodeSpawnConfig {
         OpencodeSpawnConfig {
-            program: "node".to_owned(),
+            program: crate::test_node_program(),
             prefix_args: vec![mock_script()],
             ..Default::default()
         }

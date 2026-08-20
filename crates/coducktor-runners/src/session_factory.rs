@@ -423,7 +423,11 @@ mod tests {
             .join("../..")
             .canonicalize()
             .unwrap();
-        let factory = factory_with_env(&[("DUCK_DRY_RUN", "1")]);
+        let mut host_env = BTreeMap::from([("DUCK_DRY_RUN".to_owned(), "1".to_owned())]);
+        if let Ok(path) = std::env::var("PATH") {
+            host_env.insert("PATH".to_owned(), path);
+        }
+        let factory = DefaultSessionFactory::with_env(host_env);
         let request = SessionRequest {
             cancellation: CancellationToken::default(),
             images: Vec::new(),

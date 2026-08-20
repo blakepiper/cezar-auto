@@ -607,7 +607,7 @@ mod tests {
 
     fn node_config(script: String) -> ClaudeSpawnConfig {
         ClaudeSpawnConfig {
-            program: "node".to_owned(),
+            program: crate::test_node_program(),
             prefix_args: vec![script],
             ..Default::default()
         }

@@ -1151,7 +1151,7 @@ mod tests {
 
     fn node_config() -> CodexSpawnConfig {
         CodexSpawnConfig {
-            program: "node".to_owned(),
+            program: crate::test_node_program(),
             prefix_args: vec![mock_script()],
             ..Default::default()
         }

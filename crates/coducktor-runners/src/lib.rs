@@ -21,3 +21,17 @@ pub mod pi_runner;
 pub mod session_factory;
 pub mod usage;
 pub mod v1_text_coalescer;
+
+#[cfg(test)]
+pub(crate) fn test_node_program() -> String {
+    let executable = if cfg!(windows) { "node.exe" } else { "node" };
+    std::env::var_os("PATH")
+        .and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|directory| directory.join(executable))
+                .find(|candidate| candidate.is_file())
+        })
+        .expect("Node must be available on PATH for runner integration tests")
+        .to_string_lossy()
+        .into_owned()
+}

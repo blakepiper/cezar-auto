@@ -342,7 +342,7 @@ mod tests {
         // -e prints stdin back to stdout — no fixture needed for this plumbing-only test.
         let dir = tempfile::tempdir().unwrap();
         let config = SpawnConfig {
-            program: "node".to_owned(),
+            program: crate::test_node_program(),
             args: vec![
                 "-e".to_owned(),
                 "process.stdin.pipe(process.stdout)".to_owned(),
@@ -373,7 +373,7 @@ mod tests {
     fn next_line_reports_timed_out_without_touching_the_channel() {
         let dir = tempfile::tempdir().unwrap();
         let config = SpawnConfig {
-            program: "node".to_owned(),
+            program: crate::test_node_program(),
             args: vec!["-e".to_owned(), "setInterval(() => {}, 60000)".to_owned()],
             eof_term_grace: Duration::from_millis(50),
             eof_kill_grace: Duration::from_millis(50),
@@ -397,7 +397,7 @@ mod tests {
     fn drop_kills_and_reaps_a_live_child_with_its_pipe_readers() {
         let dir = tempfile::tempdir().unwrap();
         let config = SpawnConfig {
-            program: "node".to_owned(),
+            program: crate::test_node_program(),
             args: vec![
                 "-e".to_owned(),
                 "setInterval(() => console.log('still running'), 1000)".to_owned(),
@@ -423,7 +423,7 @@ mod tests {
     fn cancellation_wakes_an_unbounded_read_and_signals_the_child() {
         let dir = tempfile::tempdir().unwrap();
         let config = SpawnConfig {
-            program: "node".to_owned(),
+            program: crate::test_node_program(),
             args: vec!["-e".to_owned(), "setInterval(() => {}, 60000)".to_owned()],
             eof_term_grace: Duration::from_millis(50),
             eof_kill_grace: Duration::from_millis(50),
