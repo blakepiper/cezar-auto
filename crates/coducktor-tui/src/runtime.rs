@@ -36,6 +36,11 @@ const PENDING_ACTIONS_PER_FRAME: usize = 16;
 const BACKGROUND_WORKER_COUNT: usize = 4;
 /// Native jobs can outlive a frame, but must never form an unbounded memory backlog.
 const BACKGROUND_QUEUE_CAPACITY: usize = 128;
+/// How long a confirmed quit waits for in-flight turn/activation workers to notice their
+/// cancellation token and exit on their own before the process moves on regardless. A worker
+/// blocked in `ChildProcess::next_line` reliably notices within tens of milliseconds; this only
+/// bounds the wait for one that never does.
+const ENGINE_SHUTDOWN_GRACE: Duration = Duration::from_millis(750);
 
 #[tokio::main]
 pub async fn entry() -> io::Result<()> {
@@ -91,8 +96,8 @@ pub async fn entry() -> io::Result<()> {
     let keymap = Keymap::load(user_keymap.as_deref()).unwrap_or_default();
     let mut app = App::new("main", Theme::detect(), keymap);
     app.set_boot_root(repo_root.clone());
-    let engine: Arc<dyn Engine> =
-        Arc::new(InProcessEngine::new(repo_root, env!("CARGO_PKG_VERSION")));
+    let in_process = Arc::new(InProcessEngine::new(repo_root, env!("CARGO_PKG_VERSION")));
+    let engine: Arc<dyn Engine> = in_process.clone();
     let mut workspace_listener =
         open_workspace_listener(engine.clone(), app.current_project().to_owned()).await;
     let run_result = run(
@@ -106,6 +111,13 @@ pub async fn entry() -> io::Result<()> {
     if let Some((handle, _)) = workspace_listener {
         handle.abort();
     }
+    // A confirmed quit must not leak a still-running provider child process: signal every
+    // in-flight run's cancellation token and give its worker a bounded window to notice and
+    // exit cleanly before this thread — the only one whose stack unwinding runs `Drop` — returns.
+    let shutdown = tokio::task::spawn_blocking(move || {
+        in_process.shutdown(ENGINE_SHUTDOWN_GRACE);
+    });
+    let _ = shutdown.await;
     let restore_result = terminal::restore();
 
     run_result.and(restore_result)

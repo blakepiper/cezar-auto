@@ -27,9 +27,9 @@ emulator applications interactively, which no implementation session — human o
 available, and chasing it further isn't worth it. `docs/tui/terminals.md` keeps whatever real
 results already exist there (some entries are genuine manual PTY runs) as a living, opportunistic
 checklist; it is no longer gated work in this plan. Of the remaining eleven findings, six have
-their functional correction complete, R1/R2/R3/R7/R9/R10 are done or substantially closed this
-session, and R8 has been audited with one real, documented, unmitigated risk (OpenCode permission
-events). Several completed corrections still require focused verification, so this is not a
+their functional correction complete, R1/R2/R3/R7/R9/R10 are done or closed this session, and R8
+has been audited with one real, documented, unmitigated risk (OpenCode permission events). Several
+completed corrections still require focused verification, so this is not a
 percentage-complete release claim.
 
 | Finding | Current state | What remains |
@@ -42,7 +42,7 @@ percentage-complete release claim.
 | R6 selected account environment | complete | Do not redesign; preserve its integration coverage. |
 | R7 resource settings | complete except memory limit | Workspace/repository leases and monitoring wake policy are both wired end-to-end now (see evidence); `memory_limit_mb` remains saved-but-honestly-unavailable, which is the intended final state, not a gap. |
 | R8 runner protocol drift | matrix audited, one real risk found and documented | Every "degraded" cell in `CAPABILITY_MATRIX.md` was individually re-verified against the runner's own code (see evidence): most were already safe under a shared/generic path or genuinely have no corresponding wire event to test; pi's untested image path was backfilled with a real fixture and the mapper code it needed. One real, unmitigated risk remains: OpenCode's mapper recognizes no permission/approval event at all, so if the live server ever emits one, it is silently dropped by the fallback — a genuine hang-until-timeout risk, not proven safe by any fixture. |
-| R9 worker/process lifetime | partial, high | `TurnDispatch`'s per-run worker registry is now leak-checked (see evidence); still missing shutdown escalation — no bounded-wait-then-force-terminate path exists for a worker whose session ignores cancellation. |
+| R9 worker/process lifetime | complete | `TurnDispatch`'s per-run worker registry is leak-checked (see evidence) and `InProcessEngine::shutdown` now closes the escalation gap: a confirmed TUI quit signals every in-flight cancellation token, waits a bounded grace period, reaps whatever finished, and returns regardless — see evidence for the required "ignores cancellation" test. |
 | R10 durable run state | fault matrix complete | Every named scenario in the original fault matrix (unknown nested keys, one bad entry, truncated index, permissions, concurrent writer conflict, disk-full, pre-rename crash, post-rename/directory-sync failure, repair-replacement failure) now has a dedicated or pre-existing regression test — see evidence. |
 | R11 dead UI/duplicate tests | primary correction complete | Extract oversized orchestration code only when needed by R1/R2; no standalone refactor. |
 | ~~R12 cross-platform CLI handoff~~ | descoped 2026-08-19 | Removed from this plan — see the note above the table. `docs/tui/terminals.md` remains a living, non-gating checklist. |
@@ -104,12 +104,26 @@ Evidence checked during this rewrite and subsequent implementation:
   handle under that key before the old thread returns), hence the sweep-on-every-dispatch design
   instead. `repeated_start_finish_and_cancel_cycles_return_turn_worker_counts_to_baseline` proves
   worker and cancellation-registry counts return to baseline across repeated start/finish and
-  start/cancel cycles. Not covered: a worker whose session never observes cancellation at all has
-  no bounded exit — there is still no shutdown-escalation path (graceful wait, then forced
-  termination) for that case, which is the remaining R9 shutdown-escalation gap. "Reader" and
+  start/cancel cycles. Closed the remaining shutdown-escalation gap: `InProcessEngine::shutdown(grace)`
+  requests every entry in `cancellations`, then polls `turn_workers`/`activation_workers` for up to
+  `grace` before reaping whatever finished and returning unconditionally — a worker still running
+  past the deadline is abandoned to the process's own exit, same as before this method existed.
+  Rust drops only the calling thread's own stack on `main` returning, so a worker blocked inside a
+  live child read would otherwise never run `ChildProcess`'s `Drop` at all; `runtime.rs::entry()`
+  now calls `shutdown` (750ms grace, off the async executor via `spawn_blocking`) right after `run()`
+  returns and before `terminal::restore()`. This escalates through the *existing* session seam
+  rather than a new one: `ChildProcess::next_line`'s read loop already polls its token at least
+  every 50ms and sends SIGTERM the moment it notices, and the process's own `Drop` impl already
+  escalates to SIGKILL if the child is still alive once that worker thread unwinds normally — the
+  gap was purely that nothing gave a worker time to reach that unwind before the process exited.
+  `shutdown_does_not_wait_forever_for_a_worker_that_ignores_cancellation` is the required "cover a
+  worker that ignores graceful cancellation" test: a session whose `turn()` never reads its token
+  (sleeps 400ms regardless) proves `shutdown(50ms)` still returns in well under 300ms. "Reader" and
   "child" counts (pipe-reader threads, spawned child processes) are a `coducktor-runners`-layer
   concern with their own existing coverage (e.g. `child_process::tests::drop_kills_and_reaps_a_live_child_with_its_pipe_readers`);
-  this session did not touch that layer.
+  this session did not touch that layer, and the monitoring-scheduler thread (`coducktor-monitor`)
+  is intentionally not joined by `shutdown` — it holds no live child-process handle directly, only
+  dispatches through the same `TurnDispatch` machinery `shutdown` already drains.
 - `crates/coducktor-tui/src/runtime.rs` now dispatches normal engine/host operations through its
   fixed four-thread bounded worker pool; route generations reject stale results, input drains
   before receivers, and a receiver that exhausts its item/time budget wakes the next frame

@@ -1551,6 +1551,51 @@ impl InProcessEngine {
         Ok(())
     }
 
+    /// Signal every currently in-flight run's cancellation token, wait up to `grace` for their
+    /// `turn_workers`/`activation_workers` threads to actually finish, then reap whichever ones
+    /// did. A confirmed TUI quit must not hang forever on a session that never notices
+    /// cancellation, so this always returns once `grace` elapses regardless of how many workers
+    /// are still running — a worker still running past the deadline is abandoned to the process's
+    /// own exit, same as before this method existed. `ChildProcess::next_line`'s read loop polls
+    /// its token at least every 50ms and sends SIGTERM the moment it notices (with the process's
+    /// existing `Drop` impl escalating to SIGKILL once that worker thread unwinds normally), so a
+    /// well-behaved worker reliably finishes well inside a sub-second grace; this only bounds the
+    /// wait for one that never notices at all.
+    pub fn shutdown(&self, grace: Duration) {
+        if let Ok(cancellations) = self.cancellations.lock() {
+            for cancellation in cancellations.values() {
+                cancellation.request();
+            }
+        }
+        let deadline = Instant::now() + grace;
+        loop {
+            let pending: usize = [&self.turn_workers, &self.activation_workers]
+                .into_iter()
+                .map(|workers| {
+                    workers
+                        .lock()
+                        .map(|workers| {
+                            workers
+                                .values()
+                                .filter(|worker| !worker.is_finished())
+                                .count()
+                        })
+                        .unwrap_or(0)
+                })
+                .sum();
+            if pending == 0 {
+                break;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10).min(deadline - now));
+        }
+        self.turn_dispatch().reap_finished();
+        let _ = self.reap_finished_activation_workers();
+    }
+
     /// Tokens belong to a live/parked session only. Worker reaping is the common terminal
     /// boundary; retaining a token past it would turn ordinary completed runs into an unbounded
     /// process-lifetime registry.
@@ -9803,6 +9848,68 @@ mod tests {
                 "cancel iteration {iteration}: cancellation token not pruned"
             );
         }
+    }
+
+    struct IgnoresCancellationSession;
+
+    impl AgentSession for IgnoresCancellationSession {
+        fn turn(
+            &mut self,
+            _on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
+        ) -> Result<SessionOutcome, String> {
+            // Deliberately never reads its own cancellation token — models a worker whose
+            // session backend ignores the graceful signal entirely, unlike `BlockingSession`
+            // above (which polls it every 5ms).
+            std::thread::sleep(Duration::from_millis(400));
+            Ok(SessionOutcome::Completed(
+                coducktor_core::workflows::run::SessionReport::default(),
+            ))
+        }
+    }
+
+    struct IgnoresCancellationFactory;
+
+    impl SessionFactory for IgnoresCancellationFactory {
+        fn open(
+            &mut self,
+            _request: SessionRequest,
+        ) -> Result<Box<dyn AgentSession + Send>, String> {
+            Ok(Box::new(IgnoresCancellationSession))
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_does_not_wait_forever_for_a_worker_that_ignores_cancellation() {
+        let dir = TempDir::new().unwrap();
+        let engine = InProcessEngine::with_session_factory(
+            dir.path(),
+            "0.0.0-test",
+            IgnoresCancellationFactory,
+        );
+        let CreateRunResponse::Single(run) = engine
+            .start_run(steps_input("ignores cancellation"))
+            .await
+            .unwrap()
+        else {
+            panic!("expected one run");
+        };
+        engine.activate_runs().unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while engine.turn_workers.lock().unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("worker for {} never started", run.id));
+
+        let started = Instant::now();
+        engine.shutdown(Duration::from_millis(50));
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(300),
+            "shutdown waited {elapsed:?} for a worker that never checks its cancellation token"
+        );
     }
 
     struct MonitoringSession {
