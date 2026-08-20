@@ -193,14 +193,6 @@ fn legacy_run_provenance_remains_readable() {
 #[test]
 fn routing_contracts_accept_opencode_and_preserve_sanitized_explanations() {
     let value = json!({
-        "taskProfile": {
-            "kind": "debugging",
-            "qualityFloor": "strong",
-            "complexity": 72,
-            "risk": 30,
-            "breadth": 45,
-            "ambiguity": 20
-        },
         "selected": {
             "runner": "opencode",
             "profileId": "default",

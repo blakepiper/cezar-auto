@@ -40,7 +40,9 @@ use coducktor_contract::runs::{
     MarkerRefs, RunActivity, RunRecord, RunStatus, StepKind, StepState, StepStatus,
 };
 use coducktor_contract::workflows::WorkflowDef;
-use coducktor_contract::{ConcreteReasoningEffort, ReasoningEffort, Runner, RunnerSelection};
+use coducktor_contract::{
+    ConcreteReasoningEffort, ReasoningEffort, RoutingDecision, Runner, RunnerSelection,
+};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -134,6 +136,9 @@ pub struct CreateRunInput {
     pub worktree: Option<bool>,
     pub group_id: Option<String>,
     pub variant: Option<String>,
+    /// Explanation for an `auto` runner request, attached to the run's first step. `None` for an
+    /// explicit runner request or when the caller has no decision to record.
+    pub routing_decision: Option<RoutingDecision>,
 }
 
 impl CreateRunInput {
@@ -417,6 +422,55 @@ fn runner_label(runner: Runner) -> &'static str {
     }
 }
 
+fn routing_reason_label(reason: coducktor_contract::RoutingReasonCode) -> &'static str {
+    use coducktor_contract::RoutingReasonCode;
+    match reason {
+        RoutingReasonCode::Selected => "selected",
+        RoutingReasonCode::Considered => "considered",
+        RoutingReasonCode::Disabled => "disabled",
+        RoutingReasonCode::NotInstalled => "not installed",
+        RoutingReasonCode::Disconnected => "disconnected",
+        RoutingReasonCode::AuthError => "auth error",
+        RoutingReasonCode::ReservedQuota => "reserved quota",
+        RoutingReasonCode::HardExhausted => "quota exhausted",
+        RoutingReasonCode::UnknownUsage => "usage unknown",
+    }
+}
+
+/// One readable transcript line for a routing decision. The full structured decision — every
+/// candidate considered, its score, its reason — is persisted on the step itself
+/// (`StepState::routing_decision`); this note is what a user sees without inspecting raw run
+/// state.
+fn routing_decision_note(decision: &RoutingDecision) -> String {
+    let others: Vec<String> = decision
+        .considered
+        .iter()
+        .filter(|candidate| candidate.reason != coducktor_contract::RoutingReasonCode::Selected)
+        .map(|candidate| {
+            format!(
+                "{} ({})",
+                runner_label(candidate.runner),
+                routing_reason_label(candidate.reason)
+            )
+        })
+        .collect();
+    match &decision.selected {
+        Some(selection) if others.is_empty() => {
+            format!("Auto routing · selected {}", runner_label(selection.runner))
+        }
+        Some(selection) => format!(
+            "Auto routing · selected {} — also considered: {}",
+            runner_label(selection.runner),
+            others.join(", ")
+        ),
+        None if others.is_empty() => "Auto routing · no candidates available".to_owned(),
+        None => format!(
+            "Auto routing · no eligible candidate — {}",
+            others.join(", ")
+        ),
+    }
+}
+
 fn is_auto_route_failure(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     [
@@ -523,6 +577,9 @@ pub struct StartRunInput {
     /// Ordered concrete fallbacks for an authored `auto` request. This is process-local routing
     /// state: the durable record keeps the user's `auto` intent and the currently selected runner.
     pub auto_runner_candidates: Vec<Runner>,
+    /// Why `resolved_runner`/`auto_runner_candidates` came out the way they did. Recorded on the
+    /// run's first step so a user can see what else was considered and why it wasn't picked.
+    pub routing_decision: Option<RoutingDecision>,
     pub agent_profile: Option<String>,
     pub system_prompt: Option<String>,
     pub autonomous: Option<bool>,
@@ -1252,6 +1309,10 @@ impl RunManager {
     pub fn create_run(&mut self, input: CreateRunInput) -> io::Result<RunRecord> {
         let id = new_run_id();
         let created_at = now_iso8601();
+        let mut steps: Vec<StepState> = input.steps.into_iter().map(step_from_seed).collect();
+        if let (Some(decision), Some(first)) = (input.routing_decision, steps.first_mut()) {
+            first.routing_decision = Some(decision);
+        }
         let run = RunRecord {
             id: id.clone(),
             title: input.title,
@@ -1275,7 +1336,7 @@ impl RunManager {
             updated_at: Some(created_at),
             tokens_used: 0.0,
             archived: false,
-            steps: input.steps.into_iter().map(step_from_seed).collect(),
+            steps,
             workflow_def: input.workflow_def,
             ..RunRecord::default()
         };
@@ -1319,7 +1380,18 @@ impl RunManager {
         create.worktree = input.worktree;
         create.task_images = (!input.images.is_empty())
             .then(|| input.images.iter().map(PromptImage::data_url).collect());
+        create.routing_decision = input.routing_decision;
         let run = self.create_run(create)?;
+        if let Some(decision) = run
+            .steps
+            .first()
+            .and_then(|step| step.routing_decision.as_ref())
+        {
+            self.append_event(
+                &run.id,
+                EventInput::new("note").field("message", routing_decision_note(decision)),
+            )?;
+        }
         if input.runner == Some(RunnerSelection::Auto) {
             self.auto_routes
                 .insert(run.id.clone(), input.auto_runner_candidates);
@@ -5074,6 +5146,66 @@ mod tests {
             runner: Some(RunnerSelection::Claude),
             ..StartRunInput::default()
         }
+    }
+
+    #[test]
+    fn an_auto_run_persists_its_routing_decision_and_announces_it() {
+        let dir = tempdir().unwrap();
+        let (factory, _requests) = fake_factory(vec![completed_session("auto-session")]);
+        let mut manager = RunManager::with_session_factory(dir.path(), factory);
+        let workflow = workflow_with_steps(vec![agent_workflow_step("work")]);
+        let decision = RoutingDecision {
+            selected: Some(coducktor_contract::RouteSelection {
+                runner: Runner::Codex,
+                profile_id: "default".to_owned(),
+                upstream_provider: None,
+                model: None,
+                reasoning_effort: None,
+                route_key: "codex:default".to_owned(),
+            }),
+            considered: vec![
+                coducktor_contract::ConsideredCandidate {
+                    route_key: "codex:default".to_owned(),
+                    runner: Runner::Codex,
+                    profile_id: "default".to_owned(),
+                    model: None,
+                    eligible: true,
+                    reason: coducktor_contract::RoutingReasonCode::Selected,
+                    score: Some(2),
+                },
+                coducktor_contract::ConsideredCandidate {
+                    route_key: "claude:default".to_owned(),
+                    runner: Runner::Claude,
+                    profile_id: "default".to_owned(),
+                    model: None,
+                    eligible: false,
+                    reason: coducktor_contract::RoutingReasonCode::ReservedQuota,
+                    score: None,
+                },
+            ],
+            retry_at: None,
+            generation: 0,
+        };
+        let mut input = start_input("pick the best runner");
+        input.runner = Some(RunnerSelection::Auto);
+        input.resolved_runner = Some(Runner::Codex);
+        input.auto_runner_candidates = vec![Runner::Codex];
+        input.routing_decision = Some(decision.clone());
+
+        let run = manager.start_run(&workflow, input).unwrap();
+
+        assert_eq!(
+            run.steps[0].routing_decision.as_ref(),
+            Some(&decision),
+            "the decision that produced resolved_runner is durably attached to the first step"
+        );
+        assert!(manager.read_events(&run.id).iter().any(|event| {
+            event.event_type == "note"
+                && event.extra.get("message").and_then(Value::as_str)
+                    == Some(
+                        "Auto routing · selected Codex — also considered: Claude (reserved quota)",
+                    )
+        }));
     }
 
     #[test]

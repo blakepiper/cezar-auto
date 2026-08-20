@@ -1246,15 +1246,22 @@ impl InProcessEngine {
         // default. Resolve that omission here so a configured `auto` default does not silently
         // collapse to the core runtime's legacy Claude fallback.
         let requested_runner = Some(effective_requested_runner(input.runner, configured_runner));
-        let auto_runner_candidates = if requested_runner == Some(RunnerSelection::Auto) {
+        let routing_decision = if requested_runner == Some(RunnerSelection::Auto) {
             let status = provider_status_response();
-            self.fresh_cached_workspace_usage()
-                .map(|usage| quota_aware_auto_runners(&status, &usage, &workspace.quota_routing))
-                .filter(|candidates| !candidates.is_empty())
-                .unwrap_or_else(|| auto_runners(&status))
+            let quota_decision = self.fresh_cached_workspace_usage().map(|usage| {
+                quota_aware_routing_decision(&status, &usage, &workspace.quota_routing)
+            });
+            Some(match quota_decision {
+                Some(decision) if decision.selected.is_some() => decision,
+                _ => connectivity_routing_decision(&status),
+            })
         } else {
-            Vec::new()
+            None
         };
+        let auto_runner_candidates = routing_decision
+            .as_ref()
+            .map(routing_decision_runners)
+            .unwrap_or_default();
         let resolved_runner = if requested_runner == Some(RunnerSelection::Auto) {
             Some(
                 *auto_runner_candidates
@@ -1286,6 +1293,7 @@ impl InProcessEngine {
             runner: requested_runner,
             resolved_runner,
             auto_runner_candidates,
+            routing_decision,
             agent_profile: Some(agent_profile),
             system_prompt: input.system_prompt,
             autonomous: input.autonomous,
@@ -8209,46 +8217,161 @@ fn effective_requested_runner(
     authored.unwrap_or(configured)
 }
 
-fn auto_runners(status: &ProviderStatusResponse) -> Vec<Runner> {
-    [Runner::Claude, Runner::Codex, Runner::OpenCode]
+/// One candidate's raw evaluation before ranking. `score` is only meaningful when `eligible`;
+/// [`finalize_routing_decision`] never reads it otherwise.
+struct CandidateEval {
+    runner: Runner,
+    eligible: bool,
+    reason: coducktor_contract::RoutingReasonCode,
+    score: Option<i64>,
+}
+
+/// A route key stable across a process's lifetime — not the executable path, which an
+/// environment override can change without changing what route this candidate represents.
+fn auto_route_key(runner: Runner) -> String {
+    let name = match runner {
+        Runner::Claude => "claude",
+        Runner::Codex => "codex",
+        Runner::OpenCode => "opencode",
+        Runner::Pi => "pi",
+    };
+    format!("{name}:default")
+}
+
+/// Turn raw per-candidate evaluations into a [`RoutingDecision`]: eligible candidates are
+/// ranked best-score-first with the top one marked `Selected` and the rest `Considered`;
+/// ineligible candidates keep their evaluated reason. Shared by both the connectivity-only and
+/// quota-aware candidate builders so a decision's shape never drifts from the `Vec<Runner>` an
+/// older caller derives from it.
+fn finalize_routing_decision(evals: Vec<CandidateEval>) -> coducktor_contract::RoutingDecision {
+    use coducktor_contract::{ConsideredCandidate, RouteSelection, RoutingReasonCode};
+
+    let (mut eligible, ineligible): (Vec<_>, Vec<_>) =
+        evals.into_iter().partition(|candidate| candidate.eligible);
+    eligible.sort_by_key(|candidate| std::cmp::Reverse(candidate.score.unwrap_or(i64::MIN)));
+
+    let selected = eligible.first().map(|candidate| RouteSelection {
+        runner: candidate.runner,
+        profile_id: "default".to_owned(),
+        upstream_provider: None,
+        model: None,
+        reasoning_effort: None,
+        route_key: auto_route_key(candidate.runner),
+    });
+    let considered = eligible
         .into_iter()
-        .filter(|candidate| {
-            status.providers.iter().any(|provider| {
-                provider.provider == *candidate
-                    && provider.enabled == Some(true)
-                    && provider.status == ProviderConnectionState::Connected
-            })
+        .enumerate()
+        .map(|(index, candidate)| ConsideredCandidate {
+            route_key: auto_route_key(candidate.runner),
+            runner: candidate.runner,
+            profile_id: "default".to_owned(),
+            model: None,
+            eligible: true,
+            // The top candidate wins outright; every other eligible candidate keeps whatever
+            // reason it was evaluated with — `Considered` when nothing counted against it, or a
+            // specific caveat (e.g. `UnknownUsage`) when one does.
+            reason: if index == 0 {
+                RoutingReasonCode::Selected
+            } else {
+                candidate.reason
+            },
+            score: candidate.score,
         })
+        .chain(ineligible.into_iter().map(|candidate| ConsideredCandidate {
+            route_key: auto_route_key(candidate.runner),
+            runner: candidate.runner,
+            profile_id: "default".to_owned(),
+            model: None,
+            eligible: false,
+            reason: candidate.reason,
+            score: None,
+        }))
+        .collect();
+    coducktor_contract::RoutingDecision {
+        selected,
+        considered,
+        retry_at: None,
+        generation: 0,
+    }
+}
+
+fn connection_eval(status: &ProviderStatusResponse, runner: Runner) -> CandidateEval {
+    use coducktor_contract::RoutingReasonCode;
+
+    let provider = status.providers.iter().find(|p| p.provider == runner);
+    let (eligible, reason) = match provider {
+        Some(provider) if provider.enabled != Some(true) => (false, RoutingReasonCode::Disabled),
+        Some(provider) => match provider.status {
+            ProviderConnectionState::Connected => (true, RoutingReasonCode::Considered),
+            ProviderConnectionState::NotInstalled => (false, RoutingReasonCode::NotInstalled),
+            ProviderConnectionState::Disconnected | ProviderConnectionState::Unknown => {
+                (false, RoutingReasonCode::Disconnected)
+            }
+        },
+        None => (false, RoutingReasonCode::NotInstalled),
+    };
+    CandidateEval {
+        runner,
+        eligible,
+        reason,
+        score: None,
+    }
+}
+
+/// Connectivity-only Auto candidates — every enabled, connected runner is eligible with no
+/// preference among them. Used when no usage snapshot is available at all.
+fn connectivity_routing_decision(
+    status: &ProviderStatusResponse,
+) -> coducktor_contract::RoutingDecision {
+    let evals = [Runner::Claude, Runner::Codex, Runner::OpenCode]
+        .into_iter()
+        .map(|runner| connection_eval(status, runner))
+        .collect();
+    finalize_routing_decision(evals)
+}
+
+/// The candidates a decision judged eligible, best-ranked first — the order the `Vec<Runner>`
+/// call sites (candidate list, `Auto`'s own resolved-runner pick) have always needed.
+fn routing_decision_runners(decision: &coducktor_contract::RoutingDecision) -> Vec<Runner> {
+    decision
+        .considered
+        .iter()
+        .filter(|candidate| candidate.eligible)
+        .map(|candidate| candidate.runner)
         .collect()
 }
 
 /// Quota-aware provider selection deliberately ranks trustworthy available capacity above an
 /// unknown account. This is the missing behavior that otherwise made the legacy Claude-first
 /// fallback win even while Codex had a fresh, unused weekly window.
-fn quota_aware_auto_runners(
+fn quota_aware_routing_decision(
     status: &ProviderStatusResponse,
     usage: &WorkspaceUsageResponse,
     policy: &coducktor_core::workspace::config::QuotaRouting,
-) -> Vec<Runner> {
+) -> coducktor_contract::RoutingDecision {
+    use coducktor_contract::RoutingReasonCode;
+
     let candidates = [Runner::Claude, Runner::Codex, Runner::OpenCode];
-    let mut scored: Vec<_> = candidates
+    let evals = candidates
         .into_iter()
-        .filter(|runner| {
-            status.providers.iter().any(|provider| {
-                provider.provider == *runner
-                    && provider.enabled == Some(true)
-                    && provider.status == ProviderConnectionState::Connected
-            })
-        })
-        .filter_map(|runner| {
+        .map(|runner| {
+            let connection = connection_eval(status, runner);
+            if !connection.eligible {
+                return connection;
+            }
             let (provider, provider_policy) = match runner {
                 Runner::Claude => (QuotaProvider::Claude, &policy.claude),
                 Runner::Codex => (QuotaProvider::Codex, &policy.codex),
                 Runner::OpenCode => (QuotaProvider::OpenCode, &policy.opencode),
-                Runner::Pi => return None,
+                Runner::Pi => unreachable!("Pi is never offered as an Auto candidate"),
             };
             if !provider_policy.enabled {
-                return None;
+                return CandidateEval {
+                    runner,
+                    eligible: false,
+                    reason: RoutingReasonCode::Disabled,
+                    score: None,
+                };
             }
             let snapshot = usage
                 .providers
@@ -8263,19 +8386,36 @@ fn quota_aware_auto_runners(
             let health = snapshot
                 .map(|snapshot| snapshot.health)
                 .unwrap_or(ProviderUsageHealth::Unknown);
-            let health_rank = match health {
-                ProviderUsageHealth::Available => 2_u8,
+            let (eligible, reason) = match health {
+                ProviderUsageHealth::Available => (true, RoutingReasonCode::Considered),
                 ProviderUsageHealth::Unknown
                     if policy.unknown_usage_policy
                         == coducktor_contract::UnknownUsagePolicy::AllowWithPenalty =>
                 {
-                    1
+                    (true, RoutingReasonCode::UnknownUsage)
                 }
-                ProviderUsageHealth::SoftExhausted
-                | ProviderUsageHealth::HardExhausted
-                | ProviderUsageHealth::AuthError
-                | ProviderUsageHealth::Unavailable
-                | ProviderUsageHealth::Unknown => return None,
+                ProviderUsageHealth::Unknown => (false, RoutingReasonCode::UnknownUsage),
+                ProviderUsageHealth::SoftExhausted => (false, RoutingReasonCode::ReservedQuota),
+                ProviderUsageHealth::HardExhausted | ProviderUsageHealth::Unavailable => {
+                    (false, RoutingReasonCode::HardExhausted)
+                }
+                ProviderUsageHealth::AuthError => (false, RoutingReasonCode::AuthError),
+            };
+            if !eligible {
+                return CandidateEval {
+                    runner,
+                    eligible,
+                    reason,
+                    score: None,
+                };
+            }
+            // A health match above already excluded `Unknown` without the penalty policy, so an
+            // eligible-but-Unknown candidate here always carries the allow-with-penalty score
+            // handicap baked into `health_rank`.
+            let health_rank = if health == ProviderUsageHealth::Available {
+                2_i64
+            } else {
+                1_i64
             };
             let headroom = snapshot
                 .into_iter()
@@ -8284,28 +8424,31 @@ fn quota_aware_auto_runners(
                 .map(|used| (100.0 - used.clamp(0.0, 100.0)).round() as i64)
                 .min()
                 .unwrap_or(-1);
+            // Earlier in the configured order outranks later; not listed outranks nothing, so it
+            // gets the lowest, zero, value. Bounded by the provider list's own length (at most a
+            // handful of entries), unlike `priority`, which is user-configured and unbounded.
             let order = policy
                 .provider_order
                 .iter()
                 .position(|candidate| *candidate == provider)
-                .map(|position| u64::MAX - position as u64)
+                .map(|position| (policy.provider_order.len() - position) as i64)
                 .unwrap_or(0);
-            Some((
-                health_rank,
-                headroom,
-                provider_policy.priority,
-                order,
+            // A single weighted sum standing in for the previous four-key lexicographic sort
+            // (health, headroom, priority, order): each tier's multiplier is wide enough that the
+            // tier below it, even at its clamped maximum, can never bleed into the tier above.
+            let score = health_rank * 1_000_000_000_000
+                + headroom.clamp(-1, 1_000) * 1_000_000_000
+                + (provider_policy.priority as i64).clamp(0, 999_999) * 1_000
+                + order.clamp(0, 999);
+            CandidateEval {
                 runner,
-            ))
+                eligible: true,
+                reason,
+                score: Some(score),
+            }
         })
         .collect();
-    scored.sort_by_key(|(health, headroom, priority, order, _)| {
-        std::cmp::Reverse((*health, *headroom, *priority, *order))
-    });
-    scored
-        .into_iter()
-        .map(|(_, _, _, _, runner)| runner)
-        .collect()
+    finalize_routing_decision(evals)
 }
 
 fn provider_models_locked() -> bool {
@@ -8921,7 +9064,32 @@ mod tests {
                 provider(Runner::Pi, ProviderConnectionState::Connected, true),
             ],
         };
-        assert_eq!(auto_runners(&status), vec![Runner::OpenCode]);
+        let decision = connectivity_routing_decision(&status);
+        assert_eq!(routing_decision_runners(&decision), vec![Runner::OpenCode]);
+        assert_eq!(
+            decision.selected.as_ref().map(|selection| selection.runner),
+            Some(Runner::OpenCode)
+        );
+        let claude = decision
+            .considered
+            .iter()
+            .find(|candidate| candidate.runner == Runner::Claude)
+            .unwrap();
+        assert!(!claude.eligible);
+        assert_eq!(
+            claude.reason,
+            coducktor_contract::RoutingReasonCode::NotInstalled
+        );
+        let codex = decision
+            .considered
+            .iter()
+            .find(|candidate| candidate.runner == Runner::Codex)
+            .unwrap();
+        assert!(!codex.eligible);
+        assert_eq!(
+            codex.reason,
+            coducktor_contract::RoutingReasonCode::Disabled
+        );
     }
 
     #[test]
@@ -8976,13 +9144,37 @@ mod tests {
             refresh: None,
             policy_health: None,
         };
+        let decision = quota_aware_routing_decision(
+            &status,
+            &usage,
+            &coducktor_core::workspace::config::QuotaRouting::default(),
+        );
         assert_eq!(
-            quota_aware_auto_runners(
-                &status,
-                &usage,
-                &coducktor_core::workspace::config::QuotaRouting::default()
-            ),
+            routing_decision_runners(&decision),
             vec![Runner::Codex, Runner::Claude]
+        );
+        assert_eq!(
+            decision.selected.as_ref().map(|selection| selection.runner),
+            Some(Runner::Codex)
+        );
+        let codex = decision
+            .considered
+            .iter()
+            .find(|candidate| candidate.runner == Runner::Codex)
+            .unwrap();
+        assert_eq!(
+            codex.reason,
+            coducktor_contract::RoutingReasonCode::Selected
+        );
+        let claude = decision
+            .considered
+            .iter()
+            .find(|candidate| candidate.runner == Runner::Claude)
+            .unwrap();
+        assert!(claude.eligible, "unknown usage is allowed with a penalty");
+        assert_eq!(
+            claude.reason,
+            coducktor_contract::RoutingReasonCode::UnknownUsage
         );
     }
 

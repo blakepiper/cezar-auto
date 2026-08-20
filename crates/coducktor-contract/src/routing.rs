@@ -37,37 +37,26 @@ pub struct RouteSelection {
     pub route_key: String,
 }
 
-/// A compact task-profile summary kept with a decision for explanation and diagnostics.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct TaskProfileSummary {
-    pub kind: String,
-    pub quality_floor: String,
-    pub complexity: u8,
-    pub risk: u8,
-    pub breadth: u8,
-    pub ambiguity: u8,
-}
-
-/// Stable reason codes used in decisions and considered-candidate details.
+/// Stable reason codes used in decisions and considered-candidate details. Each variant maps to
+/// a check the router actually performs — there is no capability-registry or task-profiler
+/// dependent reason here (`unsupported_images`, `concurrency_full`, `pinned_conflict`, and the
+/// like), because Coducktor doesn't evaluate those things yet. Add a variant only once real logic
+/// produces it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RoutingReasonCode {
+    /// The candidate the router picked.
     Selected,
+    /// Passed every hard filter and was scored, but ranked below the selected candidate with no
+    /// other caveat.
+    Considered,
     Disabled,
-    Missing,
+    NotInstalled,
     Disconnected,
-    UnsupportedImages,
-    UnsupportedTools,
-    UnsupportedContext,
-    UnsupportedReasoning,
+    AuthError,
     ReservedQuota,
     HardExhausted,
-    ConcurrencyFull,
     UnknownUsage,
-    AlreadyAttempted,
-    PinnedConflict,
-    NoCapableRoute,
 }
 
 /// One candidate retained for a bounded decision explanation.
@@ -89,7 +78,6 @@ pub struct ConsideredCandidate {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RoutingDecision {
-    pub task_profile: TaskProfileSummary,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected: Option<RouteSelection>,
     pub considered: Vec<ConsideredCandidate>,

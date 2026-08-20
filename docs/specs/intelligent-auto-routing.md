@@ -13,22 +13,27 @@ State scope: per-user routing state under `~/.coducktor/`; per-run decisions in 
 Coducktor's `auto` choices must become a trustworthy fire-and-forget policy. For every agent step
 authored with automatic settings, Coducktor will:
 
-1. understand the task well enough to choose an appropriate quality tier;
-2. choose an eligible runner and account without crossing configured usage reserves;
-3. choose a concrete model and reasoning effort supported by that runner;
-4. start promptly from cached state rather than waiting on quota probes;
-5. explain and persist the decision;
-6. detect a real usage-limit failure, fail over safely, and avoid spending workflow retry budget;
-7. wait durably when no candidate is usable; and
-8. resume promptly after capacity returns, including after Coducktor restarts.
+1. choose an eligible runner and account without crossing configured usage reserves;
+2. let the chosen runner resolve a concrete model and reasoning effort by its own defaults;
+3. start promptly from cached state rather than waiting on quota probes;
+4. explain and persist the decision;
+5. detect a real usage-limit failure, fail over safely, and avoid spending workflow retry budget;
+6. wait durably when no candidate is usable; and
+7. resume promptly after capacity returns, including after Coducktor restarts.
 
 Settings will expose the same sanitized usage and limit data used by the router. A user must be able
 to see what is known, when it was observed, where it came from, and when Coducktor is operating from
 incomplete information.
 
-This is not a single opaque AI call. It is a deterministic, testable routing system composed of a
-task profiler, capability registry, usage adapters, eligibility policy, scorer, reservation
-coordinator, and durable recovery loop.
+This is not a single opaque AI call. It is a deterministic, testable routing system composed of
+usage adapters, eligibility policy, scoring, a reservation coordinator, decision explanations, and
+a durable recovery loop.
+
+**Deliberately not part of this system**: a task profiler and a model capability registry — see
+[§8](#8-task-intelligence-deliberately-not-built) for why. `auto` ranks candidates on usage health,
+configured priority, and connectivity; it does not read task content to infer complexity, and it
+does not maintain a per-model capability catalog. Model and reasoning selection under `auto`
+delegate to the chosen runner's own defaults.
 
 ## 2. Product principles
 
@@ -56,12 +61,11 @@ fully available progress bar.
 
 ### 2.3 Quality before cleverness
 
-The first release uses deterministic task profiling and scoring. It must not make an extra LLM call
-to decide which LLM to call. Such a call adds latency, spends the resource being scheduled, creates
-a new failure mode when accounts are exhausted, and makes decisions harder to reproduce.
-
-The profiling seam may support an optional classifier in a later release, but the deterministic
-path remains the required fallback and the source of all safety floors.
+Routing is deterministic scoring over cached data, not an extra LLM call to decide which LLM to
+call. Such a call adds latency, spends the resource being scheduled, creates a new failure mode
+when accounts are exhausted, and makes decisions harder to reproduce. This guardrail is why a task
+profiler is out of scope ([§8](#8-task-intelligence-deliberately-not-built)): the moment routing
+tries to understand task content, it invites exactly this failure mode.
 
 ### 2.4 Explicit choices remain explicit
 
@@ -101,7 +105,6 @@ OpenCode runner.
 - Claude Code, Codex, and OpenCode as automatic runner candidates.
 - Multiple configured Claude and Codex profiles as opt-in automatic account candidates.
 - The default OpenCode installation/profile as an automatic candidate.
-- Task-sensitive concrete model and reasoning selection.
 - Background, cached usage collection from supported local interfaces.
 - Runtime limit detection for every initial runner.
 - Process-wide reservations and per-route concurrency limits.
@@ -114,6 +117,8 @@ OpenCode runner.
 
 ### 3.2 Not in the first release
 
+- A task profiler or a model capability registry, in this or any later release — see
+  [§8](#8-task-intelligence-deliberately-not-built).
 - Pi automatic routing.
 - Direct calls to provider billing or private subscription endpoints.
 - Automatically buying credits or enabling paid overage.
@@ -148,7 +153,12 @@ The first quota-aware slice is now connected:
   instead of always allowing the legacy Claude-first order to win; and
 - runner Auto retains the ranked connected-provider list, emits its choices into the run event
   stream, and retries the unchanged opening prompt on the next provider after a classified quota,
-  authentication, capacity, or startup failure.
+  authentication, capacity, or startup failure; and
+- the routing decision itself — every candidate considered, its eligibility, its reason, and which
+  one was selected — is built once per run creation and persisted on the run's first step
+  (`StepState::routingDecision`), with a one-line summary announced into the transcript. This is
+  §10.4's explanation, scoped to the single resolve-at-creation decision the engine actually makes
+  today; it does not yet cover step-level re-resolution or same-step failover attempts.
 
 The broader coordinator work remains incomplete:
 
@@ -159,6 +169,9 @@ The broader coordinator work remains incomplete:
 - live Claude session observations and OpenCode local consumption have not yet been harvested; and
 - reservations, concurrency caps, route-specific model policy, step/Continue re-routing, and
   durable cross-restart failover still need the shared coordinator described below.
+
+A task profiler and model capability registry are not gaps to close — they are deliberately not
+being built. See [§8](#8-task-intelligence-deliberately-not-built).
 
 Repository history contains a prior TypeScript quota service, policy router, coordinator,
 provider-failure classifier, sanitized snapshot store, blocked queue, and settings UI. The Rust
@@ -215,7 +228,7 @@ network, oversized, or malformed responses degrade to unknown rather than zero.
 For the first release:
 
 - OpenCode is a full routing candidate only when a concrete `provider/model` can be selected;
-- model capabilities come from the OpenCode catalog plus Coducktor's capability registry;
+- model capabilities come from the OpenCode catalog directly;
 - connection state comes from the existing local OpenCode probe/server;
 - Coducktor-recorded usage and, where a stable parseable interface exists, OpenCode local usage are
   displayed as consumption, not mislabeled as remaining quota;
@@ -253,7 +266,6 @@ RunnerSelection        auto | claude | codex | opencode | pi
 Runner                 claude | codex | opencode | pi
 AccountKey             Runner + profile ID
 RouteKey               AccountKey + concrete model + optional upstream provider
-TaskProfile            deterministic description of task demands
 Candidate              one executable runner/account/model/reasoning combination
 RoutingDecision        selected candidate or a durable wait decision
 ProviderUsageSnapshot  sanitized evidence about one account/route's limits
@@ -268,17 +280,18 @@ The selected profile, model, reasoning, route key, and decision explanation are 
 
 ### 7.1 New task
 
-The runner, model, and reasoning pickers retain Auto. When all three are Auto, the summary reads:
+The runner, model, and reasoning pickers retain Auto. When runner is Auto, the summary reads:
 
 ```text
-Auto · Chooses runner, account, model, and effort for each step
+Auto · Chooses runner and account for each step
 ```
 
-The picker must not show Claude's model catalog while runner Auto is selected. Instead it shows an
-automatic-policy explanation and an optional preview computed from the current cache:
+Model and reasoning Auto delegate to the chosen runner's own defaults; the picker does not claim to
+choose them, and it must not show Claude's model catalog while runner Auto is selected. Instead it
+shows an automatic-policy explanation and an optional preview computed from the current cache:
 
 ```text
-Likely route: Codex · work · balanced model · High
+Likely route: Codex · work
 Claude personal is reserved at 91% weekly usage
 ```
 
@@ -289,13 +302,13 @@ The preview is advisory. Dispatch re-evaluates the route because usage or concur
 Every automatic decision emits one compact normalized event:
 
 ```text
-Auto selected Codex · work · gpt-x-codex · High
-Complex debugging task; 74% weekly headroom; Claude personal held until 14:00
+Auto routing · selected Codex — also considered: Claude (reserved quota)
 ```
 
-The collapsed row shows the outcome. Expanded details show considered candidates and sanitized
-reasons such as `unsupported_images`, `reserved_quota`, `concurrency_full`, `unknown_usage`, or
-`already_attempted`. No credential paths, raw provider payloads, or private error text appear.
+The collapsed row shows the outcome. Expanded details show every considered candidate and its
+sanitized reason: `selected`, `considered`, `disabled`, `not_installed`, `disconnected`,
+`auth_error`, `reserved_quota`, `hard_exhausted`, or `unknown_usage`. No credential paths, raw
+provider payloads, or private error text appear.
 
 When waiting:
 
@@ -377,101 +390,28 @@ duck usage --refresh
 call. It exits nonzero only when the command itself cannot produce a response; unknown provider
 usage is valid output.
 
-## 8. Task intelligence
+## 8. Task intelligence (deliberately not built)
 
-### 8.1 Task profile
+Earlier drafts of this spec called for two additional subsystems: a deterministic task profiler
+(inferring complexity/risk/breadth from prompt text and signals to pick a quality tier) and a
+versioned model capability registry (a cross-provider quality/speed/context scale keyed by model
+family). Both are struck from this plan, not deferred:
 
-Create a pure profiler in `coducktor-core`. Its inputs are already-known task metadata; it does not
-read arbitrary repository files or run commands.
+- **Task profiler** — task classification from lexical signals is inherently fuzzy. A mediocre
+  scorer is worse than none: it makes `auto`'s choices feel arbitrary in exactly the cases where a
+  user is watching closely enough to notice, and there is no evidence yet that quality-tier
+  mis-selection is a real problem worth this complexity. If a concrete complaint ever justifies
+  revisiting this, it should start from real usage data produced by the simpler router this spec
+  now describes, not from a design written in advance of any evidence.
+- **Model capability registry** — mechanical and lower-risk than the profiler, but still not
+  worth the maintenance cost (a versioned per-model-family catalog that needs updating as new
+  models ship) against what it would buy: today's reactive failover already turns an unsupported
+  capability into a same-step retry on the next candidate. A registry would only upgrade that from
+  reactive to proactive.
 
-```rust
-struct TaskProfile {
-    kind: TaskKind,
-    complexity: u8,          // 0..=100
-    risk: u8,                // 0..=100
-    breadth: u8,             // 0..=100
-    ambiguity: u8,           // 0..=100
-    expected_context: ContextDemand,
-    needs_images: bool,
-    needs_tools: bool,
-    needs_strong_reasoning: bool,
-    speed_sensitive: bool,
-    quality_floor: QualityTier,
-    signals: Vec<TaskSignal>,
-}
-```
-
-`TaskKind` initially includes `question`, `planning`, `implementation`, `debugging`, `refactor`,
-`review`, `testing`, `documentation`, `migration`, `security`, and `unknown`.
-
-Signals include:
-
-- selected task mode, skill, workflow, and step kind;
-- prompt length and structural complexity;
-- attached images;
-- explicit verification, migration, security, concurrency, performance, or architecture language;
-- breadth indicators such as workspace-wide, cross-crate, many files, or multi-stage work;
-- bounded high-risk terms such as authentication, authorization, cryptography, destructive data
-  changes, deployment, and schema migration;
-- whether the step is a retry, review, or continuation; and
-- previous route outcomes for this run.
-
-Lexical signals only increase demands; a missing keyword never proves a task is easy. Ambiguous
-unknown tasks default to the balanced tier, not the cheapest tier.
-
-### 8.2 Model capability registry
-
-Model catalogs provide identities but not a consistent cross-provider quality scale. Add a local,
-versioned capability registry keyed by runner and model-family matchers. It supplies:
-
-```rust
-struct ModelCapabilities {
-    quality_tier: QualityTier,       // fast, balanced, strong, frontier
-    speed_tier: SpeedTier,
-    context_tier: ContextTier,
-    supports_images: bool,
-    supports_tools: bool,
-    supported_reasoning: Vec<ConcreteReasoningEffort>,
-    relative_usage_cost: u8,
-    confidence: CapabilityConfidence,
-}
-```
-
-Exact model IDs discovered from the host remain dynamic. The registry matches stable families and
-aliases, and unknown models receive conservative balanced capabilities with low confidence. A
-catalog capability always overrides a static assumption when the runner reports it authoritatively.
-
-Registry updates are ordinary application releases. Coducktor does not download a remote model
-policy file.
-
-### 8.3 Reasoning selection
-
-Reasoning is chosen only after a model is selected:
-
-| Task profile | Default effort |
-| --- | --- |
-| fast, narrow, low risk | Low |
-| ordinary implementation or documentation | Medium |
-| debugging, review, broad refactor, or high ambiguity | High |
-| security, architecture, difficult migration, or repeated failed attempts | XHigh/Max when supported, otherwise High |
-
-The router clamps this recommendation to the model's advertised levels. It records both requested
-and selected effort. It never sends an unsupported value and never silently maps Max to an
-unrelated provider-specific mode.
-
-### 8.4 Quality floors
-
-Hard quality floors prevent quota optimization from routing important work to an unsuitable model.
-Examples:
-
-- security and destructive migrations require `strong` or `frontier`;
-- image tasks require confirmed image support;
-- repository modification requires tool support;
-- high-context tasks exclude models below the required context tier; and
-- a third attempt raises the floor by one tier when another tier is available.
-
-If no candidate meets the floor, the task waits or fails with `no_capable_route`; it does not
-silently run on a clearly inadequate model.
+Model and reasoning selection under `auto` therefore delegate to the chosen runner's own defaults
+for the foreseeable future, and every reason code this router produces (§10) is one an eligibility
+or usage check can actually justify — never one that implies the router understood the task.
 
 ## 9. Usage and quota model
 
@@ -558,7 +498,6 @@ Reject a candidate before scoring when:
 
 - its runner or profile is disabled, missing, disconnected, or unauthenticated;
 - its model conflicts with the runner;
-- required image/tool/context/reasoning capability is absent;
 - a fresh hard limit or durable runtime hold applies;
 - its per-account concurrent lease limit is full;
 - it was already attempted in this recovery generation;
@@ -573,31 +512,30 @@ Score remaining candidates using bounded integer components:
 
 | Component | Range | Purpose |
 | --- | ---: | --- |
-| Quality fit | 0..400 | Reward capability at or just above the task floor. |
 | Quota headroom | 0..250 | Prefer measured remaining capacity and protect long windows. |
 | Continuity | 0..150 | Prefer safely resumable sessions and avoid needless provider changes. |
 | User preference | 0..100 | Apply account/runner priority and Economy/Balanced/Best policy. |
-| Speed fit | 0..100 | Reward fast models for speed-sensitive narrow work. |
 | Cost efficiency | 0..75 | Prefer lower relative usage when quality is equivalent. |
 | Freshness/confidence | 0..75 | Reward reliable current telemetry and model metadata. |
 | Congestion penalty | -100..0 | Spread work away from saturated account slots. |
 | Unknown-usage penalty | -150..0 | Allow but demote unknown quota under the default policy. |
 
-Quality fit is lexicographically dominant over preference, speed, and efficiency: a cheaper model
-cannot outscore a candidate below the task's quality floor because below-floor candidates never
-reach scoring. Avoid overqualified models for ordinary tasks unless `Best available` is selected;
-this preserves scarce frontier quota.
-
 Tie-breaking is stable: configured runner priority, configured account priority, model family,
 reasoning effort, then lexical route key. The same inputs always produce the same decision.
 
-### 10.4 Explanation
+The current implementation (`quota_aware_routing_decision` in
+`crates/coducktor-client/src/in_process.rs`) scores a narrower set — health rank, headroom,
+configured priority, configured provider order — sufficient for today's runner-only, resolve-at-
+creation decision. Extend it in place as the remaining components above become real (continuity
+once same-step failover exists, cost/freshness once consumption data is tracked); do not build a
+parallel scorer.
+
+### 10.4 Explanation — implemented
 
 The scorer returns structured reasons, not prose assembled by the runner:
 
 ```rust
 struct RoutingDecision {
-    task_profile: TaskProfileSummary,
     selected: Option<RouteSelection>,
     considered: Vec<ConsideredCandidate>,
     retry_at: Option<String>,
@@ -605,8 +543,13 @@ struct RoutingDecision {
 }
 ```
 
-The protocol/TUI converts reason codes to user-facing text. Persist at most the selected candidate
-and a bounded top set of rejected candidates to avoid unbounded run records.
+This is implemented as described: `coducktor_contract::RoutingDecision` (no `task_profile` field —
+see §8), built by `finalize_routing_decision`/`connectivity_routing_decision`/
+`quota_aware_routing_decision` in `crates/coducktor-client/src/in_process.rs`, persisted on the
+run's first step by `RunManager::create_run`, and announced into the transcript by
+`routing_decision_note` in `crates/coducktor-core/src/workflows/run/mod.rs`. `considered` is
+bounded to the three routing candidates (Claude, Codex, OpenCode) today, matching "a bounded top
+set of rejected candidates."
 
 ## 11. Runtime architecture
 
@@ -624,11 +567,8 @@ installed CLIs and live runner events
                  +------------------+
                  |                  |
                  v                  v
-          Settings usage       Task profiler
-                                    |
-                                    v
-                  AutoRoutingCoordinator (process-wide)
-               eligibility, scoring, serialized reservations
+          Settings usage    AutoRoutingCoordinator (process-wide)
+                          eligibility, scoring, serialized reservations
                                     |
                                     v
                           RunManager step dispatch
@@ -650,8 +590,8 @@ lifecycle, durable queue state, worktrees, and workflow transitions.
 
 - `coducktor-contract`: serde-compatible request, response, persisted decision, usage, and event
   shapes.
-- `coducktor-core`: pure task profiling, capability matching, scoring, quota reconciliation,
-  failure-independent state transitions, and sanitized state persistence.
+- `coducktor-core`: pure scoring, quota reconciliation, failure-independent state transitions, and
+  sanitized state persistence.
 - `coducktor-client`: local CLI usage adapters, process-wide cache/coordinator wiring, model
   catalog integration, and Engine methods.
 - `coducktor-runners`: provider protocol parsing, structured usage observations, and structured
@@ -667,7 +607,7 @@ For each agent step:
 
 1. Resolve authored runner precedence: continuation override, workflow step, task, project default.
 2. If explicit, preserve current concrete behavior and validate pinned model/reasoning.
-3. If Auto, create the task profile and candidate set from cached catalogs/status/usage.
+3. If Auto, build the candidate set from cached catalogs/status/usage.
 4. Serialize `evaluate → select → reserve` in the process-wide coordinator.
 5. If selected, persist the decision and concrete step affinity before spawning.
 6. Resolve the account environment, model, and reasoning from the selected candidate.
@@ -934,14 +874,12 @@ stays out of normal transcript output.
 
 ### 19.1 Pure policy tests
 
-Table-drive task profiling, capability floors, effort clamping, quota thresholds, hysteresis,
-unknown policies, scoring, stable ties, attempted-route exclusion, and recovery backoff. Include
-property tests for:
+Table-drive quota thresholds, hysteresis, unknown policies, scoring, stable ties, attempted-route
+exclusion, and recovery backoff. Include property tests for:
 
 - the same inputs always select the same candidate;
 - an ineligible candidate is never selected;
 - increasing only a candidate's used percentage cannot improve its score;
-- lowering capability below the quality floor makes it ineligible;
 - explicit constraints are never relaxed; and
 - every wait either has a wake source or a terminal explanation.
 
@@ -1068,27 +1006,7 @@ Work:
 Exit criteria: users can inspect honest usage/limit state without enabling Auto, refreshes do not
 block the TUI, and provider failures degrade to unknown/unavailable.
 
-### Phase 3 — task profiler and model capability policy
-
-Likely files:
-
-- new `crates/coducktor-core/src/routing/` modules
-- `crates/coducktor-client/src/in_process.rs` model-catalog normalization
-- `crates/coducktor-tui/src/new_task_form.rs`
-- `crates/coducktor-tui/src/screens/new_task.rs`
-
-Work:
-
-1. Implement and table-test the deterministic TaskProfile.
-2. Add the versioned model capability registry and catalog merge rules.
-3. Implement reasoning recommendation/clamping and hard quality floors.
-4. Replace the Claude-specific Auto picker state with policy preview state.
-5. Benchmark profiling and candidate construction.
-
-Exit criteria: supplied prompts/task metadata produce stable reviewed profiles and concrete
-model/reasoning recommendations without starting a process or accessing the network.
-
-### Phase 4 — shared coordinator and automatic dispatch
+### Phase 3 — shared coordinator and automatic dispatch
 
 Likely files:
 
@@ -1110,7 +1028,7 @@ Work:
 Exit criteria: Auto intelligently selects among all three runners and opted-in accounts; explicit
 routes are unchanged; multi-project concurrency cannot overbook an in-process route.
 
-### Phase 5 — quota failover and durable intelligent resume
+### Phase 4 — quota failover and durable intelligent resume
 
 Likely files:
 
@@ -1132,7 +1050,7 @@ Work:
 Exit criteria: confirmed quota failures neither lose work nor consume workflow failure retries;
 exhausted tasks wait durably and resume once; restart tests cover every wait boundary.
 
-### Phase 6 — calibration and rollout
+### Phase 5 — calibration and rollout
 
 1. Run mocked workload matrices spanning task kinds, quota states, accounts, and catalogs.
 2. Review routing explanations for surprising or wasteful selections.
@@ -1144,28 +1062,26 @@ exhausted tasks wait durably and resume once; restart tests cover every wait bou
 
 ## 21. Acceptance scenarios
 
-The feature is complete only when all scenarios pass:
+The feature is complete only when all scenarios pass. (Two scenarios from earlier drafts —
+choosing a model/effort tier by task content — are gone along with the task profiler; see §8.)
 
-1. A small documentation edit with healthy accounts chooses a fast/balanced model and Low/Medium
-   effort without consuming frontier quota.
-2. A security-sensitive cross-crate change selects a strong model and High or greater effort.
-3. Claude at 92% of a protected weekly window is reserved; Codex or OpenCode is selected.
-4. Codex is hard exhausted and Claude telemetry is unknown; policy `allow_with_penalty` may choose
+1. Claude at 92% of a protected weekly window is reserved; Codex or OpenCode is selected.
+2. Codex is hard exhausted and Claude telemetry is unknown; policy `allow_with_penalty` may choose
    Claude and records that uncertainty.
-5. OpenCode has no quota API but is connected with a capable concrete model; it remains an eligible,
+3. OpenCode has no quota API but is connected with a capable concrete model; it remains an eligible,
    lower-confidence fallback and is never shown as 0% used.
-6. Two projects simultaneously request the last Codex account slot; one starts and one waits or
+4. Two projects simultaneously request the last Codex account slot; one starts and one waits or
    takes another route.
-7. Claude hits a documented plan limit mid-step; the hold is visible before the next queue sweep,
+5. Claude hits a documented plan limit mid-step; the hold is visible before the next queue sweep,
    and the step continues with the best untried candidate in the same worktree.
-8. Every route is exhausted; the task remains visibly waiting with the earliest known reset.
-9. Coducktor restarts while waiting; it reconstructs the hold and resumes once without duplicate
+6. Every route is exhausted; the task remains visibly waiting with the earliest known reset.
+7. Coducktor restarts while waiting; it reconstructs the hold and resumes once without duplicate
    execution.
-10. A user cancels a waiting task; no future refresh or timer restarts it.
-11. Explicit Claude + Opus + High never routes to Codex/OpenCode and never changes effort.
-12. An opted-out work account is never selected even when every opted-in account is exhausted.
-13. Settings and `duck usage --json` agree on values, freshness, provenance, and unknown state.
-14. Missing CLIs, malformed cache, unavailable credentials, and offline operation still allow the
+8. A user cancels a waiting task; no future refresh or timer restarts it.
+9. Explicit Claude + Opus + High never routes to Codex/OpenCode and never changes effort.
+10. An opted-out work account is never selected even when every opted-in account is exhausted.
+11. Settings and `duck usage --json` agree on values, freshness, provenance, and unknown state.
+12. Missing CLIs, malformed cache, unavailable credentials, and offline operation still allow the
    application to start with reduced capabilities.
 
 ## 22. Success measures
