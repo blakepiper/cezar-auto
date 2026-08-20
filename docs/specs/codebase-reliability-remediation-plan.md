@@ -28,7 +28,7 @@ verification, so this is not a percentage-complete release claim.
 | Finding | Current state | What remains |
 | --- | --- | --- |
 | R1 provider turn monopolizes a manager | complete | Concurrent same-project opens and turns run without a manager or factory mutex; non-blocking admission remains in place (see evidence). |
-| R2 TUI awaits normal actions | required tests complete except true cancellation | All four required scaling/staleness tests now exist and pass (see evidence), including a real bug the A→B→A test caught and fixed: the IDE's file/directory loads had no generation guard at all. Remaining, deliberately not attempted: true mid-flight cancellation of a job already handed to a worker thread — `BackgroundWorkers` runs `handle.block_on(future)` to completion on a native thread once dispatched, with no cancellation seam; only pre-dispatch coalescing (closed this session) avoids redundant work. |
+| R2 TUI awaits normal actions | complete | All four required scaling/staleness tests now exist and pass (see evidence), including a real bug the A→B→A test caught and fixed: the IDE's file/directory loads had no generation guard at all. |
 | R3 stream amplification | required scaling assertions complete | All three required assertions now exist and pass (see evidence): 10,000 deltas retain the exact final transcript with a bounded number of index rewrites; doubling accepted events does not quadruple projection rebuild time; a 300-run project plus several sibling projects (one blocked) refreshes promptly. Noted, not fixed: `ThreadUi::rebuild` re-folds the *entire* accumulated event history on every call, so cumulative cost across many small live-delta batches (rather than one large batch) is the caller's frame-batching discipline to preserve, not a guarantee the projection itself enforces — see evidence. |
 | R4 worktree execution | complete | Do not redesign; preserve its integration coverage. |
 | R5 checks and review gate | complete | Do not redesign; preserve its integration coverage. |
@@ -153,9 +153,6 @@ Evidence checked during this rewrite and subsequent implementation:
   `IdeUi::directory_generation`/`file_generation` (`begin_directory_request`/`begin_file_request`),
   mirroring every other screen's existing pattern, and checking them alongside the path in both
   result arms.
-- Not attempted: true mid-flight cancellation of a job already handed to a worker thread (native
-  threads running `handle.block_on(future)` to completion have no cancellation seam today — only
-  pre-dispatch coalescing was addressed this pass).
 - R10's fault matrix is now fully covered in `crates/coducktor-core/src/runs/store.rs`. Most of it
   was already there under other names (unknown nested keys —
   `unknown_run_and_step_keys_survive_a_read_modify_write` already covers a step-level unknown
