@@ -175,6 +175,7 @@ duck                         Launch the interactive cockpit
 duck tui                     Same as the default invocation
 duck run "<task>"            Run a task and stream events to the terminal
 duck init                    Scaffold an example workflow and skill
+duck repair-runs             Back up and repair quarantined run state
 duck doctor [--json]         Check installation and available CLIs
 duck projects [list]         List registered projects
 duck projects add [DIR]      Register a folder
@@ -216,9 +217,13 @@ execution error. The headless default runner is Claude; a workflow step can requ
 `.ai/coducktor/skills/project-conventions.md` without overwriting existing example files. This is
 an explicit, repository-owned setup intended to be reviewed and committed.
 
-The `usage` command is retained for command compatibility, but provider quota telemetry is not
-available in this build. It reports that limitation and exits nonzero. Per-run token and cost
-fields are still shown when a backend supplies them.
+`usage` prints the same sanitized quota and routing-health view as Settings. Use `--json` for
+machine-readable output or `--refresh` to bypass the local quota cache. Providers without a
+supported quota source remain visible with an honest unknown or unavailable status. Per-run token
+and cost fields are also shown when a backend supplies them.
+
+`repair-runs` is an explicit recovery command for a project whose `runs.json` was quarantined after
+a corrupt read. It backs up the original file before replacing it with the salvaged run records.
 
 ## Workflows and skills
 
@@ -338,8 +343,8 @@ treated as a degraded capability rather than a reason to prevent startup.
 The following features are opt-in or limited in this build:
 
 - Intelligent context refresh is disabled by default and can be enabled in Settings -> Resources.
-- Provider quota dashboards and the `usage` command are not implemented. Run-local usage remains
-  available when the backend reports it.
+- Provider quota dashboards report supported local telemetry and preserve unknown states when an
+  installed backend does not expose a stable quota source.
 - Coducktor itself opens no listening socket and no browser. OpenCode may start its own short-lived
   local `serve` process when that runner is selected.
 

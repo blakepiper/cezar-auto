@@ -24,28 +24,29 @@ fn num(raw: &str) -> Option<i64> {
     (n > 0 && n < MAX_REF).then_some(n)
 }
 
-static PR_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)github\.com/[0-9A-Za-z_.-]+/[0-9A-Za-z_.-]+/pull/(\d+)").unwrap()
+static PR_URL_RE: LazyLock<Option<Regex>> = LazyLock::new(|| {
+    Regex::new(r"(?i)github\.com/[0-9A-Za-z_.-]+/[0-9A-Za-z_.-]+/pull/(\d+)").ok()
 });
-static ISSUE_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)github\.com/[0-9A-Za-z_.-]+/[0-9A-Za-z_.-]+/issues/(\d+)").unwrap()
+static ISSUE_URL_RE: LazyLock<Option<Regex>> = LazyLock::new(|| {
+    Regex::new(r"(?i)github\.com/[0-9A-Za-z_.-]+/[0-9A-Za-z_.-]+/issues/(\d+)").ok()
 });
-static PR_WORDED_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\b(?:pull\s+request|pr)\s*#?\s*(\d+)").unwrap());
-static ISSUE_WORDED_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\bissue\s*#?\s*(\d+)").unwrap());
-static BARE_NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*#?(\d+)\s*$").unwrap());
-static HASH_NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"#(\d+)\b").unwrap());
+static PR_WORDED_RE: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"(?i)\b(?:pull\s+request|pr)\s*#?\s*(\d+)").ok());
+static ISSUE_WORDED_RE: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"(?i)\bissue\s*#?\s*(\d+)").ok());
+static BARE_NUMBER_RE: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"^\s*#?(\d+)\s*$").ok());
+static HASH_NUMBER_RE: LazyLock<Option<Regex>> = LazyLock::new(|| Regex::new(r"#(\d+)\b").ok());
 
 /// First match wins per kind, scanning the whole prompt.
 pub fn extract_task_refs(task: &str) -> TaskRefs {
     let mut refs = TaskRefs::default();
 
     // 1. Explicit URLs — the strongest signal.
-    if let Some(caps) = PR_URL_RE.captures(task) {
+    if let Some(caps) = PR_URL_RE.as_ref().and_then(|regex| regex.captures(task)) {
         refs.pr_number = num(&caps[1]);
     }
-    if let Some(caps) = ISSUE_URL_RE.captures(task) {
+    if let Some(caps) = ISSUE_URL_RE.as_ref().and_then(|regex| regex.captures(task)) {
         refs.issue_number = num(&caps[1]);
     }
 
@@ -53,21 +54,29 @@ pub fn extract_task_refs(task: &str) -> TaskRefs {
     //    request #N", "Fix GitHub issue #N") and free text ("pr 437", "PR#437", "review pull
     //    request 437", "issue #12").
     if refs.pr_number.is_none()
-        && let Some(caps) = PR_WORDED_RE.captures(task)
+        && let Some(caps) = PR_WORDED_RE.as_ref().and_then(|regex| regex.captures(task))
     {
         refs.pr_number = num(&caps[1]);
     }
     if refs.issue_number.is_none()
-        && let Some(caps) = ISSUE_WORDED_RE.captures(task)
+        && let Some(caps) = ISSUE_WORDED_RE
+            .as_ref()
+            .and_then(|regex| regex.captures(task))
     {
         refs.issue_number = num(&caps[1]);
     }
 
     // 3. A task that IS a number — the argument-only skill invocation (`469`).
     if refs.pr_number.is_none() && refs.issue_number.is_none() {
-        if let Some(caps) = BARE_NUMBER_RE.captures(task) {
+        if let Some(caps) = BARE_NUMBER_RE
+            .as_ref()
+            .and_then(|regex| regex.captures(task))
+        {
             refs.ambiguous_number = num(&caps[1]);
-        } else if let Some(caps) = HASH_NUMBER_RE.captures(task) {
+        } else if let Some(caps) = HASH_NUMBER_RE
+            .as_ref()
+            .and_then(|regex| regex.captures(task))
+        {
             // 4. Last resort: the first `#N` anywhere.
             refs.ambiguous_number = num(&caps[1]);
         }
@@ -82,8 +91,8 @@ pub fn title_ref_number(refs: &TaskRefs) -> Option<i64> {
         .or(refs.ambiguous_number)
 }
 
-static PR_SKILL_NAME_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(^|\W)pr(\W|$)|pull-?request").unwrap());
+static PR_SKILL_NAME_RE: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"(^|\W)pr(\W|$)|pull-?request").ok());
 
 /// Skill-aware disambiguation for a bare number: `469` handed to a *-review-pr skill is a
 /// PR; handed to a *-fix-issue skill it is an issue. Only upgrades `ambiguous_number` —
@@ -93,7 +102,10 @@ pub fn refine_task_refs(refs: TaskRefs, skill_name: Option<&str>) -> TaskRefs {
         return refs;
     };
     let name = skill_name.to_lowercase();
-    if PR_SKILL_NAME_RE.is_match(&name) {
+    if PR_SKILL_NAME_RE
+        .as_ref()
+        .is_some_and(|regex| regex.is_match(&name))
+    {
         return TaskRefs {
             pr_number: refs.pr_number.or(Some(ambiguous)),
             ambiguous_number: None,
