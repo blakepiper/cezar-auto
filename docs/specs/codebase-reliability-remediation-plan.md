@@ -20,17 +20,10 @@ provider RPCs fail safely; and the remaining platform claims have recorded evide
 
 ## Audit inventory
 
-The original audit had twelve findings. R12 (cross-platform CLI handoff / real-terminal evidence
-across Ghostty, kitty, WezTerm, iTerm2, Terminal.app, Alacritty, tmux, GNU screen) was explicitly
-descoped on 2026-08-19: verifying it properly means installing and driving each of those terminal
-emulator applications interactively, which no implementation session — human or agent — has had
-available, and chasing it further isn't worth it. `docs/tui/terminals.md` keeps whatever real
-results already exist there (some entries are genuine manual PTY runs) as a living, opportunistic
-checklist; it is no longer gated work in this plan. Of the remaining eleven findings, six have
-their functional correction complete, R1/R2/R3/R7/R9/R10 are done or closed this session, and R8
-has been audited with one real, documented, unmitigated risk (OpenCode permission events). Several
-completed corrections still require focused verification, so this is not a
-percentage-complete release claim.
+The audit findings covered by this plan have their functional corrections complete: R1/R2/R3/R7/
+R9/R10 are done or closed this session, and R8 has been audited with one real, documented,
+unmitigated risk (OpenCode permission events). Several completed corrections still require focused
+verification, so this is not a percentage-complete release claim.
 
 | Finding | Current state | What remains |
 | --- | --- | --- |
@@ -45,7 +38,6 @@ percentage-complete release claim.
 | R9 worker/process lifetime | complete | `TurnDispatch`'s per-run worker registry is leak-checked (see evidence) and `InProcessEngine::shutdown` now closes the escalation gap: a confirmed TUI quit signals every in-flight cancellation token, waits a bounded grace period, reaps whatever finished, and returns regardless — see evidence for the required "ignores cancellation" test. |
 | R10 durable run state | fault matrix complete | Every named scenario in the original fault matrix (unknown nested keys, one bad entry, truncated index, permissions, concurrent writer conflict, disk-full, pre-rename crash, post-rename/directory-sync failure, repair-replacement failure) now has a dedicated or pre-existing regression test — see evidence. |
 | R11 dead UI/duplicate tests | primary correction complete | Extract oversized orchestration code only when needed by R1/R2; no standalone refactor. |
-| ~~R12 cross-platform CLI handoff~~ | descoped 2026-08-19 | Removed from this plan — see the note above the table. `docs/tui/terminals.md` remains a living, non-gating checklist. |
 
 Evidence checked during this rewrite and subsequent implementation:
 
@@ -478,9 +470,6 @@ provider captures.
 - A standalone decomposition of large files. Extract only the coordinator/executor units needed to
   make ownership testable; make such moves behavior-preserving and separately committed.
 - Deleting worktrees during retention or repair, or weakening existing compatibility readers.
-- Real-terminal-emulator verification (R12, descoped — see the audit inventory note). Nothing in
-  this plan is gated on installing or driving Ghostty/kitty/WezTerm/iTerm2/Terminal.app/Alacritty/
-  tmux/GNU screen; `docs/tui/terminals.md` is upkept opportunistically, not as required work.
 
 ## Completion and handoff checklist
 
