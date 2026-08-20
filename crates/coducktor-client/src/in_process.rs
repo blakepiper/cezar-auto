@@ -1849,7 +1849,6 @@ impl InProcessEngine {
         runs.sort_by(|left, right| right.created_at.cmp(&left.created_at));
         Ok(RunsIndexResponse {
             runs,
-            reference_statuses: BTreeMap::new(),
             per_project_limit: PER_PROJECT_LIMIT as u64,
             truncated,
         })

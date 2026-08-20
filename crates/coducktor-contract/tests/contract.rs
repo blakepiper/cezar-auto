@@ -141,10 +141,9 @@ fn salvage_helper_drops_only_invalid_entries() {
 }
 
 #[test]
-fn runs_index_reference_map_is_json_object_key_compatible() {
+fn runs_index_response_round_trips() {
     let value = json!({
         "runs": [],
-        "referenceStatuses": {"shop": {"prs": {"42": "ready"}, "issues": {}}},
         "perProjectLimit": 50,
         "truncated": [],
     });

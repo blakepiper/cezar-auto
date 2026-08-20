@@ -178,10 +178,7 @@ mod tests {
                     model_identity: None,
                     route_key: None,
                     recovery_generation: None,
-                    routing_intent: None,
                     routing_decision: None,
-                    routing_wait: None,
-                    routing_attempts: None,
                     extra: serde_json::Map::new(),
                 }]
             })

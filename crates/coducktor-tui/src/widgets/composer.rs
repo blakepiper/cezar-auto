@@ -1043,7 +1043,6 @@ mod tests {
             body: String::new(),
             path: "/skills/om-fix.md".to_owned(),
             source: coducktor_contract::SkillSource::Ai,
-            team: None,
         }];
         let ctx = ComposerContext {
             skills: &skills,

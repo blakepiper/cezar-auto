@@ -76,26 +76,4 @@ pub struct Skill {
     pub body: String,
     pub path: String,
     pub source: SkillSource,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub team: Option<TeamSkillSource>,
-}
-
-/// Mirrors the nested team provenance object in `Skill`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TeamSkillSource {
-    pub repo: String,
-    pub ref_name: String,
-    pub path: String,
-    pub dir: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub commit: Option<String>,
-}
-
-/// `ImportableSkill` contract shape.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ImportableSkill {
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
 }

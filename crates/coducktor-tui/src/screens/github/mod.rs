@@ -1213,7 +1213,6 @@ mod tests {
             body: "b".to_owned(),
             path: "p".to_owned(),
             source: coducktor_contract::SkillSource::Global,
-            team: None,
         }];
 
         // Nothing picked → quick-task.

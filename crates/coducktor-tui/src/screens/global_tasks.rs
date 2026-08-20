@@ -1172,7 +1172,6 @@ mod tests {
             runs: entries,
             per_project_limit: 200,
             truncated: Vec::new(),
-            reference_statuses: Default::default(),
         });
         app.navigate_route(crate::app::Route::GlobalTasks);
         app

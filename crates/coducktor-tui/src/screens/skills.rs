@@ -306,7 +306,6 @@ mod tests {
                 body: "# Fix\n\nRun the fix protocol.".to_owned(),
                 path: ".ai/skills/om-fix.md".to_owned(),
                 source: SkillSource::Agents,
-                team: None,
             },
             Skill {
                 name: "omarchy".to_owned(),
@@ -315,7 +314,6 @@ mod tests {
                 body: "Body two.".to_owned(),
                 path: "~/.agents/skills/omarchy.md".to_owned(),
                 source: SkillSource::Global,
-                team: None,
             },
         ];
         app

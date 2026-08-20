@@ -1,28 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-/// `IdeDirectoryQuery` contract shape.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct IdeDirectoryQuery {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-}
-
-/// `IdeFileQuery` contract shape.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct IdeFileQuery {
-    pub path: String,
-}
-
-/// `IdeFileInput` contract shape.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct IdeFileInput {
-    pub path: String,
-    pub content: String,
-}
-
 /// `IdeEntry` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -5,22 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::health::{Runner, RunnerSelection};
-use crate::reasoning::{ConcreteReasoningEffort, ReasoningEffort};
-
-/// The authored picker intent for an automatic step.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RoutingIntent {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runner: Option<RunnerSelection>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning_effort: Option<ReasoningEffort>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profile_id: Option<String>,
-}
+use crate::health::Runner;
+use crate::reasoning::ConcreteReasoningEffort;
 
 /// The concrete route selected for one step.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,50 +70,4 @@ pub struct RoutingDecision {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_at: Option<String>,
     pub generation: u64,
-}
-
-/// Why a step is waiting for routing capacity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RoutingWaitReason {
-    Capacity,
-    NoCapableRoute,
-    RefreshingUsage,
-}
-
-/// A bounded route hold included in a durable wait.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BlockedRoute {
-    pub route_key: String,
-    pub reason: RoutingReasonCode,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retry_at: Option<String>,
-}
-
-/// Durable capacity wait state. Legacy `autoResumeAt` remains readable beside this shape.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RoutingWait {
-    pub reason: RoutingWaitReason,
-    pub generation: u64,
-    pub attempted_routes: Vec<String>,
-    pub blocked_routes: Vec<BlockedRoute>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retry_at: Option<String>,
-    pub created_at: String,
-    pub last_checked_at: String,
-    pub attempts: u32,
-}
-
-/// One confirmed or pending automatic route attempt.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RoutingAttempt {
-    pub route_key: String,
-    pub generation: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reset_at: Option<String>,
 }

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::compat::ExtraFields;
-use crate::routing::{RoutingDecision, RoutingWait};
+use crate::routing::RoutingDecision;
 
 /// The fixed page size.
 pub const RUN_HISTORY_PAGE_ITEMS: u64 = 100;
@@ -20,31 +20,8 @@ pub struct RunEvent {
     pub extra: ExtraFields,
 }
 
-/// `RunIdParam` contract shape.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunIdParam {
-    pub id: String,
-}
-
 /// A history cursor accepted by the history and event routes.
 pub type RunHistoryCursor = String;
-
-/// `RunHistoryQuery` contract shape.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunHistoryQuery {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<RunHistoryCursor>,
-}
-
-/// `RunEventsQuery` contract shape.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RunEventsQuery {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<RunHistoryCursor>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub after_seq: Option<f64>,
-}
 
 /// The open history event envelope.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -89,34 +66,4 @@ pub struct RunHistoryContext {
 #[serde(rename_all = "camelCase")]
 pub struct RoutingDecisionEvent {
     pub decision: RoutingDecision,
-}
-
-/// Normalized automatic-routing wait event.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RoutingWaitEvent {
-    pub wait: RoutingWait,
-}
-
-/// The checkout phase enum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum CheckoutPhase {
-    Cloning,
-    Done,
-    Error,
-}
-
-/// `CheckoutProgressEvent` contract shape.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CheckoutProgressEvent {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub checkout_id: Option<String>,
-    pub name: String,
-    pub phase: CheckoutPhase,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub line: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
 }

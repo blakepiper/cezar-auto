@@ -106,18 +106,6 @@ pub struct ParsedWorkflow {
     pub steps: Vec<WorkflowStepDef>,
 }
 
-/// The request body for parsing and normalizing pasted workflow YAML.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ParseWorkflowInput {
-    pub yaml: String,
-}
-
-/// The planning prompt accepted by the engine.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PlanInput {
-    pub task: String,
-}
-
 /// `DeleteWorkflowResponse` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeleteWorkflowResponse {

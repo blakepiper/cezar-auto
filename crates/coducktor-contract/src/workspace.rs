@@ -490,10 +490,6 @@ pub struct UiState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recent_sources: Option<Vec<TaskSource>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_worktree: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_autonomous: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_usage: Option<BTreeMap<String, f64>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runs_view: Option<RunsView>,
@@ -701,26 +697,6 @@ pub struct ProviderStatusResponse {
     pub providers: Vec<ProviderStatus>,
 }
 
-/// Optional provider-status refresh input.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct ProviderStatusQuery {
-    #[serde(default)]
-    pub refresh: Option<String>,
-}
-
-/// `ProviderEnabledInput` contract shape.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProviderEnabledInput {
-    pub enabled: bool,
-}
-
-/// Mirrors the current-auth incident body accepted by the retry route.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProviderRetryInput {
-    pub auth_failure_id: String,
-}
-
 /// `ProviderConnectInput` contract shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -765,12 +741,6 @@ pub enum ModelDiscoveryRunner {
 /// The host-discovered model runners.
 pub const MODEL_DISCOVERY_RUNNERS: [ModelDiscoveryRunner; 2] =
     [ModelDiscoveryRunner::Codex, ModelDiscoveryRunner::OpenCode];
-
-/// The runner whose models should be discovered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ModelDiscoveryQuery {
-    pub runner: ModelDiscoveryRunner,
-}
 
 /// Whether a runner has a host-discovered model catalog.
 pub fn runner_discovers_models(runner: Runner) -> bool {

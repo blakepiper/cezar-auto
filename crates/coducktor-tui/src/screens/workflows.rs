@@ -765,7 +765,6 @@ mod tests {
                 body: "b".to_owned(),
                 path: "p".to_owned(),
                 source: coducktor_contract::SkillSource::Global,
-                team: None,
             },
             Skill {
                 name: "omarchy".to_owned(),
@@ -774,7 +773,6 @@ mod tests {
                 body: "b".to_owned(),
                 path: "p".to_owned(),
                 source: coducktor_contract::SkillSource::Global,
-                team: None,
             },
         ];
         app

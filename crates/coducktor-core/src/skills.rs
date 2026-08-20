@@ -79,7 +79,6 @@ pub fn discover_skills(repo_root: &Path, env: &dyn EnvSource) -> Vec<Skill> {
             body: BUILT_IN_PLANNING_SKILL_BODY.to_owned(),
             path: "builtin:planning".to_owned(),
             source: SkillSource::BuiltIn,
-            team: None,
         });
     }
     merged.sort_by(|a, b| a.name.cmp(&b.name));
@@ -188,7 +187,6 @@ fn read_markdown_skills(dir: &Path, source: SkillSource) -> Vec<Skill> {
             body,
             path: abs_path.to_string_lossy().into_owned(),
             source,
-            team: None,
         });
     }
     skills

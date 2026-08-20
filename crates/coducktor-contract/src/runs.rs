@@ -1,9 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::github::ReferenceStatus;
 use crate::health::{Runner, RunnerSelection};
 use crate::reasoning::{ConcreteReasoningEffort, ReasoningEffort};
-use crate::routing::{RoutingAttempt, RoutingDecision, RoutingIntent, RoutingWait};
+use crate::routing::RoutingDecision;
 use crate::workflows::{WorkflowDef, WorkflowStepDef};
 use crate::workspace::QuotaProvider;
 
@@ -109,13 +108,7 @@ pub struct StepState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery_generation: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub routing_intent: Option<RoutingIntent>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing_decision: Option<RoutingDecision>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub routing_wait: Option<RoutingWait>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub routing_attempts: Option<Vec<RoutingAttempt>>,
     #[serde(default, flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -220,8 +213,6 @@ pub struct RunRecord {
     pub auto_resume_attempts: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_reason: Option<ProviderQuotaBlockedReason>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub routing_wait: Option<RoutingWait>,
     pub created_at: String,
     /// Most recent meaningful task activity. Read/unread changes do not advance it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -287,8 +278,6 @@ pub struct RunRecord {
     pub steps: Vec<StepState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_def: Option<WorkflowDef>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub routing_intent: Option<RoutingIntent>,
     #[serde(default, flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -328,13 +317,6 @@ pub struct ModelUsageEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ConcreteReasoningEffort>,
     pub pct: f64,
-}
-
-/// Mirrors the per-project reference-status map in `RunsIndexResponse`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReferenceStatuses {
-    pub prs: std::collections::BTreeMap<String, ReferenceStatus>,
-    pub issues: std::collections::BTreeMap<String, ReferenceStatus>,
 }
 
 /// `RunIndexEntry` contract shape.
@@ -408,7 +390,6 @@ pub struct RunIndexEntry {
 #[serde(rename_all = "camelCase")]
 pub struct RunsIndexResponse {
     pub runs: Vec<RunIndexEntry>,
-    pub reference_statuses: std::collections::BTreeMap<String, ReferenceStatuses>,
     pub per_project_limit: u64,
     pub truncated: Vec<String>,
 }

@@ -1541,7 +1541,6 @@ mod tests {
             body: String::new(),
             path: format!("/skills/{name}.md"),
             source,
-            team: None,
         }
     }
 

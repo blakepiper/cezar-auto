@@ -3966,7 +3966,6 @@ mod tests {
                     ..RunIndexEntry::default()
                 })
                 .collect(),
-            reference_statuses: BTreeMap::new(),
             per_project_limit: 200,
             truncated: Vec::new(),
         });

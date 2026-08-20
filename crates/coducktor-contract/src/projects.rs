@@ -99,14 +99,3 @@ pub struct UpdateProjectInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tags: Option<Option<Vec<String>>>,
 }
-
-/// `CheckoutProjectInput` contract shape.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CheckoutProjectInput {
-    pub url: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub checkout_id: Option<String>,
-}

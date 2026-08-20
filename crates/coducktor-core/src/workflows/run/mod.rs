@@ -4318,10 +4318,7 @@ fn step_from_seed(seed: StepSeed) -> StepState {
         model_identity: None,
         route_key: None,
         recovery_generation: None,
-        routing_intent: None,
         routing_decision: None,
-        routing_wait: None,
-        routing_attempts: None,
         extra: Map::new(),
     }
 }
