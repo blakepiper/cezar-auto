@@ -5,12 +5,12 @@
 //! patterns only when `bash_allowlist` is set.
 //!
 //! Each call to `turn()` or `send_message()` consumes one Claude result frame. Shared process
-//! plumbing handles stdout, stderr, EOF, and timeout escalation; this module maps Claude's
+//! plumbing handles stdout, stderr, and EOF escalation; this module maps Claude's
 //! stream-json frames into the normalized event protocol.
 
 use std::collections::BTreeMap;
 use std::io;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use coducktor_contract::Runner;
 use coducktor_core::workflows::run::{
@@ -24,11 +24,6 @@ use crate::child_process::{ChildProcess, NextLine, SpawnConfig};
 use crate::claude::{stringify_tool_result_content, tool_result_image_blocks};
 use crate::usage::{self, RawUsage};
 
-/// Default wall-clock cap for a single run before SIGTERM -> SIGKILL. Interactive sessions pass
-/// `timeout_ms: Some(0)` to disable it entirely.
-pub const DEFAULT_RUN_TIMEOUT_MS: u64 = 30 * 60_000;
-/// Grace period between SIGTERM and SIGKILL when a wall-clock timeout fires.
-pub const KILL_GRACE_MS: u64 = 10_000;
 /// After `finish()` closes stdin: claude in stream-json mode can ignore EOF and hang — escalate
 /// SIGTERM, then SIGKILL.
 pub const EOF_TERM_GRACE_MS: u64 = 8_000;
@@ -123,8 +118,6 @@ pub struct ClaudeSpawnConfig {
     pub eof_term_grace: Duration,
     /// Grace period after that SIGTERM before escalating to SIGKILL.
     pub eof_kill_grace: Duration,
-    /// Grace period after a wall-clock timeout's SIGTERM before escalating to SIGKILL.
-    pub kill_grace: Duration,
 }
 
 impl Default for ClaudeSpawnConfig {
@@ -134,7 +127,6 @@ impl Default for ClaudeSpawnConfig {
             prefix_args: Vec::new(),
             eof_term_grace: Duration::from_millis(EOF_TERM_GRACE_MS),
             eof_kill_grace: Duration::from_millis(EOF_KILL_GRACE_MS),
-            kill_grace: Duration::from_millis(KILL_GRACE_MS),
         }
     }
 }
@@ -155,8 +147,6 @@ pub struct ClaudeSession {
     session_id: Option<String>,
     /// Whether stdin is still open for this session.
     open: bool,
-    /// 0 disables the wall-clock kill switch entirely (interactive sessions).
-    timeout_ms: u64,
 }
 
 /// Spawn a claude session and send the opening message — mirrors `startSession`'s synchronous
@@ -175,7 +165,6 @@ pub fn open_claude_session(
             args,
             eof_term_grace: config.eof_term_grace,
             eof_kill_grace: config.eof_kill_grace,
-            kill_grace: config.kill_grace,
         },
         Runner::Claude,
         &spec.cwd,
@@ -185,13 +174,10 @@ pub fn open_claude_session(
     .map_err(|error| wrap_spawn_error(&error, &config.program))?;
     process.set_cancellation(spec.cancellation.clone());
 
-    let timeout_ms = spec.timeout_ms.unwrap_or(DEFAULT_RUN_TIMEOUT_MS);
-
     let mut session = ClaudeSession {
         process,
         session_id: spec.session_id.clone(),
         open: true,
-        timeout_ms,
     };
 
     let mut opening = spec.images.clone();
@@ -385,14 +371,6 @@ impl ClaudeSession {
         self.process.write_line(&line)
     }
 
-    /// The wall-clock kill switch a live turn's read loop arms when `timeout_ms` elapses.
-    fn escalate_after_timeout(&mut self) -> String {
-        self.open = false;
-        self.process.escalate_after_timeout();
-        let minutes = (self.timeout_ms as f64 / 60_000.0 * 10.0).round() / 10.0;
-        format!("claude CLI timed out after {minutes}m and was killed")
-    }
-
     fn finalize_turn(
         &self,
         text_chunks: Vec<String>,
@@ -430,8 +408,6 @@ impl ClaudeSession {
         if !self.open {
             return Err("session is closed".to_owned());
         }
-        let deadline =
-            (self.timeout_ms > 0).then(|| Instant::now() + Duration::from_millis(self.timeout_ms));
         let mut text_chunks: Vec<String> = Vec::new();
         let mut saw_usage = false;
         let mut tokens_used = 0.0_f64;
@@ -439,15 +415,10 @@ impl ClaudeSession {
         let mut cost_usd: Option<f64> = None;
 
         loop {
-            let line = match self.process.next_line(deadline) {
+            let line = match self.process.next_line(None) {
                 Ok(NextLine::Line(line)) => line,
                 Ok(NextLine::Closed) => break,
-                Err(_timed_out) => {
-                    let message = self.escalate_after_timeout();
-                    on_event(EventInput::new("error").field("message", message.clone()))
-                        .map_err(|error| error.to_string())?;
-                    return Err(message);
-                }
+                Err(_) => unreachable!("an unbounded read cannot time out"),
             };
 
             let line = line.trim();
@@ -584,6 +555,7 @@ mod tests {
     use super::*;
     use coducktor_contract::ConcreteReasoningEffort;
     use std::path::PathBuf;
+    use std::time::Instant;
 
     fn mock_script(name: &str) -> String {
         let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -617,7 +589,6 @@ mod tests {
         AgentRunSpec {
             user_prompt: user_prompt.to_owned(),
             cwd: cwd.to_path_buf(),
-            timeout_ms: Some(0),
             ..Default::default()
         }
     }
@@ -854,19 +825,6 @@ mod tests {
         // eof_term_grace — proves the escalation actually fired rather than idly waiting out
         // the (much longer, real) default grace periods.
         assert!(started.elapsed() < Duration::from_secs(3));
-    }
-
-    #[test]
-    fn a_wall_clock_timeout_kills_the_process_and_fails_the_turn() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = node_config(mock_script("mock-claude.mjs"));
-        let mut run_spec = spec_for(dir.path(), "please wait mock:slow");
-        run_spec.timeout_ms = Some(300);
-        let mut session = open_claude_session(&config, &run_spec, &BTreeMap::new()).unwrap();
-        let (outcome, events) = run_turn(&mut session);
-        let error = outcome.expect_err("a hung turn should fail rather than park forever");
-        assert!(error.contains("timed out"), "unexpected message: {error}");
-        assert!(events.iter().any(|event| event.event_type == "error"));
     }
 
     #[test]

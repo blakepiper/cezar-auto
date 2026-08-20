@@ -35,9 +35,6 @@ pub struct AgentRunSpec {
     pub model: Option<String>,
     /// Concrete reasoning level for this session — the run manager resolves `auto` before spawn.
     pub reasoning_effort: Option<ConcreteReasoningEffort>,
-    /// Wall-clock kill switch for the run (ms). `None` uses the backend's own default; `Some(0)`
-    /// disables it entirely (interactive sessions).
-    pub timeout_ms: Option<u64>,
     /// Stable session id (UUID) so the user can take over interactively later.
     pub session_id: Option<String>,
     /// Spawn with `--resume <sessionId>` instead of starting a fresh session — picks up the

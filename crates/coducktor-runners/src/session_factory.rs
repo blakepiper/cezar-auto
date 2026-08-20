@@ -202,7 +202,6 @@ fn to_agent_run_spec(request: &SessionRequest) -> AgentRunSpec {
         env: request.env.clone(),
         model: request.model.clone(),
         reasoning_effort: request.reasoning_effort,
-        timeout_ms: None,
         session_id: request.session_id.clone(),
         resume: request.continuation,
     }

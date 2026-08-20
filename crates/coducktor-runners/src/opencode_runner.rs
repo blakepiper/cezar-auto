@@ -35,11 +35,7 @@
 //! cumulative-over-the-session, not per-turn deltas.
 //!
 //! One narrow, deliberate behavior difference, matching the same call already made for codex:
-//! A follow-up prompt failure is returned as a hard `Err`. A second, opencode-specific behavior:
-//! the wall-clock timeout sends SIGTERM (`interrupt()`) and then SIGKILL
-//! follow-up if the process ignores it — genuinely able to hang the whole `result` promise
-//! forever. This session escalates to SIGKILL after `kill_grace`, same as claude/codex's own
-//! timeout paths, closing that gap rather than reproducing it.
+//! A follow-up prompt failure is returned as a hard `Err`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{self, BufRead, BufReader};
@@ -59,7 +55,7 @@ use serde_json::{Map, Value, json};
 
 use crate::agent_runner::{AgentRunSpec, ContentBlock, reasoning_effort_str};
 use crate::child_process::{ChildProcess, NextLine, SpawnConfig};
-use crate::claude_runner::{DEFAULT_RUN_TIMEOUT_MS, EOF_KILL_GRACE_MS};
+use crate::claude_runner::EOF_KILL_GRACE_MS;
 use crate::model_identity::parse_model_identity;
 use crate::v1_text_coalescer::V1TextCoalescer;
 use crate::wire::json_string;
@@ -78,8 +74,7 @@ static VARIANT_ERROR_RE: LazyLock<Result<Regex, regex::Error>> =
 pub struct OpencodeSpawnConfig {
     pub program: String,
     pub prefix_args: Vec<String>,
-    /// Grace period after `finish()`'s SIGTERM before escalating to SIGKILL, and after a
-    /// wall-clock timeout's SIGTERM too.
+    /// Grace period after `finish()`'s SIGTERM before escalating to SIGKILL.
     pub kill_grace: Duration,
 }
 
@@ -143,8 +138,6 @@ pub struct OpencodeSession {
     cost_total: f64,
     /// Whether the OpenCode session is still open.
     open: bool,
-    /// 0 disables the wall-clock kill switch entirely (interactive sessions).
-    timeout_ms: u64,
     kill_grace: Duration,
 }
 
@@ -172,7 +165,6 @@ pub fn open_opencode_session(
             // No EOF watchdog for a process that reads no stdin protocol.
             eof_term_grace: Duration::ZERO,
             eof_kill_grace: Duration::ZERO,
-            kill_grace: config.kill_grace,
         },
         Runner::OpenCode,
         &spec.cwd,
@@ -204,8 +196,6 @@ pub fn open_opencode_session(
     // while that POST is in flight would otherwise be lost.
     let sse_rx = connect_sse(&client, &base_url)?;
 
-    let timeout_ms = spec.timeout_ms.unwrap_or(DEFAULT_RUN_TIMEOUT_MS);
-
     Ok(OpencodeSession {
         process,
         client,
@@ -223,7 +213,6 @@ pub fn open_opencode_session(
         output_tokens_total: 0.0,
         cost_total: 0.0,
         open: true,
-        timeout_ms,
         kill_grace: config.kill_grace,
     })
 }
@@ -378,7 +367,6 @@ impl OpencodeSession {
         &mut self,
         path: &str,
         body: Value,
-        deadline: Option<Instant>,
         on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
     ) -> Result<Value, String> {
         let url = format!("{}{}", self.base_url, path);
@@ -398,17 +386,6 @@ impl OpencodeSession {
                 self.process.signal_term();
                 let _ = post_handle.join();
                 return Err("opencode run cancelled".to_owned());
-            }
-            if let Some(dl) = deadline
-                && Instant::now() >= dl
-            {
-                self.open = false;
-                self.process.escalate_after_timeout();
-                let _ = post_handle.join();
-                let minutes = (self.timeout_ms as f64 / 60_000.0 * 10.0).round() / 10.0;
-                return Err(format!(
-                    "opencode timed out after {minutes}m and was killed"
-                ));
             }
             if let Ok(frame) = self.sse_rx.recv_timeout(Duration::from_millis(20)) {
                 self.handle_frame(&frame, on_event)?;
@@ -433,19 +410,16 @@ impl OpencodeSession {
     }
 
     /// One prompt round trip, with the model-variant fallback retry. Any failure — including a
-    /// wall-clock timeout — is reported as a single `error` event here (`post_and_drain` itself
-    /// never emits one, so a retried timeout can't double-report).
     fn run_prompt(
         &mut self,
         text: &str,
         images: &[PromptImage],
         system_prompt: Option<&str>,
-        deadline: Option<Instant>,
         on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
     ) -> Result<(), String> {
         let path = format!("/session/{}/message", self.session_id);
         let body = self.build_prompt_body(text, images, true, system_prompt);
-        let result = self.post_and_drain(&path, body, deadline, on_event);
+        let result = self.post_and_drain(&path, body, on_event);
         // OpenCode variants are model-specific; a generic Auto decision can name a level the
         // selected model doesn't advertise. Retry once with the provider default instead of
         // turning a valid task into a hard failure.
@@ -463,7 +437,7 @@ impl OpencodeSession {
                 ))
                 .map_err(|error| error.to_string())?;
                 let fallback_body = self.build_prompt_body(text, images, false, system_prompt);
-                self.post_and_drain(&path, fallback_body, deadline, on_event)
+                self.post_and_drain(&path, fallback_body, on_event)
             }
             other => other,
         };
@@ -490,8 +464,6 @@ impl OpencodeSession {
         system_prompt: Option<&str>,
         on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
     ) -> Result<SessionOutcome, String> {
-        let deadline =
-            (self.timeout_ms > 0).then(|| Instant::now() + Duration::from_millis(self.timeout_ms));
         let baseline = (
             self.tokens_used_total,
             self.input_tokens_total,
@@ -500,7 +472,7 @@ impl OpencodeSession {
         );
         let text_start = self.text_chunks.len();
 
-        let result = self.run_prompt(text, images, system_prompt, deadline, on_event);
+        let result = self.run_prompt(text, images, system_prompt, on_event);
         // A part that never saw `time.end` (abort, server quirk) still surfaces its prose before
         // the turn boundary.
         for flushed in self.coalescer.flush() {
@@ -946,7 +918,6 @@ mod tests {
         AgentRunSpec {
             user_prompt: user_prompt.to_owned(),
             cwd: cwd.to_path_buf(),
-            timeout_ms: Some(0),
             ..Default::default()
         }
     }

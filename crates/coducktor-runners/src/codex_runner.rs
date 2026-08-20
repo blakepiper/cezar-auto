@@ -44,9 +44,7 @@ use crate::agent_runner::{
     AgentRunSpec, ContentBlock, prepend_system_prompt, reasoning_effort_str,
 };
 use crate::child_process::{ChildProcess, NextLine, SpawnConfig};
-use crate::claude_runner::{
-    DEFAULT_RUN_TIMEOUT_MS, EOF_KILL_GRACE_MS, EOF_TERM_GRACE_MS, KILL_GRACE_MS,
-};
+use crate::claude_runner::{EOF_KILL_GRACE_MS, EOF_TERM_GRACE_MS};
 use crate::v1_text_coalescer::V1TextCoalescer;
 use crate::wire::json_string;
 
@@ -65,7 +63,6 @@ pub struct CodexSpawnConfig {
     pub prefix_args: Vec<String>,
     pub eof_term_grace: Duration,
     pub eof_kill_grace: Duration,
-    pub kill_grace: Duration,
 }
 
 impl Default for CodexSpawnConfig {
@@ -75,7 +72,6 @@ impl Default for CodexSpawnConfig {
             prefix_args: Vec::new(),
             eof_term_grace: Duration::from_millis(EOF_TERM_GRACE_MS),
             eof_kill_grace: Duration::from_millis(EOF_KILL_GRACE_MS),
-            kill_grace: Duration::from_millis(KILL_GRACE_MS),
         }
     }
 }
@@ -151,8 +147,6 @@ pub struct CodexSession {
     pending_approval: Option<PendingApproval>,
     /// Whether stdin is still open for this session.
     open: bool,
-    /// 0 disables the wall-clock kill switch entirely (interactive sessions).
-    timeout_ms: u64,
     sandbox: &'static str,
     reasoning_summary: String,
     approval_gate: bool,
@@ -173,7 +167,6 @@ pub fn open_codex_session(
             args,
             eof_term_grace: config.eof_term_grace,
             eof_kill_grace: config.eof_kill_grace,
-            kill_grace: config.kill_grace,
         },
         Runner::Codex,
         &spec.cwd,
@@ -183,7 +176,6 @@ pub fn open_codex_session(
     .map_err(|error| wrap_spawn_error(&error, &config.program))?;
     process.set_cancellation(spec.cancellation.clone());
 
-    let timeout_ms = spec.timeout_ms.unwrap_or(DEFAULT_RUN_TIMEOUT_MS);
     let sandbox = resolve_sandbox(host_env);
     let reasoning_summary = resolve_reasoning_summary(host_env);
 
@@ -196,7 +188,6 @@ pub fn open_codex_session(
         pending_user_input: None,
         pending_approval: None,
         open: true,
-        timeout_ms,
         sandbox,
         reasoning_summary,
         approval_gate: resolve_approval_policy(host_env) == "on-request",
@@ -519,16 +510,7 @@ impl CodexSession {
             let line = match self.process.next_line(deadline) {
                 Ok(NextLine::Line(line)) => line,
                 Ok(NextLine::Closed) => return Ok(StopReason::ChannelClosed),
-                Err(_timed_out) => {
-                    self.open = false;
-                    self.process.escalate_after_timeout();
-                    let minutes = (self.timeout_ms as f64 / 60_000.0 * 10.0).round() / 10.0;
-                    let message =
-                        format!("codex app-server timed out after {minutes}m and was killed");
-                    on_event(EventInput::new("error").field("message", message.clone()))
-                        .map_err(|error| error.to_string())?;
-                    return Err(message);
-                }
+                Err(_) => unreachable!("an unbounded read cannot time out"),
             };
 
             let line = line.trim();
@@ -1060,8 +1042,7 @@ impl AgentSession for CodexSession {
         if !self.open {
             return Err("session is closed".to_owned());
         }
-        let deadline =
-            (self.timeout_ms > 0).then(|| Instant::now() + Duration::from_millis(self.timeout_ms));
+        let deadline = None;
         let mut turn = TurnState::default();
         self.bootstrap_and_first_turn(deadline, &mut turn, on_event)?;
         self.finish_turn_reading(deadline, turn, on_event)
@@ -1076,8 +1057,7 @@ impl AgentSession for CodexSession {
         if !self.open {
             return Err("session does not accept follow-up messages".to_owned());
         }
-        let deadline =
-            (self.timeout_ms > 0).then(|| Instant::now() + Duration::from_millis(self.timeout_ms));
+        let deadline = None;
         let mut turn = TurnState::default();
         if let Some(pending) = self.pending_user_input.take() {
             let answers = user_input_answers(&pending.questions, prompt);
@@ -1161,7 +1141,6 @@ mod tests {
         AgentRunSpec {
             user_prompt: user_prompt.to_owned(),
             cwd: cwd.to_path_buf(),
-            timeout_ms: Some(0),
             ..Default::default()
         }
     }

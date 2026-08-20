@@ -1,7 +1,6 @@
 //! Shared subprocess plumbing for every agent-CLI backend: spawn with the curated child env
-//! (`agent_env`), a live stdout-line channel so a turn-scoped caller can enforce a wall-clock
-//! deadline without blocking forever, stderr collection, and the SIGTERM->SIGKILL escalation
-//! both the post-`finish()` EOF watchdog and a mid-turn timeout need.
+//! (`agent_env`), a live stdout-line channel, stderr collection, and the SIGTERM->SIGKILL
+//! escalation used by the post-`finish()` EOF watchdog.
 //!
 //! Protocol semantics (what to write and how to interpret a line) stay in each backend; this
 //! module only owns the process itself.
@@ -27,8 +26,6 @@ pub struct SpawnConfig {
     pub eof_term_grace: Duration,
     /// Grace period after that SIGTERM before escalating to SIGKILL.
     pub eof_kill_grace: Duration,
-    /// Grace period after a wall-clock timeout's SIGTERM before escalating to SIGKILL.
-    pub kill_grace: Duration,
 }
 
 /// A spawned agent-CLI child process: piped stdin, a background-thread-fed stdout line channel,
@@ -42,7 +39,6 @@ pub struct ChildProcess {
     stderr_handle: Option<JoinHandle<String>>,
     eof_term_grace: Duration,
     eof_kill_grace: Duration,
-    kill_grace: Duration,
     cancellation: Option<CancellationToken>,
 }
 
@@ -52,9 +48,7 @@ pub enum NextLine {
     Closed,
 }
 
-/// A wall-clock deadline elapsed while waiting for the next line. The caller decides how to
-/// escalate (`escalate_after_timeout`) and what message to report — wording differs per backend
-/// ("claude CLI timed out…" vs "codex app-server timed out…").
+/// A caller-provided deadline elapsed while waiting for the next line.
 pub struct TimedOut;
 
 fn clean_up_missing_pipe(child: &mut Child, pipe: &str) -> io::Error {
@@ -130,7 +124,6 @@ impl ChildProcess {
             stderr_handle: Some(stderr_handle),
             eof_term_grace: config.eof_term_grace,
             eof_kill_grace: config.eof_kill_grace,
-            kill_grace: config.kill_grace,
             cancellation: None,
         })
     }
@@ -289,18 +282,6 @@ impl ChildProcess {
         }
     }
 
-    /// The wall-clock kill switch a live turn's read loop arms when its deadline elapses.
-    /// Leaves the child reaped (`wait_for_exit` already called) before returning.
-    pub fn escalate_after_timeout(&mut self) {
-        if !self.has_exited() {
-            self.signal_term();
-        }
-        if !self.wait_exited_within(self.kill_grace) {
-            self.signal_kill();
-        }
-        self.wait_for_exit();
-    }
-
     fn join_readers(&mut self) {
         if let Some(handle) = self.stdout_handle.take() {
             let _ = handle.join();
@@ -349,7 +330,6 @@ mod tests {
             ],
             eof_term_grace: Duration::from_millis(50),
             eof_kill_grace: Duration::from_millis(50),
-            kill_grace: Duration::from_millis(50),
         };
         let mut proc = ChildProcess::spawn(
             &config,
@@ -377,7 +357,6 @@ mod tests {
             args: vec!["-e".to_owned(), "setInterval(() => {}, 60000)".to_owned()],
             eof_term_grace: Duration::from_millis(50),
             eof_kill_grace: Duration::from_millis(50),
-            kill_grace: Duration::from_millis(50),
         };
         let mut proc = ChildProcess::spawn(
             &config,
@@ -404,7 +383,6 @@ mod tests {
             ],
             eof_term_grace: Duration::from_millis(50),
             eof_kill_grace: Duration::from_millis(50),
-            kill_grace: Duration::from_millis(50),
         };
         let started = Instant::now();
         let process = ChildProcess::spawn(
@@ -427,7 +405,6 @@ mod tests {
             args: vec!["-e".to_owned(), "setInterval(() => {}, 60000)".to_owned()],
             eof_term_grace: Duration::from_millis(50),
             eof_kill_grace: Duration::from_millis(50),
-            kill_grace: Duration::from_millis(50),
         };
         let mut proc = ChildProcess::spawn(
             &config,
