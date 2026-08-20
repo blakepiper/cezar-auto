@@ -57,7 +57,7 @@ impl Default for RepoGitUi {
             branches_selected: 0,
             new_branch_name: String::new(),
             new_branch_open: false,
-            highlighter: Highlighter::new(true),
+            highlighter: Highlighter::new(),
         }
     }
 }

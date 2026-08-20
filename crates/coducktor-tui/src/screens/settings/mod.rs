@@ -206,7 +206,7 @@ impl Default for SettingsUi {
             loading_file: None,
             file_editing: false,
             file_editor: Editor::default(),
-            file_highlighter: Highlighter::new(true),
+            file_highlighter: Highlighter::new(),
             file_viewport: 20,
             add_account_provider: 0,
         }

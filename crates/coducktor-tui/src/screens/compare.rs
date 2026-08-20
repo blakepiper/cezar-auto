@@ -40,7 +40,7 @@ impl Default for CompareUi {
             variant_diffs: HashMap::new(),
             diff_state: DiffViewState::default(),
             diff_scroll: 0,
-            highlighter: Highlighter::new(true),
+            highlighter: Highlighter::new(),
         }
     }
 }

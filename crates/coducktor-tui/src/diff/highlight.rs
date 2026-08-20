@@ -22,9 +22,8 @@ pub struct HighlightSpan {
     pub color: Color,
 }
 
-pub struct Highlighter {
-    dark: bool,
-}
+#[derive(Default)]
+pub struct Highlighter;
 
 static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
 static DARK_THEME: OnceLock<Theme> = OnceLock::new();
@@ -49,27 +48,27 @@ fn theme(dark: bool) -> &'static Theme {
 }
 
 impl Highlighter {
-    pub fn new(dark: bool) -> Self {
-        Self { dark }
-    }
-
-    /// A theme-only instance for tests/tools that never need a live palette choice.
-    #[cfg(test)]
-    pub fn default_dark() -> Self {
-        Self::new(true)
+    pub fn new() -> Self {
+        Self
     }
 
     /// Highlight a whole file's lines (already reassembled from hunk + expanded-gap text, in
     /// display order — see `render.rs`'s `line_list`) and return one span vec per input line.
     /// `None` when the file is too large or the language could not be resolved to anything
     /// beyond plain text (plain text still highlights, just with a single unstyled span, so
-    /// this only returns `None` above the line cap).
-    pub fn highlight_lines(&self, path: &str, lines: &[String]) -> Option<Vec<Vec<HighlightSpan>>> {
+    /// this only returns `None` above the line cap). `dark` picks the syntax palette that
+    /// matches the active theme's background so foreground colors stay legible.
+    pub fn highlight_lines(
+        &self,
+        path: &str,
+        lines: &[String],
+        dark: bool,
+    ) -> Option<Vec<Vec<HighlightSpan>>> {
         if lines.len() > HIGHLIGHT_MAX_LINES {
             return None;
         }
         let syntax_set = syntax_set();
-        let theme = theme(self.dark);
+        let theme = theme(dark);
         let extension = path.rsplit('.').next().unwrap_or("");
         let syntax = syntax_set
             .find_syntax_by_extension(extension)
@@ -109,10 +108,10 @@ mod tests {
 
     #[test]
     fn highlights_rust_keywords_with_a_non_default_color() {
-        let highlighter = Highlighter::default_dark();
+        let highlighter = Highlighter::new();
         let lines = vec!["fn main() {}".to_owned()];
         let spans = highlighter
-            .highlight_lines("lib.rs", &lines)
+            .highlight_lines("lib.rs", &lines, true)
             .expect("small file highlights");
         assert_eq!(spans.len(), 1);
         assert!(!spans[0].is_empty());
@@ -120,19 +119,23 @@ mod tests {
 
     #[test]
     fn a_file_past_the_line_cap_is_not_highlighted() {
-        let highlighter = Highlighter::default_dark();
+        let highlighter = Highlighter::new();
         let lines: Vec<String> = (0..HIGHLIGHT_MAX_LINES + 1)
             .map(|i| format!("line {i}"))
             .collect();
-        assert!(highlighter.highlight_lines("lib.rs", &lines).is_none());
+        assert!(
+            highlighter
+                .highlight_lines("lib.rs", &lines, true)
+                .is_none()
+        );
     }
 
     #[test]
     fn unknown_extensions_degrade_to_plain_text_rather_than_failing() {
-        let highlighter = Highlighter::default_dark();
+        let highlighter = Highlighter::new();
         let lines = vec!["whatever content".to_owned()];
         let spans = highlighter
-            .highlight_lines("file.made-up-extension", &lines)
+            .highlight_lines("file.made-up-extension", &lines, true)
             .expect("plain text still highlights");
         assert_eq!(spans.len(), 1);
     }

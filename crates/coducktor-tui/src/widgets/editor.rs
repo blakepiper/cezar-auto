@@ -472,7 +472,7 @@ impl Editor {
             .len()
             .max(1);
         let owned: Vec<String> = lines.iter().map(|line| (*line).to_owned()).collect();
-        let highlighted = highlighter.highlight_lines(path, &owned);
+        let highlighted = highlighter.highlight_lines(path, &owned, theme.name.is_dark());
         lines
             .iter()
             .enumerate()
@@ -509,7 +509,7 @@ impl Editor {
             .max(1);
         let content_width = usize::from(width).saturating_sub(gutter_width + 1).max(1);
         let owned: Vec<String> = lines.iter().map(|line| (*line).to_owned()).collect();
-        let highlighted = highlighter.highlight_lines(path, &owned);
+        let highlighted = highlighter.highlight_lines(path, &owned, theme.name.is_dark());
         let mut rows = Vec::new();
         for (index, line) in lines.iter().enumerate() {
             let length = line.chars().count();
@@ -699,7 +699,7 @@ mod tests {
             crate::theme::ThemeName::Dark,
             crate::theme::ColorCapability::TrueColor,
         );
-        let highlighter = Highlighter::new(true);
+        let highlighter = Highlighter::new();
         let lines = editor.render_lines("lib.rs", &highlighter, &theme, 10, true);
         let rendered: String = lines[0]
             .spans
@@ -722,7 +722,7 @@ mod tests {
             crate::theme::ThemeName::Dark,
             crate::theme::ColorCapability::TrueColor,
         );
-        let highlighter = Highlighter::new(true);
+        let highlighter = Highlighter::new();
         let lines = editor.render_wrapped_lines("notes.md", &highlighter, &theme, 3, 8, true);
         let rendered: String = lines
             .last()

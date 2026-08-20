@@ -68,7 +68,7 @@ impl Default for WorkflowsUi {
             import_open: false,
             import_yaml: Editor::default(),
             delete_confirm: None,
-            highlighter: crate::diff::Highlighter::new(true),
+            highlighter: crate::diff::Highlighter::new(),
         }
     }
 }

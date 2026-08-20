@@ -180,7 +180,7 @@ fn render_file(
     let expanded = state.expanded_for(&key);
 
     let line_list = build_line_list(&parsed.hunks, expanded);
-    let tokens = highlighter.highlight_lines(&file.path, &line_list.texts);
+    let tokens = highlighter.highlight_lines(&file.path, &line_list.texts, theme.name.is_dark());
 
     match mode {
         DiffMode::Unified => {
@@ -687,7 +687,7 @@ mod tests {
             crate::theme::ThemeName::Dark,
             crate::theme::ColorCapability::TrueColor,
         );
-        let highlighter = Highlighter::new(true);
+        let highlighter = Highlighter::new();
         let state = DiffViewState::default();
         let (lines, _) = render_files(
             std::slice::from_ref(&file),
@@ -726,7 +726,7 @@ mod tests {
             crate::theme::ThemeName::Dark,
             crate::theme::ColorCapability::TrueColor,
         );
-        let highlighter = Highlighter::new(true);
+        let highlighter = Highlighter::new();
         let mut state = DiffViewState::default();
         state.toggle_file(&file_key(&file));
         let (lines, _) = render_files(
@@ -748,7 +748,7 @@ mod tests {
             crate::theme::ThemeName::Dark,
             crate::theme::ColorCapability::TrueColor,
         );
-        let highlighter = Highlighter::new(true);
+        let highlighter = Highlighter::new();
         let state = DiffViewState::default();
         let (lines, _) = render_files(
             std::slice::from_ref(&file),

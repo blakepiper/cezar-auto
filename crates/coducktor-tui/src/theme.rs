@@ -27,6 +27,16 @@ impl ThemeName {
             Self::Lakes => "lakes",
         }
     }
+
+    /// Whether this theme's surfaces are dark, used to pick a matching syntax-highlighting
+    /// palette (e.g. so `Lakes`'s light parchment background doesn't pair with foreground
+    /// colors meant for a dark terminal).
+    pub const fn is_dark(self) -> bool {
+        match self {
+            Self::Dark | Self::LazyVim => true,
+            Self::Lakes => false,
+        }
+    }
 }
 
 /// Terminal color capability detected at startup.

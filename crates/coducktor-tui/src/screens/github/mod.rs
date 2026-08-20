@@ -102,7 +102,7 @@ impl Default for GithubUi {
             picked_skills: Vec::new(),
             skill_query: String::new(),
             markdown: RenderCache::new(),
-            highlighter: Highlighter::new(true),
+            highlighter: Highlighter::new(),
         }
     }
 }

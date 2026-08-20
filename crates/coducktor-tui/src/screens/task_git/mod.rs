@@ -80,7 +80,7 @@ impl Default for TaskGitUi {
             commit_detail: None,
             commit_diff_state: DiffViewState::default(),
             commit_diff_scroll: 0,
-            highlighter: Highlighter::new(true),
+            highlighter: Highlighter::new(),
         }
     }
 }

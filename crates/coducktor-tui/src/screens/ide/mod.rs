@@ -82,7 +82,7 @@ impl Default for IdeUi {
             editor: Editor::default(),
             dirty: false,
             last_viewport: 20,
-            highlighter: Highlighter::new(true),
+            highlighter: Highlighter::new(),
         }
     }
 }
