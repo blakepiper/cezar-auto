@@ -20,9 +20,17 @@ provider RPCs fail safely; and the remaining platform claims have recorded evide
 
 ## Audit inventory
 
-The original audit had twelve findings. Six have their functional correction complete, while the
-remaining six contain the work below. Several completed corrections still require focused
-verification, so this is not a percentage-complete release claim.
+The original audit had twelve findings. R12 (cross-platform CLI handoff / real-terminal evidence
+across Ghostty, kitty, WezTerm, iTerm2, Terminal.app, Alacritty, tmux, GNU screen) was explicitly
+descoped on 2026-08-19: verifying it properly means installing and driving each of those terminal
+emulator applications interactively, which no implementation session — human or agent — has had
+available, and chasing it further isn't worth it. `docs/tui/terminals.md` keeps whatever real
+results already exist there (some entries are genuine manual PTY runs) as a living, opportunistic
+checklist; it is no longer gated work in this plan. Of the remaining eleven findings, six have
+their functional correction complete, R1/R2/R3/R7/R9/R10 are done or substantially closed this
+session, and R8 has been audited with one real, documented, unmitigated risk (OpenCode permission
+events). Several completed corrections still require focused verification, so this is not a
+percentage-complete release claim.
 
 | Finding | Current state | What remains |
 | --- | --- | --- |
@@ -37,7 +45,7 @@ verification, so this is not a percentage-complete release claim.
 | R9 worker/process lifetime | partial, high | `TurnDispatch`'s per-run worker registry is now leak-checked (see evidence); still missing shutdown escalation — no bounded-wait-then-force-terminate path exists for a worker whose session ignores cancellation. |
 | R10 durable run state | fault matrix complete | Every named scenario in the original fault matrix (unknown nested keys, one bad entry, truncated index, permissions, concurrent writer conflict, disk-full, pre-rename crash, post-rename/directory-sync failure, repair-replacement failure) now has a dedicated or pre-existing regression test — see evidence. |
 | R11 dead UI/duplicate tests | primary correction complete | Extract oversized orchestration code only when needed by R1/R2; no standalone refactor. |
-| R12 cross-platform CLI handoff | code complete | Record real-terminal results where the platform is available; do not fabricate unavailable-platform evidence. |
+| ~~R12 cross-platform CLI handoff~~ | descoped 2026-08-19 | Removed from this plan — see the note above the table. `docs/tui/terminals.md` remains a living, non-gating checklist. |
 
 Evidence checked during this rewrite and subsequent implementation:
 
@@ -429,13 +437,12 @@ Required scaling assertions:
 - A 300-run project plus several registered projects can refresh without waiting on a blocked
   provider worker.
 
-### 5. Complete provider compatibility and terminal evidence (R8, R12)
+### 5. Complete provider compatibility (R8)
 
 Primary files:
 
 - `crates/coducktor-runners/src/{codex_runner.rs,claude_runner.rs,opencode_runner.rs,pi_runner.rs}`
 - committed sanitized fixtures under `fixtures/`
-- `docs/tui/terminals.md`
 
 Create a checked-in capability/fixture matrix for Codex, Claude, OpenCode, and pi. For each runner
 cover: first/follow-up turn, built-in and custom/MCP tools, shell/PTY, delegation, question and
@@ -450,11 +457,6 @@ in headless fixtures and document it as unsupported if no durable answer seam ex
 runtime logic to one installed CLI version and never commit credentials, full prompts, or raw
 provider captures.
 
-Run real terminal handoff only on platforms actually available to the agent. Record command,
-provider, terminal, pass/fail, date, and observed behavior in `docs/tui/terminals.md`. For an
-unavailable macOS/Windows platform, leave its existing “not run” state and do not infer success
-from Linux argument-construction tests.
-
 ## Explicitly out of scope
 
 - New product features and any browser/server/hosted surface.
@@ -463,6 +465,9 @@ from Linux argument-construction tests.
 - A standalone decomposition of large files. Extract only the coordinator/executor units needed to
   make ownership testable; make such moves behavior-preserving and separately committed.
 - Deleting worktrees during retention or repair, or weakening existing compatibility readers.
+- Real-terminal-emulator verification (R12, descoped — see the audit inventory note). Nothing in
+  this plan is gated on installing or driving Ghostty/kitty/WezTerm/iTerm2/Terminal.app/Alacritty/
+  tmux/GNU screen; `docs/tui/terminals.md` is upkept opportunistically, not as required work.
 
 ## Completion and handoff checklist
 
@@ -475,10 +480,8 @@ cargo fmt --all --check
 cargo tree --workspace
 ```
 
-Inspect changed `insta` snapshots manually. If terminal behavior was exercised, record the real
-result in `docs/tui/terminals.md`; headless output is not terminal evidence. Commit coherent
-changes on `main`, push `origin main`, and report the commit SHA, test commands/results, any
-platform verification that could not be performed, and any deliberately deferred item from the
+Inspect changed `insta` snapshots manually. Commit coherent changes on `main`, push `origin main`,
+and report the commit SHA, test commands/results, and any deliberately deferred item from the
 explicit out-of-scope list.
 
 The remediation is complete when all required tests above exist and pass, no provider I/O occurs
