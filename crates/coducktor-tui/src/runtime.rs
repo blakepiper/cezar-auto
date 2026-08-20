@@ -238,6 +238,7 @@ enum BackgroundResult {
         project: String,
         generation: u64,
         result: Result<coducktor_contract::GithubData, coducktor_client::EngineError>,
+        ui_state: Result<coducktor_contract::UiState, coducktor_client::EngineError>,
     },
     GithubComments {
         project: String,
@@ -1620,11 +1621,17 @@ fn execute_pending(
                 spawn_background(
                     background_handle,
                     background_sender,
-                    async move { engine_for_task.github(&scope).await },
-                    move |result| BackgroundResult::Github {
+                    async move {
+                        tokio::join!(
+                            engine_for_task.github(&scope),
+                            engine_for_task.ui_state(&scope),
+                        )
+                    },
+                    move |(result, ui_state)| BackgroundResult::Github {
                         project,
                         generation,
                         result,
+                        ui_state,
                     },
                 );
             }
@@ -2250,6 +2257,7 @@ fn drain_background_results(
                 project,
                 generation,
                 result,
+                ui_state,
             } => {
                 if !matches!(app.route(), app::Route::Github { project: route_project } if route_project == &project)
                     || app.github_ui.project != project
@@ -2260,6 +2268,18 @@ fn drain_background_results(
                 match result {
                     Ok(data) => app.github_ui.data = Some(data),
                     Err(error) => app.notice = Some(format!("load github failed: {error}")),
+                }
+                // Only restore the persisted tab the first time this screen instance sees a
+                // real ui_state — a tab switch made while this fetch was in flight already set
+                // its own `ui_state`, and that local choice must win over a now-stale fetch.
+                if app.github_ui.ui_state.is_none()
+                    && let Ok(state) = &ui_state
+                    && let Some(view) = state.github_view
+                {
+                    app.github_ui.tab = crate::screens::github::screen_tab(view);
+                }
+                if let Ok(state) = ui_state {
+                    app.github_ui.ui_state = Some(state);
                 }
             }
             BackgroundResult::GithubComments {
@@ -3539,6 +3559,9 @@ mod tests {
                 result: Err(coducktor_client::EngineError::Unavailable {
                     reason: "stale request".to_owned(),
                 }),
+                ui_state: Err(coducktor_client::EngineError::Unavailable {
+                    reason: "stale request".to_owned(),
+                }),
             })
             .unwrap();
 
@@ -3546,6 +3569,77 @@ mod tests {
 
         assert_eq!(app.github_request_generation, current_generation);
         assert!(app.notice.is_none());
+    }
+
+    #[test]
+    fn a_fetched_github_view_restores_the_tab_on_first_arrival_only() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        crate::screens::github::open(&mut app, "main");
+        assert_eq!(app.github_ui.tab, crate::screens::github::GithubTab::Issues);
+        let generation = app.github_request_generation;
+        let (sender, receiver) = channel();
+        let mut starts_in_flight = HashSet::new();
+
+        sender
+            .send(BackgroundResult::Github {
+                project: "main".to_owned(),
+                generation,
+                result: Ok(coducktor_contract::GithubData {
+                    available: true,
+                    reason: None,
+                    repo: Some("x/y".to_owned()),
+                    synced_at: None,
+                    issues: Vec::new(),
+                    prs: Vec::new(),
+                    label_colors: None,
+                }),
+                ui_state: Ok(coducktor_contract::UiState {
+                    github_view: Some(coducktor_contract::GithubView::Prs),
+                    ..coducktor_contract::UiState::default()
+                }),
+            })
+            .unwrap();
+        drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+
+        assert_eq!(
+            app.github_ui.tab,
+            crate::screens::github::GithubTab::Prs,
+            "the persisted tab is restored on the first ui_state this screen instance sees"
+        );
+
+        // A manual switch back to Issues must win over a second, now-stale arrival of the old
+        // fetch's ui_state rather than being silently reverted.
+        crate::screens::github::apply_hit(
+            &mut app,
+            crate::input::hitmap::GithubAction::SwitchTab(
+                crate::screens::github::GithubTab::Issues,
+            ),
+        );
+        sender
+            .send(BackgroundResult::Github {
+                project: "main".to_owned(),
+                generation,
+                result: Ok(coducktor_contract::GithubData {
+                    available: true,
+                    reason: None,
+                    repo: Some("x/y".to_owned()),
+                    synced_at: None,
+                    issues: Vec::new(),
+                    prs: Vec::new(),
+                    label_colors: None,
+                }),
+                ui_state: Ok(coducktor_contract::UiState {
+                    github_view: Some(coducktor_contract::GithubView::Prs),
+                    ..coducktor_contract::UiState::default()
+                }),
+            })
+            .unwrap();
+        drain_background_results(&receiver, &mut app, &mut starts_in_flight);
+        assert_eq!(
+            app.github_ui.tab,
+            crate::screens::github::GithubTab::Issues,
+            "a manual switch is not reverted by a stale ui_state arrival"
+        );
     }
 
     #[test]

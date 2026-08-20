@@ -53,6 +53,10 @@ pub struct GithubUi {
     pub project: String,
     pub data: Option<GithubData>,
     pub tab: GithubTab,
+    /// The engine's persisted per-project UI state, refreshed alongside `data`. Read to restore
+    /// `tab` on entry and merged with on every tab switch so a write only ever changes
+    /// `githubView`, never clobbers a sibling screen's own field in the same open bag.
+    pub ui_state: Option<coducktor_contract::UiState>,
     pub list_selected: usize,
     pub focus: GithubFocus,
 
@@ -84,6 +88,7 @@ impl Default for GithubUi {
             project: String::new(),
             data: None,
             tab: GithubTab::Issues,
+            ui_state: None,
             list_selected: 0,
             focus: GithubFocus::Tab,
             detail_item: None,
@@ -978,6 +983,21 @@ fn toggle_skill(app: &mut App, index: usize) {
     }
 }
 
+/// The contract's runner-agnostic tab preference for the persisted `githubView`.
+fn contract_view(tab: GithubTab) -> coducktor_contract::GithubView {
+    match tab {
+        GithubTab::Issues => coducktor_contract::GithubView::Issues,
+        GithubTab::Prs => coducktor_contract::GithubView::Prs,
+    }
+}
+
+pub(crate) fn screen_tab(view: coducktor_contract::GithubView) -> GithubTab {
+    match view {
+        coducktor_contract::GithubView::Issues => GithubTab::Issues,
+        coducktor_contract::GithubView::Prs => GithubTab::Prs,
+    }
+}
+
 pub fn apply_hit(app: &mut App, action: GithubAction) {
     match action {
         GithubAction::SwitchTab(tab) => {
@@ -987,6 +1007,12 @@ pub fn apply_hit(app: &mut App, action: GithubAction) {
             app.github_ui.comments = None;
             app.github_ui.merge_state = None;
             app.github_ui.pr_changes = None;
+            let mut state = app.github_ui.ui_state.clone().unwrap_or_default();
+            state.github_view = Some(contract_view(tab));
+            app.github_ui.ui_state = Some(state.clone());
+            let project = app.github_ui.project.clone();
+            app.pending
+                .push(PendingAction::PutUiState { project, state });
         }
         GithubAction::SelectItem(index) => {
             app.github_ui.list_selected = index;
@@ -1163,6 +1189,38 @@ mod tests {
         assert!(content.contains("GitHub is unavailable"));
         assert!(content.contains("gh not installed or not authenticated"));
         assert!(content.contains("gh CLI"));
+    }
+
+    #[test]
+    fn switching_tabs_persists_the_choice_without_clobbering_other_ui_state_fields() {
+        let mut app = app_with_github();
+        app.github_ui.ui_state = Some(coducktor_contract::UiState {
+            last_task: Some(coducktor_contract::TaskSource::Baseline),
+            ..coducktor_contract::UiState::default()
+        });
+
+        apply_hit(&mut app, GithubAction::SwitchTab(GithubTab::Prs));
+
+        assert_eq!(app.github_ui.tab, GithubTab::Prs);
+        assert_eq!(
+            app.github_ui.ui_state.as_ref().and_then(|s| s.github_view),
+            Some(coducktor_contract::GithubView::Prs)
+        );
+        let PendingAction::PutUiState { project, state } = app
+            .pending
+            .iter()
+            .find(|action| matches!(action, PendingAction::PutUiState { .. }))
+            .cloned()
+            .expect("tab switch queues a ui-state write")
+        else {
+            unreachable!()
+        };
+        assert_eq!(project, "main");
+        assert_eq!(state.github_view, Some(coducktor_contract::GithubView::Prs));
+        assert!(
+            state.last_task.is_some(),
+            "the write merges from the cached state instead of starting from a blank one"
+        );
     }
 
     #[test]
