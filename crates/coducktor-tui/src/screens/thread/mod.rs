@@ -1760,6 +1760,25 @@ mod tests {
     }
 
     #[test]
+    fn a_multi_line_routing_note_renders_every_considered_candidate() {
+        let mut app = app_with_run(RunStatus::Running);
+        app.thread_ui.push_event(
+            1.0,
+            event(
+                1.0,
+                "note",
+                json!({"message": "Auto routing · selected Codex\n  Claude — reserved quota"}),
+            ),
+        );
+        let content = render_to_string(&mut app);
+        assert!(
+            content.contains("Auto routing · selected Codex"),
+            "{content}"
+        );
+        assert!(content.contains("Claude — reserved quota"), "{content}");
+    }
+
+    #[test]
     fn review_send_back_refuses_empty_notes() {
         let mut app = app_with_run(RunStatus::Review);
         apply_action(&mut app, ThreadAction::ReviewSendBack);

@@ -437,10 +437,12 @@ fn routing_reason_label(reason: coducktor_contract::RoutingReasonCode) -> &'stat
     }
 }
 
-/// One readable transcript line for a routing decision. The full structured decision — every
-/// candidate considered, its score, its reason — is persisted on the step itself
-/// (`StepState::routing_decision`); this note is what a user sees without inspecting raw run
-/// state.
+/// A readable transcript note for a routing decision: one headline plus one indented line per
+/// other candidate and its reason — every candidate the router actually looked at, not just the
+/// winner, so "why not Claude?" is answered in the transcript itself rather than requiring a
+/// dive into raw run state. The full structured decision remains persisted on the step
+/// (`StepState::routing_decision`) and duplicated onto a `routing-decision` event for anything
+/// that wants it typed rather than parsed from this text.
 fn routing_decision_note(decision: &RoutingDecision) -> String {
     let others: Vec<String> = decision
         .considered
@@ -448,26 +450,20 @@ fn routing_decision_note(decision: &RoutingDecision) -> String {
         .filter(|candidate| candidate.reason != coducktor_contract::RoutingReasonCode::Selected)
         .map(|candidate| {
             format!(
-                "{} ({})",
+                "  {} — {}",
                 runner_label(candidate.runner),
                 routing_reason_label(candidate.reason)
             )
         })
         .collect();
-    match &decision.selected {
-        Some(selection) if others.is_empty() => {
-            format!("Auto routing · selected {}", runner_label(selection.runner))
-        }
-        Some(selection) => format!(
-            "Auto routing · selected {} — also considered: {}",
-            runner_label(selection.runner),
-            others.join(", ")
-        ),
-        None if others.is_empty() => "Auto routing · no candidates available".to_owned(),
-        None => format!(
-            "Auto routing · no eligible candidate — {}",
-            others.join(", ")
-        ),
+    let headline = match &decision.selected {
+        Some(selection) => format!("Auto routing · selected {}", runner_label(selection.runner)),
+        None => "Auto routing · no eligible candidate".to_owned(),
+    };
+    if others.is_empty() {
+        headline
+    } else {
+        format!("{headline}\n{}", others.join("\n"))
     }
 }
 
@@ -1390,6 +1386,10 @@ impl RunManager {
             self.append_event(
                 &run.id,
                 EventInput::new("note").field("message", routing_decision_note(decision)),
+            )?;
+            self.append_event(
+                &run.id,
+                EventInput::new("routing-decision").field("decision", decision),
             )?;
         }
         if input.runner == Some(RunnerSelection::Auto) {
@@ -5199,10 +5199,16 @@ mod tests {
         assert!(manager.read_events(&run.id).iter().any(|event| {
             event.event_type == "note"
                 && event.extra.get("message").and_then(Value::as_str)
-                    == Some(
-                        "Auto routing · selected Codex — also considered: Claude (reserved quota)",
-                    )
+                    == Some("Auto routing · selected Codex\n  Claude — reserved quota")
         }));
+        assert!(
+            manager.read_events(&run.id).iter().any(|event| {
+                event.event_type == "routing-decision"
+                    && event.extra.get("decision")
+                        == Some(&serde_json::to_value(&decision).unwrap())
+            }),
+            "the full structured decision is also durably persisted as its own event"
+        );
     }
 
     #[test]
