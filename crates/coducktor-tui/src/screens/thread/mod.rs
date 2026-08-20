@@ -1730,6 +1730,36 @@ mod tests {
     }
 
     #[test]
+    fn a_session_scoped_permission_option_is_flagged_as_persistent() {
+        let mut app = app_with_run(RunStatus::Running);
+        app.thread_ui.push_event(
+            1.0,
+            event(
+                1.0,
+                "permission.requested",
+                json!({
+                    "requestId": "permission-1",
+                    "title": "Allow command: cargo test?",
+                    "options": [
+                        {"id": "allow_once", "label": "Allow once", "kind": "allow_once"},
+                        {"id": "allow_session", "label": "Allow session", "kind": "allow_always"},
+                        {"id": "reject_once", "label": "Reject", "kind": "reject_once"}
+                    ]
+                }),
+            ),
+        );
+        let content = render_to_string(&mut app);
+        assert!(
+            content.contains("Allow session (remembers this choice)"),
+            "a session-scoped grant is flagged as persistent: {content}"
+        );
+        assert!(
+            !content.contains("Allow once (remembers this choice)"),
+            "a once-only grant is not: {content}"
+        );
+    }
+
+    #[test]
     fn review_send_back_refuses_empty_notes() {
         let mut app = app_with_run(RunStatus::Review);
         apply_action(&mut app, ThreadAction::ReviewSendBack);

@@ -520,6 +520,7 @@ pub fn reduce_thread(events: &[RunEvent], options: ThreadReduceOptions) -> Threa
                     .map(|option| UiAskOption {
                         label: option.label,
                         description: None,
+                        kind: Some(option.kind),
                     })
                     .collect();
                 let idx = current_turn(&mut turns, &mut turn_seq);
@@ -1017,6 +1018,7 @@ mod tests {
                     "title": "Allow command: cargo test?",
                     "options": [
                         {"id":"allow_once","label":"Allow once","kind":"allow_once"},
+                        {"id":"allow_session","label":"Allow session","kind":"allow_always"},
                         {"id":"reject_once","label":"Reject","kind":"reject_once"}
                     ]
                 }),
@@ -1033,6 +1035,15 @@ mod tests {
         };
         assert_eq!(ask.questions[0].header, "Permission");
         assert_eq!(ask.questions[0].options[0].label, "Allow once");
+        assert_eq!(
+            ask.questions[0].options[0].kind,
+            Some(coducktor_protocol::PermissionOptionKind::AllowOnce)
+        );
+        assert_eq!(
+            ask.questions[0].options[1].kind,
+            Some(coducktor_protocol::PermissionOptionKind::AllowAlways),
+            "a session-scoped grant is tagged so the UI can flag it as persistent"
+        );
         assert!(ask.resolved);
     }
 

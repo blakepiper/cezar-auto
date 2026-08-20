@@ -215,12 +215,16 @@ pub enum UiItem {
     Tool(UiToolItem),
 }
 
-/// A structured AskUser option.
+/// A structured AskUser option. `kind` is `None` for an ordinary `DUCK:ASK` choice, which has no
+/// once-vs-always distinction; a permission-request option carries its `PermissionOptionKind` so
+/// the UI can flag a choice that outlives this one answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiAskOption {
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<PermissionOptionKind>,
 }
 
 /// A structured AskUser question.

@@ -427,11 +427,18 @@ pub fn render_ask_card(
             } else {
                 Style::default().fg(theme.palette.fg)
             };
+            let persists = matches!(
+                option.kind,
+                Some(coducktor_protocol::PermissionOptionKind::AllowAlways)
+                    | Some(coducktor_protocol::PermissionOptionKind::RejectAlways)
+            );
+            let label = if persists {
+                format!("  {marker} {} (remembers this choice)", option.label)
+            } else {
+                format!("  {marker} {}", option.label)
+            };
             frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    format!("  {marker} {}", option.label),
-                    style,
-                ))),
+                Paragraph::new(Line::from(Span::styled(label, style))),
                 Rect::new(area.x, row, area.width, 1),
             );
             hitmap.register(
