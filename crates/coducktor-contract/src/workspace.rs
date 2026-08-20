@@ -492,8 +492,6 @@ pub struct UiState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_usage: Option<BTreeMap<String, f64>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runs_view: Option<RunsView>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_view: Option<GithubView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appearance: Option<Appearance>,
@@ -501,14 +499,6 @@ pub struct UiState {
     pub prompt_templates: Option<Vec<PromptTemplate>>,
     #[serde(flatten, default)]
     pub extra: ExtraFields,
-}
-
-/// The task list view preference.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum RunsView {
-    List,
-    Table,
 }
 
 /// The GitHub tab view preference.
