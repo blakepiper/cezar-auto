@@ -21,10 +21,6 @@ records what is implemented and which terminal observations remain unverified.
   terminal reports mouse events at all; there's no separate capability gate.
 - **Alternate screen + raw mode.** Always on; restored via the panic hook and on
   clean exit (`terminal::restore()`).
-- **Welcome splash.** Interactive launches reveal the embedded root `logo.txt` line by line, then
-  enter the normal shell after a short hold; a key skips it and `q` still quits. Manually exercised
-  in this workspace's `script` pseudo-terminal at `120x60` on 2026-08-17: logo frames, shell
-  transition, splash `q` skip, and alternate-screen restoration all behaved as intended.
 - **Global settings.** Manually exercised through `:open /settings` in the same `script` pseudo-terminal
   at `120x40` on 2026-08-17: the `Global settings` panel exposed `Add repository` and `Appearance`,
   and quitting restored the alternate screen. Repeated at `120x40` on 2026-08-18 after adding

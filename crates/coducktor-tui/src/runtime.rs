@@ -25,7 +25,6 @@ use crate::cli::{Cli, Command};
 use crate::input::keymap::Keymap;
 use crate::terminal::AppTerminal;
 use crate::theme::Theme;
-use crate::welcome::WelcomeAnimation;
 use crate::{cli, headless, new_task_form, screens, terminal};
 
 const FRAME_BUDGET: Duration = Duration::from_millis(33);
@@ -3058,7 +3057,6 @@ async fn run(
     let (background_sender, background_receiver) = channel();
     let mut background_handle = BackgroundWorkers::new(tokio::runtime::Handle::current());
     let mut starts_in_flight = HashSet::new();
-    let mut welcome = WelcomeAnimation::new();
     let mut last_needs_you = usize::MAX;
     let mut bootstrap_applied = false;
     let mut launch_args_applied =
@@ -3086,7 +3084,6 @@ async fn run(
             launch_args_applied = true;
         }
         let mut pending_mouse = None;
-        let welcome_was_active = welcome.is_active();
         for _ in 0..INPUT_ITEMS_PER_FRAME {
             if !event::poll(Duration::ZERO)? {
                 break;
@@ -3095,17 +3092,10 @@ async fn run(
                 Event::Mouse(mouse) if mouse.kind == MouseEventKind::Moved => {
                     pending_mouse = Some(Event::Mouse(mouse));
                 }
-                event if welcome_was_active => {
-                    if welcome.handle_event(&event) {
-                        app.handle_event(event);
-                    }
-                }
                 event => app.handle_event(event),
             }
         }
-        if let Some(mouse) = pending_mouse
-            && !welcome_was_active
-        {
+        if let Some(mouse) = pending_mouse {
             app.handle_event(mouse);
         }
         for action in &app.pending {
@@ -3233,13 +3223,7 @@ async fn run(
                 });
             }
         }
-        terminal.draw(|frame| {
-            if welcome.is_active() {
-                welcome.render(frame, &app.theme);
-            } else {
-                app.render(frame);
-            }
-        })?;
+        terminal.draw(|frame| app.render(frame))?;
         if bootstrap.is_none() && !app.should_quit() {
             bootstrap = Some(spawn_prime(engine.clone()));
         }
