@@ -734,6 +734,8 @@ mod tests {
         let root = dir.path();
         let ok = |args: &[&str]| assert!(run_git(root, args).ok, "git {args:?} failed");
         ok(&["init", "-q", "-b", "main"]);
+        ok(&["config", "user.name", "test"]);
+        ok(&["config", "user.email", "test@local"]);
         fs::write(root.join("base.txt"), "base\n").unwrap();
         ok(&["add", "-A"]);
         ok(&[
