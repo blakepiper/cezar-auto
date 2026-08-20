@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# nix-start — build coducktor from this checkout with a nixpkgs Rust toolchain
+# and launch the freshly built binary straight out of target/.
+#
+# This exists because the documented install path (./install.sh, README's
+# "Install from a checkout") assumes `rustup` and `cargo install`, which need
+# an FHS-style dynamic linker setup that NixOS doesn't provide by default.
+# `nix-shell -p` sidesteps that by borrowing rustc/cargo/gcc from nixpkgs for
+# just the build, then we run the resulting binary directly from target/ —
+# no `cargo install`, no changes to PATH or the rest of the system.
+#
+# Personal convenience script for a NixOS checkout. Does not replace or alter
+# ./install.sh; non-Nix users keep using that.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$repo_root"
+
+if ! command -v nix-shell >/dev/null 2>&1; then
+  echo "error: nix-shell not found on PATH." >&2
+  echo "This script is for NixOS/Nix checkouts. Non-Nix users: run ./install.sh instead." >&2
+  exit 1
+fi
+
+echo "==> Building coducktor (release) via nix-shell (rustc, cargo, gcc)" >&2
+nix-shell -p rustc cargo gcc --run "cargo build --release -p coducktor-tui"
+
+echo "==> Launching target/release/duck" >&2
+exec "$repo_root/target/release/duck" "$@"
