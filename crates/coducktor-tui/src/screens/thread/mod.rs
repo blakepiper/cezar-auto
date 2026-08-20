@@ -445,6 +445,7 @@ fn build_transcript_items(
                 user_message.text.clone(),
             )));
         }
+        let mut agent_messages = Vec::new();
         let mut final_response = None;
         for entry in &turn.items {
             match entry {
@@ -453,7 +454,7 @@ fn build_transcript_items(
                         .and_then(|turn| turn.response.as_ref())
                         .is_some_and(|response| response.id == message.id);
                     if message.role == coducktor_protocol::MessageRole::Assistant && !is_final {
-                        items.push(TranscriptItem::Note(NoteItem::new(
+                        agent_messages.push(TranscriptItem::Note(NoteItem::new(
                             message.id.clone(),
                             message.text.clone(),
                             TranscriptNoteTone::Dim,
@@ -522,9 +523,6 @@ fn build_transcript_items(
                 ThreadEntry::Ask(_) => {}
             }
         }
-        if let Some(final_response) = final_response {
-            items.push(final_response);
-        }
         if let Some(plan) = &turn.plan_entries {
             let completed = plan
                 .iter()
@@ -540,6 +538,15 @@ fn build_transcript_items(
             && let Some(outcome) = outcome_item(projected)
         {
             items.push(outcome);
+        }
+        // Agent-authored text is what the user needs to read and respond to. Providers may open
+        // a message before dispatching the tools that support it (legacy text events are also
+        // folded into one early item), so preserving raw item order can strand that text in the
+        // middle of a long activity list. Keep commentary together at the turn's tail and the
+        // final response last so sticky-bottom always exposes the agent's latest words.
+        items.append(&mut agent_messages);
+        if let Some(final_response) = final_response {
+            items.push(final_response);
         }
     }
     if let Some(prompt) = pending_prompt {
@@ -1972,6 +1979,56 @@ mod tests {
         let content = render_to_string(&mut app);
         assert!(content.contains("Waiting for your reply."));
         assert!(!content.contains("Working…"));
+    }
+
+    #[test]
+    fn waiting_session_keeps_agent_text_after_later_tool_activity() {
+        let mut app = app_with_run(RunStatus::Waiting);
+        app.thread_ui.push_events([
+            (
+                1.0,
+                event(
+                    1.0,
+                    "item.started",
+                    json!({
+                        "item": {
+                            "kind": "message",
+                            "id": "agent-question",
+                            "role": "assistant",
+                            "text": "Which export format should I use?",
+                            "phase": "commentary"
+                        }
+                    }),
+                ),
+            ),
+            (
+                2.0,
+                event(
+                    2.0,
+                    "tool-call",
+                    json!({"id": "inspect", "tool": "shell", "input": {"cmd": "inspect"}}),
+                ),
+            ),
+            (
+                3.0,
+                event(
+                    3.0,
+                    "tool-result",
+                    json!({"toolCallId": "inspect", "result": "done"}),
+                ),
+            ),
+        ]);
+
+        assert_eq!(
+            app.thread_ui
+                .transcript
+                .items()
+                .last()
+                .map(TranscriptItem::id),
+            Some("agent-question")
+        );
+        let content = render_to_string(&mut app);
+        assert!(content.contains("Which export format should I use?"));
     }
 
     #[test]
