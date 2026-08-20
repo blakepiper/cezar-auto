@@ -935,6 +935,9 @@ pub enum PendingAction {
     SettingsSelectAgentProfile {
         input: coducktor_contract::SelectAgentProfileInput,
     },
+    ConnectProvider {
+        input: coducktor_contract::ProviderConnectInput,
+    },
     SettingsRegisterProject {
         root: String,
     },

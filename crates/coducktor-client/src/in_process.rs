@@ -32,7 +32,8 @@ use coducktor_contract::{
     OpenAgentAccountFileResponse, OpenInCliResponse, OpenInInput, OpenProjectInResponse,
     OpenTargetsResponse, ParsedWorkflow, PatchRunInput, PickVariantRequest, PickVariantResponse,
     PlanResponse, PresentRepoResponse, ProjectListEntry, ProjectSource, ProjectStatus,
-    ProjectsResponse, ProviderConnectionState, ProviderStatus, ProviderStatusResponse,
+    ProjectsResponse, ProviderConnectAlreadyConnected, ProviderConnectInput, ProviderConnectOpened,
+    ProviderConnectResponse, ProviderConnectionState, ProviderStatus, ProviderStatusResponse,
     ProviderUsageError, ProviderUsageHealth, ProviderUsageSnapshot, ProviderUsageWindow,
     ProviderUsageWindowKind, QueuedMessagePatchInput, QuotaProvider, RUN_HISTORY_PAGE_ITEMS,
     ReclaimWorktreesResponse, RegisterProjectInput, RegisterProjectResponse,
@@ -2103,6 +2104,63 @@ impl InProcessEngine {
         tokio::task::spawn_blocking(provider_status_response)
             .await
             .map_err(|error| EngineError::Transport(error.to_string()))
+    }
+
+    /// Open the provider's own interactive login flow in a new terminal window — the same
+    /// hand-off `open_in_cli` uses to resume a session, so auth stays entirely with the agent
+    /// CLI and never touches this process's stdio. Only the default profile is supported: a
+    /// non-default `profile_id` needs a config-dir environment override this seam doesn't set.
+    pub async fn connect_provider(
+        &self,
+        input: &ProviderConnectInput,
+    ) -> Result<ProviderConnectResponse, EngineError> {
+        if input.profile_id.is_some() {
+            return Err(EngineError::Conflict {
+                reason: "connecting a non-default account profile is not supported yet".to_owned(),
+            });
+        }
+        let Some(login_args) = provider_login_args(input.provider) else {
+            return Err(EngineError::Conflict {
+                reason: format!(
+                    "{} has no interactive login command",
+                    runner_display_name(input.provider)
+                ),
+            });
+        };
+        let status = self.provider_status().await?;
+        let program = provider_executable(input.provider);
+        let command = std::iter::once(program.as_str())
+            .chain(login_args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let already_connected = status.providers.iter().any(|provider| {
+            provider.provider == input.provider
+                && provider.status == ProviderConnectionState::Connected
+        });
+        if already_connected {
+            return Ok(ProviderConnectResponse::AlreadyConnected(
+                ProviderConnectAlreadyConnected {
+                    opened: false,
+                    connected: true,
+                    command,
+                },
+            ));
+        }
+        let repo_root = self.repo_root.clone();
+        let opened = tokio::task::spawn_blocking(move || {
+            open_terminal_for_command(&repo_root, &program, &login_args)
+        })
+        .await
+        .map_err(|error| EngineError::Transport(error.to_string()))?;
+        if !opened {
+            return Err(EngineError::Conflict {
+                reason: "no supported terminal launcher found".to_owned(),
+            });
+        }
+        Ok(ProviderConnectResponse::Opened(ProviderConnectOpened {
+            opened: true,
+            command,
+        }))
     }
 
     pub async fn agent_profiles(&self) -> Result<AgentProfilesResponse, EngineError> {
@@ -8485,6 +8543,27 @@ fn provider_install_hint(provider: Runner) -> &'static str {
     }
 }
 
+/// The default profile's interactive login subcommand, spawnable as `program` + these args in a
+/// fresh terminal. `None` when the provider has no such one-shot command — pi's `/login` is a
+/// slash command typed inside its own interactive session, not something this seam can drive.
+fn provider_login_args(provider: Runner) -> Option<Vec<String>> {
+    match provider {
+        Runner::Claude => Some(vec!["auth".to_owned(), "login".to_owned()]),
+        Runner::Codex => Some(vec!["login".to_owned()]),
+        Runner::OpenCode => Some(vec!["auth".to_owned(), "login".to_owned()]),
+        Runner::Pi => None,
+    }
+}
+
+fn runner_display_name(runner: Runner) -> &'static str {
+    match runner {
+        Runner::Claude => "Claude Code",
+        Runner::Codex => "Codex",
+        Runner::OpenCode => "OpenCode",
+        Runner::Pi => "pi",
+    }
+}
+
 fn provider_state_from_output(
     provider: Runner,
     stdout: &str,
@@ -11112,6 +11191,37 @@ mod tests {
         for provider in PROVIDER_IDS {
             assert!(status.providers.iter().any(|p| p.provider == provider));
         }
+    }
+
+    #[tokio::test]
+    async fn connect_provider_rejects_a_non_default_profile() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine
+            .connect_provider(&coducktor_contract::ProviderConnectInput {
+                provider: Runner::Claude,
+                profile_id: Some("work-claude".to_owned()),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(error, EngineError::Conflict { .. }));
+    }
+
+    #[tokio::test]
+    async fn connect_provider_reports_no_login_command_for_pi() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let error = engine
+            .connect_provider(&coducktor_contract::ProviderConnectInput {
+                provider: Runner::Pi,
+                profile_id: None,
+            })
+            .await
+            .unwrap_err();
+        let EngineError::Conflict { reason } = error else {
+            panic!("expected a conflict, got {error:?}");
+        };
+        assert!(reason.contains("no interactive login command"), "{reason}");
     }
 
     #[tokio::test]

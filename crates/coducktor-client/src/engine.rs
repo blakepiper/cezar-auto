@@ -12,13 +12,14 @@ use coducktor_contract::{
     IdeDirectoryResponse, IdeFileResponse, MarkAllReadResponse, MessageInput, MessageResponse,
     OpenAgentAccountFileInput, OpenAgentAccountFileResponse, OpenInCliResponse, OpenInInput,
     OpenProjectInResponse, OpenTargetsResponse, ParsedWorkflow, PatchRunInput, PickVariantRequest,
-    PickVariantResponse, PlanResponse, ProjectsResponse, ProviderStatusResponse,
-    QueuedMessagePatchInput, ReclaimWorktreesResponse, RegisterProjectInput,
-    RegisterProjectResponse, RemoveAgentProfileResponse, RemoveProjectResponse,
-    RemoveQueuedMessageResponse, RemoveWorktreeResponse, RepoBranchRequest, RepoBranchResponse,
-    RepoCommitPayload, RepoResponse, RunCommitsResponse, RunHistoryContext, RunHistoryPage, Runner,
-    RunnerModelCatalogResponse, RunsIndexResponse, SaveWorkflowInput, SaveWorkflowResponse,
-    Scratchpad, SelectAgentProfileInput, SetAgentConfigInput, SetConfigInput, SetScratchpadInput,
+    PickVariantResponse, PlanResponse, ProjectsResponse, ProviderConnectInput,
+    ProviderConnectResponse, ProviderStatusResponse, QueuedMessagePatchInput,
+    ReclaimWorktreesResponse, RegisterProjectInput, RegisterProjectResponse,
+    RemoveAgentProfileResponse, RemoveProjectResponse, RemoveQueuedMessageResponse,
+    RemoveWorktreeResponse, RepoBranchRequest, RepoBranchResponse, RepoCommitPayload, RepoResponse,
+    RunCommitsResponse, RunHistoryContext, RunHistoryPage, Runner, RunnerModelCatalogResponse,
+    RunsIndexResponse, SaveWorkflowInput, SaveWorkflowResponse, Scratchpad,
+    SelectAgentProfileInput, SetAgentConfigInput, SetConfigInput, SetScratchpadInput,
     SetWorkspaceConfigInput, SetWorkspaceUiStateInput, Skill, UiState, UpdateAgentProfileInput,
     UpdateProjectInput, UpdateProjectResponse, WorkflowsResponse, WorkspaceConfigResponse,
     WorkspaceUiState, WorkspaceUsageResponse, WorktreeEntry, WorktreesResponse,
@@ -89,6 +90,10 @@ pub trait Engine: Send + Sync {
         input: &SetConfigInput,
     ) -> Result<ConfigResponse, EngineError>;
     async fn provider_status(&self) -> Result<ProviderStatusResponse, EngineError>;
+    async fn connect_provider(
+        &self,
+        input: &ProviderConnectInput,
+    ) -> Result<ProviderConnectResponse, EngineError>;
     async fn models(&self, runner: Runner) -> Result<RunnerModelCatalogResponse, EngineError>;
     async fn github(&self, scope: &Scope) -> Result<GithubData, EngineError>;
 
@@ -506,6 +511,13 @@ impl Engine for InProcessEngine {
 
     async fn provider_status(&self) -> Result<ProviderStatusResponse, EngineError> {
         InProcessEngine::provider_status(self).await
+    }
+
+    async fn connect_provider(
+        &self,
+        input: &ProviderConnectInput,
+    ) -> Result<ProviderConnectResponse, EngineError> {
+        InProcessEngine::connect_provider(self, input).await
     }
 
     async fn models(&self, runner: Runner) -> Result<RunnerModelCatalogResponse, EngineError> {

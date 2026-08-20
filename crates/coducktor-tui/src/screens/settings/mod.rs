@@ -51,29 +51,32 @@ pub enum SettingsSection {
     Worktrees,
     PromptTemplates,
     Accounts,
+    Providers,
     Appearance,
     Notifications,
     Resources,
     Projects,
 }
 
-const SECTIONS: [SettingsSection; 9] = [
+const SECTIONS: [SettingsSection; 10] = [
     SettingsSection::Agents,
     SettingsSection::AgentConfig,
     SettingsSection::Worktrees,
     SettingsSection::PromptTemplates,
     SettingsSection::Accounts,
+    SettingsSection::Providers,
     SettingsSection::Appearance,
     SettingsSection::Notifications,
     SettingsSection::Resources,
     SettingsSection::Projects,
 ];
 
-const GLOBAL_SECTIONS: [SettingsSection; 6] = [
+const GLOBAL_SECTIONS: [SettingsSection; 7] = [
     SettingsSection::Agents,
     SettingsSection::Projects,
     SettingsSection::Appearance,
     SettingsSection::Accounts,
+    SettingsSection::Providers,
     SettingsSection::Notifications,
     SettingsSection::Resources,
 ];
@@ -86,6 +89,7 @@ impl SettingsSection {
             Self::Worktrees => "Worktrees",
             Self::PromptTemplates => "Prompt templates",
             Self::Accounts => "Agent accounts",
+            Self::Providers => "Providers",
             Self::Appearance => "Appearance",
             Self::Notifications => "Notifications",
             Self::Resources => "Resources",
@@ -169,6 +173,10 @@ pub struct SettingsUi {
     pub agent_config: Option<AgentConfigListing>,
     pub agent_profiles: Option<AgentProfilesResponse>,
     pub worktrees: Option<WorktreesResponse>,
+    pub provider_status: Option<coducktor_contract::ProviderStatusResponse>,
+    /// Set while a Connect attempt for this provider is in flight, so `activate_providers`
+    /// cannot fire a second overlapping request from a repeated Enter press.
+    pub connecting_provider: Option<Runner>,
 
     pub open_file: Option<AgentConfigFileContent>,
     /// File ID for the in-flight config-file read. It makes a fast selection change a
@@ -202,6 +210,8 @@ impl Default for SettingsUi {
             agent_config: None,
             agent_profiles: None,
             worktrees: None,
+            provider_status: None,
+            connecting_provider: None,
             open_file: None,
             loading_file: None,
             file_editing: false,
@@ -295,6 +305,7 @@ fn rows_for(app: &App, section: SettingsSection) -> Vec<Row> {
         SettingsSection::Worktrees => rows_worktrees(app),
         SettingsSection::PromptTemplates => rows_prompt_templates(app),
         SettingsSection::Accounts => rows_accounts(app),
+        SettingsSection::Providers => rows_providers(app),
         SettingsSection::Appearance => rows_appearance(app),
         SettingsSection::Notifications => rows_notifications(app),
         SettingsSection::Resources => rows_resources(app),
@@ -666,6 +677,80 @@ fn selected_default_label(profiles: &AgentProfilesResponse, runner: Runner) -> S
             .unwrap_or_else(|| id.clone()),
         None => "discovered (default)".to_owned(),
     }
+}
+
+fn rows_providers(app: &App) -> Vec<Row> {
+    let Some(status) = &app.settings_ui.provider_status else {
+        return vec![row("Loading…", "")];
+    };
+    RUNNERS
+        .iter()
+        .map(|&runner| {
+            row(
+                runner_label(runner),
+                provider_status_value(app, runner, status),
+            )
+        })
+        .collect()
+}
+
+fn provider_status_value(
+    app: &App,
+    runner: Runner,
+    status: &coducktor_contract::ProviderStatusResponse,
+) -> String {
+    let Some(entry) = status.providers.iter().find(|p| p.provider == runner) else {
+        return "unknown".to_owned();
+    };
+    if app.settings_ui.connecting_provider == Some(runner) {
+        return "connecting…".to_owned();
+    }
+    if entry.enabled == Some(false) {
+        return "disabled".to_owned();
+    }
+    match entry.status {
+        coducktor_contract::ProviderConnectionState::Connected => "connected".to_owned(),
+        coducktor_contract::ProviderConnectionState::NotInstalled => entry
+            .hint
+            .clone()
+            .unwrap_or_else(|| "not installed".to_owned()),
+        coducktor_contract::ProviderConnectionState::Disconnected => {
+            if runner == Runner::Pi {
+                "not connected · run `pi`, then type /login".to_owned()
+            } else {
+                "not connected · Enter to connect".to_owned()
+            }
+        }
+        coducktor_contract::ProviderConnectionState::Unknown => entry
+            .hint
+            .clone()
+            .unwrap_or_else(|| "status unknown".to_owned()),
+    }
+}
+
+fn activate_providers(app: &mut App, row: usize) {
+    let Some(status) = &app.settings_ui.provider_status else {
+        return;
+    };
+    let Some(&runner) = RUNNERS.get(row) else {
+        return;
+    };
+    let Some(entry) = status.providers.iter().find(|p| p.provider == runner) else {
+        return;
+    };
+    if entry.status != coducktor_contract::ProviderConnectionState::Disconnected
+        || runner == Runner::Pi
+        || app.settings_ui.connecting_provider.is_some()
+    {
+        return;
+    }
+    app.settings_ui.connecting_provider = Some(runner);
+    app.pending.push(PendingAction::ConnectProvider {
+        input: coducktor_contract::ProviderConnectInput {
+            provider: runner,
+            profile_id: None,
+        },
+    });
 }
 
 fn rows_appearance(app: &App) -> Vec<Row> {
@@ -1544,6 +1629,7 @@ fn activate(app: &mut App) {
         SettingsSection::Worktrees => activate_worktrees(app, row),
         SettingsSection::PromptTemplates => activate_prompt_templates(app, row),
         SettingsSection::Accounts => activate_accounts(app, row),
+        SettingsSection::Providers => activate_providers(app, row),
         SettingsSection::Appearance => cycle_appearance(app, row, false),
         SettingsSection::Notifications => toggle_notifications(app),
         SettingsSection::Resources => toggle_or_ignore_resource(app, row),
@@ -2362,7 +2448,7 @@ mod tests {
     #[test]
     fn resources_renders_provider_usage_and_unknown_limits_honestly() {
         let mut app = app_with_global_settings();
-        app.settings_ui.section = 5;
+        app.settings_ui.section = 6;
         app.settings_ui.workspace_usage = Some(WorkspaceUsageResponse {
             providers: vec![coducktor_contract::ProviderUsageSnapshot {
                 provider: coducktor_contract::QuotaProvider::Codex,
@@ -2406,10 +2492,101 @@ mod tests {
         assert!(!content.contains("100% available"));
     }
 
+    fn sample_provider_status() -> coducktor_contract::ProviderStatusResponse {
+        let entry = |provider, status, hint: Option<&str>| coducktor_contract::ProviderStatus {
+            provider,
+            status,
+            enabled: Some(true),
+            hint: hint.map(str::to_owned),
+            auth_failure_id: None,
+            profile_id: None,
+        };
+        coducktor_contract::ProviderStatusResponse {
+            providers: vec![
+                entry(
+                    Runner::Claude,
+                    coducktor_contract::ProviderConnectionState::Connected,
+                    None,
+                ),
+                entry(
+                    Runner::Codex,
+                    coducktor_contract::ProviderConnectionState::Disconnected,
+                    None,
+                ),
+                entry(
+                    Runner::OpenCode,
+                    coducktor_contract::ProviderConnectionState::NotInstalled,
+                    Some("Install OpenCode, then run `opencode auth login`."),
+                ),
+                entry(
+                    Runner::Pi,
+                    coducktor_contract::ProviderConnectionState::Disconnected,
+                    None,
+                ),
+            ],
+        }
+    }
+
+    #[test]
+    fn providers_section_renders_status_and_connect_hint() {
+        let mut app = app_with_global_settings();
+        app.settings_ui.section = 4;
+        app.settings_ui.provider_status = Some(sample_provider_status());
+        let content = render_text(&mut app, 120, 40);
+        assert!(content.contains("connected"), "{content}");
+        assert!(
+            content.contains("not connected · Enter to connect"),
+            "{content}"
+        );
+        assert!(content.contains("Install OpenCode, then run"), "{content}");
+        assert!(
+            content.contains("not connected · run `pi`"),
+            "pi cannot be driven by a one-shot command: {content}"
+        );
+    }
+
+    #[test]
+    fn activate_providers_only_queues_a_connect_for_a_disconnected_non_pi_provider() {
+        let mut app = app_with_global_settings();
+        app.settings_ui.section = 4;
+        app.settings_ui.provider_status = Some(sample_provider_status());
+
+        // Claude (row 0) is already connected — activating it does nothing.
+        app.settings_ui.row = 0;
+        activate(&mut app);
+        assert!(app.pending.is_empty());
+
+        // Codex (row 1) is disconnected — activating it queues a connect and marks it in flight.
+        app.settings_ui.row = 1;
+        activate(&mut app);
+        assert_eq!(
+            app.pending,
+            vec![PendingAction::ConnectProvider {
+                input: coducktor_contract::ProviderConnectInput {
+                    provider: Runner::Codex,
+                    profile_id: None,
+                },
+            }]
+        );
+        assert_eq!(app.settings_ui.connecting_provider, Some(Runner::Codex));
+        app.pending.clear();
+
+        // A second Enter while a connect is already in flight does not queue a duplicate.
+        app.settings_ui.row = 1;
+        activate(&mut app);
+        assert!(app.pending.is_empty());
+        app.settings_ui.connecting_provider = None;
+
+        // pi (row 3) is disconnected but has no one-shot login command — never queued.
+        app.settings_ui.row = 3;
+        activate(&mut app);
+        assert!(app.pending.is_empty());
+    }
+
     #[test]
     fn resources_render_a_status_for_every_retained_policy_control() {
         let mut app = app_with_global_settings();
-        app.settings_ui.section = 5;
+        app.settings_ui.section = 6;
         let content = render_text(&mut app, 120, 40);
 
         for (label, unavailable) in [

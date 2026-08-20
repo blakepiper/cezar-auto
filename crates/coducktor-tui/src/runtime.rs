@@ -207,6 +207,7 @@ struct SettingsSnapshot {
     agent_config: Option<coducktor_contract::AgentConfigListing>,
     agent_profiles: Option<coducktor_contract::AgentProfilesResponse>,
     worktrees: Option<coducktor_contract::WorktreesResponse>,
+    provider_status: Option<coducktor_contract::ProviderStatusResponse>,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -2035,6 +2036,37 @@ fn execute_pending(
                     },
                 );
             }
+            PendingAction::ConnectProvider { input } => {
+                let provider = input.provider;
+                let engine_for_task = engine.clone();
+                spawn_background(
+                    background_handle,
+                    background_sender,
+                    async move { engine_for_task.connect_provider(&input).await },
+                    move |result| {
+                        BackgroundResult::AppUpdate(Box::new(move |app| {
+                            app.settings_ui.connecting_provider = None;
+                            app.settings_ui.notice = Some(match result {
+                                Ok(coducktor_contract::ProviderConnectResponse::Opened(opened)) => {
+                                    format!("opened `{}` in a new terminal", opened.command)
+                                }
+                                Ok(
+                                    coducktor_contract::ProviderConnectResponse::AlreadyConnected(
+                                        _,
+                                    ),
+                                ) => format!(
+                                    "{} is already connected",
+                                    crate::screens::settings::runner_label(provider)
+                                ),
+                                Err(error) => format!("connect failed: {error}"),
+                            });
+                            app.pending.push(PendingAction::LoadSettings {
+                                project: app.settings_ui.project.clone(),
+                            });
+                        }))
+                    },
+                );
+            }
             PendingAction::SettingsRegisterProject { root } => {
                 let input = coducktor_contract::RegisterProjectInput { root };
                 let engine_for_task = engine.clone();
@@ -2928,6 +2960,7 @@ async fn load_settings_snapshot(engine: Arc<dyn Engine>, project: &str) -> Setti
         agent_config,
         agent_profiles,
         worktrees,
+        provider_status,
     ) = tokio::join!(
         engine.config(&scope),
         engine.workspace_config(),
@@ -2936,6 +2969,7 @@ async fn load_settings_snapshot(engine: Arc<dyn Engine>, project: &str) -> Setti
         engine.agent_config(&scope),
         engine.agent_profiles(),
         engine.worktrees(&scope),
+        engine.provider_status(),
     );
     SettingsSnapshot {
         config: config.ok(),
@@ -2945,6 +2979,7 @@ async fn load_settings_snapshot(engine: Arc<dyn Engine>, project: &str) -> Setti
         agent_config: agent_config.ok(),
         agent_profiles: agent_profiles.ok(),
         worktrees: worktrees.ok(),
+        provider_status: provider_status.ok(),
     }
 }
 
@@ -2974,6 +3009,9 @@ fn apply_settings_snapshot(app: &mut App, snapshot: SettingsSnapshot) {
     }
     if let Some(worktrees) = snapshot.worktrees {
         app.settings_ui.worktrees = Some(worktrees);
+    }
+    if let Some(status) = snapshot.provider_status {
+        app.settings_ui.provider_status = Some(status);
     }
 }
 
