@@ -44,10 +44,10 @@ use coducktor_contract::{
     RunnerModelOption, RunnerSelection, RunsIndexResponse, SaveWorkflowInput, SaveWorkflowResponse,
     SelectAgentProfileInput, SetAgentConfigInput, SetConfigInput, SetWorkspaceConfigInput,
     SetWorkspaceUiStateInput, Skill, StatusEntry, UpdateAgentProfileInput, UpdateProjectInput,
-    UpdateProjectResponse, UsageConfidence, UserMcpListing, WorkflowStepDef, WorkflowsResponse,
-    WorkspaceConfigResponse, WorkspaceUiState, WorkspaceUsagePolicyHealth, WorkspaceUsageRefresh,
-    WorkspaceUsageResponse, WorktreeDirEntry, WorktreeEntry, WorktreeEntryType, WorktreeInfo,
-    WorktreeRunStatus, WorktreesResponse,
+    UpdateProjectResponse, UsageAggregate, UsageAggregateScope, UsageConfidence, UserMcpListing,
+    WorkflowStepDef, WorkflowsResponse, WorkspaceConfigResponse, WorkspaceUiState,
+    WorkspaceUsagePolicyHealth, WorkspaceUsageRefresh, WorkspaceUsageResponse, WorktreeDirEntry,
+    WorktreeEntry, WorktreeEntryType, WorktreeInfo, WorktreeRunStatus, WorktreesResponse,
 };
 use coducktor_core::config::{RepoConfig, load_config};
 use coducktor_core::handoff::{append_handoff_heartbeat, handoff_progress_excerpt, read_handoff};
@@ -2087,7 +2087,12 @@ impl InProcessEngine {
             return Ok(cached);
         }
         let config = self.loaded_workspace_config();
-        let response = collect_workspace_usage(&self.repo_root, &config).await;
+        let consumption = self
+            .run_snapshot
+            .read()
+            .map(|snapshot| coducktor_recorded_consumption(&snapshot))
+            .unwrap_or_default();
+        let response = collect_workspace_usage(&self.repo_root, &config, &consumption).await;
         if let Ok(mut cache) = self.usage_cache.lock() {
             *cache = Some(CachedWorkspaceUsage {
                 response: response.clone(),
@@ -5325,6 +5330,7 @@ fn unknown_usage_snapshot(
     profile: &ResolvedAgentProfile,
     status: ProviderConnectionState,
     fetched_at: &str,
+    consumption: Option<UsageAggregate>,
 ) -> ProviderUsageSnapshot {
     let (health, code, message) = match status {
         ProviderConnectionState::Connected => (
@@ -5363,7 +5369,7 @@ fn unknown_usage_snapshot(
         source: "local_cli".to_owned(),
         stale: false,
         windows: Vec::new(),
-        consumption: None,
+        consumption,
         error: Some(ProviderUsageError {
             code: code.to_owned(),
             message: message.to_owned(),
@@ -5668,6 +5674,7 @@ async fn probe_codex_usage(
 async fn collect_workspace_usage(
     repo_root: &Path,
     config: &coducktor_core::workspace::config::WorkspaceConfig,
+    consumption: &[(Runner, UsageAggregate)],
 ) -> WorkspaceUsageResponse {
     let fetched_at = coducktor_core::time::now_iso8601();
     let store = coducktor_core::workspace::agent_accounts::load_agent_accounts(
@@ -5714,7 +5721,15 @@ async fn collect_workspace_usage(
                 continue;
             }
         }
-        providers.push(unknown_usage_snapshot(&profile, status, &fetched_at));
+        providers.push(unknown_usage_snapshot(
+            &profile,
+            status,
+            &fetched_at,
+            consumption
+                .iter()
+                .find(|(runner, _)| *runner == profile.provider)
+                .map(|(_, usage)| usage.clone()),
+        ));
     }
     let ready_candidates = providers
         .iter()
@@ -8921,6 +8936,65 @@ fn model_usage_breakdown(
     )
 }
 
+/// Coducktor's own recorded token/cost totals per provider, summed across every step of every
+/// run in the shared in-memory snapshot (no disk I/O — the same cache `runs_index` reads)
+/// created since the start of the current UTC calendar month. This is the "Coducktor-recorded"
+/// fallback the workspace usage panel shows for a provider whose own quota API can't be queried
+/// (Claude has none at all; others degrade to it on a failed probe) — evidence the app already
+/// has from running the work, not a new telemetry source.
+fn coducktor_recorded_consumption(
+    run_snapshot: &BTreeMap<String, BTreeMap<String, coducktor_contract::RunRecord>>,
+) -> Vec<(Runner, UsageAggregate)> {
+    let month_start = {
+        let now = coducktor_core::time::now_iso8601();
+        format!("{}-01T00:00:00.000Z", &now[..7])
+    };
+    // `Runner` is a small, Copy, non-`Ord` enum — a handful of linear-scanned entries is both
+    // simpler and no slower than a map for at most four runners.
+    let mut totals: Vec<(Runner, f64, f64, f64)> = Vec::new();
+    for project_runs in run_snapshot.values() {
+        for run in project_runs.values() {
+            if run.created_at < month_start {
+                continue;
+            }
+            for step in &run.steps {
+                let Some(backend) = step.backend.or(run.runner) else {
+                    continue;
+                };
+                let entry = match totals.iter_mut().find(|(runner, ..)| *runner == backend) {
+                    Some(entry) => entry,
+                    None => {
+                        totals.push((backend, 0.0, 0.0, 0.0));
+                        totals.last_mut().expect("just pushed")
+                    }
+                };
+                entry.1 += step.input_tokens.unwrap_or(0.0);
+                entry.2 += step.output_tokens.unwrap_or(0.0);
+                entry.3 += step.cost_usd.unwrap_or(0.0);
+            }
+        }
+    }
+    totals
+        .into_iter()
+        .filter(|(_, input, output, cost)| *input > 0.0 || *output > 0.0 || *cost > 0.0)
+        .map(|(runner, input_tokens, output_tokens, cost_usd)| {
+            (
+                runner,
+                UsageAggregate {
+                    scope: UsageAggregateScope::CoducktorOnly,
+                    period_start: Some(month_start.clone()),
+                    period_end: None,
+                    input_tokens: Some(input_tokens),
+                    output_tokens: Some(output_tokens),
+                    reasoning_tokens: None,
+                    cache_tokens: None,
+                    cost_usd: (cost_usd > 0.0).then_some(cost_usd),
+                },
+            )
+        })
+        .collect()
+}
+
 /// Keep the workspace index useful without copying an unbounded task body into it.
 /// Character iteration makes the bound safe for UTF-8 and the source text remains in RunRecord.
 fn prompt_preview(task: &str) -> Option<String> {
@@ -11321,6 +11395,59 @@ mod tests {
                 .pct,
             50.0
         );
+    }
+
+    fn run_with_steps(
+        id: &str,
+        created_at: &str,
+        steps: Vec<coducktor_contract::runs::StepState>,
+    ) -> coducktor_contract::RunRecord {
+        coducktor_contract::RunRecord {
+            id: id.to_owned(),
+            created_at: created_at.to_owned(),
+            steps,
+            ..coducktor_contract::RunRecord::default()
+        }
+    }
+
+    fn snapshot_of(
+        run: coducktor_contract::RunRecord,
+    ) -> BTreeMap<String, BTreeMap<String, coducktor_contract::RunRecord>> {
+        let mut runs = BTreeMap::new();
+        runs.insert(run.id.clone(), run);
+        let mut projects = BTreeMap::new();
+        projects.insert("proj".to_owned(), runs);
+        projects
+    }
+
+    #[test]
+    fn coducktor_recorded_consumption_sums_priced_steps_by_backend_within_the_current_month() {
+        let mut step = priced_step("claude-sonnet", 2.0);
+        step.backend = Some(Runner::Claude);
+        step.input_tokens = Some(100.0);
+        step.output_tokens = Some(50.0);
+        let run = run_with_steps("run-1", &coducktor_core::time::now_iso8601(), vec![step]);
+
+        let consumption = coducktor_recorded_consumption(&snapshot_of(run));
+
+        let (runner, usage) = consumption
+            .iter()
+            .find(|(runner, _)| *runner == Runner::Claude)
+            .expect("claude has recorded consumption this month");
+        assert_eq!(*runner, Runner::Claude);
+        assert_eq!(usage.scope, UsageAggregateScope::CoducktorOnly);
+        assert_eq!(usage.input_tokens, Some(100.0));
+        assert_eq!(usage.output_tokens, Some(50.0));
+        assert_eq!(usage.cost_usd, Some(2.0));
+    }
+
+    #[test]
+    fn coducktor_recorded_consumption_excludes_runs_from_before_this_month() {
+        let mut step = priced_step("claude-sonnet", 2.0);
+        step.backend = Some(Runner::Claude);
+        let run = run_with_steps("run-1", "2020-01-01T00:00:00.000Z", vec![step]);
+
+        assert!(coducktor_recorded_consumption(&snapshot_of(run)).is_empty());
     }
 
     #[tokio::test]

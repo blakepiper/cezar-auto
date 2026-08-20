@@ -28,6 +28,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::app::{App, ConfirmRequest, PendingAction, Route};
 use crate::diff::Highlighter;
+use crate::screens::runs_util::{compact_tokens, format_cost};
 use crate::theme::{Theme, ThemeName};
 use crate::widgets::editor::Editor;
 use crate::widgets::picker::{Picker, PickerEvent, PickerItem};
@@ -790,6 +791,28 @@ fn rows_notifications(app: &App) -> Vec<Row> {
     vec![row("Desktop notifications", bool_label(enabled))]
 }
 
+/// `1.2M tokens · $8.40 this month` (or just the token count when cost wasn't recorded) — the
+/// fallback shown for a provider whose own quota API can't say what's left, using what Coducktor
+/// itself has observed running the work instead.
+fn format_usage_aggregate(usage: &coducktor_contract::UsageAggregate) -> String {
+    let tokens = usage.input_tokens.unwrap_or(0.0) + usage.output_tokens.unwrap_or(0.0);
+    let period = if usage.scope == coducktor_contract::UsageAggregateScope::CoducktorOnly {
+        " this month"
+    } else {
+        ""
+    };
+    match usage.cost_usd {
+        Some(cost) if cost > 0.0 => {
+            format!(
+                "{} tokens · {}{period}",
+                compact_tokens(tokens),
+                format_cost(Some(cost))
+            )
+        }
+        _ => format!("{} tokens{period}", compact_tokens(tokens)),
+    }
+}
+
 fn rows_resources(app: &App) -> Vec<Row> {
     let Some(config) = &app.settings_ui.workspace_config else {
         return vec![row("Loading…", "")];
@@ -883,6 +906,12 @@ fn rows_resources(app: &App) -> Vec<Row> {
                 && let Some(error) = &provider.error
             {
                 rows.push(row("  Limits", &error.message));
+            }
+            if let Some(consumption) = &provider.consumption {
+                rows.push(row(
+                    "  Coducktor-recorded",
+                    format_usage_aggregate(consumption),
+                ));
             }
         }
     } else {
@@ -2490,6 +2519,50 @@ mod tests {
         assert!(content.contains("Monitoring wake interval (min)"));
         assert!(content.contains("Memory limit (MB) · unavailable"));
         assert!(!content.contains("100% available"));
+    }
+
+    #[test]
+    fn resources_shows_coducktor_recorded_consumption_when_the_providers_own_quota_is_unknown() {
+        let mut app = app_with_global_settings();
+        app.settings_ui.section = 6;
+        app.settings_ui.workspace_usage = Some(WorkspaceUsageResponse {
+            providers: vec![coducktor_contract::ProviderUsageSnapshot {
+                provider: coducktor_contract::QuotaProvider::Claude,
+                profile_id: "default".to_owned(),
+                upstream_provider: None,
+                health: coducktor_contract::ProviderUsageHealth::Unknown,
+                confidence: Some(coducktor_contract::UsageConfidence::Unknown),
+                fetched_at: "2026-08-20T00:00:00.000Z".to_owned(),
+                source: "local_cli".to_owned(),
+                stale: false,
+                windows: Vec::new(),
+                consumption: Some(coducktor_contract::UsageAggregate {
+                    scope: coducktor_contract::UsageAggregateScope::CoducktorOnly,
+                    period_start: Some("2026-08-01T00:00:00.000Z".to_owned()),
+                    period_end: None,
+                    input_tokens: Some(1_100_000.0),
+                    output_tokens: Some(100_000.0),
+                    reasoning_tokens: None,
+                    cache_tokens: None,
+                    cost_usd: Some(8.4),
+                }),
+                error: Some(coducktor_contract::ProviderUsageError {
+                    code: "limits_unknown".to_owned(),
+                    message: "Claude reports limits only after a real session observation"
+                        .to_owned(),
+                }),
+                extra: Default::default(),
+            }],
+            refresh: None,
+            policy_health: None,
+        });
+        let content = render_text(&mut app, 120, 40);
+        assert!(
+            content.contains("Coducktor-recorded"),
+            "the fallback consumption row renders: {content}"
+        );
+        assert!(content.contains("1.2M tokens"), "{content}");
+        assert!(content.contains("$8.40 this month"), "{content}");
     }
 
     fn sample_provider_status() -> coducktor_contract::ProviderStatusResponse {
