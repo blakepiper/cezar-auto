@@ -140,9 +140,39 @@ pub fn map_opencode_event(value: &Value, state: &OpencodeUiMapperState) -> Openc
             map_message_info(properties, state)
         }
         "message.part.updated" | "message.part.created" => map_part(properties, state),
+        "permission.asked" => map_permission_requested(properties, state),
         "session.idle" => map_idle(properties, state),
         "session.error" => map_session_error(properties, state),
         _ => no_events(state),
+    }
+}
+
+/// OpenCode's HTTP permission replies have no durable interactive answer seam in this runner.
+/// The live session rejects a valid request and fails the turn; preserve that outcome in the
+/// normalized mapper instead of silently dropping the bus event and leaving a replayed turn open.
+fn map_permission_requested(
+    properties: &Map<String, Value>,
+    state: &OpencodeUiMapperState,
+) -> OpencodeUiMapping {
+    let request_id = as_nonempty_str(properties.get("id"))
+        .or_else(|| as_nonempty_str(properties.get("requestID")));
+    let permission = as_nonempty_str(properties.get("permission"));
+    if request_id.is_none() || permission.is_none() {
+        return no_events(state);
+    }
+    let mut next = state.clone();
+    if next.current_turn_id.is_some() {
+        next.turn_errored = true;
+    }
+    OpencodeUiMapping {
+        events: vec![UiEvent::SessionError {
+            message: format!(
+                "OpenCode requested permission {:?}; Coducktor declined it because interactive OpenCode permission prompts are unavailable",
+                permission.unwrap_or_default()
+            ),
+            fatal: false,
+        }],
+        state: next,
     }
 }
 

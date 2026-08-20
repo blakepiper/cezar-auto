@@ -21,6 +21,7 @@ const SESSION_ID = 'ses_mock_1';
 const MESSAGE_ID = 'msg_mock_1';
 
 let sse = null;
+let pendingPermissionPrompt = null;
 const send = (event) => {
   if (sse) sse.write(`data: ${JSON.stringify(event)}\n\n`);
 };
@@ -54,7 +55,31 @@ const server = createServer((req, res) => {
       res.end(JSON.stringify({ id: SESSION_ID, title: 'coducktor task' }));
       return;
     }
+    if (req.method === 'POST' && url === `/session/${SESSION_ID}/permission/per_mock_1/reply`) {
+      const reply = JSON.parse(body || '{}').reply;
+      res.writeHead(reply === 'reject' ? 204 : 400);
+      res.end();
+      if (reply === 'reject' && pendingPermissionPrompt) {
+        pendingPermissionPrompt.writeHead(403, { 'content-type': 'application/json' });
+        pendingPermissionPrompt.end(JSON.stringify({ error: 'permission rejected' }));
+        pendingPermissionPrompt = null;
+      }
+      return;
+    }
     if (req.method === 'POST' && url === `/session/${SESSION_ID}/message`) {
+      if (body.includes('mock:permission')) {
+        pendingPermissionPrompt = res;
+        send({
+          type: 'permission.asked',
+          properties: {
+            id: 'per_mock_1',
+            sessionID: SESSION_ID,
+            permission: 'external_directory',
+            patterns: ['/outside/*'],
+          },
+        });
+        return;
+      }
       send({ type: 'message.updated', properties: { info: info({}) } });
       send({
         type: 'message.part.updated',

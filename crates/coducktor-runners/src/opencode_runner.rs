@@ -1,8 +1,10 @@
 //! `AgentSession` over `opencode serve` — the local OpenCode process with an SSE event stream.
 //!
-//! Auth is the host's opencode config/logins. The agent runs autonomously (auto-approved
-//! permissions); OpenCode has no per-tool allowlist, so `spec.allowed_tools`/`bash_allowlist` are
-//! ignored. `spec.model` is `provider/model`, split via [`crate::model_identity`].
+//! Auth is the host's opencode config/logins. OpenCode has no per-tool allowlist, so
+//! `spec.allowed_tools`/`bash_allowlist` are ignored. An unexpected OpenCode permission request
+//! is explicitly rejected and fails the turn: Coducktor has no reply UI for that provider's HTTP
+//! permission protocol, so silently assuming permissions are auto-approved could hang a run.
+//! `spec.model` is `provider/model`, split via [`crate::model_identity`].
 //!
 //! # Architecture notes
 //!
@@ -256,6 +258,23 @@ fn read_json_response(url: &str, response: reqwest::blocking::Response) -> Resul
         return Ok(Value::Object(Map::new()));
     }
     Ok(serde_json::from_str(&text).unwrap_or(Value::Object(Map::new())))
+}
+
+/// Encode an untrusted server-issued identifier for one HTTP path segment. OpenCode normally uses
+/// ASCII ids, but this keeps an unexpected future spelling from changing the request path.
+fn path_segment(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            const HEX: &[u8; 16] = b"0123456789ABCDEF";
+            encoded.push('%');
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+    }
+    encoded
 }
 
 /// Connect the SSE stream on a background thread and block until it is either connected (headers
@@ -528,6 +547,15 @@ impl OpencodeSession {
         let event_type = evt.get("type").and_then(Value::as_str).unwrap_or("");
         let props = evt.get("properties").cloned().unwrap_or(Value::Null);
         match event_type {
+            "permission.asked" => {
+                let Some((request_id, session_id, permission)) = permission_request(&props) else {
+                    return Ok(());
+                };
+                self.reject_permission(request_id, session_id)?;
+                return Err(format!(
+                    "OpenCode requested permission {permission:?}; Coducktor declined it because interactive OpenCode permission prompts are unavailable"
+                ));
+            }
             "message.updated" | "message.created" | "message.completed" => {
                 let info = props.get("info").cloned().unwrap_or_else(|| props.clone());
                 let message_id = info.get("id").and_then(Value::as_str).map(str::to_owned);
@@ -544,6 +572,24 @@ impl OpencodeSession {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Decline a live permission request before failing the turn. Current OpenCode exposes the
+    /// session-scoped v2 route; older local servers used a global route, so retain that bounded
+    /// fallback to avoid converting an unsupported prompt into a permanent provider wait.
+    fn reject_permission(&self, request_id: &str, session_id: &str) -> Result<(), String> {
+        let body = json!({"reply": "reject"});
+        let request_id = path_segment(request_id);
+        let session_id = path_segment(session_id);
+        let current = format!(
+            "{}/session/{session_id}/permission/{request_id}/reply",
+            self.base_url
+        );
+        if permission_reply(&self.client, &current, &body).is_ok() {
+            return Ok(());
+        }
+        let legacy = format!("{}/permission/{request_id}/reply", self.base_url);
+        permission_reply(&self.client, &legacy, &body)
     }
 
     /// Only surface parts of assistant messages — the user's own message streams over the same
@@ -680,6 +726,43 @@ impl OpencodeSession {
     }
 }
 
+/// Extract the small, safe subset needed to settle a permission. Both `id` (current OpenCode)
+/// and `requestID` (older server bus spelling) are accepted during the protocol transition.
+fn permission_request(properties: &Value) -> Option<(&str, &str, &str)> {
+    let request_id = properties
+        .get("id")
+        .or_else(|| properties.get("requestID"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= 512)?;
+    let session_id = properties
+        .get("sessionID")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= 512)?;
+    let permission = properties
+        .get("permission")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= 128)
+        .unwrap_or("unspecified");
+    Some((request_id, session_id, permission))
+}
+
+fn permission_reply(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    body: &Value,
+) -> Result<(), String> {
+    let response = client
+        .post(url)
+        .json(body)
+        .send()
+        .map_err(|error| error.to_string())?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("permission reply returned {}", response.status()))
+    }
+}
+
 fn opencode_parts(text: &str, images: &[PromptImage]) -> Vec<Value> {
     let mut parts = Vec::with_capacity(images.len() + usize::from(!text.is_empty()));
     for image in images {
@@ -810,6 +893,34 @@ mod tests {
             body.pointer("/parts/0/text").and_then(Value::as_str),
             Some("answer the question")
         );
+        session.finish(&mut |_| Ok(())).unwrap();
+    }
+
+    #[test]
+    fn permission_request_is_rejected_and_fails_instead_of_hanging() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = open_opencode_session(
+            &node_config(),
+            spec_for(dir.path(), "mock:permission"),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        let (result, events) = run_turn(&mut session);
+        assert!(
+            result
+                .as_ref()
+                .is_err_and(|error| error.contains("interactive OpenCode permission prompts")),
+            "unexpected permission result: {result:?}"
+        );
+        assert!(events.iter().any(|event| {
+            event.event_type == "error"
+                && event
+                    .extra
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .is_some_and(|message| message.contains("external_directory"))
+        }));
         session.finish(&mut |_| Ok(())).unwrap();
     }
     use std::path::PathBuf;

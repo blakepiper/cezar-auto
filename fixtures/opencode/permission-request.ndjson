@@ -1,0 +1,2 @@
+{"type":"permission.asked","properties":{"id":"per_01J8ZE88","sessionID":"ses_01J8ZE00MAIN","permission":"external_directory","patterns":["/tmp/other/*"]}}
+{"type":"session.idle","properties":{"sessionID":"ses_01J8ZE00MAIN"}}

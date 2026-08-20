@@ -20,10 +20,9 @@ provider RPCs fail safely; and the remaining platform claims have recorded evide
 
 ## Audit inventory
 
-The audit findings covered by this plan have their functional corrections complete: R1/R2/R3/R7/
-R9/R10 are done or closed this session, and R8 has been audited with one real, documented,
-unmitigated risk (OpenCode permission events). Several completed corrections still require focused
-verification, so this is not a percentage-complete release claim.
+The audit findings covered by this plan have their functional corrections complete. Several
+completed corrections still require focused verification, so this is not a percentage-complete
+release claim.
 
 | Finding | Current state | What remains |
 | --- | --- | --- |
@@ -34,7 +33,7 @@ verification, so this is not a percentage-complete release claim.
 | R5 checks and review gate | complete | Do not redesign; preserve its integration coverage. |
 | R6 selected account environment | complete | Do not redesign; preserve its integration coverage. |
 | R7 resource settings | complete except memory limit | Workspace/repository leases and monitoring wake policy are both wired end-to-end now (see evidence); `memory_limit_mb` remains saved-but-honestly-unavailable, which is the intended final state, not a gap. |
-| R8 runner protocol drift | matrix audited, one real risk found and documented | Every "degraded" cell in `CAPABILITY_MATRIX.md` was individually re-verified against the runner's own code (see evidence): most were already safe under a shared/generic path or genuinely have no corresponding wire event to test; pi's untested image path was backfilled with a real fixture and the mapper code it needed. One real, unmitigated risk remains: OpenCode's mapper recognizes no permission/approval event at all, so if the live server ever emits one, it is silently dropped by the fallback — a genuine hang-until-timeout risk, not proven safe by any fixture. |
+| R8 runner protocol drift | complete | Every "degraded" cell in `CAPABILITY_MATRIX.md` was individually re-verified against the runner's own code (see evidence): most were already safe under a shared/generic path or genuinely have no corresponding wire event to test; pi's image path and OpenCode's permission-request path have focused fixtures and safe terminal behavior. |
 | R9 worker/process lifetime | complete | `TurnDispatch`'s per-run worker registry is leak-checked (see evidence) and `InProcessEngine::shutdown` now closes the escalation gap: a confirmed TUI quit signals every in-flight cancellation token, waits a bounded grace period, reaps whatever finished, and returns regardless — see evidence for the required "ignores cancellation" test. |
 | R10 durable run state | fault matrix complete | Every named scenario in the original fault matrix (unknown nested keys, one bad entry, truncated index, permissions, concurrent writer conflict, disk-full, pre-rename crash, post-rename/directory-sync failure, repair-replacement failure) now has a dedicated or pre-existing regression test — see evidence. |
 | R11 dead UI/duplicate tests | primary correction complete | Extract oversized orchestration code only when needed by R1/R2; no standalone refactor. |
@@ -249,18 +248,15 @@ Evidence checked during this rewrite and subsequent implementation:
     hung, just not "precise." Left unfixed pending a grounded understanding of OpenCode's actual
     wire shape for file/image tool output (no precedent for it exists anywhere in this codebase to
     confirm against).
-  - **OpenCode Review/approval** is the one genuine, unmitigated risk this pass found: `opencode.rs`
-    recognizes exactly five SSE event types (`message.*`, `session.idle`, `session.error`) and
-    silently no-ops everything else. Nothing in `open_opencode_session` passes any auto-approve
-    flag at spawn or session-creation time — the module doc's "auto-approved permissions" is an
-    *assumption* about the live server's default configuration, not something this integration
-    enforces. If a user's OpenCode installation ever has a permission policy that emits an
-    approval-request bus event, this mapper would drop it silently and the turn would stall until
-    the wall-clock timeout, with no diagnostic. Not fixed this pass: guessing at OpenCode's actual
-    event-type name without a grounded source would risk encoding a wrong assumption into a
-    "golden" fixture, worse than leaving the gap explicit. Needs either confirmation from
-    OpenCode's own API reference or a real local install to observe the actual event shape before
-    a fixture (and matching handling) can be added correctly.
+  - **OpenCode Review/approval** is now grounded in OpenCode's `permission.asked` bus event and
+    its session-scoped HTTP reply route. `opencode_runner.rs` validates the bounded request and
+    session identifiers, percent-encodes them as path segments, posts a `reject` reply through
+    the current route (with the legacy global route as a compatibility fallback), then fails the
+    turn with a precise diagnostic. It deliberately does not pretend Coducktor can render and
+    resume an interactive OpenCode approval flow. `permission-request` covers the normalized
+    error/terminal event sequence, while
+    `permission_request_is_rejected_and_fails_instead_of_hanging` drives the HTTP/SSE serve mock
+    end-to-end and proves the reply is sent before the turn settles.
 - Worktree admission, production checks/diff inspection, account-home propagation, durable index
   salvage/repair, `repair-runs`, reader teardown, and portable handoff argument construction are
   present with focused regressions. Do not duplicate them.

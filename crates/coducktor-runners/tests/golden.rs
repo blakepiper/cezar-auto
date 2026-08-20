@@ -47,6 +47,7 @@ const OPENCODE_FIXTURES: &[&str] = &[
     "subtask-nested",
     "subtask-overlapping",
     "session-error",
+    "permission-request",
 ];
 
 const OPENCODE_SESSION_ID: &str = "ses_01J8ZE00MAIN";
