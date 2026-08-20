@@ -475,7 +475,8 @@ fn spawn_background<F, T, M>(
     sender: &BackgroundSender<BackgroundResult>,
     future: F,
     map: M,
-) where
+) -> bool
+where
     F: Future<Output = T> + Send + 'static,
     T: Send + 'static,
     M: FnOnce(T) -> BackgroundResult + Send + 'static,
@@ -492,6 +493,9 @@ fn spawn_background<F, T, M>(
         let _ = sender.send(BackgroundResult::AppUpdate(Box::new(|app| {
             app.notice = Some("background command queue is full; please retry".to_owned());
         })));
+        false
+    } else {
+        true
     }
 }
 
@@ -1057,7 +1061,9 @@ fn execute_pending(
                 let scope = Scope::Project(project.clone());
                 let engine_for_task = engine.clone();
                 let id_for_task = id.clone();
-                spawn_background(
+                let result_project = project.clone();
+                let result_id = id.clone();
+                let queued = spawn_background(
                     background_handle,
                     background_sender,
                     async move {
@@ -1068,11 +1074,14 @@ fn execute_pending(
                     },
                     move |result| BackgroundResult::SessionMutation {
                         action: SessionMutation::Send,
-                        project,
-                        id,
+                        project: result_project,
+                        id: result_id,
                         result,
                     },
                 );
+                if !queued {
+                    app.thread_ui.restore_pending_prompt(&project, &id);
+                }
             }
             PendingAction::CancelRun { project, id } => {
                 let scope = Scope::Project(project.clone());
@@ -1109,7 +1118,9 @@ fn execute_pending(
                 };
                 let engine_for_task = engine.clone();
                 let id_for_task = id.clone();
-                spawn_background(
+                let result_project = project.clone();
+                let result_id = id.clone();
+                let queued = spawn_background(
                     background_handle,
                     background_sender,
                     async move {
@@ -1120,11 +1131,14 @@ fn execute_pending(
                     },
                     move |result| BackgroundResult::SessionMutation {
                         action: SessionMutation::Continue,
-                        project,
-                        id,
+                        project: result_project,
+                        id: result_id,
                         result,
                     },
                 );
+                if !queued {
+                    app.thread_ui.restore_pending_prompt(&project, &id);
+                }
             }
             PendingAction::FinishRun { project, id } => {
                 let scope = Scope::Project(project.clone());
