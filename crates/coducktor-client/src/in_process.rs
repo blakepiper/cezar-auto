@@ -28,7 +28,7 @@ use coducktor_contract::{
     GithubRefStatusAvailable, GithubRefStatusData, GithubRefStatusUnavailable, GroupResponse,
     GroupVariant, HealthProject, HealthResponse, IdeDirectoryResponse, IdeEntry, IdeEntryType,
     IdeFileResponse, ImageInput, LogEntry, MarkAllReadResponse, MessageInput, MessageResponse,
-    ModelCatalogSource, ModelDiscoveryRunner, OpenAgentAccountFileInput,
+    ModelCatalogSource, ModelDiscoveryRunner, ModelUsageEntry, OpenAgentAccountFileInput,
     OpenAgentAccountFileResponse, OpenInCliResponse, OpenInInput, OpenProjectInResponse,
     OpenTargetsResponse, ParsedWorkflow, PatchRunInput, PickVariantRequest, PickVariantResponse,
     PlanResponse, PresentRepoResponse, ProjectListEntry, ProjectSource, ProjectStatus,
@@ -8834,6 +8834,7 @@ fn api_run(record: coducktor_contract::RunRecord) -> ApiRun {
 
 #[allow(clippy::too_many_lines)]
 fn run_index_entry(project_id: &str, run: coducktor_contract::RunRecord) -> RunIndexEntry {
+    let model_usage = model_usage_breakdown(&run.steps);
     RunIndexEntry {
         project_id: project_id.to_owned(),
         id: run.id,
@@ -8865,10 +8866,59 @@ fn run_index_entry(project_id: &str, run: coducktor_contract::RunRecord) -> RunI
         usage: None,
         runner: run.runner,
         model: run.model,
-        model_usage: None,
+        model_usage,
         model_identity: run.model_identity,
         reasoning_effort: None,
     }
+}
+
+/// A run's cost broken down by the concrete model each step actually used, as a percentage of
+/// the run's total step cost. `None` when every step shares one model — auto-failover across
+/// providers mid-run is the case this exists to make visible, not the common single-model run.
+/// Steps a runner never priced (`cost_usd: None`, e.g. a runner with no cost telemetry) are
+/// excluded from both the per-model total and the denominator, so an unpriced step neither
+/// dilutes nor is misrepresented in the percentages of the steps that were priced.
+fn model_usage_breakdown(
+    steps: &[coducktor_contract::runs::StepState],
+) -> Option<Vec<ModelUsageEntry>> {
+    let mut totals: Vec<(
+        String,
+        Option<coducktor_contract::ConcreteReasoningEffort>,
+        f64,
+    )> = Vec::new();
+    for step in steps {
+        let (Some(model), Some(cost)) = (step.model_identity.as_deref(), step.cost_usd) else {
+            continue;
+        };
+        match totals.iter_mut().find(|(existing, reasoning, _)| {
+            existing == model && *reasoning == step.reasoning_effort
+        }) {
+            Some((_, _, total)) => *total += cost,
+            None => totals.push((model.to_owned(), step.reasoning_effort, cost)),
+        }
+    }
+    let distinct_models = totals
+        .iter()
+        .map(|(model, _, _)| model.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    if distinct_models < 2 {
+        return None;
+    }
+    let total: f64 = totals.iter().map(|(_, _, cost)| cost).sum();
+    if total <= 0.0 {
+        return None;
+    }
+    Some(
+        totals
+            .into_iter()
+            .map(|(model, reasoning_effort, cost)| ModelUsageEntry {
+                model,
+                reasoning_effort,
+                pct: cost / total * 100.0,
+            })
+            .collect(),
+    )
 }
 
 /// Keep the workspace index useful without copying an unbounded task body into it.
@@ -11181,6 +11231,97 @@ mod tests {
     // `workspace_config_path` to accept an injected `EnvSource` the way `coducktor-core`'s lower-
     // level `load_agent_accounts`/`merge_write_agent_accounts` already do, which is a real gap in
     // the current engine behavior, not something introduced by this test.
+
+    fn priced_step(model_identity: &str, cost_usd: f64) -> coducktor_contract::runs::StepState {
+        coducktor_contract::runs::StepState {
+            id: "step".to_owned(),
+            name: "step".to_owned(),
+            kind: coducktor_contract::StepKind::Agent,
+            status: coducktor_contract::StepStatus::Done,
+            iterations: 1.0,
+            tokens_used: 0.0,
+            input_tokens: None,
+            output_tokens: None,
+            usage_invocations_started: None,
+            usage_invocations_observed: None,
+            usage_turns_started: None,
+            usage_turns_recorded: None,
+            usage_invocation_epoch: None,
+            started_at: None,
+            finished_at: None,
+            error: None,
+            session_id: None,
+            backend: None,
+            requested_runner: None,
+            profile_id: None,
+            reasoning_effort: None,
+            cost_usd: Some(cost_usd),
+            model_identity: Some(model_identity.to_owned()),
+            route_key: None,
+            recovery_generation: None,
+            routing_decision: None,
+            extra: Map::new(),
+        }
+    }
+
+    #[test]
+    fn model_usage_breakdown_is_absent_for_a_single_model_run() {
+        let steps = vec![
+            priced_step("claude-sonnet", 1.0),
+            priced_step("claude-sonnet", 2.0),
+        ];
+        assert_eq!(model_usage_breakdown(&steps), None);
+    }
+
+    #[test]
+    fn model_usage_breakdown_splits_cost_by_model_when_more_than_one_was_used() {
+        let steps = vec![
+            priced_step("claude-sonnet", 3.0),
+            priced_step("gpt-5.1-codex", 1.0),
+        ];
+        let usage = model_usage_breakdown(&steps).unwrap();
+        assert_eq!(usage.len(), 2);
+        let claude = usage
+            .iter()
+            .find(|entry| entry.model == "claude-sonnet")
+            .unwrap();
+        let codex = usage
+            .iter()
+            .find(|entry| entry.model == "gpt-5.1-codex")
+            .unwrap();
+        assert_eq!(claude.pct, 75.0);
+        assert_eq!(codex.pct, 25.0);
+    }
+
+    #[test]
+    fn model_usage_breakdown_ignores_unpriced_steps_in_both_the_total_and_the_split() {
+        let mut unpriced = priced_step("claude-sonnet", 1.0);
+        unpriced.cost_usd = None;
+        let steps = vec![
+            unpriced,
+            priced_step("claude-sonnet", 1.0),
+            priced_step("gpt-5.1-codex", 1.0),
+        ];
+        let usage = model_usage_breakdown(&steps).unwrap();
+        // The unpriced claude-sonnet step contributes to neither side, so the priced steps split
+        // evenly — an unpriced step must not silently deflate the model it belongs to.
+        assert_eq!(
+            usage
+                .iter()
+                .find(|e| e.model == "claude-sonnet")
+                .unwrap()
+                .pct,
+            50.0
+        );
+        assert_eq!(
+            usage
+                .iter()
+                .find(|e| e.model == "gpt-5.1-codex")
+                .unwrap()
+                .pct,
+            50.0
+        );
+    }
 
     #[tokio::test]
     async fn provider_status_reports_one_entry_per_provider() {

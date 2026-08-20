@@ -13,7 +13,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::app::{App, PendingAction, RowMenu, RowMenuItem};
 use crate::input::hitmap::HitAction;
 use crate::screens::runs_util::{
-    TaskView, UsageCell, UsageKind, format_cost, format_mem, short_age,
+    TaskView, UsageCell, UsageKind, format_cost_with_split, format_mem, short_age,
 };
 use crate::theme::Theme;
 use crate::widgets::table::{ColumnId, Table, TableCell, TableRow};
@@ -400,7 +400,7 @@ fn run_cells(
         Style::default().fg(theme.palette.review),
     ));
     cells.push(TableCell::new(
-        format_cost(entry.cost_usd),
+        format_cost_with_split(entry.cost_usd, entry.model_usage.as_deref()),
         Style::default().fg(theme.palette.soft_fg),
     ));
     cells.push(TableCell::new(

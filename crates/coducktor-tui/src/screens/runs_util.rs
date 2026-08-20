@@ -156,6 +156,21 @@ pub fn format_cost(usd: Option<f64>) -> String {
     }
 }
 
+/// [`format_cost`] plus a compact `×N` marker when the run split its cost across more than one
+/// model — same-provider failover or a mid-run model change, the case a single blended total
+/// hides. `model_usage` is only ever `Some` for more than one distinct model, so its presence
+/// alone is the signal; the marker doesn't need to re-derive that count itself.
+pub fn format_cost_with_split(
+    usd: Option<f64>,
+    model_usage: Option<&[coducktor_contract::ModelUsageEntry]>,
+) -> String {
+    let cost = format_cost(usd);
+    match model_usage {
+        Some(usage) if !usage.is_empty() => format!("{cost} ×{}", usage.len()),
+        _ => cost,
+    }
+}
+
 /// Format memory usage as `612 MB` or `1.2 GB`.
 pub fn format_mem(bytes: Option<f64>) -> String {
     match bytes {
@@ -634,6 +649,24 @@ mod tests {
             },
             usage: None,
         }
+    }
+
+    #[test]
+    fn cost_with_split_flags_a_run_that_used_more_than_one_model() {
+        assert_eq!(format_cost_with_split(Some(1.20), None), "$1.20");
+        let usage = vec![
+            coducktor_contract::ModelUsageEntry {
+                model: "claude-sonnet".to_owned(),
+                reasoning_effort: None,
+                pct: 75.0,
+            },
+            coducktor_contract::ModelUsageEntry {
+                model: "gpt-5.1-codex".to_owned(),
+                reasoning_effort: None,
+                pct: 25.0,
+            },
+        ];
+        assert_eq!(format_cost_with_split(Some(1.20), Some(&usage)), "$1.20 ×2");
     }
 
     #[test]
