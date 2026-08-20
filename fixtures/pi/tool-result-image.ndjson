@@ -1,0 +1,5 @@
+{"id":"state","type":"response","command":"get_state","success":true,"data":{"sessionId":"pi-session-image","model":{"id":"anthropic/claude-sonnet-5"}}}
+{"type":"tool_execution_start","toolCallId":"view-1","toolName":"imageview","args":{"path":"screenshot.png"}}
+{"type":"tool_execution_end","toolCallId":"view-1","toolName":"imageview","result":{"content":[{"type":"text","text":"viewed"},{"type":"image","data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==","mimeType":"image/png"}]},"isError":false}
+{"type":"message_end","message":{"role":"assistant","usage":{"input":5,"output":2,"cacheRead":0,"cacheWrite":0,"totalTokens":7,"cost":{"total":0.001}}}}
+{"type":"agent_settled"}

@@ -51,7 +51,7 @@ const OPENCODE_FIXTURES: &[&str] = &[
 
 const OPENCODE_SESSION_ID: &str = "ses_01J8ZE00MAIN";
 
-const PI_FIXTURES: &[&str] = &["rpc-lifecycle"];
+const PI_FIXTURES: &[&str] = &["rpc-lifecycle", "tool-result-image"];
 
 fn fixture_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures")

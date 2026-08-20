@@ -358,7 +358,8 @@ fn map_tool_end(value: &Map<String, Value>, state: &PiUiMapperState) -> PiUiMapp
         return no_events(state);
     };
     let result = value.get("result").and_then(as_record);
-    let output = result.and_then(|result| content_text(result.get("content")));
+    let content = result.and_then(|result| result.get("content"));
+    let output = content_text(content);
     let is_error = value.get("isError").and_then(Value::as_bool) == Some(true);
     let mut item = previous.clone();
     item.status = if is_error {
@@ -373,10 +374,18 @@ fn map_tool_end(value: &Map<String, Value>, state: &PiUiMapperState) -> PiUiMapp
     }
     let mut next = state.clone();
     next.tools.insert(id.to_owned(), item.clone());
+    let mut events = vec![UiEvent::ItemCompleted {
+        item: UiItem::Tool(item),
+    }];
+    for (media_type, data) in tool_result_images(content) {
+        events.push(UiEvent::Image {
+            item_id: Some(id.to_owned()),
+            media_type,
+            data,
+        });
+    }
     PiUiMapping {
-        events: vec![UiEvent::ItemCompleted {
-            item: UiItem::Tool(item),
-        }],
+        events,
         state: next,
     }
 }
@@ -529,6 +538,28 @@ fn content_text(value: Option<&Value>) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// Pi's image shape (`data`/`mimeType` directly on the part) — distinct from claude's
+/// Anthropic-shaped `source.media_type`/`source.data`. Mirrors `pi_runner`'s
+/// `tool_result_images`, which extracts the same shape for the durable event log; this is the
+/// mapper-layer counterpart so the golden fixture contract actually covers what the runner does.
+fn tool_result_images(value: Option<&Value>) -> Vec<(String, String)> {
+    let Some(Value::Array(parts)) = value else {
+        return Vec::new();
+    };
+    parts
+        .iter()
+        .filter_map(|part| {
+            let record = as_record(part)?;
+            if record.get("type").and_then(Value::as_str) != Some("image") {
+                return None;
+            }
+            let data = as_nonempty_str(record.get("data"))?;
+            let media_type = as_nonempty_str(record.get("mimeType"))?;
+            Some((media_type.to_owned(), data.to_owned()))
+        })
+        .collect()
 }
 
 fn rpc_error(value: &Map<String, Value>) -> String {

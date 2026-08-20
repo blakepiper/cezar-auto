@@ -33,7 +33,7 @@ verification, so this is not a percentage-complete release claim.
 | R5 checks and review gate | complete | Do not redesign; preserve its integration coverage. |
 | R6 selected account environment | complete | Do not redesign; preserve its integration coverage. |
 | R7 resource settings | complete except memory limit | Workspace/repository leases and monitoring wake policy are both wired end-to-end now (see evidence); `memory_limit_mb` remains saved-but-honestly-unavailable, which is the intended final state, not a gap. |
-| R8 runner protocol drift | partial, high | Complete the fixture/capability matrix and non-hanging response coverage. |
+| R8 runner protocol drift | matrix audited, one real risk found and documented | Every "degraded" cell in `CAPABILITY_MATRIX.md` was individually re-verified against the runner's own code (see evidence): most were already safe under a shared/generic path or genuinely have no corresponding wire event to test; pi's untested image path was backfilled with a real fixture and the mapper code it needed. One real, unmitigated risk remains: OpenCode's mapper recognizes no permission/approval event at all, so if the live server ever emits one, it is silently dropped by the fallback — a genuine hang-until-timeout risk, not proven safe by any fixture. |
 | R9 worker/process lifetime | partial, high | `TurnDispatch`'s per-run worker registry is now leak-checked (see evidence); still missing shutdown escalation — no bounded-wait-then-force-terminate path exists for a worker whose session ignores cancellation. |
 | R10 durable run state | fault matrix complete | Every named scenario in the original fault matrix (unknown nested keys, one bad entry, truncated index, permissions, concurrent writer conflict, disk-full, pre-rename crash, post-rename/directory-sync failure, repair-replacement failure) now has a dedicated or pre-existing regression test — see evidence. |
 | R11 dead UI/duplicate tests | primary correction complete | Extract oversized orchestration code only when needed by R1/R2; no standalone refactor. |
@@ -221,7 +221,48 @@ Evidence checked during this rewrite and subsequent implementation:
   rebuild count/work. A truncated index is covered end-to-end: boot degrades, writes quarantine,
   and explicit repair makes a backup before replacing the index.
 - `fixtures/CAPABILITY_MATRIX.md` is checked in and its golden test requires every replayed
-  normalized Codex, Claude, OpenCode, and pi fixture to remain represented in the matrix.
+  normalized Codex, Claude, OpenCode, and pi fixture to remain represented in the matrix. That
+  test only checks a fixture *name* appears in the matrix text — it never verified that a cell
+  labeled `degraded` (no fixture, just the word) was actually true. Every one of the 8 such cells
+  was individually re-verified this pass by reading the runner's own code:
+  - **Claude Review/approval** was mislabeled — Claude has no distinct review-mode concept; it
+    denies via the same `--permission-mode dontAsk` path as Question/permission, already proven by
+    `failed-and-denied`. Repointed to that fixture.
+  - **pi Custom/MCP tool** was mislabeled — `pi.rs`'s tool mapping has no per-tool special-casing,
+    so any tool name (MCP or not) already replays through the existing `rpc-lifecycle` fixture.
+    Repointed to it.
+  - **pi Delegation** and **pi Review/approval** are genuinely `n/a`: pi's RPC vocabulary
+    (confirmed by reading `pi.rs`/`pi_runner.rs`) has no subagent/delegation event and no
+    review-mode event at all — there is nothing to degrade from, so a fixture asserting the
+    generic unknown-event no-op would prove only what `malformed_and_unknown_provider_frames_are_noops`
+    already proves.
+  - **pi Question/permission**: the question half is real and tested, just not here — the
+    runner-neutral `DUCK:ASK` marker is parsed in `coducktor-core`'s `runs::ask` (extensive unit
+    tests there, not a `coducktor-runners` golden fixture). The permission half is `n/a` for the
+    same reason as Review/approval — no interactive tool-approval RPC exists in pi's protocol.
+  - **pi PTY/image** was a real, narrow gap, now fixed: `pi_runner.rs` (the durable-event-log
+    layer) already extracted tool-result images correctly, but `pi.rs` (the separate mapper this
+    matrix's fixtures exercise) had no matching logic at all — the two implementations of the same
+    wire shape had silently diverged. Added `tool_result_images`/the `UiEvent::Image` emission to
+    `pi.rs::map_tool_end`, mirroring `pi_runner.rs`'s already-correct extraction and `claude.rs`'s
+    existing `UiEvent::Image` pattern, backed by the new `tool-result-image` fixture.
+  - **OpenCode PTY/image** is a real but minor gap: non-string tool output (which would include an
+    image content block) is unconditionally stringified into a text field — never dropped or
+    hung, just not "precise." Left unfixed pending a grounded understanding of OpenCode's actual
+    wire shape for file/image tool output (no precedent for it exists anywhere in this codebase to
+    confirm against).
+  - **OpenCode Review/approval** is the one genuine, unmitigated risk this pass found: `opencode.rs`
+    recognizes exactly five SSE event types (`message.*`, `session.idle`, `session.error`) and
+    silently no-ops everything else. Nothing in `open_opencode_session` passes any auto-approve
+    flag at spawn or session-creation time — the module doc's "auto-approved permissions" is an
+    *assumption* about the live server's default configuration, not something this integration
+    enforces. If a user's OpenCode installation ever has a permission policy that emits an
+    approval-request bus event, this mapper would drop it silently and the turn would stall until
+    the wall-clock timeout, with no diagnostic. Not fixed this pass: guessing at OpenCode's actual
+    event-type name without a grounded source would risk encoding a wrong assumption into a
+    "golden" fixture, worse than leaving the gap explicit. Needs either confirmation from
+    OpenCode's own API reference or a real local install to observe the actual event shape before
+    a fixture (and matching handling) can be added correctly.
 - Worktree admission, production checks/diff inspection, account-home propagation, durable index
   salvage/repair, `repair-runs`, reader teardown, and portable handoff argument construction are
   present with focused regressions. Do not duplicate them.
