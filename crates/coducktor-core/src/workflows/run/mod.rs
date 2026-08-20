@@ -3775,9 +3775,28 @@ impl RunManager {
             .and_then(|step| step.backend)
             .or(run.runner)
             .unwrap_or(Runner::Claude);
+        let prior_session_id = session_step.and_then(|step| step.session_id.clone());
         let resume_session = (target_concrete == Some(session_backend))
-            .then(|| session_step.and_then(|step| step.session_id.clone()))
+            .then(|| prior_session_id.clone())
             .flatten();
+        // A real prior session exists but the runner switch makes it unresumable: the new step
+        // starts with an empty transcript instead of the one the user was just looking at. Say so
+        // — silently dropping the conversation is exactly the kind of quiet capability loss
+        // CODE_REVIEW.md rules out; the user should see this in the same place they'd see any
+        // other run note, not have to notice a step counter or discover it from a confused reply.
+        if prior_session_id.is_some() && resume_session.is_none() {
+            self.append_event(
+                run_id,
+                EventInput::new("note").field(
+                    "message",
+                    format!(
+                        "switching from {} to {} starts a fresh session — the previous conversation is not resumed",
+                        runner_name(session_backend),
+                        runner_name(target_concrete.unwrap_or(Runner::Claude)),
+                    ),
+                ),
+            )?;
+        }
 
         if options.runner.is_some() || options.model.is_some() {
             let mut patch = RunPatch::new();
@@ -6079,6 +6098,39 @@ mod tests {
                     .iter()
                     .any(|step| step.id == "continue-1"))
         );
+    }
+
+    #[test]
+    fn continuation_across_a_runner_switch_announces_the_dropped_session() {
+        let dir = tempdir().unwrap();
+        let (factory, _requests) =
+            fake_factory(vec![completed_session("old"), completed_session("new")]);
+        let mut manager = RunManager::with_session_factory(dir.path(), factory);
+        let workflow = workflow_with_steps(vec![agent_workflow_step("work")]);
+        let run = manager
+            .start_run(&workflow, start_input("continue me"))
+            .unwrap();
+        manager
+            .continue_run(
+                &run.id,
+                ContinueOptions {
+                    text: Some("keep going".to_owned()),
+                    runner: Some(RunnerSelection::Codex),
+                    ..ContinueOptions::default()
+                },
+            )
+            .unwrap();
+        assert!(manager.read_events(&run.id).iter().any(|event| {
+            event.event_type == "note"
+                && event
+                    .extra
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .is_some_and(|message| {
+                        message.contains("switching from claude to codex")
+                            && message.contains("not resumed")
+                    })
+        }));
     }
 
     #[test]
