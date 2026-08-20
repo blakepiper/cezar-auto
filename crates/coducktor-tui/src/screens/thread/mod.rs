@@ -318,6 +318,12 @@ impl ThreadUi {
                     && event.event_type == "user-message"
                     && durable_prompt_label(event) == prompt
             })
+            // History is paged. A reload can therefore advance its sequence watermark past the
+            // follow-up while omitting that individual event from the visible page. The core
+            // writes the user-message before it can append any later event, so this is still a
+            // durable acknowledgement; without it the optimistic UI could remain "Sending…"
+            // forever after a missed live notification.
+            || self.data.as_of_seq > self.pending_prompt_after_seq
         });
         if pending_is_durable {
             self.pending_prompt = None;
@@ -1870,6 +1876,29 @@ mod tests {
         let content = render_to_string(&mut app);
         assert!(!content.contains("Sending…"));
         assert!(app.thread_ui.pending_prompt.is_none());
+    }
+
+    #[test]
+    fn history_watermark_acknowledges_a_follow_up_missing_from_the_visible_page() {
+        let mut app = app_with_run(RunStatus::Running);
+        app.thread_ui
+            .push_event(1.0, event(1.0, "text", json!({"text": "earlier output"})));
+        app.thread_ui.set_pending_prompt("follow up".to_owned());
+        let run = app.thread_ui.data.run.clone().unwrap();
+
+        // A compact history page can omit the just-written user event while its watermark still
+        // includes it. That must acknowledge the optimistic composer state.
+        app.thread_ui.load(
+            "main".to_owned(),
+            "run-1".to_owned(),
+            run,
+            vec![event(1.0, "text", json!({"text": "earlier output"}))],
+            2.0,
+            None,
+        );
+
+        assert!(app.thread_ui.pending_prompt.is_none());
+        assert!(!app.thread_ui.delivery_error);
     }
 
     #[test]
