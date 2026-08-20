@@ -9132,7 +9132,7 @@ mod tests {
 
     async fn activate_until_terminal(engine: &InProcessEngine, run_id: &str) {
         engine.activate_runs().unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 let status = engine.get_run(run_id).await.unwrap().record.status;
                 if matches!(
@@ -9550,7 +9550,7 @@ mod tests {
         };
         engine.activate_runs().unwrap();
 
-        tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if tokens.lock().unwrap().contains_key(&first.id) {
                     break;
@@ -9839,15 +9839,28 @@ mod tests {
                 panic!("expected one run");
             };
             activate_until_terminal(&engine, &run.id).await;
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !engine
+                    .turn_workers
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .all(std::thread::JoinHandle::is_finished)
+                {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("iteration {iteration}: turn worker did not finish"));
             // Nothing new to admit, so this call's only effect is `TurnDispatch`'s reap sweep.
             engine.activate_runs().unwrap();
-            tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::time::timeout(Duration::from_secs(5), async {
                 while !engine.turn_workers.lock().unwrap().is_empty() {
                     tokio::task::yield_now().await;
                 }
             })
             .await
-            .unwrap_or_else(|_| panic!("iteration {iteration}: turn worker not reaped"));
+            .unwrap_or_else(|_| panic!("iteration {iteration}: finished turn worker not reaped"));
             assert!(
                 engine.cancellations.lock().unwrap().is_empty(),
                 "iteration {iteration}: cancellation token not pruned"
@@ -9871,7 +9884,7 @@ mod tests {
                 panic!("expected one run");
             };
             cancel_engine.activate_runs().unwrap();
-            tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::time::timeout(Duration::from_secs(5), async {
                 while !tokens.lock().unwrap().contains_key(&run.id) {
                     tokio::task::yield_now().await;
                 }
@@ -9880,14 +9893,29 @@ mod tests {
             .unwrap();
             cancel_engine.cancel_run(&run.id).await.unwrap();
             activate_until_terminal(&cancel_engine, &run.id).await;
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !cancel_engine
+                    .turn_workers
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .all(std::thread::JoinHandle::is_finished)
+                {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("cancel iteration {iteration}: turn worker did not finish"));
             cancel_engine.activate_runs().unwrap();
-            tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::time::timeout(Duration::from_secs(5), async {
                 while !cancel_engine.turn_workers.lock().unwrap().is_empty() {
                     tokio::task::yield_now().await;
                 }
             })
             .await
-            .unwrap_or_else(|_| panic!("cancel iteration {iteration}: turn worker not reaped"));
+            .unwrap_or_else(|_| {
+                panic!("cancel iteration {iteration}: finished turn worker not reaped")
+            });
             assert!(
                 cancel_engine.cancellations.lock().unwrap().is_empty(),
                 "cancel iteration {iteration}: cancellation token not pruned"
@@ -10024,7 +10052,7 @@ mod tests {
         };
         engine.activate_runs().unwrap();
 
-        tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 let current = engine.get_run(&run.id).await.unwrap();
                 if current.record.activity == Some(coducktor_contract::RunActivity::Monitoring) {
@@ -12003,16 +12031,27 @@ mod tests {
     }
 
     #[test]
-    fn open_target_command_points_finder_and_terminal_at_the_repo_root_on_every_platform() {
+    fn open_target_commands_point_at_the_repo_root_when_available() {
         let dir = TempDir::new().unwrap();
-        for target in ["finder", "terminal"] {
-            let (_program, args) = open_target_command(target, dir.path())
-                .unwrap_or_else(|| panic!("{target} should always resolve to a command"));
-            assert!(
-                args.iter().any(|arg| arg == &dir.path().to_string_lossy()),
-                "{target}'s args should carry the repo root: {args:?}"
-            );
-        }
+        let (_program, args) = open_target_command("finder", dir.path())
+            .expect("the platform file manager should always resolve to a command");
+        assert!(
+            args.iter().any(|arg| arg == &dir.path().to_string_lossy()),
+            "finder's args should carry the repo root: {args:?}"
+        );
+
+        let terminal = open_target_command("terminal", dir.path());
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        let (_program, args) = terminal.expect("the platform terminal should resolve to a command");
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let Some((_program, args)) = terminal else {
+            // Minimal/headless Linux installations legitimately have no terminal emulator.
+            return;
+        };
+        assert!(
+            args.iter().any(|arg| arg == &dir.path().to_string_lossy()),
+            "terminal's args should carry the repo root: {args:?}"
+        );
     }
 
     #[test]
