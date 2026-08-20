@@ -72,6 +72,7 @@ pub enum NewTaskAction {
     BasePill,
     WorktreePill,
     AutonomousPill,
+    GitModePill,
     Compose,
 }
 

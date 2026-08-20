@@ -76,6 +76,9 @@ impl TranscriptItem {
                         Some(false) => 0,
                         Some(true) => 1,
                     });
+                bits = bits
+                    .wrapping_mul(31)
+                    .wrapping_add(u64::from(item.is_latest));
                 bits
             }
             Self::Note(item) => item.text.len() as u64,
@@ -173,6 +176,9 @@ pub struct ToolItem {
     /// `None` follows the default-open policy (`tool_default_open`); `Some` is the
     /// user's explicit toggle, which always wins once they touch the card.
     pub user_expanded: Option<bool>,
+    /// Set by the thread screen on the most recently appended tool call, so the task
+    /// view tracks progress without the user having to expand each card by hand.
+    pub is_latest: bool,
 }
 
 impl ToolItem {
@@ -193,6 +199,7 @@ impl ToolItem {
             error: None,
             exit_code: None,
             user_expanded: None,
+            is_latest: false,
         }
     }
 
@@ -209,13 +216,15 @@ impl ToolItem {
     }
 }
 
-/// A running command with output already
-/// streaming in opens to show its live tail; everything else — edits, finished
-/// commands, and failures — starts closed but visible.
+/// A running command with output already streaming in opens to show its live tail, and
+/// the most recently appended tool call opens by default so the task view tracks along;
+/// everything else — edits, finished commands, and failures further back — starts
+/// closed but visible.
 fn tool_default_open(item: &ToolItem) -> bool {
-    item.tool_kind == ToolKind::Execute
-        && item.status == ToolStatus::Running
-        && item.output.is_some()
+    item.is_latest
+        || (item.tool_kind == ToolKind::Execute
+            && item.status == ToolStatus::Running
+            && item.output.is_some())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -950,6 +959,44 @@ mod tests {
         assert!(
             !failed.open(),
             "a failure no longer springs open on its own"
+        );
+    }
+
+    #[test]
+    fn the_most_recent_tool_call_opens_by_default_so_the_task_view_tracks_along() {
+        let mut latest_finished = ToolItem::new(
+            "t1",
+            "Read",
+            Some(&serde_json::json!({"path": "a.rs"})),
+            ToolStatus::Completed,
+        );
+        latest_finished.output = Some("contents".to_owned());
+        latest_finished.is_latest = true;
+        assert!(latest_finished.open());
+
+        let mut latest_failed = ToolItem::new(
+            "t2",
+            "Read",
+            Some(&serde_json::json!({"path": "b.rs"})),
+            ToolStatus::Failed,
+        );
+        latest_failed.error = Some("not found".to_owned());
+        latest_failed.is_latest = true;
+        assert!(
+            latest_failed.open(),
+            "the latest call opens even when it failed"
+        );
+
+        let mut older_finished = ToolItem::new(
+            "t3",
+            "Read",
+            Some(&serde_json::json!({"path": "c.rs"})),
+            ToolStatus::Completed,
+        );
+        older_finished.output = Some("contents".to_owned());
+        assert!(
+            !older_finished.open(),
+            "a non-latest finished call still starts closed"
         );
     }
 

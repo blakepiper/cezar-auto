@@ -411,6 +411,8 @@ pub struct CreateRunBodyOpts {
     /// Resolved worktree flag: `false` → run in the repo working tree (single runs only).
     pub worktree: Option<bool>,
     pub autonomous: bool,
+    /// Resolved automatic git commit/push flag for this run.
+    pub git_auto: bool,
 }
 
 fn task_step(id: &str, name: &str, skill: Option<&str>) -> WorkflowStepDef {
@@ -460,6 +462,7 @@ pub fn build_create_run_body(opts: &CreateRunBodyOpts) -> CreateRunInput {
             _ => None,
         },
         autonomous: opts.autonomous.then_some(true),
+        git_auto: opts.git_auto.then_some(true),
         system_prompt: match &opts.source {
             TaskSource::Skill { reference }
                 if reference == coducktor_core::skills::BUILT_IN_PLANNING_SKILL_NAME =>
@@ -558,6 +561,9 @@ pub struct NewTaskDraft {
     pub worktree: Option<bool>,
     /// TUI-only override: pin autonomous on/off; `None` follows the workspace default.
     pub autonomous: Option<bool>,
+    /// TUI-only override: pin automatic git commit/push on/off; `None` follows the workspace
+    /// default.
+    pub git_auto: Option<bool>,
 }
 
 impl Default for NewTaskDraft {
@@ -572,6 +578,7 @@ impl Default for NewTaskDraft {
             variants_explicit: false,
             worktree: None,
             autonomous: None,
+            git_auto: None,
         }
     }
 }
@@ -873,6 +880,7 @@ mod tests {
             images: Vec::new(),
             worktree: None,
             autonomous: false,
+            git_auto: false,
         }
     }
 

@@ -337,10 +337,12 @@ pub struct ComposerDefaults {
     pub variants: Option<u64>,
     pub autonomous: Option<bool>,
     pub worktree: Option<bool>,
+    pub git_auto: Option<bool>,
     pub extra: Map<String, Value>,
 }
 
-const COMPOSER_DEFAULTS_KEYS: &[&str] = &["reasoning", "variants", "autonomous", "worktree"];
+const COMPOSER_DEFAULTS_KEYS: &[&str] =
+    &["reasoning", "variants", "autonomous", "worktree", "gitAuto"];
 
 impl ComposerDefaults {
     fn parse(value: Option<&Value>) -> Self {
@@ -354,6 +356,7 @@ impl ComposerDefaults {
             }),
             autonomous: zod::bool_opt(zod::field(object, "autonomous")),
             worktree: zod::bool_opt(zod::field(object, "worktree")),
+            git_auto: zod::bool_opt(zod::field(object, "gitAuto")),
             extra: object
                 .map(|o| zod::extra_fields(o, COMPOSER_DEFAULTS_KEYS))
                 .unwrap_or_default(),
@@ -381,6 +384,10 @@ impl ComposerDefaults {
                 (
                     "worktree",
                     self.worktree.map(Value::from).unwrap_or(Value::Null),
+                ),
+                (
+                    "gitAuto",
+                    self.git_auto.map(Value::from).unwrap_or(Value::Null),
                 ),
             ],
         )

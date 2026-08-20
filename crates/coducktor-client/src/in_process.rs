@@ -57,10 +57,10 @@ use coducktor_core::paths::{
 use coducktor_core::skills::discover_skills;
 use coducktor_core::workflows::load::{WORKFLOWS_DIR, load_workflows};
 use coducktor_core::workflows::run::{
-    AUTONOMOUS_NUDGE, AdmittedTurn, CancellationToken, CheckExecutor, CheckResult, DiffInspector,
-    EventInput, MONITORING_WAKE_PROMPT, PromptImage, RepositoryRootLease, RunManager,
-    RuntimeActive, RuntimeOptions, SessionFactory, StartRunInput as CoreStartRunInput, TurnStep,
-    WorkspaceSemaphore, review_gate_enabled,
+    AUTOMATIC_COMMIT_MESSAGE_NUDGE, AUTONOMOUS_NUDGE, AdmittedTurn, CancellationToken,
+    CheckExecutor, CheckResult, DiffInspector, EventInput, GitAutoMessage, MONITORING_WAKE_PROMPT,
+    PromptImage, RepositoryRootLease, RunManager, RuntimeActive, RuntimeOptions, SessionFactory,
+    StartRunInput as CoreStartRunInput, TurnStep, WorkspaceSemaphore, review_gate_enabled,
 };
 use coducktor_core::workflows::types::{parse_workflow_file_doc, steps_issue};
 use coducktor_core::workspace::agent_accounts::{
@@ -458,6 +458,10 @@ impl TurnDispatch {
             let active = match step {
                 Ok(TurnStep::Done) | Err(_) => break,
                 Ok(TurnStep::Nudge(active)) => active,
+                Ok(TurnStep::GitAutoCommit(active)) => {
+                    self.run_git_auto_commit(&run_id, &step_id, active);
+                    break;
+                }
             };
             step = self.run_nudge(&run_id, &step_id, active, &cancellation);
         }
@@ -480,6 +484,41 @@ impl TurnDispatch {
             .lock()
             .map_err(|_| std::io::Error::other("manager unavailable"))?
             .apply_active_turn(run_id, *active, send_result, cancellation.is_requested())
+    }
+
+    fn run_git_auto_commit(&self, run_id: &str, step_id: &str, mut active: Box<RuntimeActive>) {
+        let send_result =
+            active
+                .session_mut()
+                .send_message(AUTOMATIC_COMMIT_MESSAGE_NUDGE, &[], &mut |event| {
+                    self.apply_event(run_id, step_id, event)
+                });
+        let subject = match self.manager.lock() {
+            Ok(mut manager) => manager.apply_git_auto_commit_message(run_id, *active, send_result),
+            Err(_) => return,
+        };
+        let result = match subject {
+            Ok(Ok(GitAutoMessage::Subject(message))) => {
+                let root = self.manager.lock().ok().and_then(|manager| {
+                    manager
+                        .get_run(run_id)
+                        .and_then(|run| manager.working_directory_for(run))
+                });
+                match root {
+                    Some(root) => commit_all(&root, &message)
+                        .and_then(|_| push_current_branch(&root).map(|_| ())),
+                    None => {
+                        Err("run has no working directory for automatic Git actions".to_owned())
+                    }
+                }
+            }
+            Ok(Ok(GitAutoMessage::Cancelled)) => return,
+            Ok(Err(reason)) => Err(reason),
+            Err(error) => Err(error.to_string()),
+        };
+        if let Ok(mut manager) = self.manager.lock() {
+            let _ = manager.finish_git_auto(run_id, result);
+        }
     }
 
     /// Applied under a fresh, brief lock per event — never the same lock the child process I/O
@@ -556,6 +595,10 @@ impl TurnDispatch {
             let active = match step {
                 Ok(TurnStep::Done) | Err(_) => break,
                 Ok(TurnStep::Nudge(active)) => active,
+                Ok(TurnStep::GitAutoCommit(active)) => {
+                    self.run_git_auto_commit(&run_id, &step_id, active);
+                    break;
+                }
             };
             step = self.run_nudge(&run_id, &step_id, active, &CancellationToken::default());
         }
@@ -1246,6 +1289,7 @@ impl InProcessEngine {
             agent_profile: Some(agent_profile),
             system_prompt: input.system_prompt,
             autonomous: input.autonomous,
+            git_auto: input.git_auto,
             worktree: input.worktree,
         };
         let variants = input.variants.unwrap_or(1.0);
@@ -4715,6 +4759,7 @@ fn workspace_config_response(
             worktree: config.composer_defaults.worktree,
             inherited_autonomous: coducktor_contract::InheritedAutonomous::Value(true),
             inherited_worktree: false,
+            git_auto: config.composer_defaults.git_auto,
         },
         resources: coducktor_contract::WorkspaceResources {
             max_parallel: config.resources.max_parallel,
@@ -4848,6 +4893,9 @@ fn apply_workspace_config_input(
         }
         if let Some(worktree) = composer.worktree {
             config.composer_defaults.worktree = worktree;
+        }
+        if let Some(git_auto) = composer.git_auto {
+            config.composer_defaults.git_auto = git_auto;
         }
     }
     if let Some(resources) = &input.resources {
@@ -7380,12 +7428,14 @@ fn config_response(repo_root: &Path, state_home: &Path) -> ConfigResponse {
     let composer_defaults = (!config.composer_defaults.reasoning.is_none()
         || !config.composer_defaults.variants.is_none()
         || !config.composer_defaults.autonomous.is_none()
-        || !config.composer_defaults.worktree.is_none())
+        || !config.composer_defaults.worktree.is_none()
+        || !config.composer_defaults.git_auto.is_none())
     .then_some(coducktor_contract::ProjectComposerDefaults {
         reasoning: config.composer_defaults.reasoning,
         variants: config.composer_defaults.variants,
         autonomous: config.composer_defaults.autonomous,
         worktree: config.composer_defaults.worktree,
+        git_auto: config.composer_defaults.git_auto,
     });
     ConfigResponse {
         base_branch: config.base_branch,
@@ -7520,6 +7570,16 @@ fn apply_project_composer_defaults(
             }
             None => {
                 defaults.remove("worktree");
+            }
+        }
+    }
+    if let Some(git_auto) = patch.git_auto {
+        match git_auto {
+            Some(value) => {
+                defaults.insert("gitAuto".to_owned(), Value::Bool(value));
+            }
+            None => {
+                defaults.remove("gitAuto");
             }
         }
     }
@@ -9202,6 +9262,7 @@ mod tests {
             variants: None,
             worktree: Some(false),
             autonomous: None,
+            git_auto: None,
             system_prompt: None,
             images: None,
         }
@@ -11317,6 +11378,7 @@ mod tests {
                     variants: Some(Some(3)),
                     autonomous: Some(Some(false)),
                     worktree: Some(Some(true)),
+                    git_auto: Some(Some(true)),
                 }),
                 ..Default::default()
             })
@@ -11330,6 +11392,7 @@ mod tests {
         assert_eq!(defaults.variants, Some(3));
         assert_eq!(defaults.autonomous, Some(false));
         assert_eq!(defaults.worktree, Some(true));
+        assert_eq!(defaults.git_auto, Some(true));
 
         let cleared = engine
             .put_config(&SetConfigInput {
@@ -11338,6 +11401,7 @@ mod tests {
                     variants: Some(None),
                     autonomous: Some(None),
                     worktree: Some(None),
+                    git_auto: Some(None),
                 }),
                 ..Default::default()
             })

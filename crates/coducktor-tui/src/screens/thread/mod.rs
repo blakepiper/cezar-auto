@@ -445,6 +445,7 @@ fn build_transcript_items(
                 user_message.text.clone(),
             )));
         }
+        let mut final_response = None;
         for entry in &turn.items {
             match entry {
                 ThreadEntry::Item(UiItem::Message(message)) => {
@@ -458,11 +459,21 @@ fn build_transcript_items(
                             TranscriptNoteTone::Dim,
                         )));
                     } else {
-                        items.push(TranscriptItem::Message(MessageItem::new(
+                        // The runner opens the final-answer item early — often before it
+                        // dispatches the turn's tool calls — and streams text into it until
+                        // the turn ends, so its slot in `turn.items` reflects when it started,
+                        // not when it finished. Hold it back and place it after every other
+                        // activity in the turn so the summary the user reads always lands last.
+                        let message = TranscriptItem::Message(MessageItem::new(
                             message.id.clone(),
                             message.role,
                             message.text.clone(),
-                        )));
+                        ));
+                        if is_final {
+                            final_response = Some(message);
+                        } else {
+                            items.push(message);
+                        }
                     }
                 }
                 ThreadEntry::Item(UiItem::Reasoning(reasoning)) => {
@@ -511,6 +522,9 @@ fn build_transcript_items(
                 ThreadEntry::Ask(_) => {}
             }
         }
+        if let Some(final_response) = final_response {
+            items.push(final_response);
+        }
         if let Some(plan) = &turn.plan_entries {
             let completed = plan
                 .iter()
@@ -539,6 +553,13 @@ fn build_transcript_items(
             "Sending…",
             TranscriptNoteTone::Dim,
         )));
+    }
+    if let Some(TranscriptItem::Tool(item)) = items
+        .iter_mut()
+        .rev()
+        .find(|item| matches!(item, TranscriptItem::Tool(_)))
+    {
+        item.is_latest = true;
     }
     items
 }
@@ -1764,6 +1785,51 @@ mod tests {
                 terminal.backend().buffer()
             );
         }
+    }
+
+    #[test]
+    fn the_most_recently_appended_tool_call_is_marked_latest_and_expands() {
+        let mut app = app_with_run(RunStatus::Running);
+        app.thread_ui.push_event(
+            1.0,
+            event(
+                1.0,
+                "item.completed",
+                json!({"item": {"kind": "tool", "id": "t1", "name": "Read", "toolKind": "read", "title": "Read a.rs", "status": "completed", "output": "fn a() {}"}}),
+            ),
+        );
+        app.thread_ui.push_event(
+            2.0,
+            event(
+                2.0,
+                "item.completed",
+                json!({"item": {"kind": "tool", "id": "t2", "name": "Read", "toolKind": "read", "title": "Read b.rs", "status": "completed", "output": "fn b() {}"}}),
+            ),
+        );
+
+        let tools: Vec<_> = app
+            .thread_ui
+            .transcript
+            .items()
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::Tool(tool) => Some(tool),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tools.len(), 2);
+        assert!(!tools[0].is_latest, "the earlier call is not latest");
+        assert!(tools[1].is_latest, "the last-appended call is latest");
+
+        let content = render_to_string(&mut app);
+        assert!(
+            content.contains("fn b() {}"),
+            "the latest tool call's output is expanded by default"
+        );
+        assert!(
+            !content.contains("fn a() {}"),
+            "the earlier tool call stays collapsed"
+        );
     }
 
     #[test]

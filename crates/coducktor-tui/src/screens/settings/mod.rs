@@ -336,6 +336,9 @@ fn rows_agents(app: &App) -> Vec<Row> {
             })
         })
         .unwrap_or(true);
+    let git_auto = composer
+        .and_then(|defaults| defaults.git_auto)
+        .unwrap_or(false);
     let rows = vec![
         row("Base branch", opt_str(&config.base_branch)),
         row(
@@ -410,8 +413,19 @@ fn rows_agents(app: &App) -> Vec<Row> {
                     )
                 }),
         ),
+        row(
+            "Project git mode",
+            project_composer
+                .and_then(|defaults| defaults.git_auto)
+                .map(|git_auto| git_mode_label(git_auto).to_owned())
+                .unwrap_or_else(|| format!("inherit ({})", git_mode_label(git_auto))),
+        ),
     ];
     rows
+}
+
+fn git_mode_label(git_auto: bool) -> &'static str {
+    if git_auto { "automatic" } else { "manual" }
 }
 
 fn rows_global_agents(app: &App) -> Vec<Row> {
@@ -428,6 +442,7 @@ fn rows_global_agents(app: &App) -> Vec<Row> {
             coducktor_contract::InheritedAutonomous::SourceDependent => None,
         })
         .unwrap_or(true);
+    let git_auto = composer.git_auto.unwrap_or(false);
     vec![
         row(
             "Default runner",
@@ -481,6 +496,7 @@ fn rows_global_agents(app: &App) -> Vec<Row> {
                 "manual approval"
             },
         ),
+        row("Default git mode", git_mode_label(git_auto)),
     ]
 }
 
@@ -1154,6 +1170,7 @@ fn cycle(app: &mut App, backward: bool) {
         (SettingsSection::Agents, 10) => cycle_project_reasoning(app, backward),
         (SettingsSection::Agents, 12) => cycle_project_worktree(app, backward),
         (SettingsSection::Agents, 13) => cycle_project_autonomous(app, backward),
+        (SettingsSection::Agents, 14) => cycle_project_git_auto(app, backward),
         (SettingsSection::Appearance, index) => cycle_appearance(app, index, backward),
         (SettingsSection::Notifications, 0) => toggle_notifications(app),
         (SettingsSection::Resources, index) => toggle_or_ignore_resource(app, index),
@@ -1167,6 +1184,7 @@ fn cycle_global_agents(app: &mut App, row: usize, backward: bool) {
         5 => cycle_default_reasoning(app, backward),
         7 => cycle_default_worktree(app),
         8 => cycle_default_autonomous(app),
+        9 => cycle_default_git_auto(app),
         _ => {}
     }
 }
@@ -1242,6 +1260,22 @@ fn cycle_default_autonomous(app: &mut App) {
         app,
         ComposerDefaultsPatch {
             autonomous: Some(Some(!current)),
+            ..Default::default()
+        },
+    );
+}
+
+fn cycle_default_git_auto(app: &mut App) {
+    let current = app
+        .settings_ui
+        .workspace_config
+        .as_ref()
+        .and_then(|config| config.composer_defaults.git_auto)
+        .unwrap_or(false);
+    put_composer_defaults(
+        app,
+        ComposerDefaultsPatch {
+            git_auto: Some(Some(!current)),
             ..Default::default()
         },
     );
@@ -1332,6 +1366,27 @@ fn cycle_project_autonomous(app: &mut App, backward: bool) {
         app,
         coducktor_contract::ComposerDefaultsPatch {
             autonomous: Some(next),
+            ..Default::default()
+        },
+    );
+}
+
+fn cycle_project_git_auto(app: &mut App, backward: bool) {
+    let current = project_composer_defaults(app).and_then(|defaults| defaults.git_auto);
+    let order = [None, Some(false), Some(true)];
+    let position = order
+        .iter()
+        .position(|value| *value == current)
+        .unwrap_or(0);
+    let next = if backward {
+        order[(position + order.len() - 1) % order.len()]
+    } else {
+        order[(position + 1) % order.len()]
+    };
+    put_project_composer_defaults(
+        app,
+        coducktor_contract::ComposerDefaultsPatch {
+            git_auto: Some(next),
             ..Default::default()
         },
     );
@@ -1723,14 +1778,14 @@ fn activate_agents(app: &mut App, row: usize) {
                 .map(|variants| variants.to_string())
                 .unwrap_or_default(),
         ),
-        12 | 13 => cycle(app, false),
+        12..=14 => cycle(app, false),
         _ => {}
     }
 }
 
 fn activate_global_agents(app: &mut App, row: usize) {
     match row {
-        0 | 5 | 7 | 8 => cycle_global_agents(app, row, false),
+        0 | 5 | 7 | 8 | 9 => cycle_global_agents(app, row, false),
         1 => open_model_picker(app, ModelScope::Global, Runner::Claude),
         2 => open_model_picker(app, ModelScope::Global, Runner::Codex),
         3 => open_model_picker(app, ModelScope::Global, Runner::OpenCode),
@@ -2218,6 +2273,7 @@ mod tests {
                 worktree: None,
                 inherited_autonomous: InheritedAutonomous::SourceDependent,
                 inherited_worktree: false,
+                git_auto: None,
             },
             resources: WorkspaceResources {
                 max_parallel: 4,

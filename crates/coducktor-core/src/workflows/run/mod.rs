@@ -56,6 +56,10 @@ use crate::time::{is_zod_datetime, now_iso8601, now_plus_iso8601};
 /// uses.
 pub const AUTONOMOUS_NUDGE: &str = "Your immediately preceding response may already have completed the user's original request, but it did not include the required completion marker. Do not begin new work, search for unrelated work, or expand the task. If the original request is fully complete, reply with exactly DUCK:DONE. Otherwise, continue only the original request. If you genuinely need user input, end normally without a marker.";
 
+/// Sent after a `git_auto` run finishes its work with a diff. The dispatcher uses the returned
+/// subject with its normal Git helpers; Git itself remains outside this backend-neutral crate.
+pub const AUTOMATIC_COMMIT_MESSAGE_NUDGE: &str = "The task is complete and its changes will now be committed automatically. Reply with only one concise, imperative Git commit subject (72 characters or fewer). Do not use Markdown, quotes, a body, or the DUCK completion marker.";
+
 /// Sent to a parked monitoring session once its durable `monitoringWakeAt` deadline passes.
 /// `pub` for the same reason as `AUTONOMOUS_NUDGE`: the caller that actually sends it
 /// (`RunManager::begin_monitoring_wake`'s caller, outside any lock) needs the exact text.
@@ -126,6 +130,7 @@ pub struct CreateRunInput {
     pub agent_profile: Option<String>,
     pub system_prompt: Option<String>,
     pub autonomous: Option<bool>,
+    pub git_auto: Option<bool>,
     pub worktree: Option<bool>,
     pub group_id: Option<String>,
     pub variant: Option<String>,
@@ -349,6 +354,27 @@ pub fn hydrate_queued_prompt(run: &RunRecord) -> String {
         .join("\n\n")
 }
 
+fn commit_subject(text: &str) -> Result<String, String> {
+    let subject = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
+        .trim_matches('`')
+        .trim_matches('"')
+        .trim();
+    if subject.is_empty() {
+        return Err("agent did not provide an automatic commit subject".to_owned());
+    }
+    if subject.chars().count() > 72 {
+        return Err("automatic commit subject exceeds 72 characters".to_owned());
+    }
+    if subject.contains('\n') || subject.contains('\r') || subject.chars().any(char::is_control) {
+        return Err("automatic commit subject contains invalid control characters".to_owned());
+    }
+    Ok(subject.to_owned())
+}
+
 fn hydrate_queued_images(run: &RunRecord) -> Vec<PromptImage> {
     run.task_images
         .iter()
@@ -500,6 +526,7 @@ pub struct StartRunInput {
     pub agent_profile: Option<String>,
     pub system_prompt: Option<String>,
     pub autonomous: Option<bool>,
+    pub git_auto: Option<bool>,
     pub worktree: Option<bool>,
 }
 
@@ -860,6 +887,15 @@ pub enum TurnStep {
     /// `active.session_mut().send_message(..)` (no lock held) and report the result back through
     /// [`RunManager::apply_active_turn`].
     Nudge(Box<RuntimeActive>),
+    /// Ask the completed session for the one-line subject used by the production dispatcher to
+    /// commit and push this run's changes.
+    GitAutoCommit(Box<RuntimeActive>),
+}
+
+/// Result of the synthetic automatic-commit subject turn.
+pub enum GitAutoMessage {
+    Subject(String),
+    Cancelled,
 }
 
 /// A stateful, synchronous facade over the durable run files.
@@ -1230,6 +1266,7 @@ impl RunManager {
             agent_profile: input.agent_profile,
             system_prompt: input.system_prompt,
             autonomous: input.autonomous,
+            git_auto: input.git_auto,
             worktree: input.worktree,
             group_id: input.group_id,
             variant: input.variant,
@@ -1278,6 +1315,7 @@ impl RunManager {
         create.agent_profile = input.agent_profile;
         create.system_prompt = input.system_prompt;
         create.autonomous = input.autonomous;
+        create.git_auto = input.git_auto;
         create.worktree = input.worktree;
         create.task_images = (!input.images.is_empty())
             .then(|| input.images.iter().map(PromptImage::data_url).collect());
@@ -2174,17 +2212,28 @@ impl RunManager {
             session.turn(&mut |event| self.apply_turn_event(&run_id, &step_id, event));
         let mut step =
             self.apply_admitted_turn(admitted, session, turn_result, cancellation_requested)?;
-        while let TurnStep::Nudge(boxed) = step {
+        loop {
+            let TurnStep::Nudge(boxed) = step else {
+                if matches!(step, TurnStep::GitAutoCommit(_)) {
+                    self.finish_git_auto(
+                        &run_id,
+                        Err(
+                            "automatic Git actions require the production engine dispatcher"
+                                .to_owned(),
+                        ),
+                    )?;
+                }
+                break;
+            };
             let mut active = *boxed;
             step_id = active.workflow.steps[active.step_index].id.clone();
-            let cancellation_requested = false;
             let send_result =
                 active
                     .session_mut()
                     .send_message(AUTONOMOUS_NUDGE, &[], &mut |event| {
                         self.apply_turn_event(&run_id, &step_id, event)
                     });
-            step = self.apply_active_turn(&run_id, active, send_result, cancellation_requested)?;
+            step = self.apply_active_turn(&run_id, active, send_result, false)?;
         }
         Ok(())
     }
@@ -3138,12 +3187,117 @@ impl RunManager {
                     );
                     self.enqueue(run_id.to_owned());
                 } else {
+                    if self.should_prepare_git_auto_commit(run_id) {
+                        self.append_event(
+                            run_id,
+                            EventInput::new("note")
+                                .field("message", "preparing automatic commit message"),
+                        )?;
+                        return Ok(TurnStep::GitAutoCommit(Box::new(active)));
+                    }
                     self.settle_success(run_id)?;
                 }
                 self.pump()?;
                 Ok(TurnStep::Done)
             }
         }
+    }
+
+    fn should_prepare_git_auto_commit(&mut self, run_id: &str) -> bool {
+        let Some(run) = self.get_run(run_id).cloned() else {
+            return false;
+        };
+        run.git_auto == Some(true)
+            && self
+                .diff_inspector
+                .as_mut()
+                .is_some_and(|inspector| inspector.has_diff(&run))
+    }
+
+    /// Record the synthetic commit-subject turn and return its subject to the production
+    /// dispatcher. The caller must then either call [`Self::finish_git_auto`] after its Git work
+    /// or use the returned error as that method's failure reason.
+    pub fn apply_git_auto_commit_message(
+        &mut self,
+        run_id: &str,
+        active: RuntimeActive,
+        outcome: Result<SessionOutcome, String>,
+    ) -> io::Result<Result<GitAutoMessage, String>> {
+        self.in_flight.remove(run_id);
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(message) => return Ok(Err(message)),
+        };
+        let report = session_outcome_report(&outcome).clone();
+        let step_id = active.workflow.steps[active.step_index].id.clone();
+        self.apply_session_report(run_id, &step_id, &report, active.session.session_id())?;
+        self.apply_session_markers(run_id, &report.turn_text)?;
+        match outcome {
+            SessionOutcome::Cancelled(_) => {
+                self.cancel_run_after_session(run_id, &step_id)?;
+                Ok(Ok(GitAutoMessage::Cancelled))
+            }
+            SessionOutcome::Failed { message, .. } => Ok(Err(message)),
+            SessionOutcome::Completed(_)
+            | SessionOutcome::Running(_)
+            | SessionOutcome::Waiting(_) => {
+                Ok(commit_subject(&report.turn_text).map(GitAutoMessage::Subject))
+            }
+        }
+    }
+
+    /// Settle the Git action that follows a successful automatic commit-subject turn. A failure
+    /// deliberately leaves the completed changes in Review so the user can inspect, commit, or
+    /// push them manually instead of losing a successful agent run to a Git configuration issue.
+    pub fn finish_git_auto(&mut self, run_id: &str, result: Result<(), String>) -> io::Result<()> {
+        match result {
+            Ok(()) => {
+                self.update_run(
+                    run_id,
+                    RunPatch::new()
+                        .set("status", RunStatus::Done)
+                        .set("finishedAt", now_iso8601())
+                        .clear("currentStepId")
+                        .clear("autoResumeAttempts"),
+                )?;
+                self.append_event(
+                    run_id,
+                    EventInput::new("lifecycle")
+                        .field("message", "automatic commit and push finished"),
+                )?;
+                self.cleanup_runtime(run_id);
+                Ok(())
+            }
+            Err(reason) => {
+                self.update_run(
+                    run_id,
+                    RunPatch::new()
+                        .set("status", RunStatus::Review)
+                        .set("finishedAt", now_iso8601())
+                        .clear("currentStepId")
+                        .clear("autoResumeAttempts"),
+                )?;
+                self.append_event(
+                    run_id,
+                    EventInput::new("note").field(
+                        "message",
+                        format!(
+                            "automatic commit/push failed — review and finish manually: {reason}"
+                        ),
+                    ),
+                )?;
+                self.cleanup_runtime(run_id);
+                Ok(())
+            }
+        }
+    }
+
+    /// The worktree is preferred; single-worktree runs use the manager's repository root.
+    pub fn working_directory_for(&self, run: &RunRecord) -> Option<PathBuf> {
+        run.worktree_path
+            .as_deref()
+            .map(PathBuf::from)
+            .or_else(|| self.repo_root.clone())
     }
 
     fn announce_auto_route(
@@ -3485,7 +3639,19 @@ impl RunManager {
         outcome: SessionOutcome,
     ) -> io::Result<()> {
         let mut step = self.continue_active_turn(run_id, active, outcome)?;
-        while let TurnStep::Nudge(boxed) = step {
+        loop {
+            let TurnStep::Nudge(boxed) = step else {
+                if matches!(step, TurnStep::GitAutoCommit(_)) {
+                    self.finish_git_auto(
+                        run_id,
+                        Err(
+                            "automatic Git actions require the production engine dispatcher"
+                                .to_owned(),
+                        ),
+                    )?;
+                }
+                break;
+            };
             let mut active = *boxed;
             let step_id = active.workflow.steps[active.step_index].id.clone();
             let next = match active.session_mut().send_message(
@@ -5336,6 +5502,55 @@ mod tests {
         assert!(AUTONOMOUS_NUDGE.contains("Do not begin new work"));
         assert!(AUTONOMOUS_NUDGE.contains("search for unrelated work"));
         assert!(AUTONOMOUS_NUDGE.contains("reply with exactly DUCK:DONE"));
+    }
+
+    #[test]
+    fn git_auto_with_changes_falls_back_to_review_without_a_production_dispatcher() {
+        let dir = tempdir().unwrap();
+        let (factory, _requests) = fake_factory(vec![completed_session("git-auto-session")]);
+        let mut manager = RunManager::with_session_factory(dir.path(), factory);
+        manager.set_diff_inspector(FakeDiff(true));
+        let workflow = workflow_with_steps(vec![agent_workflow_step("work")]);
+        let mut input = start_input("commit this");
+        input.git_auto = Some(true);
+
+        let run = manager.start_run(&workflow, input).unwrap();
+
+        assert_eq!(run.status, RunStatus::Review);
+        assert!(manager.read_events(&run.id).iter().any(|event| {
+            event.event_type == "note"
+                && event
+                    .extra
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .is_some_and(|message| message.contains("automatic commit/push failed"))
+        }));
+    }
+
+    #[test]
+    fn automatic_commit_subject_is_one_safe_line() {
+        assert_eq!(
+            commit_subject("  Add automatic commits  \nignored body").unwrap(),
+            "Add automatic commits"
+        );
+        assert!(commit_subject("").is_err());
+        assert!(commit_subject(&"x".repeat(73)).is_err());
+        assert!(commit_subject("bad\u{0000} subject").is_err());
+    }
+
+    #[test]
+    fn successful_automatic_git_action_finishes_without_the_review_gate() {
+        let dir = tempdir().unwrap();
+        let mut manager = RunManager::open(dir.path());
+        let run = manager.create_run(create_input()).unwrap();
+        manager.finish_git_auto(&run.id, Ok(())).unwrap();
+
+        assert_eq!(manager.get_run(&run.id).unwrap().status, RunStatus::Done);
+        assert!(manager.read_events(&run.id).iter().any(|event| {
+            event.event_type == "lifecycle"
+                && event.extra.get("message").and_then(Value::as_str)
+                    == Some("automatic commit and push finished")
+        }));
     }
 
     #[test]

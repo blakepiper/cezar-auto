@@ -202,6 +202,9 @@ pub struct RunRecord {
     pub system_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autonomous: Option<bool>,
+    /// `true` when this run commits and pushes automatically at natural checkpoints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_auto: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automation: Option<AutomationProvenance>,
     pub status: RunStatus,
@@ -617,6 +620,8 @@ pub struct CreateRunInputBase {
     pub worktree: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autonomous: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_auto: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

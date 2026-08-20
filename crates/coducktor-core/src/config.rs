@@ -51,6 +51,7 @@ pub struct ProjectComposerDefaults {
     pub variants: Option<u64>,
     pub autonomous: Option<bool>,
     pub worktree: Option<bool>,
+    pub git_auto: Option<bool>,
 }
 
 impl Default for RepoConfig {
@@ -216,6 +217,7 @@ fn parse_project_composer_defaults(value: Option<&Value>) -> ProjectComposerDefa
         }),
         autonomous: zod::bool_opt(zod::field(object, "autonomous")),
         worktree: zod::bool_opt(zod::field(object, "worktree")),
+        git_auto: zod::bool_opt(zod::field(object, "gitAuto")),
     }
 }
 

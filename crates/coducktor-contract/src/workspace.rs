@@ -32,6 +32,10 @@ pub struct ComposerDefaults {
     pub worktree: Option<bool>,
     pub inherited_autonomous: InheritedAutonomous,
     pub inherited_worktree: bool,
+    /// `true` commits and pushes at each natural checkpoint without asking; `false`/`None`
+    /// (the hard default) leaves git actions to the user via the Task Git screen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_auto: Option<bool>,
 }
 
 /// The boolean-or-policy value used by `ComposerDefaults`.
@@ -181,6 +185,8 @@ pub struct ComposerDefaultsPatch {
     pub autonomous: Option<Option<bool>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<Option<bool>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_auto: Option<Option<bool>>,
 }
 
 /// The partial agent-default patch accepted by workspace settings.
@@ -627,6 +633,8 @@ pub struct ProjectComposerDefaults {
     pub autonomous: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_auto: Option<bool>,
 }
 
 /// The response to a config write has the same shape as `ConfigResponse`.

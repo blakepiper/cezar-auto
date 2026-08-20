@@ -4,7 +4,8 @@
 //! "What should the agent work on?", the shared composer card (auto-growing text
 //! area, pasted-image row — no Dictation, per decision 2), a pill row —
 //! `skill/workflow ▾` · `runner ▾` · `model ▾` · `reasoning ▾` · `×N variants ▾` ·
-//! `branch: <branch> ▾` · `worktree: off ▾` · `mode: autonomous ▾` — then the send hint.
+//! `branch: <branch> ▾` · `worktree: off ▾` · `mode: autonomous ▾` · `git: manual ▾` —
+//! then the send hint.
 
 use coducktor_contract::{
     ProviderStatusResponse, ReasoningEffort, RepoInfo, Runner, RunnerModelCatalogResponse,
@@ -37,10 +38,11 @@ pub enum PillId {
     Base,
     Worktree,
     Autonomous,
+    GitMode,
 }
 
 impl PillId {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::Source,
         Self::Runner,
         Self::Model,
@@ -49,6 +51,7 @@ impl PillId {
         Self::Base,
         Self::Worktree,
         Self::Autonomous,
+        Self::GitMode,
     ];
 
     fn next(self) -> Self {
@@ -75,6 +78,7 @@ pub enum PickerKind {
     Base(Picker),
     Worktree(Picker),
     Autonomous(Picker),
+    GitMode(Picker),
 }
 
 impl PickerKind {
@@ -87,7 +91,8 @@ impl PickerKind {
             | Self::Variants(picker)
             | Self::Base(picker)
             | Self::Worktree(picker)
-            | Self::Autonomous(picker) => picker,
+            | Self::Autonomous(picker)
+            | Self::GitMode(picker) => picker,
         }
     }
 
@@ -100,7 +105,8 @@ impl PickerKind {
             | Self::Variants(picker)
             | Self::Base(picker)
             | Self::Worktree(picker)
-            | Self::Autonomous(picker) => picker,
+            | Self::Autonomous(picker)
+            | Self::GitMode(picker) => picker,
         }
     }
 }
@@ -149,6 +155,7 @@ pub struct Effective {
     pub has_git: bool,
     pub worktree_on: bool,
     pub autonomous_on: bool,
+    pub git_auto_on: bool,
     pub base_branch: String,
     pub providers_ready: bool,
 }
@@ -302,6 +309,13 @@ pub fn effective_values(draft: &NewTaskDraft, data: &NewTaskData) -> Effective {
         .or_else(|| data.repo.as_ref().map(|repo| repo.branch.clone()))
         .unwrap_or_else(|| "main".to_owned());
 
+    let git_auto_on = draft.git_auto.unwrap_or_else(|| {
+        project_defaults
+            .and_then(|defaults| defaults.git_auto)
+            .or_else(|| workspace_defaults.and_then(|defaults| defaults.git_auto))
+            .unwrap_or(false)
+    });
+
     Effective {
         providers_ready: !runners.is_empty(),
         source,
@@ -316,6 +330,7 @@ pub fn effective_values(draft: &NewTaskDraft, data: &NewTaskData) -> Effective {
         has_git,
         worktree_on,
         autonomous_on,
+        git_auto_on,
         base_branch,
     }
 }
@@ -379,6 +394,7 @@ pub fn apply_hit(app: &mut App, action: NewTaskAction) {
         NewTaskAction::BasePill => open_pill(app, PillId::Base),
         NewTaskAction::WorktreePill => open_pill(app, PillId::Worktree),
         NewTaskAction::AutonomousPill => open_pill(app, PillId::Autonomous),
+        NewTaskAction::GitModePill => open_pill(app, PillId::GitMode),
         NewTaskAction::Compose => {
             app.new_task_ui.pill_focus = None;
             app.new_task_ui.composer_focused = true;
@@ -411,6 +427,7 @@ fn picker_pill(kind: &PickerKind) -> PillId {
         PickerKind::Base(_) => PillId::Base,
         PickerKind::Worktree(_) => PillId::Worktree,
         PickerKind::Autonomous(_) => PillId::Autonomous,
+        PickerKind::GitMode(_) => PillId::GitMode,
     }
 }
 
@@ -479,7 +496,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                 app.new_task_ui
                     .pill_focus
                     .map(PillId::previous)
-                    .unwrap_or(PillId::Autonomous),
+                    .unwrap_or(PillId::GitMode),
             );
             true
         }
@@ -501,6 +518,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         }
         KeyCode::Char(' ') if app.new_task_ui.pill_focus == Some(PillId::Worktree) => {
             toggle_worktree(app);
+            true
+        }
+        KeyCode::Char(' ') if app.new_task_ui.pill_focus == Some(PillId::GitMode) => {
+            toggle_git_auto(app);
             true
         }
         KeyCode::Enter if app.new_task_ui.pill_focus.is_some() => {
@@ -669,6 +690,13 @@ fn toggle_worktree(app: &mut App) {
     write_draft(app);
 }
 
+fn toggle_git_auto(app: &mut App) {
+    let draft = &mut app.new_task_ui.draft;
+    let effective = effective_values(draft, &app.new_task_ui.data);
+    draft.git_auto = Some(!effective.git_auto_on);
+    write_draft(app);
+}
+
 fn open_pill(app: &mut App, pill: PillId) {
     let mut picker = Picker::new(picker_title(pill));
     picker.searchable = matches!(pill, PillId::Source | PillId::Base);
@@ -682,6 +710,7 @@ fn open_pill(app: &mut App, pill: PillId) {
         PillId::Base => PickerKind::Base(picker),
         PillId::Worktree => PickerKind::Worktree(picker),
         PillId::Autonomous => PickerKind::Autonomous(picker),
+        PillId::GitMode => PickerKind::GitMode(picker),
     });
     refresh_picker_items(app);
 }
@@ -696,6 +725,7 @@ fn picker_title(pill: PillId) -> &'static str {
         PillId::Base => "BRANCH",
         PillId::Worktree => "WORKTREE",
         PillId::Autonomous => "TASK MODE",
+        PillId::GitMode => "GIT CONTROLS",
     }
 }
 
@@ -741,6 +771,7 @@ fn refresh_picker_items(app: &mut App) {
             worktree_picker_items(&app.new_task_ui.draft, &app.new_task_ui.data)
         }
         PickerKind::Autonomous(_) => autonomous_picker_items(),
+        PickerKind::GitMode(_) => git_auto_picker_items(),
     };
     kind.picker_mut().set_items(items);
 }
@@ -994,6 +1025,21 @@ fn autonomous_picker_items() -> Vec<PickerItem> {
     ]
 }
 
+fn git_auto_picker_items() -> Vec<PickerItem> {
+    vec![
+        PickerItem::simple(
+            "git-auto:true",
+            "automatic",
+            Some("Commit and push at each natural checkpoint, no approval needed".to_owned()),
+        ),
+        PickerItem::simple(
+            "git-auto:false",
+            "manual",
+            Some("Ask before committing or pushing — use the Task Git screen yourself".to_owned()),
+        ),
+    ]
+}
+
 fn apply_pick(app: &mut App, pill: PillId, value: &str) {
     match pill {
         PillId::Source => {
@@ -1044,6 +1090,11 @@ fn apply_pick(app: &mut App, pill: PillId, value: &str) {
         PillId::Autonomous => {
             if let Some(autonomous) = value.strip_prefix("autonomous:") {
                 app.new_task_ui.draft.autonomous = Some(autonomous == "true");
+            }
+        }
+        PillId::GitMode => {
+            if let Some(git_auto) = value.strip_prefix("git-auto:") {
+                app.new_task_ui.draft.git_auto = Some(git_auto == "true");
             }
         }
     }
@@ -1126,6 +1177,7 @@ fn request_start(app: &mut App) {
         images,
         worktree: Some(effective.worktree_on),
         autonomous: effective.autonomous_on,
+        git_auto: effective.git_auto_on,
     };
     let input = new_task_form::build_create_run_body(&opts);
     let project = app.current_project().to_owned();
@@ -1319,6 +1371,7 @@ fn render_pills(frame: &mut Frame<'_>, area: Rect, app: &mut App, effective: &Ef
                     PillId::Base => NewTaskAction::BasePill,
                     PillId::Worktree => NewTaskAction::WorktreePill,
                     PillId::Autonomous => NewTaskAction::AutonomousPill,
+                    PillId::GitMode => NewTaskAction::GitModePill,
                 }),
             );
             column = column.saturating_add(width);
@@ -1375,6 +1428,12 @@ fn pill_entries(effective: &Effective) -> Vec<(PillId, String)> {
         "manual approval"
     };
     pills.push((PillId::Autonomous, format!("mode: {mode}")));
+    let git_mode = if effective.git_auto_on {
+        "auto"
+    } else {
+        "manual"
+    };
+    pills.push((PillId::GitMode, format!("git: {git_mode}")));
     pills
 }
 
@@ -1634,6 +1693,7 @@ mod tests {
                 worktree: Some(true),
                 inherited_autonomous: InheritedAutonomous::Value(true),
                 inherited_worktree: false,
+                git_auto: None,
             },
             resources: WorkspaceResources {
                 max_parallel: 1,
@@ -1663,6 +1723,7 @@ mod tests {
                 variants: None,
                 autonomous: Some(false),
                 worktree: None,
+                git_auto: None,
             }),
             ..ComposerConfig::default()
         });
@@ -1675,6 +1736,7 @@ mod tests {
                 worktree: Some(true),
                 inherited_autonomous: InheritedAutonomous::Value(true),
                 inherited_worktree: false,
+                git_auto: None,
             },
             resources: WorkspaceResources {
                 max_parallel: 1,

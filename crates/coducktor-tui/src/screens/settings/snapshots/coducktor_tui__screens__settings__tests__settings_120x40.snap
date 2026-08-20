@@ -1,5 +1,6 @@
 ---
 source: crates/coducktor-tui/src/screens/settings/mod.rs
+assertion_line: 2700
 expression: terminal.backend().buffer()
 ---
 Buffer {
@@ -22,7 +23,7 @@ Buffer {
         "    All tasks               │                      │Project variants                  inherit (1)                       ",
         "    Settings                │                      │Project worktree                  inherit (off)                     ",
         "                            │                      │Project task mode                 inherit (autonomous)              ",
-        "                            │                      │                                                                    ",
+        "                            │                      │Project git mode                  inherit (manual)                  ",
         "                            │                      │                                                                    ",
         "                            │                      │                                                                    ",
         "                            │                      │                                                                    ",
@@ -190,7 +191,9 @@ Buffer {
         x: 28, y: 17, fg: Rgb(65, 72, 104), bg: Reset, underline: Reset, modifier: NONE,
         x: 29, y: 17, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
         x: 51, y: 17, fg: Rgb(65, 72, 104), bg: Reset, underline: Reset, modifier: NONE,
-        x: 52, y: 17, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 52, y: 17, fg: Rgb(192, 202, 245), bg: Reset, underline: Reset, modifier: NONE,
+        x: 84, y: 17, fg: Rgb(130, 139, 184), bg: Reset, underline: Reset, modifier: NONE,
+        x: 102, y: 17, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
         x: 0, y: 18, fg: Reset, bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
         x: 28, y: 18, fg: Rgb(65, 72, 104), bg: Reset, underline: Reset, modifier: NONE,
         x: 29, y: 18, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,

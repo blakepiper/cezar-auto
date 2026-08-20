@@ -1,5 +1,6 @@
 ---
 source: crates/coducktor-tui/src/screens/settings/mod.rs
+assertion_line: 2700
 expression: terminal.backend().buffer()
 ---
 Buffer {
@@ -22,7 +23,7 @@ Buffer {
         "│                      │Project variants                  inherit (1)           ",
         "│                      │Project worktree                  inherit (off)         ",
         "│                      │Project task mode                 inherit (autonomous)  ",
-        "│                      │                                                        ",
+        "│                      │Project git mode                  inherit (manual)      ",
         "│                      │                                                        ",
         "│                      │                                                        ",
         "│                      │                                                        ",
@@ -143,7 +144,9 @@ Buffer {
         x: 0, y: 17, fg: Rgb(65, 72, 104), bg: Reset, underline: Reset, modifier: NONE,
         x: 1, y: 17, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
         x: 23, y: 17, fg: Rgb(65, 72, 104), bg: Reset, underline: Reset, modifier: NONE,
-        x: 24, y: 17, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 24, y: 17, fg: Rgb(192, 202, 245), bg: Reset, underline: Reset, modifier: NONE,
+        x: 56, y: 17, fg: Rgb(130, 139, 184), bg: Reset, underline: Reset, modifier: NONE,
+        x: 74, y: 17, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
         x: 0, y: 18, fg: Rgb(65, 72, 104), bg: Reset, underline: Reset, modifier: NONE,
         x: 1, y: 18, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
         x: 23, y: 18, fg: Rgb(65, 72, 104), bg: Reset, underline: Reset, modifier: NONE,
