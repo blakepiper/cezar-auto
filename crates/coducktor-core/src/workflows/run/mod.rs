@@ -3566,14 +3566,14 @@ impl RunManager {
                 run_status_name(run.status)
             )));
         }
-        let Some(session_step) = run
+        // A run with no prior session (e.g. the agent crashed before its first turn) still gets
+        // a fresh step in this same run/worktree — it just starts without a resumed transcript,
+        // the same as a resumed step whose backend no longer matches the target runner below.
+        let session_step = run
             .steps
             .iter()
             .rev()
-            .find(|step| step.session_id.is_some())
-        else {
-            return Ok(ContinueResult::error("no agent session to resume"));
-        };
+            .find(|step| step.session_id.is_some());
         let target_runner = options
             .runner
             .unwrap_or(run.requested_runner.unwrap_or_else(|| {
@@ -3606,11 +3606,11 @@ impl RunManager {
             ));
         };
         let session_backend = session_step
-            .backend
+            .and_then(|step| step.backend)
             .or(run.runner)
             .unwrap_or(Runner::Claude);
         let resume_session = (target_concrete == Some(session_backend))
-            .then(|| session_step.session_id.clone())
+            .then(|| session_step.and_then(|step| step.session_id.clone()))
             .flatten();
 
         if options.runner.is_some() || options.model.is_some() {

@@ -86,7 +86,10 @@ pub fn run_action_flags(run: &coducktor_contract::ApiRun) -> RunActionFlags {
     let has_session = last_session_id(&run.record).is_some();
     RunActionFlags {
         finish: matches!(run.record.status, RunStatus::Waiting | RunStatus::Review),
-        continue_run: !active && has_session,
+        // A finished run can always take a follow-up: the engine starts a fresh step in the same
+        // worktree even without a prior session to resume. Only the terminal hand-off needs a
+        // real session id, since it literally runs `<runner> --resume <session_id>`.
+        continue_run: !active,
         terminal: !active && has_session,
         archive: !active,
         mark_unread: can_be_unread(run) && !is_unread(run),
@@ -222,15 +225,18 @@ mod tests {
     }
 
     #[test]
-    fn continue_and_terminal_need_a_closed_run_with_a_session() {
+    fn continue_needs_only_a_closed_run_terminal_also_needs_a_session() {
         let closed_with_session = run(RunStatus::Done, false, Some("abc123"));
         let flags = run_action_flags(&closed_with_session);
         assert!(flags.continue_run);
         assert!(flags.terminal);
 
+        // No prior session still offers Continue — the engine starts a fresh step in the same
+        // run/worktree instead of resuming a transcript — but there's no session id for the
+        // terminal hand-off to `--resume`.
         let closed_without_session = run(RunStatus::Done, false, None);
         let flags = run_action_flags(&closed_without_session);
-        assert!(!flags.continue_run);
+        assert!(flags.continue_run);
         assert!(!flags.terminal);
 
         let active_with_session = run(RunStatus::Running, false, Some("abc123"));
@@ -316,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn ask_delivery_mode_follows_the_live_resume_unavailable_ladder() {
+    fn ask_delivery_mode_follows_the_live_resume_ladder() {
         assert_eq!(
             ask_delivery_mode(&run(RunStatus::Running, false, None)),
             DeliveryMode::Live
@@ -325,9 +331,11 @@ mod tests {
             ask_delivery_mode(&run(RunStatus::Done, false, Some("abc"))),
             DeliveryMode::Resume
         );
+        // No prior session still resumes: the engine starts a fresh step in the same run/
+        // worktree rather than refusing to deliver the answer.
         assert_eq!(
             ask_delivery_mode(&run(RunStatus::Done, false, None)),
-            DeliveryMode::Unavailable
+            DeliveryMode::Resume
         );
     }
 }

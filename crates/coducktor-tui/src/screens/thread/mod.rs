@@ -28,7 +28,7 @@ use crate::widgets::transcript::{
     TranscriptItem,
 };
 
-use actions::{is_run_active, last_session_id};
+use actions::is_run_active;
 use projection::ThreadViewModel;
 use reducer::{NoteTone, ThreadAsk, ThreadEntry, ThreadReduceOptions, ThreadState, reduce_thread};
 
@@ -851,11 +851,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                 RunStatus::Waiting => "ANSWER",
                 RunStatus::Running => "GUIDANCE",
                 RunStatus::Review | RunStatus::Done | RunStatus::Failed | RunStatus::Cancelled => {
-                    if last_session_id(record).is_some() {
-                        "FOLLOW UP"
-                    } else {
-                        "NEW TASK"
-                    }
+                    "FOLLOW UP"
                 }
             }
         });
@@ -1074,7 +1070,9 @@ fn submit_composer(app: &mut App, text: String, images: Vec<ImageInput>) -> bool
             },
         });
         true
-    } else if last_session_id(&run.record).is_some() {
+    } else {
+        // No prior session just means the engine starts a fresh step in this same run/worktree
+        // instead of resuming a transcript — still delivered as a follow-up, not a new task.
         app.thread_ui.set_pending_composer(pending_label);
         app.pending.push(PendingAction::ContinueRun {
             project,
@@ -1083,10 +1081,6 @@ fn submit_composer(app: &mut App, text: String, images: Vec<ImageInput>) -> bool
             images,
         });
         true
-    } else {
-        app.notice =
-            Some("this task has no live session; start a new task for this follow-up".to_owned());
-        false
     }
 }
 
