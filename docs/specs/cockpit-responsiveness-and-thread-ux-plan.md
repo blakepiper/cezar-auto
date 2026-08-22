@@ -1,6 +1,6 @@
 # Cockpit responsiveness and thread UX — implementation specification
 
-Status: Phase 5 implemented; Phase 6 is next (written 2026-08-22, updated 2026-08-22)
+Status: Phases 1–6 implemented (written 2026-08-22, updated 2026-08-22)
 
 Audience: the next implementation agent. Work directly on `main`, preserve unrelated changes,
 commit the completed work, and push `origin main` as required by `AGENTS.md`.
@@ -522,6 +522,8 @@ agent with `Esc`. Nothing is archived, nothing is finished, no typed text is los
 lock-discipline tests included.
 
 ### Phase 6 — make navigation feel like vanilla Neovim
+
+**Status: complete (2026-08-22).**
 
 This is a small, keyboard-only conformance refactor after the reliability work, not a new modal
 editor or a Vim-emulation framework. Mouse hit targets remain available for every product action,

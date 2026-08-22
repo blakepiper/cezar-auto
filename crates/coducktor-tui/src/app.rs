@@ -13,6 +13,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use crate::input::hitmap::{HitAction, HitMap};
 use crate::input::keymap::{ActionId, KeyMode, Keymap};
+use crate::input::neovim::{Direction as VimDirection, FeedResult, NeovimInput, NormalCommand};
 use crate::screens::runs_util::TaskView;
 use crate::theme::{Theme, ThemeName};
 use crate::widgets::table::ColumnId;
@@ -409,6 +410,13 @@ impl History {
 enum InputMode {
     Normal,
     Command,
+    Search,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FocusLocation {
+    Sidebar,
+    Screen(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -421,11 +429,15 @@ enum CommandId {
     ClearScratchpad,
     Help,
     Sidebar,
+    Stop,
+    Finish,
+    Archive,
+    Delete,
     Quit,
 }
 
 impl CommandId {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 13] = [
         Self::Open,
         Self::Back,
         Self::Forward,
@@ -434,6 +446,10 @@ impl CommandId {
         Self::ClearScratchpad,
         Self::Help,
         Self::Sidebar,
+        Self::Stop,
+        Self::Finish,
+        Self::Archive,
+        Self::Delete,
         Self::Quit,
     ];
 
@@ -447,7 +463,11 @@ impl CommandId {
             "clear-scratchpad" => Some(Self::ClearScratchpad),
             "help" => Some(Self::Help),
             "sidebar" => Some(Self::Sidebar),
-            "quit" => Some(Self::Quit),
+            "stop" => Some(Self::Stop),
+            "finish" => Some(Self::Finish),
+            "archive" => Some(Self::Archive),
+            "delete" => Some(Self::Delete),
+            "q" | "quit" => Some(Self::Quit),
             _ => None,
         }
     }
@@ -462,7 +482,11 @@ impl CommandId {
             Self::ClearScratchpad => ":clear-scratchpad",
             Self::Help => ":help",
             Self::Sidebar => ":sidebar",
-            Self::Quit => ":quit",
+            Self::Stop => ":stop",
+            Self::Finish => ":finish",
+            Self::Archive => ":archive",
+            Self::Delete => ":delete",
+            Self::Quit => ":q",
         }
     }
 
@@ -476,6 +500,10 @@ impl CommandId {
             Self::ClearScratchpad => "clear the current scratchpad",
             Self::Help => "open this help",
             Self::Sidebar => "toggle sidebar",
+            Self::Stop => "stop the current task",
+            Self::Finish => "finish the current task",
+            Self::Archive => "archive the current task",
+            Self::Delete => "delete the current task",
             Self::Quit => "quit",
         }
     }
@@ -1027,6 +1055,9 @@ pub struct App {
     keymap: Keymap,
     mode: InputMode,
     command: String,
+    search: String,
+    last_search: String,
+    normal_input: NeovimInput,
     pub notice: Option<String>,
     toast: Option<String>,
     pub hover: Option<(u16, u16)>,
@@ -1118,7 +1149,6 @@ pub struct App {
     /// The absolute path main.rs should hand to `$EDITOR` (set by the `OpenIdeInEditor`
     /// handler; consumed by the run loop, which owns the terminal).
     pub editor_handoff: Option<String>,
-    pub filter_mode: bool,
     pub sort_picker_index: usize,
     /// Whether keyboard navigation is currently in the shell's left navigation panel.
     sidebar_focus: bool,
@@ -1126,6 +1156,7 @@ pub struct App {
     /// Focused pane inside the current screen for routes that do not have a screen-specific
     /// focus enum. Pane zero is the screen's leftmost pane.
     screen_focus: usize,
+    previous_focus: Option<FocusLocation>,
 }
 
 impl App {
@@ -1140,6 +1171,9 @@ impl App {
             keymap,
             mode: InputMode::Normal,
             command: String::new(),
+            search: String::new(),
+            last_search: String::new(),
+            normal_input: NeovimInput::default(),
             notice: None,
             toast: None,
             hover: None,
@@ -1207,12 +1241,12 @@ impl App {
             runtime_metrics: AppRuntimeMetrics::default(),
             debug_hud: false,
             editor_handoff: None,
-            filter_mode: false,
             sort_picker_index: 0,
-            // Start on the sidebar so `Ctrl+Right` enters the initial Tasks screen.
+            // Start on the sidebar so `Ctrl-W l` enters the initial Tasks screen.
             sidebar_focus: true,
             sidebar_selected: 0,
             screen_focus: 0,
+            previous_focus: None,
         }
     }
 
@@ -2320,18 +2354,17 @@ impl App {
 
     fn render_status(&mut self, frame: &mut Frame<'_>, area: Rect) {
         let mode = match self.mode {
+            InputMode::Normal if self.uses_literal_input() => "INSERT",
             InputMode::Normal => "NORMAL",
             InputMode::Command => "COMMAND",
+            InputMode::Search => "SEARCH",
         };
-        let line = if self.filter_mode {
-            let query = match self.route() {
-                Route::Tasks { .. } => self.tasks_ui.query.clone(),
-                Route::GlobalTasks => self.global_ui.query.clone(),
-                _ => String::new(),
-            };
-            format!(" FILTER /{query}▌")
-        } else if self.mode == InputMode::Command {
+        let line = if self.mode == InputMode::Command {
             format!(" {mode} :{}", self.command)
+        } else if self.mode == InputMode::Search {
+            format!(" {mode} /{}▌", self.search)
+        } else if let Some(prefix) = self.normal_input.prefix_label() {
+            format!(" NORMAL  {prefix}")
         } else if let Some(toast) = &self.toast {
             format!(" {mode}  {toast}")
         } else if let Some(notice) = &self.notice {
@@ -2339,7 +2372,7 @@ impl App {
         } else {
             let (focus, hint) = self.focus_summary();
             format!(
-                " {mode}  FOCUS: {focus} — {hint}  ·  {}  {}  v0.1.0  {}  ? help",
+                " {mode}  FOCUS: {focus} — {hint}  ·  {}  {}  v0.1.0  {}  :help",
                 self.current_project(),
                 self.theme.name.label(),
                 self.provider_summary(),
@@ -2427,8 +2460,11 @@ impl App {
                 "NORMAL",
                 Style::default().fg(self.theme.palette.accent),
             )),
-            Line::from("  Mouse capture: F12 toggles it; hold Shift for terminal selection."),
-            Line::from("  y copies the focused item; Esc closes this help."),
+            Line::from("  h/j/k/l move · gg/G first/last · Ctrl-U/D half-page"),
+            Line::from("  Ctrl-W h/j/k/l window · Ctrl-W w/p next/previous"),
+            Line::from("  gt/gT tab · / search · n/N match · i insert · : Ex"),
+            Line::from("  Mouse capture: F12; hold Shift for terminal selection."),
+            Line::from("  Esc closes this help."),
             Line::from(""),
             Line::from(Span::styled(
                 "COMMANDS (type : to enter)",
@@ -2675,21 +2711,30 @@ impl App {
         {
             return;
         }
-        if self.filter_mode {
-            self.handle_filter_key(key);
-            return;
-        }
         if self.mode == InputMode::Command {
             self.handle_command_key(key);
             return;
         }
-        if key
+        if self.mode == InputMode::Search {
+            self.handle_search_key(key);
+            return;
+        }
+        let starts_window_prefix = key
             .modifiers
             .contains(crossterm::event::KeyModifiers::CONTROL)
-            && matches!(key.code, KeyCode::Left | KeyCode::Right)
+            && key.code == KeyCode::Char('w');
+        if self.normal_input.prefix_label().is_some()
+            || !self.uses_literal_input()
+            || starts_window_prefix
         {
-            self.focus_step(key.code);
-            return;
+            match self.normal_input.feed(key) {
+                FeedResult::Pending | FeedResult::Cancelled => return,
+                FeedResult::Command(command) => {
+                    self.apply_normal_command(command);
+                    return;
+                }
+                FeedResult::Pass => {}
+            }
         }
         if self.sidebar_focus {
             if self.handle_sidebar_key(key) {
@@ -2700,44 +2745,388 @@ impl App {
             }
             return;
         }
-        match self.route().clone() {
-            Route::Tasks { .. } if crate::screens::tasks::handle_key(self, key) => return,
-            Route::GlobalTasks if crate::screens::global_tasks::handle_key(self, key) => return,
-            Route::GlobalSettings if crate::screens::settings::handle_key(self, key) => return,
-            Route::NewTask { .. } if crate::screens::new_task::handle_key(self, key) => return,
-            Route::Scratchpad { .. } if crate::screens::scratchpad::handle_key(self, key) => return,
-            Route::Thread { .. } if crate::screens::thread::handle_key(self, key) => return,
-            Route::TaskGit { .. } if crate::screens::task_git::handle_key(self, key) => return,
-            Route::Ide { .. } if crate::screens::ide::handle_key(self, key) => return,
-            Route::Terminal { .. }
-                if !self.sidebar_focus && crate::screens::terminal::handle_key(self, key) =>
-            {
-                return;
-            }
-            Route::Github { .. } if crate::screens::github::handle_key(self, key) => return,
-            Route::Skills { .. } if crate::screens::skills::handle_key(self, key) => return,
-            Route::Workflows { .. } if crate::screens::workflows::handle_key(self, key) => return,
-            Route::RepoGit { .. } if crate::screens::repo_git::handle_key(self, key) => return,
-            Route::Compare { .. } if crate::screens::compare::handle_key(self, key) => return,
-            Route::Settings { .. } if crate::screens::settings::handle_key(self, key) => return,
-            _ => {}
+        if self.handle_route_key(key) {
+            return;
         }
         if let Some(action) = self.keymap.action_for(KeyMode::Normal, &key) {
             self.apply_action(action);
             return;
         }
-        match key.code {
-            KeyCode::Char(':') => {
+        if key.code == KeyCode::Esc && self.sidebar_overlay_open {
+            self.sidebar_overlay_open = false;
+        }
+    }
+
+    fn handle_route_key(&mut self, key: KeyEvent) -> bool {
+        match self.route().clone() {
+            Route::Tasks { .. } => crate::screens::tasks::handle_key(self, key),
+            Route::GlobalTasks => crate::screens::global_tasks::handle_key(self, key),
+            Route::GlobalSettings => crate::screens::settings::handle_key(self, key),
+            Route::NewTask { .. } => crate::screens::new_task::handle_key(self, key),
+            Route::Scratchpad { .. } => crate::screens::scratchpad::handle_key(self, key),
+            Route::Thread { .. } => crate::screens::thread::handle_key(self, key),
+            Route::TaskGit { .. } => crate::screens::task_git::handle_key(self, key),
+            Route::Ide { .. } => crate::screens::ide::handle_key(self, key),
+            Route::Terminal { .. } => crate::screens::terminal::handle_key(self, key),
+            Route::Github { .. } => crate::screens::github::handle_key(self, key),
+            Route::Skills { .. } => crate::screens::skills::handle_key(self, key),
+            Route::Workflows { .. } => crate::screens::workflows::handle_key(self, key),
+            Route::RepoGit { .. } => crate::screens::repo_git::handle_key(self, key),
+            Route::Compare { .. } => crate::screens::compare::handle_key(self, key),
+            Route::Settings { .. } => crate::screens::settings::handle_key(self, key),
+            Route::Placeholder { .. } => false,
+        }
+    }
+
+    fn uses_literal_input(&self) -> bool {
+        if self.sidebar_focus {
+            return false;
+        }
+        match self.route() {
+            Route::NewTask { .. } => {
+                self.new_task_ui.composer_focused || self.new_task_ui.picker.is_some()
+            }
+            Route::Scratchpad { .. } | Route::Terminal { .. } => true,
+            Route::Thread { .. } => {
+                self.thread_ui.subagent_sheet.is_some()
+                    || matches!(
+                        self.thread_ui.focus,
+                        crate::screens::thread::ThreadFocus::Composer
+                            | crate::screens::thread::ThreadFocus::ReviewNotes
+                    )
+            }
+            Route::Ide { .. } => self.ide_ui.focus == crate::screens::ide::IdeFocus::Editor,
+            Route::Github { .. } => {
+                self.github_ui.focus == crate::screens::github::GithubFocus::SkillPicker
+            }
+            Route::Workflows { .. } => self.workflows_ui.import_open || self.workflows_ui.name_open,
+            Route::RepoGit { .. } => self.repo_git_ui.new_branch_open,
+            Route::TaskGit { .. } => self.task_git_ui.commit_dialog_open,
+            Route::Settings { .. } | Route::GlobalSettings => {
+                self.settings_ui.file_editing || self.settings_ui.edit.is_some()
+            }
+            _ => false,
+        }
+    }
+
+    fn apply_normal_command(&mut self, command: NormalCommand) {
+        match command {
+            NormalCommand::Motion(direction) => {
+                let code = match direction {
+                    VimDirection::Left => KeyCode::Char('h'),
+                    VimDirection::Down => KeyCode::Char('j'),
+                    VimDirection::Up => KeyCode::Char('k'),
+                    VimDirection::Right => KeyCode::Char('l'),
+                };
+                let key = KeyEvent::new(code, crossterm::event::KeyModifiers::NONE);
+                if self.sidebar_focus {
+                    self.handle_sidebar_key(key);
+                } else {
+                    self.handle_route_key(key);
+                }
+            }
+            NormalCommand::Window(direction) => self.focus_window(direction),
+            NormalCommand::WindowNext => self.cycle_window(),
+            NormalCommand::WindowPrevious => self.restore_previous_window(),
+            NormalCommand::First => self.jump_to_boundary(false),
+            NormalCommand::Last => self.jump_to_boundary(true),
+            NormalCommand::HalfPageUp => self.half_page(false),
+            NormalCommand::HalfPageDown => self.half_page(true),
+            NormalCommand::NextTab => self.cycle_task_tab(true),
+            NormalCommand::PreviousTab => self.cycle_task_tab(false),
+            NormalCommand::Search => self.begin_search(),
+            NormalCommand::SearchNext => self.repeat_search(true),
+            NormalCommand::SearchPrevious => self.repeat_search(false),
+            NormalCommand::Insert => {
+                let key = KeyEvent::new(KeyCode::Char('i'), crossterm::event::KeyModifiers::NONE);
+                self.handle_route_key(key);
+            }
+            NormalCommand::Ex => {
                 self.mode = InputMode::Command;
                 self.command.clear();
                 self.notice = None;
             }
-            KeyCode::Char('?') => self.help_open = true,
-            KeyCode::Esc if self.sidebar_overlay_open => self.sidebar_overlay_open = false,
+        }
+    }
+
+    fn begin_search(&mut self) {
+        self.mode = InputMode::Search;
+        self.search.clear();
+        self.notice = None;
+        self.apply_search_query();
+    }
+
+    fn handle_search_key(&mut self, key: KeyEvent) {
+        match key.code {
             KeyCode::Esc => {
-                self.go_back();
+                self.mode = InputMode::Normal;
+                self.search.clear();
+            }
+            KeyCode::Enter => {
+                self.mode = InputMode::Normal;
+                if !self.search.is_empty() {
+                    self.last_search = self.search.clone();
+                    self.repeat_search(true);
+                }
+            }
+            KeyCode::Backspace => {
+                self.search.pop();
+                self.apply_search_query();
+            }
+            KeyCode::Char(character)
+                if !key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                self.search.push(character);
+                self.apply_search_query();
             }
             _ => {}
+        }
+    }
+
+    fn apply_search_query(&mut self) {
+        let query = self.search.clone();
+        match self.route() {
+            Route::Tasks { .. } => self.tasks_ui.query = query,
+            Route::GlobalTasks => self.global_ui.query = query,
+            Route::Skills { .. } => {
+                self.skills_ui.query = query;
+                self.skills_ui.selected = 0;
+            }
+            Route::Workflows { .. } => {
+                self.workflows_ui.focus = crate::screens::workflows::WorkflowFocus::Palette;
+                self.workflows_ui.palette_query = query;
+                self.workflows_ui.palette_selected = 0;
+            }
+            Route::Thread { .. } => {}
+            _ => {
+                self.notice = Some("search is not available in this view".to_owned());
+            }
+        }
+    }
+
+    fn repeat_search(&mut self, forward: bool) {
+        if self.last_search.is_empty() {
+            return;
+        }
+        match self.route() {
+            Route::Tasks { .. } => {
+                self.tasks_ui
+                    .table
+                    .cycle_selection(if forward { 1 } else { -1 })
+            }
+            Route::GlobalTasks => {
+                self.global_ui
+                    .table
+                    .cycle_selection(if forward { 1 } else { -1 })
+            }
+            Route::Skills { .. } => {
+                crate::screens::skills::move_search_match(self, forward);
+            }
+            Route::Workflows { .. } => {
+                crate::screens::workflows::move_palette_selection(
+                    self,
+                    if forward { 1 } else { -1 },
+                );
+            }
+            Route::Thread { .. } => {
+                let area = self.thread_ui.transcript_area.unwrap_or_default();
+                self.thread_ui.transcript.select_next_match(
+                    &self.last_search,
+                    if forward { 1 } else { -1 },
+                    area.width,
+                    area.height,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    fn jump_to_boundary(&mut self, end: bool) {
+        if self.sidebar_focus {
+            let len = self.sidebar_rows().len();
+            self.sidebar_selected = if end { len.saturating_sub(1) } else { 0 };
+            return;
+        }
+        match self.route() {
+            Route::Tasks { .. } => {
+                let index = end.then(|| self.tasks_ui.table.rows.len().saturating_sub(1));
+                self.tasks_ui.table.select(index.or(Some(0)));
+            }
+            Route::GlobalTasks => {
+                let index = end.then(|| self.global_ui.table.rows.len().saturating_sub(1));
+                self.global_ui.table.select(index.or(Some(0)));
+            }
+            Route::Thread { .. } if end => self.thread_ui.transcript.jump_to_bottom(),
+            Route::Thread { .. } => self.thread_ui.transcript.jump_to_top(),
+            Route::Skills { .. } => {
+                let query = self.skills_ui.query.to_lowercase();
+                self.skills_ui.selected = if end {
+                    self.skills_ui
+                        .skills
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .find_map(|(index, skill)| {
+                            (query.is_empty()
+                                || skill.name.to_lowercase().contains(&query)
+                                || skill
+                                    .description
+                                    .as_deref()
+                                    .is_some_and(|value| value.to_lowercase().contains(&query)))
+                            .then_some(index)
+                        })
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+            }
+            Route::Workflows { .. } => match self.workflows_ui.focus {
+                crate::screens::workflows::WorkflowFocus::Palette => {
+                    let query = self.workflows_ui.palette_query.to_lowercase();
+                    self.workflows_ui.palette_selected = if end {
+                        self.workflows_ui
+                            .palette_skills
+                            .iter()
+                            .enumerate()
+                            .rev()
+                            .find_map(|(index, skill)| {
+                                (query.is_empty()
+                                    || skill.name.to_lowercase().contains(&query)
+                                    || skill
+                                        .description
+                                        .as_deref()
+                                        .is_some_and(|value| value.to_lowercase().contains(&query)))
+                                .then_some(index)
+                            })
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    };
+                }
+                _ => {
+                    let count =
+                        if self.workflows_ui.selected_tab < self.workflows_ui.workflows.len() {
+                            self.workflows_ui.workflows[self.workflows_ui.selected_tab]
+                                .steps
+                                .len()
+                        } else {
+                            self.workflows_ui.draft_steps.len()
+                        };
+                    self.workflows_ui.steps_selected =
+                        if end { count.saturating_sub(1) } else { 0 };
+                }
+            },
+            Route::Github { .. } => {
+                if self.github_ui.focus == crate::screens::github::GithubFocus::Detail {
+                    if end {
+                        match self.github_ui.detail_tab {
+                            crate::screens::github::GithubDetailTab::Thread => {
+                                self.github_ui.comments_scroll = usize::MAX
+                            }
+                            crate::screens::github::GithubDetailTab::Changes => {
+                                self.github_ui.changes_scroll = usize::MAX
+                            }
+                        }
+                    } else {
+                        self.github_ui.comments_scroll = 0;
+                        self.github_ui.changes_scroll = 0;
+                    }
+                } else {
+                    let count =
+                        self.github_ui
+                            .data
+                            .as_ref()
+                            .map_or(0, |data| match self.github_ui.tab {
+                                crate::screens::github::GithubTab::Issues => data.issues.len(),
+                                crate::screens::github::GithubTab::Prs => data.prs.len(),
+                            });
+                    self.github_ui.list_selected = if end { count.saturating_sub(1) } else { 0 };
+                }
+            }
+            Route::RepoGit { .. } => crate::screens::repo_git::jump_selection(self, end),
+            Route::TaskGit { .. } => crate::screens::task_git::jump_selection(self, end),
+            Route::Ide { .. } => crate::screens::ide::jump_tree(self, end),
+            Route::Compare { .. } => crate::screens::compare::jump_selection(self, end),
+            Route::Settings { .. } | Route::GlobalSettings => {
+                crate::screens::settings::jump_selection(self, end)
+            }
+            _ => {}
+        }
+    }
+
+    fn half_page(&mut self, down: bool) {
+        let code = if down { KeyCode::Down } else { KeyCode::Up };
+        let key = KeyEvent::new(code, crossterm::event::KeyModifiers::NONE);
+        for _ in 0..10 {
+            if self.sidebar_focus {
+                self.handle_sidebar_key(key);
+            } else {
+                self.handle_route_key(key);
+            }
+        }
+    }
+
+    fn cycle_task_tab(&mut self, forward: bool) {
+        let delta = if forward { 1 } else { -1 };
+        match self.route().clone() {
+            Route::Thread { project, id } => {
+                let tab = if forward {
+                    TaskGitTab::Changes
+                } else {
+                    TaskGitTab::Commits
+                };
+                crate::screens::task_git::open(self, &project, &id, tab);
+            }
+            Route::TaskGit { .. } => crate::screens::task_git::switch_tab(self, delta),
+            Route::RepoGit { project, tab } => {
+                let order = [
+                    RepoGitTab::Commits,
+                    RepoGitTab::Changes,
+                    RepoGitTab::Branches,
+                ];
+                let current = order
+                    .iter()
+                    .position(|candidate| *candidate == tab)
+                    .unwrap_or(0);
+                let next = (current as i32 + delta).rem_euclid(order.len() as i32) as usize;
+                crate::screens::repo_git::open(self, &project, order[next]);
+            }
+            Route::Github { .. } => {
+                use crate::input::hitmap::GithubAction;
+                use crate::screens::github::{GithubDetailTab, GithubTab};
+                if self.github_ui.focus == crate::screens::github::GithubFocus::Detail
+                    && self.github_ui.detail_item.is_some()
+                {
+                    let next = match self.github_ui.detail_tab {
+                        GithubDetailTab::Thread => GithubDetailTab::Changes,
+                        GithubDetailTab::Changes => GithubDetailTab::Thread,
+                    };
+                    crate::screens::github::apply_hit(self, GithubAction::SwitchDetailTab(next));
+                } else {
+                    let next = match self.github_ui.tab {
+                        GithubTab::Issues => GithubTab::Prs,
+                        GithubTab::Prs => GithubTab::Issues,
+                    };
+                    crate::screens::github::apply_hit(self, GithubAction::SwitchTab(next));
+                }
+            }
+            Route::Workflows { .. } => {
+                let count = self.workflows_ui.workflows.len() + 1;
+                let next = (self.workflows_ui.selected_tab as i32 + delta).rem_euclid(count as i32)
+                    as usize;
+                crate::screens::workflows::apply_tab_hit(self, next);
+            }
+            Route::Compare { .. } => {
+                let code = if forward {
+                    KeyCode::Right
+                } else {
+                    KeyCode::Left
+                };
+                self.handle_route_key(KeyEvent::new(code, crossterm::event::KeyModifiers::NONE));
+            }
+            _ => self.notice = Some("this view has no tabs".to_owned()),
         }
     }
 
@@ -2779,30 +3168,6 @@ impl App {
                 }
             }
             KeyCode::Char('n') | KeyCode::Esc => self.confirm = None,
-            _ => {}
-        }
-    }
-
-    fn handle_filter_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Esc => self.filter_mode = false,
-            KeyCode::Enter => {
-                self.filter_mode = false;
-            }
-            KeyCode::Backspace => match self.route() {
-                Route::Tasks { .. } => {
-                    self.tasks_ui.query.pop();
-                }
-                Route::GlobalTasks => {
-                    self.global_ui.query.pop();
-                }
-                _ => {}
-            },
-            KeyCode::Char(character) => match self.route() {
-                Route::Tasks { .. } => self.tasks_ui.query.push(character),
-                Route::GlobalTasks => self.global_ui.query.push(character),
-                _ => {}
-            },
             _ => {}
         }
     }
@@ -2885,8 +3250,61 @@ impl App {
             CommandId::ClearScratchpad => crate::screens::scratchpad::request_clear(self),
             CommandId::Help => self.help_open = true,
             CommandId::Sidebar => self.toggle_sidebar(),
+            CommandId::Stop => self.apply_thread_command(
+                crate::screens::thread::ThreadAction::Cancel,
+                ":stop requires an open task session",
+            ),
+            CommandId::Finish => self.apply_thread_command(
+                crate::screens::thread::ThreadAction::Finish,
+                ":finish requires an open task session",
+            ),
+            CommandId::Archive => self.apply_thread_command(
+                crate::screens::thread::ThreadAction::Archive,
+                ":archive requires an open task session",
+            ),
+            CommandId::Delete => self.apply_thread_command(
+                crate::screens::thread::ThreadAction::Delete,
+                ":delete requires an open task session or removable settings row",
+            ),
             CommandId::Quit => self.request_quit(),
         }
+    }
+
+    fn apply_thread_command(
+        &mut self,
+        action: crate::screens::thread::ThreadAction,
+        unavailable: &str,
+    ) {
+        if action == crate::screens::thread::ThreadAction::Delete
+            && matches!(self.route(), Route::Settings { .. } | Route::GlobalSettings)
+        {
+            crate::screens::settings::delete_selected(self);
+            return;
+        }
+        if !matches!(self.route(), Route::Thread { .. } | Route::TaskGit { .. }) {
+            self.notice = Some(unavailable.to_owned());
+            return;
+        }
+        let Some(run) = self.thread_ui.data.run.as_ref() else {
+            self.notice = Some(unavailable.to_owned());
+            return;
+        };
+        let flags = crate::screens::thread::actions::run_action_flags(run);
+        let allowed = match &action {
+            crate::screens::thread::ThreadAction::Cancel => flags.cancel,
+            crate::screens::thread::ThreadAction::Finish => flags.finish,
+            crate::screens::thread::ThreadAction::Archive => flags.archive,
+            crate::screens::thread::ThreadAction::Delete => flags.delete_run,
+            _ => false,
+        };
+        if !allowed {
+            self.notice = Some(format!(
+                "{} is not available for this task",
+                action.command_name()
+            ));
+            return;
+        }
+        crate::screens::thread::apply_hit(self, action);
     }
 
     fn apply_action(&mut self, action: ActionId) {
@@ -3040,6 +3458,11 @@ impl App {
                     crate::screens::workflows::apply_palette_hit(self, index);
                 }
             }
+            HitAction::WorkflowControl(action) => {
+                if matches!(self.route(), Route::Workflows { .. }) {
+                    crate::screens::workflows::apply_control(self, action);
+                }
+            }
             HitAction::RepoGitScreen(action) => {
                 if matches!(self.route(), Route::RepoGit { .. }) {
                     crate::screens::repo_git::apply_hit(self, action);
@@ -3059,6 +3482,13 @@ impl App {
             HitAction::SettingsRow(index) => {
                 if matches!(self.route(), Route::Settings { .. } | Route::GlobalSettings) {
                     self.settings_ui.row = index;
+                    crate::screens::settings::activate_selected(self);
+                }
+            }
+            HitAction::SettingsDeleteRow(index) => {
+                if matches!(self.route(), Route::Settings { .. } | Route::GlobalSettings) {
+                    self.settings_ui.row = index;
+                    crate::screens::settings::delete_selected(self);
                 }
             }
             HitAction::OpenCompare(group_id) => {
@@ -3272,10 +3702,8 @@ impl App {
         }
     }
 
-    /// Move keyboard focus one pane left or right (`Ctrl+Left` / `Ctrl+Right`). The shell sidebar
-    /// is always the leftmost pane; screen-specific panes follow it in visual order.
-    fn focus_step(&mut self, dir: KeyCode) {
-        if matches!(
+    fn window_navigation_blocked(&self) -> bool {
+        matches!(
             self.route(),
             Route::Github { .. } if self.github_ui.focus == crate::screens::github::GithubFocus::SkillPicker
         ) || matches!(
@@ -3294,34 +3722,89 @@ impl App {
         ) || matches!(
             self.route(),
             Route::TaskGit { .. } if self.task_git_ui.commit_dialog_open
-        ) {
+        )
+    }
+
+    fn focus_location(&self) -> FocusLocation {
+        if self.sidebar_focus {
+            FocusLocation::Sidebar
+        } else {
+            FocusLocation::Screen(self.current_screen_pane())
+        }
+    }
+
+    fn set_focus_location(&mut self, location: FocusLocation) {
+        let current = self.focus_location();
+        if current == location {
+            return;
+        }
+        self.previous_focus = Some(current);
+        match location {
+            FocusLocation::Sidebar => self.focus_sidebar(),
+            FocusLocation::Screen(pane) => {
+                self.sidebar_focus = false;
+                self.set_screen_pane(pane);
+            }
+        }
+    }
+
+    /// Apply Neovim's spatial window grammar. The sidebar is the leftmost window and each
+    /// screen pane follows it in visual order. There are currently no vertically stacked panes,
+    /// so `Ctrl-W j/k` deliberately leave focus unchanged.
+    fn focus_window(&mut self, direction: VimDirection) {
+        if self.window_navigation_blocked() {
             return;
         }
         let count = self.screen_pane_count();
-        match (dir, self.sidebar_focus) {
-            (KeyCode::Right, true) if count > 0 => {
-                self.sidebar_focus = false;
-                self.set_screen_pane(0);
+        let target = match (direction, self.focus_location()) {
+            (VimDirection::Right, FocusLocation::Sidebar) if count > 0 => {
+                Some(FocusLocation::Screen(0))
             }
-            (KeyCode::Left, false) => {
-                let pane = self.current_screen_pane();
-                if pane == 0 {
-                    if matches!(self.route(), Route::NewTask { .. }) {
-                        self.new_task_ui.composer_focused = false;
-                        self.new_task_ui.composer.blur();
-                    }
-                    self.focus_sidebar();
-                } else {
-                    self.set_screen_pane(pane - 1);
+            (VimDirection::Left, FocusLocation::Screen(0)) => Some(FocusLocation::Sidebar),
+            (VimDirection::Left, FocusLocation::Screen(pane)) if pane > 0 => {
+                Some(FocusLocation::Screen(pane - 1))
+            }
+            (VimDirection::Right, FocusLocation::Screen(pane)) if pane + 1 < count => {
+                Some(FocusLocation::Screen(pane + 1))
+            }
+            _ => None,
+        };
+        if let Some(target) = target {
+            if target == FocusLocation::Sidebar && matches!(self.route(), Route::NewTask { .. }) {
+                self.new_task_ui.composer_focused = false;
+                self.new_task_ui.composer.blur();
+            }
+            self.set_focus_location(target);
+        }
+    }
+
+    fn cycle_window(&mut self) {
+        if self.window_navigation_blocked() {
+            return;
+        }
+        let count = self.screen_pane_count();
+        let target = match self.focus_location() {
+            FocusLocation::Sidebar if count > 0 => FocusLocation::Screen(0),
+            FocusLocation::Screen(pane) if pane + 1 < count => FocusLocation::Screen(pane + 1),
+            _ => FocusLocation::Sidebar,
+        };
+        self.set_focus_location(target);
+    }
+
+    fn restore_previous_window(&mut self) {
+        if self.window_navigation_blocked() {
+            return;
+        }
+        if let Some(previous) = self.previous_focus {
+            let current = self.focus_location();
+            match previous {
+                FocusLocation::Sidebar => self.focus_sidebar(),
+                FocusLocation::Screen(pane) => {
+                    self.sidebar_focus = false;
+                    self.set_screen_pane(pane);
                 }
             }
-            (KeyCode::Right, false) => {
-                let pane = self.current_screen_pane();
-                if pane + 1 < count {
-                    self.set_screen_pane(pane + 1);
-                }
-            }
-            _ => {}
+            self.previous_focus = Some(current);
         }
     }
 
@@ -3411,12 +3894,12 @@ impl App {
         }
         match self.route() {
             Route::Tasks { .. } | Route::GlobalTasks => {
-                ("TASKS", "↑↓ choose task · Enter open · c new")
+                ("TASKS", "j/k choose task · Enter open · :new")
             }
             Route::NewTask { .. } if self.new_task_ui.composer_focused => {
-                ("COMPOSER", "type prompt · Ctrl+← returns to sidebar")
+                ("COMPOSER", "type prompt · Esc normal · Ctrl-W h sidebar")
             }
-            Route::NewTask { .. } => ("NEW TASK", "i edit prompt · Ctrl+← sidebar"),
+            Route::NewTask { .. } => ("NEW TASK", "i edit prompt · Ctrl-W h sidebar"),
             Route::Scratchpad { .. } => (
                 "SCRATCHPAD",
                 "type notes · Shift+arrows select · Ctrl+K clear",
@@ -3430,11 +3913,11 @@ impl App {
                 RepoGitTab::Changes => ("FILE LIST", "↑↓ browse changed files"),
                 RepoGitTab::Branches => ("BRANCH LIST", "↑↓ browse branches"),
             },
-            Route::RepoGit { .. } => ("GIT DETAIL", "↑↓ scroll · Ctrl+← list"),
+            Route::RepoGit { .. } => ("GIT DETAIL", "j/k scroll · Ctrl-W h list · gt tabs"),
             Route::TaskGit { .. } if self.current_screen_pane() == 0 => {
                 ("TASK FILES", "↑↓ browse · Enter open")
             }
-            Route::TaskGit { .. } => ("TASK DIFF", "↑↓ scroll · Ctrl+← files"),
+            Route::TaskGit { .. } => ("TASK DIFF", "j/k scroll · Ctrl-W h files · gt tabs"),
             Route::Workflows { .. } if self.current_screen_pane() == 0 => {
                 ("SKILL PALETTE", "↑↓ choose skill · Enter add")
             }
@@ -3442,15 +3925,15 @@ impl App {
             Route::Github { .. } if self.current_screen_pane() == 0 => {
                 ("GITHUB LIST", "↑↓ choose item · Enter open")
             }
-            Route::Github { .. } => ("GITHUB DETAIL", "↑↓ scroll · Ctrl+← list"),
+            Route::Github { .. } => ("GITHUB DETAIL", "j/k scroll · Ctrl-W h list · gt tabs"),
             Route::Settings { .. } | Route::GlobalSettings => {
                 if self.current_screen_pane() == 0 {
-                    ("SETTINGS NAV", "↑↓ choose section · Ctrl+→ values")
+                    ("SETTINGS NAV", "j/k choose section · Ctrl-W l values")
                 } else {
                     ("SETTINGS VALUES", "↑↓ choose setting · ←/→ change")
                 }
             }
-            _ => ("CONTENT", "Ctrl+←/→ changes panel"),
+            _ => ("CONTENT", "Ctrl-W h/l changes window"),
         }
     }
 
@@ -3736,6 +4219,28 @@ mod tests {
 
     use super::*;
 
+    fn ctrl_w(app: &mut App, suffix: char) {
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('w'),
+            KeyModifiers::CONTROL,
+        )));
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Char(suffix),
+            KeyModifiers::NONE,
+        )));
+    }
+
+    fn tab_command(app: &mut App, suffix: char) {
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('g'),
+            KeyModifiers::NONE,
+        )));
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Char(suffix),
+            KeyModifiers::NONE,
+        )));
+    }
+
     #[test]
     fn debug_hud_renders_sanitized_frame_metrics_in_the_status_bar() {
         let mut app = App::new("main", Theme::detect(), Keymap::default());
@@ -3892,10 +4397,7 @@ mod tests {
     #[test]
     fn key_navigation_and_history_shortcuts_change_routes() {
         let mut app = App::new("main", Theme::detect(), Keymap::default());
-        app.handle_event(Event::Key(KeyEvent::new(
-            KeyCode::Char('g'),
-            KeyModifiers::NONE,
-        )));
+        app.execute_command("open /tasks");
         assert_eq!(app.route(), &Route::GlobalTasks);
         app.handle_event(Event::Key(KeyEvent::new(
             KeyCode::Char('o'),
@@ -4151,15 +4653,9 @@ mod tests {
         let mut app = App::new("main", Theme::detect(), Keymap::default());
         assert_eq!(app.sidebar_width(), SIDEBAR_DEFAULT_WIDTH);
         assert!(!app.sidebar_is_visible(80));
-        app.handle_event(Event::Key(KeyEvent::new(
-            KeyCode::Char('b'),
-            KeyModifiers::CONTROL,
-        )));
+        app.apply_hit_action(HitAction::ToggleSidebar);
         assert!(app.sidebar_is_visible(80));
-        app.handle_event(Event::Key(KeyEvent::new(
-            KeyCode::Char('b'),
-            KeyModifiers::CONTROL,
-        )));
+        app.apply_hit_action(HitAction::ToggleSidebar);
         assert!(!app.sidebar_is_visible(80));
     }
 
@@ -4211,7 +4707,7 @@ mod tests {
     }
 
     #[test]
-    fn task_screen_arrows_select_rows_after_ctrl_right_and_enter_opens_one() {
+    fn task_screen_motions_select_rows_after_ctrl_w_l_and_enter_opens_one() {
         let mut app = App::new("main", Theme::detect(), Keymap::default());
         app.apply_workspace_event(run_event(
             "main",
@@ -4348,16 +4844,12 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_left_and_right_step_one_ide_section_at_a_time() {
-        fn ctrl(app: &mut App, code: KeyCode) {
-            app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::CONTROL)));
-        }
-
+    fn ctrl_w_h_and_l_step_one_ide_window_at_a_time() {
         let mut app = App::new("main", Theme::detect(), Keymap::default());
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
         terminal.draw(|frame| app.render(frame)).unwrap();
 
-        ctrl(&mut app, KeyCode::Left);
+        ctrl_w(&mut app, 'h');
         app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
         app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
         app.handle_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
@@ -4367,68 +4859,123 @@ mod tests {
         )));
         assert!(matches!(app.route(), Route::Ide { project } if project == "main"));
 
-        // Starts in the tree: Ctrl+Right steps into the editor, one section only.
+        // Starts in the tree: Ctrl-W l steps into the editor, one window only.
         assert_eq!(app.ide_ui.focus, crate::screens::ide::IdeFocus::Tree);
-        ctrl(&mut app, KeyCode::Right);
+        ctrl_w(&mut app, 'l');
         assert_eq!(app.ide_ui.focus, crate::screens::ide::IdeFocus::Editor);
         assert!(!app.sidebar_focus);
         // Already at the rightmost section: no-op.
-        ctrl(&mut app, KeyCode::Right);
+        ctrl_w(&mut app, 'l');
         assert_eq!(app.ide_ui.focus, crate::screens::ide::IdeFocus::Editor);
 
-        // Ctrl+Left walks back: editor → tree → sidebar, one section per press.
-        ctrl(&mut app, KeyCode::Left);
+        // Ctrl-W h walks back: editor → tree → sidebar, one window per chord.
+        ctrl_w(&mut app, 'h');
         assert_eq!(app.ide_ui.focus, crate::screens::ide::IdeFocus::Tree);
-        ctrl(&mut app, KeyCode::Left);
+        ctrl_w(&mut app, 'h');
         assert!(app.sidebar_focus);
         // Leftmost: no-op.
-        ctrl(&mut app, KeyCode::Left);
+        ctrl_w(&mut app, 'h');
         assert!(app.sidebar_focus);
 
         // And forward again: sidebar → tree → editor.
-        ctrl(&mut app, KeyCode::Right);
+        ctrl_w(&mut app, 'l');
         assert!(!app.sidebar_focus);
         assert_eq!(app.ide_ui.focus, crate::screens::ide::IdeFocus::Tree);
-        ctrl(&mut app, KeyCode::Right);
+        ctrl_w(&mut app, 'l');
         assert_eq!(app.ide_ui.focus, crate::screens::ide::IdeFocus::Editor);
     }
 
     #[test]
-    fn ctrl_left_and_right_move_one_section_between_sidebar_and_screen() {
-        fn ctrl(app: &mut App, code: KeyCode) {
-            app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::CONTROL)));
-        }
-
+    fn ctrl_w_h_and_l_move_between_sidebar_and_screen() {
         let mut app = App::new("main", Theme::detect(), Keymap::default());
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
         terminal.draw(|frame| app.render(frame)).unwrap();
 
         assert!(app.sidebar_focus);
-        ctrl(&mut app, KeyCode::Left);
+        ctrl_w(&mut app, 'h');
         assert!(app.sidebar_focus);
-        ctrl(&mut app, KeyCode::Left);
+        ctrl_w(&mut app, 'h');
         assert!(app.sidebar_focus, "already leftmost, no-op");
-        ctrl(&mut app, KeyCode::Right);
+        ctrl_w(&mut app, 'l');
         assert!(!app.sidebar_focus);
-        ctrl(&mut app, KeyCode::Right);
+        ctrl_w(&mut app, 'l');
         assert!(!app.sidebar_focus, "already rightmost, no-op");
     }
 
     #[test]
-    fn ctrl_left_releases_the_composer_so_q_quits_from_the_sidebar() {
+    fn ctrl_w_prefix_is_visible_and_window_previous_restores_focus() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('w'),
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(app.normal_input.prefix_label(), Some("CTRL-W"));
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let status: String = terminal.backend().buffer().content[(23 * 100)..]
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(status.contains("CTRL-W"));
+
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('w'),
+            KeyModifiers::CONTROL,
+        )));
+        assert!(!app.sidebar_focus);
+        ctrl_w(&mut app, 'p');
+        assert!(app.sidebar_focus);
+    }
+
+    #[test]
+    fn slash_search_and_n_use_the_shared_normal_grammar() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.set_tasks(vec![
+            run_record(1, RunStatus::Done, None),
+            run_record(2, RunStatus::Done, None),
+        ]);
+        ctrl_w(&mut app, 'l');
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('/'),
+            KeyModifiers::NONE,
+        )));
+        for character in "Task".chars() {
+            app.handle_event(Event::Key(KeyEvent::new(
+                KeyCode::Char(character),
+                KeyModifiers::NONE,
+            )));
+        }
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.tasks_ui.query, "Task");
+        assert_eq!(app.last_search, "Task");
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('n'),
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.tasks_ui.table.selected, Some(1));
+    }
+
+    #[test]
+    fn ctrl_w_h_releases_the_composer_and_bare_q_is_inert() {
         let mut app = App::new("main", Theme::detect(), Keymap::default());
         app.navigate(NavItem::NewTask);
         assert!(app.new_task_ui.composer_focused);
-        app.handle_event(Event::Key(KeyEvent::new(
-            KeyCode::Left,
-            KeyModifiers::CONTROL,
-        )));
+        ctrl_w(&mut app, 'h');
         assert!(app.sidebar_focus);
         assert!(!app.new_task_ui.composer_focused);
         app.handle_event(Event::Key(KeyEvent::new(
             KeyCode::Char('q'),
             KeyModifiers::NONE,
         )));
+        assert!(!app.should_quit());
+        app.execute_command("q");
         assert!(app.should_quit());
         assert!(app.new_task_ui.composer.text.is_empty());
     }
@@ -4479,16 +5026,44 @@ mod tests {
     }
 
     #[test]
-    fn startup_ctrl_right_enters_the_tasks_screen() {
-        fn ctrl(app: &mut App, code: KeyCode) {
-            app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::CONTROL)));
-        }
+    fn task_ex_commands_reuse_action_availability_and_confirmations() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.set_tasks(vec![run_record(1, RunStatus::Waiting, None)]);
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        ctrl_w(&mut app, 'l');
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('j'),
+            KeyModifiers::NONE,
+        )));
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
 
+        app.execute_command("stop");
+        assert!(matches!(
+            app.confirm.as_ref().map(|confirm| &confirm.action),
+            Some(PendingAction::CancelRun { project, id })
+                if project == "main" && id == "run-1"
+        ));
+        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(app.confirm.is_none());
+
+        app.execute_command("delete");
+        assert_eq!(
+            app.notice.as_deref(),
+            Some(":delete is not available for this task")
+        );
+    }
+
+    #[test]
+    fn startup_ctrl_w_l_enters_the_tasks_screen() {
         let mut app = App::new("main", Theme::detect(), Keymap::default());
         assert!(matches!(app.route(), Route::Tasks { .. }));
         assert!(app.sidebar_focus);
 
-        ctrl(&mut app, KeyCode::Right);
+        ctrl_w(&mut app, 'l');
 
         assert!(!app.sidebar_focus);
         assert!(matches!(app.route(), Route::Tasks { .. }));
@@ -4496,55 +5071,47 @@ mod tests {
 
     #[test]
     fn ctrl_focus_reaches_workflow_palette_then_steps() {
-        fn ctrl(app: &mut App, code: KeyCode) {
-            app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::CONTROL)));
-        }
-
         let mut app = App::new("main", Theme::detect(), Keymap::default());
         app.navigate(NavItem::Workflows);
         app.focus_sidebar();
 
-        ctrl(&mut app, KeyCode::Right);
+        ctrl_w(&mut app, 'l');
         assert_eq!(
             app.workflows_ui.focus,
             crate::screens::workflows::WorkflowFocus::Palette
         );
-        ctrl(&mut app, KeyCode::Right);
+        ctrl_w(&mut app, 'l');
         assert_eq!(
             app.workflows_ui.focus,
             crate::screens::workflows::WorkflowFocus::Steps
         );
-        ctrl(&mut app, KeyCode::Left);
+        ctrl_w(&mut app, 'h');
         assert_eq!(
             app.workflows_ui.focus,
             crate::screens::workflows::WorkflowFocus::Palette
         );
-        ctrl(&mut app, KeyCode::Left);
+        ctrl_w(&mut app, 'h');
         assert!(app.sidebar_focus);
     }
 
     #[test]
     fn ctrl_focus_reaches_settings_navigation_then_body() {
-        fn ctrl(app: &mut App, code: KeyCode) {
-            app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::CONTROL)));
-        }
-
         let mut app = App::new("main", Theme::detect(), Keymap::default());
         app.navigate(NavItem::Settings);
         app.focus_sidebar();
 
-        ctrl(&mut app, KeyCode::Right);
+        ctrl_w(&mut app, 'l');
         assert_eq!(app.screen_focus(), 0);
-        ctrl(&mut app, KeyCode::Right);
+        ctrl_w(&mut app, 'l');
         assert_eq!(app.screen_focus(), 1);
-        ctrl(&mut app, KeyCode::Left);
+        ctrl_w(&mut app, 'h');
         assert_eq!(app.screen_focus(), 0);
-        ctrl(&mut app, KeyCode::Left);
+        ctrl_w(&mut app, 'h');
         assert!(app.sidebar_focus);
     }
 
     #[test]
-    fn sidebar_focus_keeps_normal_commands_out_of_a_live_terminal() {
+    fn sidebar_focus_keeps_bare_q_inert_with_a_live_terminal() {
         let mut app = App::new("main", Theme::detect(), Keymap::default());
         app.navigate(NavItem::Terminal);
         app.terminal_ui.sessions.insert(
@@ -4558,7 +5125,7 @@ mod tests {
             KeyModifiers::NONE,
         )));
 
-        assert!(app.should_quit());
+        assert!(!app.should_quit());
     }
 
     #[test]
@@ -4632,18 +5199,15 @@ mod tests {
     }
 
     #[test]
-    fn repo_git_tab_cycles_with_tab_and_shift_tab() {
+    fn repo_git_tabs_cycle_with_gt_and_g_shift_t() {
         let mut app = App::new("main", Theme::detect(), Keymap::default());
         app.navigate(NavItem::RepoGit);
 
-        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        tab_command(&mut app, 't');
         assert_eq!(app.repo_git_ui.tab, RepoGitTab::Changes);
-        app.handle_event(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        tab_command(&mut app, 't');
         assert_eq!(app.repo_git_ui.tab, RepoGitTab::Branches);
-        app.handle_event(Event::Key(KeyEvent::new(
-            KeyCode::BackTab,
-            KeyModifiers::SHIFT,
-        )));
+        tab_command(&mut app, 'T');
         assert_eq!(app.repo_git_ui.tab, RepoGitTab::Changes);
     }
 
@@ -4750,13 +5314,10 @@ mod tests {
     }
 
     #[test]
-    fn help_overlay_lists_colon_commands_on_small_terminals() {
+    fn help_overlay_lists_neovim_grammar_and_colon_commands() {
         let mut app = App::new("main", Theme::detect(), Keymap::default());
-        app.handle_event(Event::Key(KeyEvent::new(
-            KeyCode::Char('?'),
-            KeyModifiers::NONE,
-        )));
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        app.execute_command("help");
+        let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
         terminal.draw(|frame| app.render(frame)).unwrap();
         let content: String = terminal
             .backend()
@@ -4766,6 +5327,8 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect();
 
+        assert!(content.contains("Ctrl-W h/j/k/l"));
+        assert!(content.contains("gt/gT tab"));
         for command in CommandId::ALL {
             assert!(
                 content.contains(command.usage()),
@@ -4845,26 +5408,21 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
         terminal.draw(|frame| app.render(frame)).unwrap();
 
-        app.handle_event(Event::Key(KeyEvent::new(
-            KeyCode::Right,
-            KeyModifiers::CONTROL,
-        )));
+        ctrl_w(&mut app, 'l');
         app.handle_event(Event::Key(KeyEvent::new(
             KeyCode::Char('j'),
             KeyModifiers::NONE,
         )));
         app.handle_event(Event::Key(KeyEvent::new(
-            KeyCode::Char('a'),
+            KeyCode::Enter,
             KeyModifiers::NONE,
         )));
-        assert_eq!(
-            app.pending,
-            vec![PendingAction::Archive {
-                project: "main".to_owned(),
-                id: "run-1".to_owned(),
-                archived: true,
-            }]
-        );
+        app.execute_command("archive");
+        assert!(app.pending.iter().any(|action| matches!(
+            action,
+            PendingAction::Archive { project, id, archived: true }
+                if project == "main" && id == "run-1"
+        )));
     }
 
     fn run_record(index: u8, status: RunStatus, seen_at: Option<&str>) -> ApiRun {

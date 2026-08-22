@@ -514,40 +514,6 @@ fn handle_changes_key(app: &mut App, key: KeyEvent) -> bool {
         .map(|changes| file_tree::build_rows(&changes.files, &app.task_git_ui.tree_collapsed).len())
         .unwrap_or(0);
     match key.code {
-        KeyCode::Char('[') | KeyCode::Char(']') => {
-            switch_tab(
-                app,
-                if key.code == KeyCode::Char('[') {
-                    -1
-                } else {
-                    1
-                },
-            );
-            true
-        }
-        KeyCode::Tab => {
-            app.task_git_ui.focus = match app.task_git_ui.focus {
-                TaskGitFocus::Tree => TaskGitFocus::Diff,
-                TaskGitFocus::Diff => TaskGitFocus::Tree,
-            };
-            true
-        }
-        KeyCode::Char('m') => {
-            apply_hit(app, TaskGitAction::ToggleMode);
-            true
-        }
-        KeyCode::Char('w') => {
-            apply_hit(app, TaskGitAction::ToggleWrap);
-            true
-        }
-        KeyCode::Char('c') => {
-            apply_hit(app, TaskGitAction::OpenCommitDialog);
-            true
-        }
-        KeyCode::Char('p') => {
-            apply_hit(app, TaskGitAction::Push);
-            true
-        }
         KeyCode::Char('j') | KeyCode::Down if app.task_git_ui.focus == TaskGitFocus::Tree => {
             if file_count > 0 {
                 app.task_git_ui.tree_selected =
@@ -580,17 +546,6 @@ fn handle_changes_key(app: &mut App, key: KeyEvent) -> bool {
 
 fn handle_files_key(app: &mut App, key: KeyEvent) -> bool {
     match key.code {
-        KeyCode::Char('[') | KeyCode::Char(']') => {
-            switch_tab(
-                app,
-                if key.code == KeyCode::Char('[') {
-                    -1
-                } else {
-                    1
-                },
-            );
-            true
-        }
         KeyCode::Char('j') | KeyCode::Down => {
             if let Some(WorktreeEntry::Dir { entries, .. }) = &app.task_git_ui.files_entry
                 && !entries.is_empty()
@@ -627,17 +582,6 @@ fn handle_commits_key(app: &mut App, key: KeyEvent) -> bool {
         .map(|commits| commits.commits.len())
         .unwrap_or(0);
     match key.code {
-        KeyCode::Char('[') | KeyCode::Char(']') => {
-            switch_tab(
-                app,
-                if key.code == KeyCode::Char('[') {
-                    -1
-                } else {
-                    1
-                },
-            );
-            true
-        }
         KeyCode::Char('j') | KeyCode::Down => {
             if count > 0 {
                 app.task_git_ui.commits_selected =
@@ -671,7 +615,7 @@ fn handle_commits_key(app: &mut App, key: KeyEvent) -> bool {
 /// Cycles Changes → Files → Commits, then off the git tabs back to the Session (thread)
 /// screen at either end — the tab row is Session | Changes | Files | Commits, with
 /// Session living on a separate `Route::Thread` rather than a `TaskGitTab` variant.
-fn switch_tab(app: &mut App, delta: i32) {
+pub(crate) fn switch_tab(app: &mut App, delta: i32) {
     let order = [TaskGitTab::Changes, TaskGitTab::Files, TaskGitTab::Commits];
     let current = order
         .iter()
@@ -685,6 +629,50 @@ fn switch_tab(app: &mut App, delta: i32) {
         return;
     }
     open(app, &project, &id, order[next as usize]);
+}
+
+pub(crate) fn jump_selection(app: &mut App, end: bool) {
+    if app.task_git_ui.tab == TaskGitTab::Changes && app.task_git_ui.focus == TaskGitFocus::Diff {
+        app.task_git_ui.diff_scroll = if end { usize::MAX } else { 0 };
+        return;
+    }
+    if app.task_git_ui.tab == TaskGitTab::Commits && app.screen_focus() == 1 {
+        app.task_git_ui.commit_diff_scroll = if end { usize::MAX } else { 0 };
+        return;
+    }
+    let last = match app.task_git_ui.tab {
+        TaskGitTab::Changes => app
+            .task_git_ui
+            .changes
+            .as_ref()
+            .map(|changes| {
+                file_tree::build_rows(&changes.files, &app.task_git_ui.tree_collapsed)
+                    .len()
+                    .saturating_sub(1)
+            })
+            .unwrap_or(0),
+        TaskGitTab::Files => app
+            .task_git_ui
+            .files_entry
+            .as_ref()
+            .and_then(|entry| match entry {
+                WorktreeEntry::Dir { entries, .. } => Some(entries.len().saturating_sub(1)),
+                _ => None,
+            })
+            .unwrap_or(0),
+        TaskGitTab::Commits => app
+            .task_git_ui
+            .commits
+            .as_ref()
+            .map(|commits| commits.commits.len().saturating_sub(1))
+            .unwrap_or(0),
+    };
+    let selected = if end { last } else { 0 };
+    match app.task_git_ui.tab {
+        TaskGitTab::Changes => app.task_git_ui.tree_selected = selected,
+        TaskGitTab::Files => app.task_git_ui.files_selected = selected,
+        TaskGitTab::Commits => app.task_git_ui.commits_selected = selected,
+    }
 }
 
 pub fn apply_hit(app: &mut App, action: TaskGitAction) {

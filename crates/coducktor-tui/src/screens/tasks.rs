@@ -10,7 +10,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::app::{App, ConfirmRequest, PendingAction, RowMenu, RowMenuItem};
+use crate::app::{App, RowMenu, RowMenuItem};
 use crate::input::hitmap::HitAction;
 use crate::screens::runs_util::{
     Attention, TaskView, UsageKind, attention, clock_time, compare_groups, filter_runs,
@@ -391,7 +391,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         &mut app.hitmap,
         &format!("TASKS — {project}"),
         if app.tasks_ui.query.trim().is_empty() {
-            "No tasks in this project. Press n for New task."
+            "No tasks in this project. Use :new or click New task."
         } else {
             "No tasks match your search."
         },
@@ -526,34 +526,6 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
             remember_selection(app);
             true
         }
-        KeyCode::Char('t') => {
-            app.toggle_view();
-            true
-        }
-        KeyCode::Char('/') => {
-            app.filter_mode = true;
-            true
-        }
-        KeyCode::Char('a') => {
-            archive_selected(app, true);
-            true
-        }
-        KeyCode::Char('r') => {
-            toggle_read(app);
-            true
-        }
-        KeyCode::Char('d') => {
-            request_delete(app);
-            true
-        }
-        KeyCode::Char('p') => {
-            open_selected_pr(app);
-            true
-        }
-        KeyCode::Char('o') => {
-            app.notice = Some("open the task's Git tabs to inspect its diff".to_owned());
-            true
-        }
         KeyCode::Enter => {
             if let Some((_, row)) = app.tasks_ui.table.selected_row() {
                 let id = row.key.clone();
@@ -563,7 +535,6 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
             }
             true
         }
-        KeyCode::Esc => true,
         _ => false,
     }
 }
@@ -575,89 +546,6 @@ fn remember_selection(app: &mut App) {
     let id = row.key.clone();
     let project = app.current_project().to_owned();
     app.select_task(&project, &id);
-}
-
-fn archive_selected(app: &mut App, archived: bool) {
-    let Some((_, row)) = app.tasks_ui.table.selected_row() else {
-        return;
-    };
-    let project = app.current_project().to_owned();
-    app.pending.push(PendingAction::Archive {
-        project,
-        id: row.key.clone(),
-        archived,
-    });
-}
-
-fn toggle_read(app: &mut App) {
-    let Some((_, row)) = app.tasks_ui.table.selected_row() else {
-        return;
-    };
-    let run = app
-        .tasks
-        .iter()
-        .find(|run| run.record.id == row.key)
-        .cloned();
-    let Some(run) = run else {
-        return;
-    };
-    let project = app.current_project().to_owned();
-    app.pending.push(if is_unread(&run) {
-        PendingAction::Read {
-            project,
-            id: row.key.clone(),
-        }
-    } else {
-        PendingAction::Unread {
-            project,
-            id: row.key.clone(),
-        }
-    });
-}
-
-fn request_delete(app: &mut App) {
-    let Some((_, row)) = app.tasks_ui.table.selected_row() else {
-        return;
-    };
-    let run = app.tasks.iter().find(|run| run.record.id == row.key);
-    let Some(run) = run else {
-        return;
-    };
-    if matches!(
-        run.record.status,
-        RunStatus::Queued | RunStatus::Running | RunStatus::Idle | RunStatus::Waiting
-    ) {
-        app.notice = Some("run is active — cancel it first".to_owned());
-        return;
-    }
-    app.confirm = Some(ConfirmRequest {
-        text: format!("Delete \"{}\" and its branch?", run_title(run)),
-        action: PendingAction::Delete {
-            project: app.current_project().to_owned(),
-            id: row.key.clone(),
-        },
-    });
-}
-
-fn open_selected_pr(app: &mut App) {
-    let Some((_, row)) = app.tasks_ui.table.selected_row() else {
-        return;
-    };
-    let Some(run) = app.tasks.iter().find(|run| run.record.id == row.key) else {
-        return;
-    };
-    let Some(reference) = task_reference(run) else {
-        app.notice = Some("no PR or issue reference on this task".to_owned());
-        return;
-    };
-    let Some(url) = reference.url else {
-        app.notice = Some(format!(
-            "no URL known for {} #{}",
-            reference.kind, reference.number
-        ));
-        return;
-    };
-    app.open_url(&url);
 }
 
 pub fn open_thread(app: &mut App, id: &str) {
@@ -838,7 +726,7 @@ mod tests {
     }
 
     #[test]
-    fn global_c_opens_the_new_task_composer() {
+    fn bare_c_is_inert_and_new_command_opens_the_composer() {
         let mut app = app_with_tasks(Vec::new());
         app.handle_event(crossterm::event::Event::Key(
             crossterm::event::KeyEvent::new(
@@ -846,6 +734,8 @@ mod tests {
                 crossterm::event::KeyModifiers::NONE,
             ),
         ));
+        assert!(matches!(app.route(), crate::app::Route::Tasks { .. }));
+        app.execute_command("new");
         assert!(matches!(app.route(), crate::app::Route::NewTask { .. }));
         assert!(app.new_task_ui.composer_focused);
     }
@@ -867,30 +757,6 @@ mod tests {
         let content = render(&mut app, 160, 30);
         assert!(content.contains("Task 1"));
         assert!(!content.contains("Task 2"));
-    }
-
-    #[test]
-    fn delete_refuses_a_waiting_run_and_confirms_a_cancelled_one() {
-        let mut app = app_with_tasks(vec![api_run(1, RunStatus::Waiting, None)]);
-        render(&mut app, 160, 30);
-        app.tasks_ui.table.move_selection(1);
-        request_delete(&mut app);
-        assert!(app.confirm.is_none());
-        assert_eq!(
-            app.notice.as_deref(),
-            Some("run is active — cancel it first")
-        );
-
-        let mut app = app_with_tasks(vec![api_run(2, RunStatus::Cancelled, None)]);
-        render(&mut app, 160, 30);
-        app.tasks_ui.table.move_selection(1);
-        request_delete(&mut app);
-        let confirm = app.confirm.as_ref().expect("delete confirm expected");
-        assert!(matches!(
-            confirm.action,
-            crate::app::PendingAction::Delete { ref id, .. } if id == "run-2"
-        ));
-        assert!(app.notice.is_none());
     }
 
     #[test]

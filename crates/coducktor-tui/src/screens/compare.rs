@@ -261,14 +261,14 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         return false;
     };
     match key.code {
-        KeyCode::Tab | KeyCode::Right => {
+        KeyCode::Right => {
             if !group.runs.is_empty() {
                 app.compare_ui.selected = (app.compare_ui.selected + 1) % group.runs.len();
                 load_selected_diff(app);
             }
             true
         }
-        KeyCode::BackTab | KeyCode::Left => {
+        KeyCode::Left => {
             if !group.runs.is_empty() {
                 app.compare_ui.selected =
                     (app.compare_ui.selected + group.runs.len() - 1) % group.runs.len();
@@ -307,6 +307,17 @@ fn load_selected_diff(app: &mut App) {
         group_id: app.compare_ui.group_id.clone(),
         run_id: variant.id.clone(),
     });
+}
+
+pub(crate) fn jump_selection(app: &mut App, end: bool) {
+    let last = app
+        .compare_ui
+        .group
+        .as_ref()
+        .map(|group| group.runs.len().saturating_sub(1))
+        .unwrap_or(0);
+    app.compare_ui.selected = if end { last } else { 0 };
+    load_selected_diff(app);
 }
 
 pub fn apply_hit(app: &mut App, action: CompareAction) {

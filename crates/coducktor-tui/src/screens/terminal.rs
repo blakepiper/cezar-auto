@@ -276,7 +276,7 @@ fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App, session: &Termina
         if app.terminal_ui.scroll_offset > 0 {
             status.push_str(&format!("  ·  {} lines up", session.scrollback()));
         }
-        status.push_str("  ·  Ctrl+Left to leave");
+        status.push_str("  ·  Ctrl-W h to leave");
         status
     };
     let style = Style::default().fg(app.theme.palette.soft_fg);
@@ -298,7 +298,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     let project = app.terminal_ui.project.clone();
     let Some(session) = app.terminal_ui.sessions.get_mut(&project) else {
         return match key.code {
-            KeyCode::Enter | KeyCode::Char('r') => {
+            KeyCode::Enter => {
                 relaunch(app);
                 true
             }
@@ -307,7 +307,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     };
     if session.exited() {
         return match key.code {
-            KeyCode::Enter | KeyCode::Char('r') => {
+            KeyCode::Enter => {
                 relaunch(app);
                 true
             }

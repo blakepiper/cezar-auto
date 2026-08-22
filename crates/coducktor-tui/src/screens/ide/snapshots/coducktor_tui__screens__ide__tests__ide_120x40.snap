@@ -44,7 +44,7 @@ Buffer {
         "                            │                            ││                                                            │",
         "                            │.git and symlinks are hidden││UTF-8 · Ctrl+S save · Ctrl+E open in $EDITOR · 1 MB edit cap│",
         "                            └────────────────────────────┘└────────────────────────────────────────────────────────────┘",
-        " NORMAL  FOCUS: EDITOR — edit file · Ctrl+S save  ·  main  lazyvim  v0.1.0  [providers --]  ? help                      ",
+        " INSERT  FOCUS: EDITOR — edit file · Ctrl+S save  ·  main  lazyvim  v0.1.0  [providers --]  :help                       ",
     ],
     styles: [
         x: 0, y: 0, fg: Rgb(122, 162, 247), bg: Rgb(36, 40, 59), underline: Reset, modifier: BOLD,

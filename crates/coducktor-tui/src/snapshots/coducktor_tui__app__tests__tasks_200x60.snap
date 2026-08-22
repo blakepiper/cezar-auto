@@ -1,6 +1,5 @@
 ---
 source: crates/coducktor-tui/src/app.rs
-assertion_line: 4199
 expression: terminal.backend().buffer()
 ---
 Buffer {
@@ -9,7 +8,7 @@ Buffer {
         " [=] coducktor / main /p/main  [running 0] [needs 0]                                                                                                                                                    ",
         "  PROJECTS                   Current 0  Needs you 0  Finished 0  Archived 0                                                                                                                             ",
         "  - main                    ┌TASKS — main──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐",
-        "  > Tasks                   │No tasks in this project. Press n for New task.                                                                                                                           │",
+        "  > Tasks                   │No tasks in this project. Use :new or click New task.                                                                                                                     │",
         "    Scratchpad              │                                                                                                                                                                          │",
         "    IDE                     │                                                                                                                                                                          │",
         "    Terminal                │                                                                                                                                                                          │",
@@ -65,7 +64,7 @@ Buffer {
         "                            │                                                                                                                                                                          │",
         "                            │                                                                                                                                                                          │",
         "                            └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘",
-        " NORMAL  FOCUS: SIDEBAR — ↑↓ choose project or view · Enter open  ·  main  lazyvim  v0.1.0  [providers --]  ? help                                                                                      ",
+        " NORMAL  FOCUS: SIDEBAR — ↑↓ choose project or view · Enter open  ·  main  lazyvim  v0.1.0  [providers --]  :help                                                                                       ",
     ],
     styles: [
         x: 0, y: 0, fg: Rgb(122, 162, 247), bg: Rgb(36, 40, 59), underline: Reset, modifier: BOLD,

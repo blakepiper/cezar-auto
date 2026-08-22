@@ -1,10 +1,4 @@
 [normal]
-q = "quit"
-t = "tasks"
-g = "global-tasks"
-c = "new-task"
-"ctrl-b" = "toggle-sidebar"
-"?" = "help"
 ":" = "command"
 "ctrl-o" = "back"
 "ctrl-i" = "forward"

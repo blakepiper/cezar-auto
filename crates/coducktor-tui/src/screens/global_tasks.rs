@@ -10,7 +10,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::app::{App, PendingAction, RowMenu, RowMenuItem};
+use crate::app::{App, RowMenu, RowMenuItem};
 use crate::input::hitmap::HitAction;
 use crate::screens::runs_util::{
     TaskView, UsageCell, UsageKind, format_cost_with_split, format_mem, short_age,
@@ -887,51 +887,6 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
             app.global_ui.table.move_selection(-1);
             true
         }
-        KeyCode::Char('t') => {
-            app.toggle_view();
-            true
-        }
-        KeyCode::Char('/') => {
-            app.filter_mode = true;
-            true
-        }
-        KeyCode::Char('f') => {
-            app.global_ui.picker_open = true;
-            app.global_ui.picker_index = 0;
-            true
-        }
-        KeyCode::Char('[') => {
-            app.global_ui.table.scroll_columns(-1);
-            true
-        }
-        KeyCode::Char(']') => {
-            app.global_ui.table.scroll_columns(1);
-            true
-        }
-        KeyCode::Char('g') => {
-            app.global_ui.group_by_tag = !app.global_ui.group_by_tag;
-            let columns = if app.global_ui.group_by_tag {
-                let mut columns = COLUMNS[..9].to_vec();
-                columns.insert(0, ColumnId::Tag);
-                columns
-            } else {
-                COLUMNS[..9].to_vec()
-            };
-            app.global_ui.table.columns = columns;
-            true
-        }
-        KeyCode::Char('a') => {
-            archive_selected(app, true);
-            true
-        }
-        KeyCode::Char('r') => {
-            toggle_read(app);
-            true
-        }
-        KeyCode::Char('d') => {
-            request_delete(app);
-            true
-        }
         KeyCode::Enter => {
             if let Some((_, row)) = app.global_ui.table.selected_row() {
                 let key = row.key.clone();
@@ -939,7 +894,6 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
             }
             true
         }
-        KeyCode::Esc => true,
         _ => false,
     }
 }
@@ -974,77 +928,6 @@ fn handle_picker_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         _ => {}
     }
     true
-}
-
-fn archive_selected(app: &mut App, archived: bool) {
-    let Some((_, row)) = app.global_ui.table.selected_row() else {
-        return;
-    };
-    let Some((project, id)) = split_key(&row.key) else {
-        return;
-    };
-    app.pending.push(PendingAction::Archive {
-        project,
-        id,
-        archived,
-    });
-}
-
-fn toggle_read(app: &mut App) {
-    let Some((_, row)) = app.global_ui.table.selected_row() else {
-        return;
-    };
-    let Some((project, id)) = split_key(&row.key) else {
-        return;
-    };
-    let Some(index) = &app.global_index else {
-        return;
-    };
-    let Some(entry) = index
-        .runs
-        .iter()
-        .find(|entry| entry.project_id == project && entry.id == id)
-    else {
-        return;
-    };
-    app.pending.push(if is_unread_entry(entry) {
-        PendingAction::Read { project, id }
-    } else {
-        PendingAction::Unread { project, id }
-    });
-}
-
-fn request_delete(app: &mut App) {
-    let Some((_, row)) = app.global_ui.table.selected_row() else {
-        return;
-    };
-    let Some((project, id)) = split_key(&row.key) else {
-        return;
-    };
-    let Some(index) = &app.global_index else {
-        return;
-    };
-    let Some(entry) = index
-        .runs
-        .iter()
-        .find(|entry| entry.project_id == project && entry.id == id)
-    else {
-        return;
-    };
-    if matches!(
-        entry.status,
-        coducktor_contract::RunStatus::Queued
-            | coducktor_contract::RunStatus::Running
-            | coducktor_contract::RunStatus::Idle
-            | coducktor_contract::RunStatus::Waiting
-    ) {
-        app.notice = Some("run is active — cancel it first".to_owned());
-        return;
-    }
-    app.confirm = Some(crate::app::ConfirmRequest {
-        text: format!("Delete \"{}\" and its branch?", run_title_entry(entry)),
-        action: PendingAction::Delete { project, id },
-    });
 }
 
 pub fn open_thread(app: &mut App, key: &str) {

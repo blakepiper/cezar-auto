@@ -87,6 +87,23 @@ fn visible(app: &App) -> Vec<usize> {
         .collect()
 }
 
+pub(crate) fn move_search_match(app: &mut App, forward: bool) {
+    let visible_indices = visible(app);
+    if visible_indices.is_empty() {
+        return;
+    }
+    let current = visible_indices
+        .iter()
+        .position(|index| *index == app.skills_ui.selected);
+    let next = match (current, forward) {
+        (Some(position), true) => (position + 1) % visible_indices.len(),
+        (Some(0), false) | (None, false) => visible_indices.len() - 1,
+        (Some(position), false) => position - 1,
+        (None, true) => 0,
+    };
+    app.skills_ui.selected = visible_indices[next];
+}
+
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -250,11 +267,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
     match key.code {
-        KeyCode::Char('/') => {
-            app.skills_ui.filter_open = true;
-            app.skills_ui.query.clear();
-            true
-        }
         KeyCode::Char('j') | KeyCode::Down if app.screen_focus() == 0 => {
             let visible_indices = visible(app);
             if !visible_indices.is_empty() {
@@ -277,10 +289,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                 let next = position.saturating_sub(1);
                 app.skills_ui.selected = visible_indices[next];
             }
-            true
-        }
-        KeyCode::Esc => {
-            app.request_back();
             true
         }
         _ => false,
@@ -346,21 +354,23 @@ mod tests {
     #[test]
     fn filtering_restricts_the_list() {
         let mut app = app_with_skills();
-        handle_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
-        );
+        app.handle_event(crossterm::event::Event::Key(KeyEvent::new(
+            KeyCode::Char('/'),
+            KeyModifiers::NONE,
+        )));
         for character in "omarchy".chars() {
-            handle_key(
-                &mut app,
-                KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
-            );
+            app.handle_event(crossterm::event::Event::Key(KeyEvent::new(
+                KeyCode::Char(character),
+                KeyModifiers::NONE,
+            )));
         }
         let content = render(&mut app, 120, 40);
         assert!(content.contains("omarchy"));
         assert!(!content.contains("om-fix"));
-        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(!app.skills_ui.filter_open);
+        app.handle_event(crossterm::event::Event::Key(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        )));
     }
 
     #[test]

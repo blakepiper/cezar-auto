@@ -68,6 +68,18 @@ pub enum ThreadAction {
     OpenGitTab(crate::app::TaskGitTab),
 }
 
+impl ThreadAction {
+    pub(crate) fn command_name(&self) -> &'static str {
+        match self {
+            Self::Cancel => ":stop",
+            Self::Finish => ":finish",
+            Self::Archive => ":archive",
+            Self::Delete => ":delete",
+            _ => "task action",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ThreadFocus {
     #[default]
@@ -1175,13 +1187,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         }
         return true;
     }
-    if key.code == KeyCode::Esc
-        && matches!(
-            app.thread_ui.focus,
-            ThreadFocus::Composer | ThreadFocus::Transcript
-        )
-    {
-        return interrupt_or_focus_transcript(app);
+    if key.code == KeyCode::Esc && app.thread_ui.focus == ThreadFocus::Composer {
+        app.thread_ui.composer.blur();
+        app.thread_ui.focus = ThreadFocus::Transcript;
+        return true;
     }
     match app.thread_ui.focus {
         ThreadFocus::Composer => return handle_composer_key(app, key),
@@ -1206,63 +1215,13 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             app.thread_ui.transcript.scroll_by(-1);
             true
         }
-        KeyCode::Char('G') => {
-            app.thread_ui.transcript.jump_to_bottom();
-            true
-        }
-        KeyCode::Tab => {
-            app.thread_ui.transcript.select_next_expandable(1);
-            true
-        }
-        KeyCode::BackTab => {
-            app.thread_ui.transcript.select_next_expandable(-1);
-            true
-        }
         KeyCode::Enter => {
             app.thread_ui.transcript.toggle_selected();
-            true
-        }
-        KeyCode::Char('R') => {
-            request_earlier(app);
-            true
-        }
-        KeyCode::Char(']') => {
-            apply_hit(
-                app,
-                ThreadAction::OpenGitTab(crate::app::TaskGitTab::Changes),
-            );
-            true
-        }
-        KeyCode::Char('[') => {
-            apply_hit(
-                app,
-                ThreadAction::OpenGitTab(crate::app::TaskGitTab::Commits),
-            );
             true
         }
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => false,
         _ => false,
     }
-}
-
-fn interrupt_or_focus_transcript(app: &mut App) -> bool {
-    let active = app
-        .thread_ui
-        .data
-        .run
-        .as_ref()
-        .is_some_and(|run| matches!(run.record.status, RunStatus::Queued | RunStatus::Running));
-    if active && !app.thread_ui.cancel_pending {
-        app.thread_ui.cancel_pending = true;
-        app.pending.push(PendingAction::CancelRun {
-            project: app.thread_ui.data.project.clone(),
-            id: app.thread_ui.data.run_id.clone(),
-        });
-    } else {
-        app.thread_ui.composer.blur();
-        app.thread_ui.focus = ThreadFocus::Transcript;
-    }
-    true
 }
 
 /// Deliver a bracketed-paste chunk to the focused composer.
@@ -2216,41 +2175,33 @@ mod tests {
     }
 
     #[test]
-    fn escape_interrupts_once_then_moves_focus_to_the_transcript() {
+    fn escape_leaves_insert_mode_without_stopping_the_task() {
         let mut app = app_with_run(RunStatus::Running);
         assert!(handle_key(
             &mut app,
             KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
         ));
-        assert!(app.thread_ui.cancel_pending);
-        assert_eq!(app.thread_ui.focus, ThreadFocus::Composer);
-        assert!(matches!(
-            app.pending.as_slice(),
-            [PendingAction::CancelRun { project, id }]
-                if project == "main" && id == "run-1"
-        ));
+        assert!(!app.thread_ui.cancel_pending);
+        assert_eq!(app.thread_ui.focus, ThreadFocus::Transcript);
+        assert!(app.pending.is_empty());
         assert!(app.confirm.is_none());
 
-        assert!(handle_key(
+        assert!(!handle_key(
             &mut app,
             KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
         ));
         assert_eq!(app.thread_ui.focus, ThreadFocus::Transcript);
-        assert_eq!(app.pending.len(), 1);
+        assert!(app.pending.is_empty());
 
         let mut queued = app_with_run(RunStatus::Queued);
         queued.thread_ui.focus = ThreadFocus::Transcript;
         queued.thread_ui.composer.blur();
-        assert!(handle_key(
+        assert!(!handle_key(
             &mut queued,
             KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
         ));
-        assert!(queued.thread_ui.cancel_pending);
-        assert!(matches!(
-            queued.pending.as_slice(),
-            [PendingAction::CancelRun { project, id }]
-                if project == "main" && id == "run-1"
-        ));
+        assert!(!queued.thread_ui.cancel_pending);
+        assert!(queued.pending.is_empty());
     }
 
     #[test]

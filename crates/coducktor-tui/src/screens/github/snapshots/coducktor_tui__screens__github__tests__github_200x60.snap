@@ -63,8 +63,8 @@ Buffer {
         "                            │                                              ││                                                                                                                          │",
         "                            │                                              ││                                                                                                                          │",
         "                            │                                              │└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘",
-        "                            └──────────────────────────────────────────────┘Hand this to the agent:  [w] workflow: quick-task   [s] skills: none   [r] Run agent on this issue                          ",
-        " NORMAL  FOCUS: GITHUB LIST — ↑↓ choose item · Enter open  ·  main  lazyvim  v0.1.0  [providers --]  ? help                                                                                             ",
+        "                            └──────────────────────────────────────────────┘Hand this to the agent:  workflow: quick-task   skills: none   Run agent on this issue                                      ",
+        " NORMAL  FOCUS: GITHUB LIST — ↑↓ choose item · Enter open  ·  main  lazyvim  v0.1.0  [providers --]  :help                                                                                              ",
     ],
     styles: [
         x: 0, y: 0, fg: Rgb(122, 162, 247), bg: Rgb(36, 40, 59), underline: Reset, modifier: BOLD,
@@ -382,7 +382,7 @@ Buffer {
         x: 28, y: 58, fg: Rgb(122, 162, 247), bg: Reset, underline: Reset, modifier: NONE,
         x: 76, y: 58, fg: Rgb(192, 202, 245), bg: Reset, underline: Reset, modifier: BOLD,
         x: 101, y: 58, fg: Rgb(122, 162, 247), bg: Reset, underline: Reset, modifier: NONE,
-        x: 174, y: 58, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 162, y: 58, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
         x: 0, y: 59, fg: Rgb(130, 139, 184), bg: Rgb(36, 40, 59), underline: Reset, modifier: NONE,
     ]
 }

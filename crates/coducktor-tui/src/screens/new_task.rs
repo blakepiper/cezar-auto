@@ -482,24 +482,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         return handle_composer_key(app, key);
     }
     match key.code {
-        KeyCode::Tab => {
-            app.new_task_ui.pill_focus = Some(
-                app.new_task_ui
-                    .pill_focus
-                    .map(PillId::next)
-                    .unwrap_or(PillId::Source),
-            );
-            true
-        }
-        KeyCode::BackTab => {
-            app.new_task_ui.pill_focus = Some(
-                app.new_task_ui
-                    .pill_focus
-                    .map(PillId::previous)
-                    .unwrap_or(PillId::GitMode),
-            );
-            true
-        }
         KeyCode::Char('j') | KeyCode::Down => {
             if let Some(pill) = app.new_task_ui.pill_focus {
                 app.new_task_ui.pill_focus = Some(pill.next());
@@ -534,10 +516,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             app.new_task_ui.pill_focus = None;
             app.new_task_ui.composer_focused = true;
             app.new_task_ui.composer.focus();
-            true
-        }
-        KeyCode::Char('n') | KeyCode::Char('s') => {
-            request_start(app);
             true
         }
         _ => false,
@@ -1657,9 +1635,11 @@ mod tests {
         assert!(!app.new_task_ui.composer.focused);
         app.handle_event(crossterm::event::Event::Key(key('q')));
         assert!(
-            app.should_quit(),
-            "q must remain available while start is pending"
+            !app.should_quit(),
+            "bare q retains Neovim's recording meaning"
         );
+        app.execute_command("q");
+        assert!(app.should_quit());
         assert!(
             app.pending
                 .iter()

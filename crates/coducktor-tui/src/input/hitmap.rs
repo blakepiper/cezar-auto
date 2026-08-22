@@ -57,8 +57,18 @@ pub enum GithubAction {
     SelectItem(usize),
     SwitchDetailTab(GithubDetailTab),
     CycleMergeMethod,
+    Merge,
     CycleWorkflow,
+    OpenSkillPicker,
     RunAgent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowAction {
+    Save,
+    Import,
+    Export,
+    Delete,
 }
 
 /// A new-task screen control (a pill, a button, or the composer).
@@ -130,6 +140,8 @@ pub enum HitAction {
     WorkflowStep(usize),
     /// A workflows palette row — click to select.
     WorkflowSkill(usize),
+    /// A workflows footer control — mouse parity for product actions kept out of Normal mode.
+    WorkflowControl(WorkflowAction),
     /// A repo-git screen control — routed by the screen.
     RepoGitScreen(RepoGitAction),
     /// A compare-variants screen control — routed by the screen.
@@ -138,6 +150,8 @@ pub enum HitAction {
     SettingsSection(usize),
     /// A Settings row — click to select it.
     SettingsRow(usize),
+    /// A destructive Settings row control rendered explicitly beside removable values.
+    SettingsDeleteRow(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

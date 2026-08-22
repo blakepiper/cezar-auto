@@ -189,6 +189,20 @@ impl Table {
         self.keep_selection_visible();
     }
 
+    pub fn cycle_selection(&mut self, delta: isize) {
+        let len = self.rows.len();
+        if len == 0 {
+            self.selected = None;
+            return;
+        }
+        let current = self
+            .selected
+            .unwrap_or_else(|| if delta >= 0 { len - 1 } else { 0 });
+        let next = (current as isize + delta).rem_euclid(len as isize) as usize;
+        self.select(Some(next));
+        self.keep_selection_visible();
+    }
+
     fn keep_selection_visible(&mut self) {
         let Some(selected) = self.selected else {
             return;

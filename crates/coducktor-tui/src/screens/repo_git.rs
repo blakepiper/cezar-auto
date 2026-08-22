@@ -402,35 +402,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
     match key.code {
-        KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('[') | KeyCode::Char(']') => {
-            let order = [
-                RepoGitTab::Commits,
-                RepoGitTab::Changes,
-                RepoGitTab::Branches,
-            ];
-            let current = order
-                .iter()
-                .position(|tab| *tab == app.repo_git_ui.tab)
-                .unwrap_or(0);
-            let delta = if matches!(key.code, KeyCode::BackTab | KeyCode::Char('[')) {
-                -1
-            } else {
-                1
-            };
-            let next = (current as i32 + delta).rem_euclid(order.len() as i32) as usize;
-            let project = app.repo_git_ui.project.clone();
-            open(app, &project, order[next]);
-            true
-        }
-        KeyCode::Char('m') if app.repo_git_ui.tab == RepoGitTab::Changes => {
-            apply_hit(app, RepoGitAction::ToggleMode);
-            true
-        }
-        KeyCode::Char('n') if app.repo_git_ui.tab == RepoGitTab::Branches => {
-            app.repo_git_ui.new_branch_open = true;
-            app.repo_git_ui.new_branch_name.clear();
-            true
-        }
         KeyCode::Char('j') | KeyCode::Down => {
             if app.screen_focus() == 1 {
                 match app.repo_git_ui.tab {
@@ -497,6 +468,39 @@ fn move_selection(app: &mut App, delta: i32) {
             app.repo_git_ui.branches_selected =
                 (app.repo_git_ui.branches_selected as i32 + delta).max(0) as usize;
         }
+    }
+}
+
+pub(crate) fn jump_selection(app: &mut App, end: bool) {
+    if app.screen_focus() == 1 {
+        let scroll = if end { usize::MAX } else { 0 };
+        match app.repo_git_ui.tab {
+            RepoGitTab::Changes => app.repo_git_ui.diff_scroll = scroll,
+            RepoGitTab::Commits => app.repo_git_ui.commit_diff_scroll = scroll,
+            RepoGitTab::Branches => {}
+        }
+        return;
+    }
+    let last = match app.repo_git_ui.tab {
+        RepoGitTab::Changes => file_tree::build_rows(
+            &app.repo_git_ui.changes_files(),
+            &app.repo_git_ui.tree_collapsed,
+        )
+        .len()
+        .saturating_sub(1),
+        RepoGitTab::Commits => match app.repo_git_ui.repo.as_ref() {
+            Some(RepoResponse::Present(repo)) => repo.log.len().saturating_sub(1),
+            _ => 0,
+        },
+        RepoGitTab::Branches => match app.repo_git_ui.repo.as_ref() {
+            Some(RepoResponse::Present(repo)) => repo.branches.len().saturating_sub(1),
+            _ => 0,
+        },
+    };
+    match app.repo_git_ui.tab {
+        RepoGitTab::Changes => app.repo_git_ui.tree_selected = if end { last } else { 0 },
+        RepoGitTab::Commits => app.repo_git_ui.commits_selected = if end { last } else { 0 },
+        RepoGitTab::Branches => app.repo_git_ui.branches_selected = if end { last } else { 0 },
     }
 }
 

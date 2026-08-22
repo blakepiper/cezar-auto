@@ -1,237 +1,80 @@
 # Keymap reference
 
-Sourced directly from `crates/coducktor-tui/src/input/keymap.rs` (the global keymap)
-and each screen's `handle_key` (screen-local bindings). Regenerate this by hand
-whenever those change — there is no automated doc-gen for it yet.
+Coducktor's cockpit uses Neovim's Normal-mode grammar. Product actions do not occupy bare
+printable keys; click their visible controls or use an Ex command. Literal text surfaces such as
+the terminal, Scratchpad, and embedded editors keep their editing input, while `Ctrl-W` still
+starts cockpit window navigation.
 
-## Global keymap (`default-keymap.toml`)
+User overrides are read from `$DUCK_HOME/keymap.toml` (normally
+`~/.coducktor/keymap.toml`) and merge over `crates/coducktor-tui/default-keymap.toml`.
 
-Works from anywhere in the app. Override any binding with a user keymap at
-`$DUCK_HOME/keymap.toml` (or `~/.coducktor/keymap.toml` when `DUCK_HOME` is unset) —
-user bindings are merged over these defaults, key by key.
+## Normal mode
 
-| Key | Action |
+| Key | Meaning |
 |---|---|
-| `q` | Quit |
-| `t` | Jump to Tasks |
-| `g` | Jump to global (cross-project) Tasks |
-| `c` | New task |
-| `Ctrl+B` | Toggle sidebar |
-| `Ctrl+Left` / `Ctrl+Right` | Move keyboard focus one section left or right — sidebar → screen (and, in the IDE, sidebar → file tree → editor). Each press steps exactly one section; `j`/`k` or `Up`/`Down` move in the panel, `Enter` opens, `Esc` returns |
+| `h` / `j` / `k` / `l` | Move left / down / up / right in the focused view |
+| `gg` / `G` | Jump to the first / last item |
+| `Ctrl+U` / `Ctrl+D` | Move half a page up / down |
+| `/` | Start search |
+| `n` / `N` | Next / previous search match |
+| `i` | Enter Insert mode in a task composer |
+| `gt` / `gT` | Next / previous tab |
+| `:` | Open the Ex command line |
+| `Ctrl+O` / `Ctrl+I` | Older / newer cockpit location |
 
-| `Up` / `Down` | Move the selection in the focused panel; on Tasks, `Enter` opens the selected task |
-| `?` | Help overlay (context-filtered) |
-| `:` | Open the command line |
-| `Ctrl+O` | Navigate back |
-| `Ctrl+I` | Navigate forward |
+`g` and `Ctrl-W` are visible prefixes in the status line. `Esc` or an invalid suffix cancels a
+prefix without triggering another action.
 
-`Ctrl+Left` / `Ctrl+Right` are handled before the keymap (they move between
-focus sections, so they are not rebindable).
+## Windows
 
-The cockpit starts with the sidebar focused, so `Ctrl+Right` enters the initial Tasks screen.
-The status line names the focused space and shows its local movement keys. `Ctrl+Left` from a
-composer releases text input and returns to the sidebar, where normal bindings such as `q` work.
+| Key | Meaning |
+|---|---|
+| `Ctrl-W h/j/k/l` | Focus the window in that direction |
+| `Ctrl-W w` | Cycle to the next window |
+| `Ctrl-W p` | Return to the previously focused window |
 
-The left navigation panel shows a persistent arrow selector that the keyboard and
-the mouse share: clicking a sidebar row with the mouse moves it there and activates
-it, and `j`/`k`/`Up`/`Down` move it once the panel has focus (`Ctrl+Left` from
-the Tasks screen). `Ctrl+Left`/`Ctrl+Right` step the keyboard
-focus one section at a time (sidebar → screen, with the IDE's file tree between
-them), so `Ctrl+Left` from a file in the IDE lands on the file tree and `Ctrl+Right`
-from the sidebar lands back on it, never skipping a section. The selector starts on
-the current project row and follows every navigation, so the highlighted row always
-matches the screen you are on. `Enter` opens the highlighted row (a project row
-switches to that project and a nav row opens its screen). Task filtering lives in the Tasks and
-All Tasks headers. `Esc` (or `Right`) returns focus to the screen. The `:open <route>` command
-remains available too.
+The sidebar is the leftmost window. Screen panes follow it in visual order, so an IDE route is
+sidebar → tree → editor. The second key may be typed with or without `Ctrl` held. There are no
+vertically stacked cockpit panes today, so `Ctrl-W j/k` is a safe no-op where no target exists.
 
-Clicking a non-active project row switches the sidebar context to that registered project and
-refreshes its tasks without moving focus out of the sidebar. Clicking the active project row still
-expands or collapses its navigation. Project navigation contains Tasks and Scratchpad; New task is
-an action opened from Tasks rather than a separate tab.
+## Insert mode
 
-### Command line (`:`)
+New Task and newly opened task sessions start with their composer in Insert mode. `Esc` returns
+to Normal mode and `i` re-enters Insert mode. `Esc` never stops a task; use `:stop`, which keeps
+the existing confirmation.
+
+The terminal, Scratchpad, config editor, commit/name dialogs, and other literal text controls
+accept their normal editing keys. `Ctrl-W` remains reserved for cockpit window navigation.
+
+## Ex commands
 
 | Command | Effect |
 |---|---|
-| `:open <route>` | Navigate to a route (e.g. `:open /tasks`) |
-| `:back` | Same as `Ctrl+O` |
-| `:forward` | Same as `Ctrl+I` |
+| `:open <route>` | Navigate to a route, for example `:open /tasks` |
+| `:back` / `:forward` | Move through cockpit history |
+| `:stop` | Stop the current active task after confirmation |
+| `:finish` | Finish the current eligible task |
+| `:archive` | Archive the current eligible task |
+| `:delete` | Delete the current terminal task or removable settings row after confirmation |
+| `:new` | Open New Task |
 | `:theme <dark\|lazyvim\|lakes>` | Switch theme |
-| `:new` | Same as `c` |
 | `:clear-scratchpad` | Clear the current scratchpad after confirmation |
-| `:help` | Same as `?` |
-| `:sidebar` | Toggle sidebar |
-| `:quit` | Same as `q` |
+| `:sidebar` | Toggle the sidebar |
+| `:help` | Open the key and command reference |
+| `:q` / `:quit` | Quit, preserving the existing quit confirmation policy |
 
-## Screen-local bindings
+## Screen behavior
 
-Everything below only applies while that screen has focus, layered on top of the
-global keymap above. `j`/`k` (and usually `Down`/`Up`) move the selection in every
-list-shaped screen — that convention is consistent throughout rather than
-re-documented per row.
+- Tasks, All Tasks, Skills, Settings, Git lists, workflow steps, and similar lists use `j`/`k`
+  and arrow keys for selection. `Enter` opens or activates the selection.
+- Task Session, Changes, Files, and Commits use `gt`/`gT`. Repo Git, GitHub, Workflows, and
+  Compare tabs use the same grammar.
+- Task transcripts use `j`/`k`, `gg`/`G`, `Ctrl-U`/`Ctrl-D`, `/`, `n`, and `N`. `Enter` toggles
+  a selected expandable item.
+- The IDE tree uses `h` or `Left` to go to the parent and `Enter` or `Right` to open an entry.
+- Ask cards and confirmation dialogs retain their local selection/confirmation keys while open.
+- Composer and editor clipboard/editing shortcuts apply only while that text surface owns input.
 
-### Tasks (`screens/tasks.rs`)
-
-| Key | Action |
-|---|---|
-| `j` / `k` | Move selection |
-| `t` | Toggle Current/Archived view |
-| `/` | Filter |
-| `a` | Archive selected |
-| `r` | Toggle read/unread |
-| `d` | Delete (with confirm) |
-| `p` | Open the task's PR |
-| `Enter` | Open the task thread |
-
-### Global tasks (`screens/global_tasks.rs`)
-
-| Key | Action |
-|---|---|
-| `j` / `k` | Move selection |
-| `t` | Toggle Current/Archived view |
-| `/` | Filter |
-| `f` | Open the project-filter picker |
-| `g` | Toggle grouping by tag |
-| `a` | Archive selected |
-| `r` | Toggle read/unread |
-| `d` | Delete (with confirm) |
-| `Enter` | Open the task thread |
-
-### New task (`screens/new_task.rs`)
-
-| Key | Action |
-|---|---|
-| `Tab` / `Shift+Tab` | Move between pill fields |
-| `j`/`Down`, `k`/`Up` | Move within a pill's options |
-| `Space` | Toggle Autonomous (when that pill is focused) |
-| `i` / `Enter` | Focus the composer |
-| `n` / `s` | Start the task |
-| `Ctrl+V` / `Alt+V` (composer focused) | Paste clipboard text or attach a clipboard image |
-
-### Scratchpad (`screens/scratchpad.rs`)
-
-The Scratchpad is a free-form editor that saves after every edit. Notes live under
-`$DUCK_HOME/scratchpads/` (normally `~/.coducktor/scratchpads/`), outside the project and Git.
-
-| Key | Action |
-|---|---|
-| text / editing keys | Edit the project note and save locally |
-| `Shift` + arrow keys | Select text; selection can span lines |
-| `Ctrl+A` | Select the entire scratchpad |
-| `Backspace` / `Delete` | Delete the selection, or edit at the caret |
-| `Ctrl+C` / `Ctrl+X` | Copy / cut the selection |
-| `Ctrl+V` | Paste text from the clipboard |
-| `Ctrl+S` | Save immediately |
-| `Ctrl+K` | Clear the scratchpad after confirmation |
-| `Ctrl+Left` | Return focus to the sidebar |
-
-### Task thread (`screens/thread/mod.rs`)
-
-Newly opened task threads focus the composer. Header and row-menu actions remain the route for
-finish and archive; neither action has a bare printable-key shortcut.
-
-| Key | Action |
-|---|---|
-| Printable keys (composer focused) | Edit the follow-up draft |
-| `Enter` (composer focused) | Send now, or queue a follow-up for the next boundary of an active turn |
-| `i` | Focus the composer |
-| `Ctrl+V` / `Alt+V` (composer focused) | Paste clipboard text or attach a clipboard image |
-| `j`/`Down`, `k`/`Up` (transcript focused) | Scroll the transcript |
-| `G` | Jump to bottom (re-enables sticky-bottom) |
-| `Tab` / `Shift+Tab` | Select the next/previous expandable tool or reasoning item |
-| `Enter` (transcript focused) | Toggle the selected timeline item |
-| `R` | Retry/load the previous history page |
-| `[` / `]` | Open Changes / Commits for this task |
-| `Esc` | Interrupt a running/queued task on the first press; otherwise return focus to the transcript |
-| Ask card: `j`/`k`/`Down`/`Up` | Move between options |
-| Ask card: `Tab`/`Right`, `Shift+Tab`/`Left` | Move between questions |
-| Ask card: `Enter` | Toggle the focused option |
-| Review notes: printable keys | Type into the review note |
-| Review notes: `Enter` | Newline |
-
-### Task git tabs (`screens/task_git/mod.rs`) — Changes / Files / Commits
-
-| Key | Action |
-|---|---|
-| `[` / `]` | Switch tab |
-| `Tab` | Move focus between tree and diff |
-| `m` | Toggle unified/split diff mode |
-| `w` | Toggle whitespace |
-| `c` | Open the commit dialog |
-| `p` | Push |
-| `j`/`Down`, `k`/`Up` | Move selection (tree, diff scroll, files list, or commits list — whichever has focus) |
-| `Enter` | Open the selected entry / commit |
-
-### Repo git (`screens/repo_git.rs`)
-
-| Key | Action |
-|---|---|
-| `[` / `]` | Switch tab |
-| `m` | Toggle diff mode (Changes tab) |
-| `n` | New branch (Branches tab) |
-| `j`/`Down`, `k`/`Up` | Move selection |
-| `Enter` | Confirm the new-branch dialog |
-
-### Compare variants (`screens/compare.rs`)
-
-| Key | Action |
-|---|---|
-| `Tab`/`Right`, `Shift+Tab`/`Left` | Move between variants |
-| `j`/`Down`, `k`/`Up` | Scroll the diff |
-| `Enter` | Pick the selected variant |
-
-### IDE (`screens/ide/mod.rs`)
-
-| Key | Action |
-|---|---|
-| `s` | Save |
-| `e` | Open in `$EDITOR` |
-| `j`/`Down`, `k`/`Up` | Move the tree selection |
-| `Enter` / `Right` | Open the selected entry |
-| `h` / `u` / `Left` | Go up a directory |
-| `Tab` | Move focus to the editor |
-| `Ctrl+Left` | One section left: editor → file tree, file tree → sidebar |
-| `Ctrl+Right` | One section right: sidebar → file tree, file tree → editor |
-| `Esc` | Back |
-| `Ctrl+S` (editor) | Save |
-
-### GitHub (`screens/github/mod.rs`)
-
-| Key | Action |
-|---|---|
-| `Tab` | Switch list tab |
-| `j`/`Down`, `k`/`Up` | Move selection |
-| `c` | Switch detail tab |
-| `m` | Cycle merge method |
-| `r` | Hand this item to an agent |
-| `w` | Cycle workflow (in the hand-to-agent card) |
-| `s` | Open the skill picker |
-| `R` | Refresh |
-| `o` | Open externally (via the `open` crate) |
-| `Space` | Toggle a skill (in the skill picker) |
-| `Esc` | Back / close the focused panel |
-
-### Skills (`screens/skills.rs`)
-
-| Key | Action |
-|---|---|
-| `/` | Filter |
-| `j`/`Down`, `k`/`Up` | Move selection |
-| `Esc` | Close filter / back |
-
-### Settings (`screens/settings/mod.rs`)
-
-The Workspace sidebar's **Settings** entry opens the global route (`/settings`) with Projects,
-Appearance, Accounts, Notifications, and Resources. The Settings entry under a project keeps the
-project-scoped sections available.
-
-| Key | Action |
-|---|---|
-| `Tab` / `Shift+Tab` | Switch section |
-| `j`/`Down`, `k`/`Up` | Move the focused row |
-| `Left` / `Right` | Cycle an option field |
-| `Enter` | Activate the focused row |
-| `d` | Delete the focused row (accounts, projects, etc.) |
-| `Ctrl+S` (agent-config editor) | Save the config file |
-| `Esc` | Back |
+All visible product controls remain mouse-operable. This includes task row menus, task lifecycle
+buttons, Git and GitHub controls, workflow Save/Import/Export/Delete controls, tabs, settings
+rows, confirmation dialogs, sidebar navigation, and composer buttons.

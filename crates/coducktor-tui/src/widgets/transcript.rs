@@ -57,6 +57,22 @@ impl TranscriptItem {
         }
     }
 
+    fn contains_search(&self, query: &str) -> bool {
+        let contains = |value: &str| value.to_lowercase().contains(query);
+        match self {
+            Self::Message(item) => contains(&item.text),
+            Self::Reasoning(item) => contains(&item.text),
+            Self::Tool(item) => {
+                contains(&item.title)
+                    || item.subtitle.as_deref().is_some_and(contains)
+                    || item.output.as_deref().is_some_and(contains)
+                    || item.error.as_deref().is_some_and(contains)
+            }
+            Self::Note(item) => contains(&item.text),
+            Self::Image(_) => false,
+        }
+    }
+
     /// A cheap fingerprint of everything that can change an item's rendered height.
     /// The transcript's height cache recomputes only when this changes.
     fn revision(&self) -> u64 {
@@ -707,6 +723,69 @@ impl Transcript {
     pub fn jump_to_bottom(&mut self) {
         self.sticky_bottom = true;
         self.unseen = 0;
+    }
+
+    pub fn jump_to_top(&mut self) {
+        self.sticky_bottom = false;
+        self.scroll_offset = 0;
+    }
+
+    pub fn select_next_match(
+        &mut self,
+        query: &str,
+        delta: isize,
+        width: u16,
+        viewport_height: u16,
+    ) -> bool {
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return false;
+        }
+        let matches: Vec<usize> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| item.contains_search(&query).then_some(index))
+            .collect();
+        if matches.is_empty() {
+            return false;
+        }
+        let current = self.selected;
+        let position = if delta >= 0 {
+            matches
+                .iter()
+                .position(|index| current.is_none_or(|current| *index > current))
+                .unwrap_or(0)
+        } else {
+            matches
+                .iter()
+                .rposition(|index| current.is_none_or(|current| *index < current))
+                .unwrap_or(matches.len() - 1)
+        };
+        let selected = matches[position];
+        self.selected = Some(selected);
+        self.sticky_bottom = false;
+        if width > 0 && viewport_height > 0 {
+            let item_top = (0..selected).fold(0_u32, |top, index| {
+                top.saturating_add(u32::from(self.height_cache.get(
+                    index,
+                    &mut self.items,
+                    width,
+                )))
+            });
+            let item_height = u32::from(self.height_cache.get(selected, &mut self.items, width));
+            let viewport = u32::from(viewport_height);
+            if item_top < self.scroll_offset {
+                self.scroll_offset = item_top;
+            } else if item_top.saturating_add(item_height)
+                > self.scroll_offset.saturating_add(viewport)
+            {
+                self.scroll_offset = item_top
+                    .saturating_add(item_height)
+                    .saturating_sub(viewport);
+            }
+        }
+        true
     }
 
     pub fn at_top(&self) -> bool {

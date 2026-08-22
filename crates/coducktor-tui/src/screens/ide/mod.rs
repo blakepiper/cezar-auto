@@ -345,19 +345,19 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     }
 }
 
+pub(crate) fn jump_tree(app: &mut App, end: bool) {
+    let last = app
+        .ide_ui
+        .entries
+        .as_ref()
+        .map(|directory| directory.entries.len().saturating_sub(1))
+        .unwrap_or(0);
+    app.ide_ui.tree_selected = if end { last } else { 0 };
+}
+
 fn handle_tree_key(app: &mut App, key: KeyEvent) -> bool {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
-        return match key.code {
-            KeyCode::Char('s') => {
-                apply_hit(app, IdeAction::Save);
-                true
-            }
-            KeyCode::Char('e') => {
-                apply_hit(app, IdeAction::OpenInEditor);
-                true
-            }
-            _ => false,
-        };
+        return false;
     }
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
@@ -380,18 +380,8 @@ fn handle_tree_key(app: &mut App, key: KeyEvent) -> bool {
             open_selected(app);
             true
         }
-        KeyCode::Char('h') | KeyCode::Char('u') | KeyCode::Left => {
+        KeyCode::Char('h') | KeyCode::Left => {
             apply_hit(app, IdeAction::GoUp);
-            true
-        }
-        KeyCode::Tab => {
-            if app.ide_ui.file_path.is_some() {
-                app.ide_ui.focus = IdeFocus::Editor;
-            }
-            true
-        }
-        KeyCode::Esc => {
-            app.request_back();
             true
         }
         _ => false,
@@ -444,7 +434,10 @@ fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::PageUp => ui.editor.move_pages(-1, viewport),
         KeyCode::PageDown => ui.editor.move_pages(1, viewport),
         KeyCode::Tab => {
-            ui.focus = IdeFocus::Tree;
+            for _ in 0..4 {
+                ui.editor.insert_char(' ');
+            }
+            ui.dirty = true;
         }
         KeyCode::Esc => {
             ui.focus = IdeFocus::Tree;

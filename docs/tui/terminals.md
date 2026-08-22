@@ -44,14 +44,17 @@ records what is implemented and which terminal observations remain unverified.
   OpenCode session or issuing a model prompt. The Resources screen was then exercised in a real
   `140x50` terminal and showed OpenCode Go as available with distinct Session, Weekly, and Monthly
   rows (0%, 80%, and 80%) and the same reset timestamps; quitting restored the alternate screen.
-- **Tasks keyboard focus.** Manually exercised through the real TUI in an 80x24 pseudo-terminal
-  on 2026-08-17: from the focused sidebar, `Ctrl+Right` moved control into the Tasks table,
+- **Tasks keyboard focus.** Before the Phase 6 keymap change, this was manually exercised through
+  the real TUI in an 80x24 pseudo-terminal on 2026-08-17: from the focused sidebar, `Ctrl+Right`
+  moved control into the Tasks table,
   `Down` highlighted the first task row, and `Enter` opened that task's thread. Quitting restored
   the alternate screen.
 - **Focus feedback.** The status line names the keyboard-owned space (for example `SIDEBAR`,
-  `TASKS`, `COMMIT LIST`, or `GIT DETAIL`) and lists its movement keys. Manual PTY smoke test on
-  2026-08-18: `Ctrl+Right` changed the focus label from `SIDEBAR` to `TASKS`, `c` opened the New
-  task composer, `Ctrl+Left` returned focus to `SIDEBAR`, and `q` exited cleanly. Project expansion
+  `TASKS`, `COMMIT LIST`, or `GIT DETAIL`) and lists its movement keys. In the latest manual PTY
+  smoke test on 2026-08-22, pressing `Ctrl+W` alone visibly changed the status to `CTRL-W`, then
+  `l` changed focus from `SIDEBAR` to `TASKS`. `/last` visibly entered `SEARCH /last` and filtered
+  the task list, `Enter` returned to normal mode, and `:q` exited cleanly with the alternate screen
+  restored. An older 2026-08-18 run covered the superseded `Ctrl+Arrow` keymap. Project expansion
   and switching retain sidebar focus.
 - **Debug HUD.** Manually exercised at `80x24` in a real pseudo-terminal on 2026-08-22 with
   `DUCK_DEBUG_HUD=1`: the status bar showed live `FRAME`, `PROJ`, `REDUCED`, and `DROPPED` values,
@@ -66,14 +69,15 @@ records what is implemented and which terminal observations remain unverified.
   every key on the tab goes to the shell (Esc included), scrollback is browsable with the mouse
   wheel, and bracketed paste is enabled for the cockpit lifetime. Pasting multiline clipboard
   content into the shell arrives as one chunk.
-  Leaving the tab: `Ctrl+Left` to the sidebar, mouse, or a sidebar nav row; a dead shell falls
+  Leaving the tab: `Ctrl+W h` to the sidebar, mouse, or a sidebar nav row; a dead shell falls
   back to degraded keys (Enter/r restarts, Esc leaves). Resize follows the tab's rect and
   forwards SIGWINCH to the shell. Sessions are killed on quit via the session `Drop`.
   The parser grid, key encoding, scrollback, and the spawn/error states are covered by unit
   tests and insta snapshots. Manually exercised through the real TUI in an 80x24 pseudo-terminal
   on 2026-08-17: opened `/p/coducktor/terminal`, verified the shell prompt and project cwd,
-  ran `printf 'manual-terminal-check\n'` and saw its output in the pane, sent `Ctrl+C`, used
-  `Ctrl+Left` to reach the sidebar, navigated to Git, and quit with the alternate screen restored.
+  ran `printf 'manual-terminal-check\n'` and saw its output in the pane, sent `Ctrl+C`, used the
+  then-current `Ctrl+Left` binding to reach the sidebar, navigated to Git, and quit with the
+  alternate screen restored.
   Mouse-wheel scrollback and bracketed paste remain unverified in a live terminal.
 - **Composer paste.** With bracketed paste enabled for the cockpit lifetime, `Event::Paste` inserts
   clipboard text at the caret in New Task and thread composers, including newlines. Text above

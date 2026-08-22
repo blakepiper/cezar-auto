@@ -627,9 +627,11 @@ fn render_merge_gate(frame: &mut Frame<'_>, area: Rect, app: &mut App, item: &Gi
             }
             lines.push(Line::from(""));
             let method = app.github_ui.merge_method;
+            let method_label = format!("method: {method}");
+            let control_y = inner.y.saturating_add(lines.len() as u16);
             lines.push(Line::from(Span::styled(
                 format!(
-                    "[m] method: {method}   [enter] merge{}",
+                    "{method_label}   Merge{}",
                     if merge_state.can_override {
                         " (override rules)"
                     } else {
@@ -639,6 +641,29 @@ fn render_merge_gate(frame: &mut Frame<'_>, area: Rect, app: &mut App, item: &Gi
                 Style::default().fg(app.theme.palette.accent),
             )));
             frame.render_widget(Paragraph::new(lines), inner);
+            app.hitmap.register(
+                Rect::new(
+                    inner.x,
+                    control_y,
+                    (method_label.len() as u16).min(inner.width),
+                    1,
+                ),
+                3,
+                HitAction::GithubScreen(GithubAction::CycleMergeMethod),
+            );
+            let merge_x = (method_label.len() as u16).saturating_add(3);
+            if merge_x < inner.width {
+                app.hitmap.register(
+                    Rect::new(
+                        inner.x.saturating_add(merge_x),
+                        control_y,
+                        inner.width.saturating_sub(merge_x).min(24),
+                        1,
+                    ),
+                    3,
+                    HitAction::GithubScreen(GithubAction::Merge),
+                );
+            }
         }
     }
 }
@@ -717,7 +742,7 @@ fn render_handoff(frame: &mut Frame<'_>, area: Rect, thread_area: Rect, app: &mu
         .map(|workflow| workflow.name.clone())
         .unwrap_or_else(|| "quick-task".to_owned());
     spans.push(Span::styled(
-        format!("[w] workflow: {workflow_label}   "),
+        format!("workflow: {workflow_label}   "),
         Style::default().fg(app.theme.palette.accent),
     ));
     let skills_label = if ui.picked_skills.is_empty() {
@@ -731,11 +756,11 @@ fn render_handoff(frame: &mut Frame<'_>, area: Rect, thread_area: Rect, app: &mu
             .join(", ")
     };
     spans.push(Span::styled(
-        format!("[s] skills: {skills_label}   "),
+        format!("skills: {skills_label}   "),
         Style::default().fg(app.theme.palette.accent),
     ));
     spans.push(Span::styled(
-        "[r] Run agent on this issue",
+        "Run agent on this issue",
         Style::default().fg(app.theme.palette.accent),
     ));
     if let Some(queued) = &ui.queued {
@@ -790,6 +815,37 @@ fn render_handoff(frame: &mut Frame<'_>, area: Rect, thread_area: Rect, app: &mu
         }
         frame.render_widget(Paragraph::new(lines), inner);
     }
+    let prefix = "Hand this to the agent:  ".len() as u16;
+    let workflow_width = format!("workflow: {workflow_label}   ").len() as u16;
+    let skills_width = format!("skills: {skills_label}   ").len() as u16;
+    for (offset, width, action) in [
+        (prefix, workflow_width, GithubAction::CycleWorkflow),
+        (
+            prefix.saturating_add(workflow_width),
+            skills_width,
+            GithubAction::OpenSkillPicker,
+        ),
+        (
+            prefix
+                .saturating_add(workflow_width)
+                .saturating_add(skills_width),
+            "Run agent on this issue".len() as u16,
+            GithubAction::RunAgent,
+        ),
+    ] {
+        if offset < area.width {
+            app.hitmap.register(
+                Rect::new(
+                    area.x.saturating_add(offset),
+                    area.y,
+                    width.min(area.width.saturating_sub(offset)),
+                    1,
+                ),
+                3,
+                HitAction::GithubScreen(action),
+            );
+        }
+    }
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
@@ -800,14 +856,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         return false;
     }
     match key.code {
-        KeyCode::Tab => {
-            let next = match app.github_ui.tab {
-                GithubTab::Issues => GithubTab::Prs,
-                GithubTab::Prs => GithubTab::Issues,
-            };
-            apply_hit(app, GithubAction::SwitchTab(next));
-            true
-        }
         KeyCode::Char('j') | KeyCode::Down if app.github_ui.focus != GithubFocus::Detail => {
             let count = items(&app.github_ui).len();
             if count > 0 {
@@ -867,66 +915,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             } else {
                 apply_hit(app, GithubAction::SelectItem(index));
             }
-            true
-        }
-        KeyCode::Char('c') => {
-            if app
-                .github_ui
-                .detail_item
-                .as_ref()
-                .is_some_and(|item| item.kind == coducktor_contract::GithubItemKind::Pr)
-            {
-                let next = match app.github_ui.detail_tab {
-                    GithubDetailTab::Thread => GithubDetailTab::Changes,
-                    GithubDetailTab::Changes => GithubDetailTab::Thread,
-                };
-                apply_hit(app, GithubAction::SwitchDetailTab(next));
-            }
-            true
-        }
-        KeyCode::Char('m') => {
-            if app
-                .github_ui
-                .detail_item
-                .as_ref()
-                .is_some_and(|item| item.kind == coducktor_contract::GithubItemKind::Pr)
-            {
-                apply_hit(app, GithubAction::CycleMergeMethod);
-            }
-            true
-        }
-        KeyCode::Char('r') => {
-            apply_hit(app, GithubAction::RunAgent);
-            true
-        }
-        KeyCode::Char('w') => {
-            apply_hit(app, GithubAction::CycleWorkflow);
-            true
-        }
-        KeyCode::Char('s') => {
-            if !app.github_ui.skills.is_empty() {
-                app.github_ui.focus = GithubFocus::SkillPicker;
-                app.github_ui.skill_query.clear();
-            }
-            true
-        }
-        KeyCode::Char('R') => {
-            let project = app.github_ui.project.clone();
-            app.pending.push(PendingAction::LoadGithub { project });
-            true
-        }
-        // External open: a GitHub URL opens in the OS browser without a run round-trip.
-        KeyCode::Char('o') => {
-            if let Some(url) = items(&app.github_ui)
-                .get(app.github_ui.list_selected)
-                .map(|item| item.url.clone())
-            {
-                app.open_url(&url);
-            }
-            true
-        }
-        KeyCode::Esc => {
-            app.request_back();
             true
         }
         _ => false,
@@ -1066,6 +1054,7 @@ pub fn apply_hit(app: &mut App, action: GithubAction) {
                 GithubMergeMethod::Rebase => GithubMergeMethod::Merge,
             };
         }
+        GithubAction::Merge => handle_merge_confirm(app),
         GithubAction::CycleWorkflow => {
             let count = app.github_ui.workflows.len();
             if count == 0 {
@@ -1075,6 +1064,12 @@ pub fn apply_hit(app: &mut App, action: GithubAction) {
                 None => 0,
                 Some(index) => (index + 1) % count,
             });
+        }
+        GithubAction::OpenSkillPicker => {
+            if !app.github_ui.skills.is_empty() {
+                app.github_ui.focus = GithubFocus::SkillPicker;
+                app.github_ui.skill_query.clear();
+            }
         }
         GithubAction::RunAgent => {
             let Some(item) = app.github_ui.detail_item.clone() else {

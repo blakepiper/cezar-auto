@@ -2,7 +2,7 @@
 //! import/export/save/delete. The save path preserves the compact `skills:` form when every
 //! step is a plain skill step.
 
-use coducktor_contract::{Skill, WorkflowDef, WorkflowSource, WorkflowStepDef};
+use coducktor_contract::{Skill, WorkflowDef, WorkflowStepDef};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -11,6 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app::{App, PendingAction, Route};
+use crate::input::hitmap::WorkflowAction;
 use crate::widgets::editor::Editor;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,7 +31,7 @@ pub struct WorkflowsUi {
     /// The draft chain being built on the "+ new" tab.
     pub draft_name: String,
     pub draft_steps: Vec<WorkflowStepDef>,
-    /// The step cursor — `j`/`k` move it, `Alt+j`/`Alt+k` move the step it points at.
+    /// The step cursor — `j`/`k` move it; mouse drag reorders the step it points at.
     pub steps_selected: usize,
     /// The row pressed for a drag-reorder (press on a step, release on another) — the
     /// dnd-kit drag's mouse twin. `None` when no drag is in flight.
@@ -269,7 +270,7 @@ fn render_steps(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let steps: Vec<WorkflowStepDef> = current_steps(app).to_vec();
     if steps.is_empty() {
         frame.render_widget(
-            Paragraph::new("No steps — pick skills from the palette (p), or press i to import.")
+            Paragraph::new("No steps — click a skill in the palette, or click Import.")
                 .style(Style::default().fg(app.theme.palette.soft_fg)),
             inner,
         );
@@ -303,7 +304,7 @@ fn render_steps(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let footer_y = inner.bottom().saturating_sub(1);
     let stack = skill_stack_of(current_steps(app));
     let footer = format!(
-        "s save · i import · e export · x delete · Alt+j/k reorder · {}",
+        "Save · Import · Export · Delete · drag to reorder · {}",
         match stack {
             Some(_) => "portable skills: form",
             None => "full steps: form",
@@ -316,6 +317,25 @@ fn render_steps(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         ))),
         Rect::new(inner.x, footer_y, inner.width, 1),
     );
+    for (offset, width, action) in [
+        (0, 4, WorkflowAction::Save),
+        (7, 6, WorkflowAction::Import),
+        (16, 6, WorkflowAction::Export),
+        (25, 6, WorkflowAction::Delete),
+    ] {
+        if offset < inner.width {
+            app.hitmap.register(
+                Rect::new(
+                    inner.x.saturating_add(offset),
+                    footer_y,
+                    width.min(inner.width.saturating_sub(offset)),
+                    1,
+                ),
+                3,
+                crate::input::hitmap::HitAction::WorkflowControl(action),
+            );
+        }
+    }
 }
 
 fn step_line(
@@ -490,36 +510,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         return handle_palette_key(app, key);
     }
     match key.code {
-        KeyCode::Tab | KeyCode::Char('l') => {
-            let count = app.workflows_ui.workflows.len() + 1;
-            app.workflows_ui.selected_tab = (app.workflows_ui.selected_tab + 1).min(count - 1);
-            true
-        }
-        KeyCode::BackTab | KeyCode::Char('h') => {
-            app.workflows_ui.selected_tab = app.workflows_ui.selected_tab.saturating_sub(1);
-            true
-        }
-        KeyCode::Char('n') => {
-            app.workflows_ui.selected_tab = app.workflows_ui.workflows.len();
-            app.workflows_ui.draft_name.clear();
-            app.workflows_ui.draft_steps.clear();
-            app.workflows_ui.name_open = true;
-            true
-        }
-        KeyCode::Char('N') => {
-            if app.workflows_ui.selected_tab >= app.workflows_ui.workflows.len() {
-                app.workflows_ui.name_open = !app.workflows_ui.name_open;
-            }
-            true
-        }
-        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::ALT) => {
-            reorder(app, 1);
-            true
-        }
-        KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::ALT) => {
-            reorder(app, -1);
-            true
-        }
         KeyCode::Char('j') | KeyCode::Down => {
             let steps = current_steps(app);
             if !steps.is_empty() {
@@ -532,67 +522,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             app.workflows_ui.steps_selected = app.workflows_ui.steps_selected.saturating_sub(1);
             true
         }
-        KeyCode::Char('p') => {
-            app.workflows_ui.focus = WorkflowFocus::Palette;
-            app.workflows_ui.palette_selected = 0;
-            true
-        }
-        KeyCode::Char('/') => {
-            app.workflows_ui.focus = WorkflowFocus::Palette;
-            app.workflows_ui.palette_query.clear();
-            app.workflows_ui.palette_selected = 0;
-            true
-        }
-        KeyCode::Char('s') => {
-            let project = app.workflows_ui.project.clone();
-            app.pending.push(PendingAction::SaveWorkflow { project });
-            true
-        }
-        KeyCode::Char('e') => {
-            let project = app.workflows_ui.project.clone();
-            app.pending.push(PendingAction::ExportWorkflow { project });
-            true
-        }
-        KeyCode::Char('i') => {
-            app.workflows_ui.import_open = true;
-            app.workflows_ui.import_yaml.set_text("");
-            true
-        }
-        KeyCode::Char('x') => {
-            if app.workflows_ui.selected_tab < app.workflows_ui.workflows.len() {
-                let workflow = app.workflows_ui.workflows[app.workflows_ui.selected_tab].clone();
-                if workflow.source == WorkflowSource::File {
-                    app.workflows_ui.delete_confirm =
-                        Some(format!("Delete workflow '{}'? [y/n]", workflow.name));
-                } else {
-                    app.notice = Some("built-in workflows cannot be deleted".to_owned());
-                }
-            } else {
-                app.workflows_ui.draft_steps.pop();
-            }
-            true
-        }
-        KeyCode::Esc => {
-            app.request_back();
-            true
-        }
         _ => false,
-    }
-}
-
-/// Move the step the cursor points at by `delta` — the dnd-kit drag's keyboard twin
-/// (`Alt+j`/`Alt+k`, the plan's "reorder by Alt+j/Alt+k").
-fn reorder(app: &mut App, delta: i32) {
-    let selected = app.workflows_ui.steps_selected;
-    let steps = current_steps_mut(app);
-    if steps.len() < 2 {
-        return;
-    }
-    let index = selected.min(steps.len() - 1);
-    let target = (index as i32 + delta).clamp(0, steps.len() as i32 - 1) as usize;
-    if target != index {
-        steps.swap(index, target);
-        app.workflows_ui.steps_selected = target;
     }
 }
 
@@ -664,7 +594,7 @@ fn palette_matches(app: &App) -> Vec<usize> {
         .collect()
 }
 
-fn move_palette_selection(app: &mut App, delta: i32) {
+pub(crate) fn move_palette_selection(app: &mut App, delta: i32) {
     let matches = palette_matches(app);
     let Some(current) = matches
         .iter()
@@ -716,6 +646,11 @@ fn handle_import_key(app: &mut App, key: KeyEvent) -> bool {
 pub fn apply_tab_hit(app: &mut App, index: usize) {
     app.workflows_ui.selected_tab = index.min(app.workflows_ui.workflows.len());
     app.workflows_ui.steps_selected = 0;
+    if app.workflows_ui.selected_tab == app.workflows_ui.workflows.len()
+        && app.workflows_ui.draft_name.is_empty()
+    {
+        app.workflows_ui.name_open = true;
+    }
 }
 
 pub fn apply_step_hit(app: &mut App, index: usize) {
@@ -739,11 +674,42 @@ pub fn apply_palette_hit(app: &mut App, index: usize) {
     }
 }
 
+pub fn apply_control(app: &mut App, action: WorkflowAction) {
+    match action {
+        WorkflowAction::Save => {
+            let project = app.workflows_ui.project.clone();
+            app.pending.push(PendingAction::SaveWorkflow { project });
+        }
+        WorkflowAction::Import => {
+            app.workflows_ui.import_open = true;
+            app.workflows_ui.import_yaml.set_text("");
+        }
+        WorkflowAction::Export => {
+            let project = app.workflows_ui.project.clone();
+            app.pending.push(PendingAction::ExportWorkflow { project });
+        }
+        WorkflowAction::Delete => {
+            if app.workflows_ui.selected_tab < app.workflows_ui.workflows.len() {
+                let workflow = app.workflows_ui.workflows[app.workflows_ui.selected_tab].clone();
+                if workflow.source == coducktor_contract::WorkflowSource::File {
+                    app.workflows_ui.delete_confirm =
+                        Some(format!("Delete workflow '{}'? [y/n]", workflow.name));
+                } else {
+                    app.notice = Some("built-in workflows cannot be deleted".to_owned());
+                }
+            } else {
+                app.workflows_ui.draft_steps.pop();
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::input::keymap::Keymap;
     use crate::theme::Theme;
+    use coducktor_contract::WorkflowSource;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -828,10 +794,7 @@ mod tests {
             app.workflows_ui.draft_steps[0].skill.as_deref(),
             Some("om-fix")
         );
-        handle_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE),
-        );
+        app.workflows_ui.focus = WorkflowFocus::Palette;
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.workflows_ui.draft_steps.len(), 2);
         assert_eq!(app.workflows_ui.draft_steps[1].id, "om-fix-2");
@@ -861,51 +824,12 @@ mod tests {
     }
 
     #[test]
-    fn alt_j_alt_k_reorder_the_cursor_step() {
-        let mut app = app_with_workflows();
-        app.workflows_ui.selected_tab = 1;
-        app.workflows_ui.draft_steps = vec![
-            skill_step("om-fix", &[]),
-            skill_step("omarchy", &[skill_step("om-fix", &[])]),
-        ];
-        // Cursor down to omarchy, Alt+k moves it up.
-        handle_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
-        );
-        let mut key = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::ALT);
-        handle_key(&mut app, key);
-        assert_eq!(
-            app.workflows_ui.draft_steps[0].skill.as_deref(),
-            Some("omarchy")
-        );
-        assert_eq!(app.workflows_ui.steps_selected, 0);
-        // Alt+j moves it back down.
-        key = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT);
-        handle_key(&mut app, key);
-        assert_eq!(
-            app.workflows_ui.draft_steps[0].skill.as_deref(),
-            Some("om-fix")
-        );
-        assert_eq!(app.workflows_ui.steps_selected, 1);
-        // At the bottom, Alt+j is a no-op.
-        handle_key(&mut app, key);
-        assert_eq!(
-            app.workflows_ui.draft_steps[0].skill.as_deref(),
-            Some("om-fix")
-        );
-    }
-
-    #[test]
     fn save_pushes_the_compact_skills_form_when_the_stack_is_portable() {
         let mut app = app_with_workflows();
         app.workflows_ui.selected_tab = 1;
         app.workflows_ui.draft_name = "portable".to_owned();
         app.workflows_ui.draft_steps = vec![skill_step("om-fix", &[])];
-        handle_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
-        );
+        apply_control(&mut app, WorkflowAction::Save);
         let save = app
             .pending
             .iter()
@@ -917,10 +841,7 @@ mod tests {
     #[test]
     fn deleting_a_built_in_workflow_is_refused() {
         let mut app = app_with_workflows();
-        handle_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
-        );
+        apply_control(&mut app, WorkflowAction::Delete);
         assert!(app.workflows_ui.delete_confirm.is_none());
         assert_eq!(
             app.notice.as_deref(),

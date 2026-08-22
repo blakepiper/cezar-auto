@@ -9,7 +9,7 @@ Buffer {
         " [=] coducktor / main /p/main  [running 0] [needs 0]                            ",
         " Current 0  Needs you 0  Finished 0                                             ",
         "┌TASKS — main──────────────────────────────────────────────────────────────────┐",
-        "│No tasks in this project. Press n for New task.                               │",
+        "│No tasks in this project. Use :new or click New task.                         │",
         "│                                                                              │",
         "│                                                                              │",
         "│                                                                              │",

@@ -1065,13 +1065,22 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         } else {
             entry.value.clone()
         };
-        lines.push(Line::from(vec![
+        let removable = row_is_removable(app, section, index);
+        let remove_offset = 34usize.saturating_add(value.chars().count());
+        let mut spans = vec![
             Span::styled(format!("{:<32}", entry.label), label_style),
             Span::styled(
                 format!("  {value}"),
                 Style::default().fg(app.theme.palette.soft_fg),
             ),
-        ]));
+        ];
+        if removable {
+            spans.push(Span::styled(
+                "  Remove",
+                Style::default().fg(app.theme.palette.del),
+            ));
+        }
+        lines.push(Line::from(spans));
         if let Some(y) = inner
             .y
             .checked_add(index.saturating_sub(first_visible) as u16)
@@ -1082,6 +1091,18 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                 2,
                 crate::input::hitmap::HitAction::SettingsRow(index),
             );
+            if removable && remove_offset < inner.width as usize {
+                app.hitmap.register(
+                    Rect::new(
+                        inner.x.saturating_add(remove_offset as u16),
+                        y,
+                        8.min(inner.width.saturating_sub(remove_offset as u16)),
+                        1,
+                    ),
+                    3,
+                    crate::input::hitmap::HitAction::SettingsDeleteRow(index),
+                );
+            }
         }
     }
     if let Some(notice) = &app.settings_ui.notice {
@@ -1133,19 +1154,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         return handle_model_picker_key(app, key);
     }
     match key.code {
-        KeyCode::Tab => {
-            let sections = visible_sections(app);
-            app.settings_ui.section = (app.settings_ui.section + 1) % sections.len();
-            app.settings_ui.row = 0;
-            true
-        }
-        KeyCode::BackTab => {
-            let sections = visible_sections(app);
-            app.settings_ui.section =
-                (app.settings_ui.section + sections.len() - 1) % sections.len();
-            app.settings_ui.row = 0;
-            true
-        }
         KeyCode::Char('j') | KeyCode::Down if app.screen_focus() == 0 => {
             let len = visible_sections(app).len();
             app.settings_ui.section = (app.settings_ui.section + 1).min(len.saturating_sub(1));
@@ -1177,14 +1185,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Left | KeyCode::Right => true,
         KeyCode::Enter => {
             activate(app);
-            true
-        }
-        KeyCode::Char('d') => {
-            delete_row(app);
-            true
-        }
-        KeyCode::Esc => {
-            app.request_back();
             true
         }
         _ => false,
@@ -1666,6 +1666,106 @@ fn activate(app: &mut App) {
     }
 }
 
+pub(crate) fn activate_selected(app: &mut App) {
+    activate(app);
+}
+
+pub(crate) fn jump_selection(app: &mut App, end: bool) {
+    if app.screen_focus() == 0 {
+        let last = visible_sections(app).len().saturating_sub(1);
+        app.settings_ui.section = if end { last } else { 0 };
+        app.settings_ui.row = 0;
+    } else {
+        let last = rows_for(app, current_section(app)).len().saturating_sub(1);
+        app.settings_ui.row = if end { last } else { 0 };
+    }
+}
+
+fn row_is_removable(app: &App, section: SettingsSection, row: usize) -> bool {
+    match section {
+        SettingsSection::PromptTemplates => app
+            .settings_ui
+            .ui_state
+            .as_ref()
+            .and_then(|state| state.prompt_templates.as_ref())
+            .is_some_and(|templates| row < templates.len()),
+        SettingsSection::Accounts => {
+            app.settings_ui
+                .agent_profiles
+                .as_ref()
+                .is_some_and(|profiles| {
+                    row >= RUNNERS.len() && row - RUNNERS.len() < profiles.profiles.len()
+                })
+        }
+        SettingsSection::Worktrees => app
+            .settings_ui
+            .worktrees
+            .as_ref()
+            .is_some_and(|worktrees| row >= 2 && row - 2 < worktrees.worktrees.len()),
+        SettingsSection::Projects => row >= 2 && row - 2 < app.project_registry.len(),
+        _ => false,
+    }
+}
+
+pub(crate) fn delete_selected(app: &mut App) {
+    let section = current_section(app);
+    let row = app.settings_ui.row;
+    if !row_is_removable(app, section, row) {
+        app.notice = Some("this settings row cannot be removed".to_owned());
+        return;
+    }
+    match section {
+        SettingsSection::PromptTemplates => {
+            let templates = app
+                .settings_ui
+                .ui_state
+                .as_ref()
+                .and_then(|state| state.prompt_templates.clone())
+                .unwrap_or_default();
+            if let Some(template) = templates.get(row) {
+                let mut next = templates.clone();
+                next.remove(row);
+                let mut state = app.settings_ui.ui_state.clone().unwrap_or_default();
+                state.prompt_templates = Some(next);
+                app.confirm = Some(ConfirmRequest {
+                    text: format!("Delete the prompt template \"{}\"?", template.label),
+                    action: PendingAction::PutUiState {
+                        project: app.settings_ui.project.clone(),
+                        state,
+                    },
+                });
+            }
+        }
+        SettingsSection::Accounts => {
+            let Some(profiles) = &app.settings_ui.agent_profiles else {
+                return;
+            };
+            if row >= RUNNERS.len()
+                && let Some(profile) = profiles.profiles.get(row - RUNNERS.len())
+            {
+                app.confirm = Some(ConfirmRequest {
+                    text: format!("Remove the account \"{}\"?", profile.label),
+                    action: PendingAction::SettingsRemoveAgentProfile {
+                        id: profile.id.clone(),
+                    },
+                });
+            }
+        }
+        SettingsSection::Worktrees => activate_worktrees(app, row),
+        SettingsSection::Projects if row >= 2 => {
+            if let Some(project) = app.project_registry.get(row - 2) {
+                app.confirm = Some(ConfirmRequest {
+                    text: format!("Remove \"{}\" from the project registry?", project.name),
+                    action: PendingAction::SettingsRemoveProject {
+                        id: project.id.clone(),
+                    },
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
 fn start_edit(app: &mut App, target: EditTarget, initial: impl Into<String>) {
     app.settings_ui.edit = Some(SettingsEdit {
         buffer: initial.into(),
@@ -2068,62 +2168,6 @@ fn activate_projects(app: &mut App, row: usize) {
     );
 }
 
-fn delete_row(app: &mut App) {
-    let section = current_section(app);
-    let row = app.settings_ui.row;
-    match section {
-        SettingsSection::PromptTemplates => {
-            let templates = app
-                .settings_ui
-                .ui_state
-                .as_ref()
-                .and_then(|state| state.prompt_templates.clone())
-                .unwrap_or_default();
-            if let Some(template) = templates.get(row) {
-                let mut next = templates.clone();
-                next.remove(row);
-                let mut state = app.settings_ui.ui_state.clone().unwrap_or_default();
-                state.prompt_templates = Some(next);
-                app.confirm = Some(ConfirmRequest {
-                    text: format!("Delete the prompt template \"{}\"?", template.label),
-                    action: PendingAction::PutUiState {
-                        project: app.settings_ui.project.clone(),
-                        state,
-                    },
-                });
-            }
-        }
-        SettingsSection::Accounts => {
-            let Some(profiles) = &app.settings_ui.agent_profiles else {
-                return;
-            };
-            if row >= RUNNERS.len() {
-                let profile_row = row - RUNNERS.len();
-                if let Some(profile) = profiles.profiles.get(profile_row) {
-                    app.confirm = Some(ConfirmRequest {
-                        text: format!("Remove the account \"{}\"?", profile.label),
-                        action: PendingAction::SettingsRemoveAgentProfile {
-                            id: profile.id.clone(),
-                        },
-                    });
-                }
-            }
-        }
-        SettingsSection::Worktrees => activate_worktrees(app, row),
-        SettingsSection::Projects if row > 1 => {
-            if let Some(project) = app.project_registry.get(row - 2) {
-                app.confirm = Some(ConfirmRequest {
-                    text: format!("Remove \"{}\" from the project registry?", project.name),
-                    action: PendingAction::SettingsRemoveProject {
-                        id: project.id.clone(),
-                    },
-                });
-            }
-        }
-        _ => {}
-    }
-}
-
 fn submit_edit(app: &mut App, edit: SettingsEdit) {
     let text = edit.buffer.trim().to_owned();
     let project = app.settings_ui.project.clone();
@@ -2451,14 +2495,21 @@ mod tests {
     }
 
     #[test]
-    fn tab_cycles_through_every_section() {
+    fn j_moves_through_every_section_without_wrapping() {
         let mut app = app_with_settings();
+        app.set_screen_focus(0);
         for expected in SECTIONS.iter().skip(1) {
-            handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+            handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+            );
             assert_eq!(current_section(&app), *expected);
         }
-        handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert_eq!(current_section(&app), SettingsSection::Agents);
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+        );
+        assert_eq!(current_section(&app), *SECTIONS.last().unwrap());
     }
 
     #[test]
@@ -2682,9 +2733,17 @@ mod tests {
     #[test]
     fn global_settings_theme_control_persists_the_theme() {
         let mut app = app_with_global_settings();
-        handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.set_screen_focus(0);
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+        );
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+        );
         assert_eq!(current_section(&app), SettingsSection::Appearance);
+        app.set_screen_focus(1);
         handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         assert_eq!(app.theme.name, ThemeName::Lakes);
         assert!(app.pending.iter().any(|action| matches!(
@@ -2698,8 +2757,15 @@ mod tests {
     #[test]
     fn appearance_menu_uses_theme_without_an_accent_control() {
         let mut app = app_with_global_settings();
-        handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.set_screen_focus(0);
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+        );
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+        );
         let content = render_text(&mut app, 120, 40);
         assert!(content.contains("Theme"));
         assert!(content.contains("Density"));
@@ -2710,7 +2776,12 @@ mod tests {
     #[test]
     fn global_projects_add_row_queues_registration() {
         let mut app = app_with_global_settings();
-        handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.set_screen_focus(0);
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+        );
+        app.set_screen_focus(1);
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         for character in "/tmp/another-repo".chars() {
             handle_key(
@@ -2724,6 +2795,26 @@ mod tests {
             action,
             PendingAction::SettingsRegisterProject { root } if root == "/tmp/another-repo"
         )));
+    }
+
+    #[test]
+    fn removable_settings_rows_have_a_mouse_control_and_keep_confirmation() {
+        let mut app = app_with_global_settings();
+        app.settings_ui.section = 1;
+        app.settings_ui.row = 2;
+        app.set_screen_focus(1);
+
+        let content = render_text(&mut app, 120, 40);
+        assert!(content.contains("Remove"), "{content}");
+        delete_selected(&mut app);
+
+        assert!(app.confirm.as_ref().is_some_and(|confirm| {
+            confirm.text == "Remove \"main\" from the project registry?"
+                && matches!(
+                    &confirm.action,
+                    PendingAction::SettingsRemoveProject { id } if id == "main"
+                )
+        }));
     }
 
     #[test]
