@@ -86,6 +86,13 @@ records what is implemented and which terminal observations remain unverified.
 
 ## Task experience smoke test
 
+- **120×40 pseudo-terminal, 2026-08-22 (Phase 3 transcript readability).** Built and launched the
+  real `coducktor` binary against the registered coducktor repository, opened a stored finished
+  task, and verified its event order directly: assistant prose used the accent `●` gutter and full
+  markdown styling, followed by collapsed/expanded tool rows with soft `▸`/`▾` gutters and colored
+  `Ran` verbs, then a dim `· run finished` lifecycle note. Blank separator rows kept the three row
+  types visually distinct, and `q` restored the alternate screen.
+
 - **80×24 pseudo-terminal, 2026-08-22 (Phase 2 state/event honesty).** Launched the real
   `coducktor` binary against the coducktor repository with `DUCK_DRY_RUN=1` and
   `DUCK_DEBUG_HUD=1`. The workspace settled at `running 0` / `needs 0`, switching from the

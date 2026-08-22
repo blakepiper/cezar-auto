@@ -1,6 +1,6 @@
 # Cockpit responsiveness and thread UX — implementation specification
 
-Status: Phase 2 state honesty implemented; Phase 3 is next (written 2026-08-22, updated 2026-08-22)
+Status: Phase 3 transcript readability implemented; Phase 4 is next (written 2026-08-22, updated 2026-08-22)
 
 Audience: the next implementation agent. Work directly on `main`, preserve unrelated changes,
 commit the completed work, and push `origin main` as required by `AGENTS.md`.
@@ -34,7 +34,9 @@ follow-up or finish sleeps for one second. The HUD's dropped-event counter stays
 2 exposes lag through the engine event stream. Phase 2 separates neutral parked sessions from
 genuine needs-input, keeps running response text non-terminal, and isolates each live topic with
 explicit lag/sequence-gap recovery from durable history. The prior audit's R1 and R3 rows point
-here.
+here. Phase 3 restores reducer chronology, renders all assistant prose as markdown messages, gives
+every row a role gutter and spacing, colors tool verbs by kind, and keeps an off-screen question
+reachable in the needs-input dock.
 
 ## Finding inventory
 
@@ -229,6 +231,10 @@ status, with no error and no resync until the thread is reopened. The TUI drains
 
 ### F7 — agent prose is styled as system chatter and reordered (P1)
 
+**Resolved in Phase 3.** Assistant prose remains a markdown message in reducer order; a parked
+session duplicates its latest substantive message above the composer only when that message is
+outside the transcript viewport.
+
 In `build_transcript_items` (`thread/mod.rs:455-462`), an assistant message that is not the turn's
 designated final response becomes a `NoteItem` with `NoteTone::Dim` — rendered as `· text` in
 `soft_fg` with no markdown (`transcript.rs:375-385`). That is identical treatment to
@@ -240,6 +246,9 @@ followed by a wall of text. The justifying comment cites a real cause: runners o
 final-answer item before dispatching the turn's tools.
 
 ### F8 — tool cards and prose share one foreground (P1)
+
+**Resolved in Phase 3.** Every top-level item has a two-column role gutter and a separating row;
+tool verbs use `ToolKind` colors without bold while arguments remain in the normal foreground.
 
 `paint_message` (`transcript.rs:324-341`) renders assistant text in `palette.fg` with no prefix,
 gutter or role marker. `paint_tool_card` (`transcript.rs:387-455`) renders its title in

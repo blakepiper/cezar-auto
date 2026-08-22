@@ -588,6 +588,38 @@ pub fn render_status_hint(frame: &mut Frame<'_>, area: Rect, text: &str, theme: 
     1
 }
 
+/// A compact duplicate of assistant prose that has scrolled out of a parked session's
+/// transcript. It sits next to the other reply affordances instead of changing event order.
+pub fn latest_message_height(text: &str, width: u16) -> u16 {
+    if text.trim().is_empty() || width < 3 {
+        return 0;
+    }
+    Paragraph::new(text)
+        .wrap(Wrap { trim: false })
+        .line_count(width.saturating_sub(2))
+        .min(5) as u16
+        + 2
+}
+
+pub fn render_latest_message(frame: &mut Frame<'_>, area: Rect, text: &str, theme: &Theme) -> u16 {
+    if area.height == 0 || text.trim().is_empty() {
+        return 0;
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" LATEST MESSAGE ")
+        .border_style(Style::default().fg(theme.palette.accent));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(
+        Paragraph::new(text.to_owned())
+            .style(Style::default().fg(theme.palette.fg))
+            .wrap(Wrap { trim: false }),
+        inner,
+    );
+    area.height
+}
+
 /// The right-side sub-agent drill-down panel: the full item stream for one agent.
 pub fn render_subagent_sheet(
     frame: &mut Frame<'_>,

@@ -13,7 +13,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Paragraph, Widget, Wrap};
 use serde_json::Value;
 
 use coducktor_protocol::{MessageRole, ToolKind, ToolStatus, tool_display};
@@ -32,6 +32,8 @@ const OUTPUT_CLAMP_LINES: u16 = 12;
 /// ratio, so transcript height math never depends on what the image protocol decides
 /// to do at render time.
 const IMAGE_MAX_ROWS: u16 = 16;
+const ITEM_GUTTER_WIDTH: u16 = 2;
+const ITEM_SPACING: u16 = 1;
 
 /// One transcript entry. Deliberately a small, closed set: this is the rendering
 /// primitive, not the thread reducer's full `ThreadEntry` union (no ask/provider-auth
@@ -91,12 +93,9 @@ impl TranscriptItem {
         if width == 0 {
             return 0;
         }
-        match self {
-            Self::Message(item) => {
-                let inner =
-                    width.saturating_sub(if item.role == MessageRole::User { 1 } else { 0 });
-                item.cache.height(&item.text, inner)
-            }
+        let content_width = width.saturating_sub(ITEM_GUTTER_WIDTH);
+        let content_height = match self {
+            Self::Message(item) => item.cache.height(&item.text, content_width),
             Self::Reasoning(item) => {
                 // A mapper regression that mints an empty reasoning item degrades quietly
                 // rather than rendering a bare, un-expandable row.
@@ -104,24 +103,57 @@ impl TranscriptItem {
                     return 0;
                 }
                 if item.expanded {
-                    1 + item.cache.height(&item.text, width.saturating_sub(2))
+                    1 + item.cache.height(&item.text, content_width)
                 } else {
                     1
                 }
             }
-            Self::Tool(item) => tool_card_height(item, width),
-            Self::Note(item) => wrapped_line_count(&item.text, width.saturating_sub(2)).max(1),
-            Self::Image(item) => image_height(item, width),
+            Self::Tool(item) => tool_card_height(item, content_width),
+            Self::Note(item) => wrapped_line_count(&item.text, content_width).max(1),
+            Self::Image(item) => image_height(item, content_width),
+        };
+        if content_height == 0 {
+            0
+        } else {
+            content_height.saturating_add(ITEM_SPACING)
         }
     }
 
     fn paint(&mut self, buf: &mut Buffer, area: Rect, theme: &Theme) {
+        if area.height <= ITEM_SPACING || area.width == 0 {
+            return;
+        }
+        let marker = match self {
+            Self::Message(item) if item.role == MessageRole::Assistant => {
+                ("●", theme.palette.accent)
+            }
+            Self::Message(_) => ("▌", theme.palette.border),
+            Self::Reasoning(item) => (if item.expanded { "▾" } else { "▸" }, theme.palette.soft_fg),
+            Self::Tool(item) => (if item.open() { "▾" } else { "▸" }, theme.palette.soft_fg),
+            Self::Note(item) => (
+                "·",
+                match item.tone {
+                    NoteTone::Danger => theme.palette.failed,
+                    NoteTone::Warning => theme.palette.waiting,
+                    NoteTone::Dim => theme.palette.soft_fg,
+                },
+            ),
+            Self::Image(_) => ("·", theme.palette.border),
+        };
+        Line::from(Span::styled(marker.0, Style::default().fg(marker.1)))
+            .render(Rect::new(area.x, area.y, 1.min(area.width), 1), buf);
+        let content = Rect::new(
+            area.x.saturating_add(ITEM_GUTTER_WIDTH),
+            area.y,
+            area.width.saturating_sub(ITEM_GUTTER_WIDTH),
+            area.height.saturating_sub(ITEM_SPACING),
+        );
         match self {
-            Self::Message(item) => paint_message(item, buf, area, theme),
-            Self::Reasoning(item) => paint_reasoning(item, buf, area, theme),
-            Self::Tool(item) => paint_tool_card(item, buf, area, theme),
-            Self::Note(item) => paint_note(item, buf, area, theme),
-            Self::Image(item) => paint_image(item, buf, area, theme),
+            Self::Message(item) => paint_message(item, buf, content, theme),
+            Self::Reasoning(item) => paint_reasoning(item, buf, content, theme),
+            Self::Tool(item) => paint_tool_card(item, buf, content, theme),
+            Self::Note(item) => paint_note(item, buf, content, theme),
+            Self::Image(item) => paint_image(item, buf, content, theme),
         }
     }
 }
@@ -282,7 +314,7 @@ fn tool_card_height(item: &ToolItem, width: u16) -> u16 {
     let mut height = 1; // the collapsed header row is always shown
     if item.open() {
         if let Some(error) = item.error.as_deref().filter(|text| !text.is_empty()) {
-            height += wrapped_line_count(error, width.saturating_sub(2)).max(1);
+            height += wrapped_line_count(error, width).max(1);
         }
         if let Some(output) = item.output.as_deref().filter(|text| !text.is_empty()) {
             let lines = output.lines().count().max(1) as u16;
@@ -323,22 +355,10 @@ fn wrapped_line_count(text: &str, width: u16) -> u16 {
 
 fn paint_message(item: &mut MessageItem, buf: &mut Buffer, area: Rect, theme: &Theme) {
     let style = Style::default().fg(theme.palette.fg);
-    if item.role == MessageRole::User {
-        let block = Block::default()
-            .borders(Borders::LEFT)
-            .border_style(Style::default().fg(theme.palette.border));
-        let inner = block.inner(area);
-        block.render(area, buf);
-        Paragraph::new(item.cache.text(&item.text).clone())
-            .style(style)
-            .wrap(Wrap { trim: false })
-            .render(inner, buf);
-    } else {
-        Paragraph::new(item.cache.text(&item.text).clone())
-            .style(style)
-            .wrap(Wrap { trim: false })
-            .render(area, buf);
-    }
+    Paragraph::new(item.cache.text(&item.text).clone())
+        .style(style)
+        .wrap(Wrap { trim: false })
+        .render(area, buf);
 }
 
 fn paint_reasoning(item: &mut ReasoningItem, buf: &mut Buffer, area: Rect, theme: &Theme) {
@@ -346,25 +366,15 @@ fn paint_reasoning(item: &mut ReasoningItem, buf: &mut Buffer, area: Rect, theme
         return;
     }
     let soft = Style::default().fg(theme.palette.soft_fg);
-    let chevron = if item.expanded {
-        '\u{25be}'
-    } else {
-        '\u{25b8}'
-    };
     let first_line = item.text.lines().next().unwrap_or_default();
     let header = Rect::new(area.x, area.y, area.width, 1.min(area.height));
     Line::from(vec![
-        Span::styled(format!("{chevron} Thinking \u{2014} "), soft),
+        Span::styled("Thinking \u{2014} ", soft),
         Span::styled(first_line.to_owned(), soft.add_modifier(Modifier::DIM)),
     ])
     .render(header, buf);
     if item.expanded && area.height > 1 {
-        let body = Rect::new(
-            area.x + 2,
-            area.y + 1,
-            area.width.saturating_sub(2),
-            area.height - 1,
-        );
+        let body = Rect::new(area.x, area.y + 1, area.width, area.height - 1);
         Paragraph::new(item.cache.text(&item.text).clone())
             .style(soft)
             .wrap(Wrap { trim: false })
@@ -373,12 +383,12 @@ fn paint_reasoning(item: &mut ReasoningItem, buf: &mut Buffer, area: Rect, theme
 }
 
 fn paint_note(item: &NoteItem, buf: &mut Buffer, area: Rect, theme: &Theme) {
-    let (prefix, color) = match item.tone {
-        NoteTone::Danger => ("\u{2717} ", theme.palette.failed),
-        NoteTone::Warning => ("\u{21c4} ", theme.palette.waiting),
-        NoteTone::Dim => ("\u{b7} ", theme.palette.soft_fg),
+    let color = match item.tone {
+        NoteTone::Danger => theme.palette.failed,
+        NoteTone::Warning => theme.palette.waiting,
+        NoteTone::Dim => theme.palette.soft_fg,
     };
-    Paragraph::new(format!("{prefix}{}", item.text))
+    Paragraph::new(item.text.clone())
         .style(Style::default().fg(color))
         .wrap(Wrap { trim: false })
         .render(area, buf);
@@ -386,23 +396,26 @@ fn paint_note(item: &NoteItem, buf: &mut Buffer, area: Rect, theme: &Theme) {
 
 fn paint_tool_card(item: &ToolItem, buf: &mut Buffer, area: Rect, theme: &Theme) {
     let open = item.open();
-    let chevron = if !item.has_detail() {
-        ' '
-    } else if open {
-        '\u{25be}'
-    } else {
-        '\u{25b8}'
+    let (verb, argument) = item.title.split_once(' ').unwrap_or((&item.title, ""));
+    let verb_color = match item.tool_kind {
+        ToolKind::Read | ToolKind::Fetch => theme.palette.accent,
+        ToolKind::Edit | ToolKind::Move => theme.palette.add,
+        ToolKind::Delete => theme.palette.del,
+        ToolKind::Search | ToolKind::Think => theme.palette.review,
+        ToolKind::Execute => theme.palette.running,
+        ToolKind::Task | ToolKind::Plan => theme.palette.waiting,
+        ToolKind::Other => theme.palette.soft_fg,
     };
-    let title_style = Style::default()
-        .fg(theme.palette.fg)
-        .add_modifier(Modifier::BOLD);
-    let mut header = vec![
-        Span::styled(
-            format!("{chevron} "),
-            Style::default().fg(theme.palette.soft_fg),
-        ),
-        Span::styled(item.title.clone(), title_style),
-    ];
+    let mut header = vec![Span::styled(
+        verb.to_owned(),
+        Style::default().fg(verb_color),
+    )];
+    if !argument.is_empty() {
+        header.push(Span::styled(
+            format!(" {argument}"),
+            Style::default().fg(theme.palette.fg),
+        ));
+    }
     if let Some(subtitle) = item.subtitle.as_deref().filter(|text| !text.is_empty()) {
         header.push(Span::raw(" "));
         header.push(Span::styled(
@@ -452,12 +465,12 @@ fn paint_tool_card(item: &ToolItem, buf: &mut Buffer, area: Rect, theme: &Theme)
     }
     let mut y = area.y + 1;
     let bottom = area.y + area.height;
-    let body_width = area.width.saturating_sub(2);
+    let body_width = area.width;
     if let Some(error) = item.error.as_deref().filter(|text| !text.is_empty())
         && y < bottom
     {
         let error_lines = wrapped_line_count(error, body_width).max(1).min(bottom - y);
-        let rect = Rect::new(area.x + 2, y, body_width, error_lines);
+        let rect = Rect::new(area.x, y, body_width, error_lines);
         Paragraph::new(error.to_owned())
             .style(Style::default().fg(theme.palette.failed))
             .wrap(Wrap { trim: false })
@@ -469,7 +482,7 @@ fn paint_tool_card(item: &ToolItem, buf: &mut Buffer, area: Rect, theme: &Theme)
     {
         let total_lines = output.lines().count().max(1) as u16;
         let shown = total_lines.min(OUTPUT_CLAMP_LINES).min(bottom - y);
-        let rect = Rect::new(area.x + 2, y, body_width, shown);
+        let rect = Rect::new(area.x, y, body_width, shown);
         let clamped: String = output
             .lines()
             .take(shown as usize)
@@ -487,7 +500,7 @@ fn paint_tool_card(item: &ToolItem, buf: &mut Buffer, area: Rect, theme: &Theme)
                     .fg(theme.palette.soft_fg)
                     .add_modifier(Modifier::DIM),
             ))
-            .render(Rect::new(area.x + 2, y, body_width, 1), buf);
+            .render(Rect::new(area.x, y, body_width, 1), buf);
         }
     }
 }
@@ -538,6 +551,53 @@ impl Transcript {
 
     pub fn items(&self) -> &[TranscriptItem] {
         &self.items
+    }
+
+    pub fn latest_assistant_message(&self) -> Option<(&str, &str)> {
+        self.items.iter().rev().find_map(|item| match item {
+            TranscriptItem::Message(message)
+                if message.role == MessageRole::Assistant && !message.text.trim().is_empty() =>
+            {
+                Some((message.id.as_str(), message.text.as_str()))
+            }
+            _ => None,
+        })
+    }
+
+    /// Whether an item's content (excluding its separator row) falls inside the current viewport.
+    /// This uses the same cached geometry and sticky-bottom policy as rendering, so dock
+    /// affordances can avoid repeating prose that the user can already read in the transcript.
+    pub fn item_content_fully_visible(
+        &mut self,
+        id: &str,
+        width: u16,
+        viewport_height: u16,
+    ) -> bool {
+        if width == 0 || viewport_height == 0 {
+            return false;
+        }
+        let total = self.total_height(width);
+        let viewport = u32::from(viewport_height);
+        let max_scroll = total.saturating_sub(viewport);
+        let top = if self.sticky_bottom {
+            max_scroll
+        } else {
+            self.scroll_offset.min(max_scroll)
+        };
+        let bottom = top.saturating_add(viewport);
+        let mut item_top = 0_u32;
+        for index in 0..self.items.len() {
+            let height = u32::from(self.height_cache.get(index, &mut self.items, width));
+            let item_bottom = item_top.saturating_add(height);
+            if self.items[index].id() == id {
+                let content_bottom = item_bottom.saturating_sub(u32::from(ITEM_SPACING));
+                return height > u32::from(ITEM_SPACING)
+                    && item_top >= top
+                    && content_bottom <= bottom;
+            }
+            item_top = item_bottom;
+        }
+        false
     }
 
     pub fn push(&mut self, item: TranscriptItem) {
@@ -793,7 +853,7 @@ impl Transcript {
                 };
                 paint_clipped(&mut self.items[index], buf, area, clip, theme);
                 if self.selected == Some(index)
-                    && let Some(cell) = buf.cell_mut((area.x, screen_y))
+                    && let Some(cell) = buf.cell_mut((area.x.saturating_add(1), screen_y))
                 {
                     cell.set_symbol("›");
                     cell.set_style(Style::default().fg(theme.palette.accent));
@@ -1045,7 +1105,27 @@ mod tests {
     }
 
     #[test]
-    fn a_locked_card_with_no_detail_shows_no_chevron() {
+    fn tool_verb_uses_kind_color_without_bold_and_argument_uses_foreground() {
+        let mut transcript = Transcript::new();
+        transcript.push(TranscriptItem::Tool(ToolItem::new(
+            "t1",
+            "Edit",
+            Some(&serde_json::json!({"path": "a.rs"})),
+            ToolStatus::Completed,
+        )));
+        let area = Rect::new(0, 0, 40, 3);
+        let mut buf = Buffer::empty(area);
+        transcript.render(&mut buf, area, &theme());
+
+        let verb = buf.cell((2, 0)).expect("tool verb painted");
+        assert_eq!(verb.fg, theme().palette.add);
+        assert!(!verb.modifier.contains(Modifier::BOLD));
+        let argument = buf.cell((7, 0)).expect("tool argument painted");
+        assert_eq!(argument.fg, theme().palette.fg);
+    }
+
+    #[test]
+    fn a_locked_card_with_no_detail_stays_closed() {
         let card = ToolItem::new(
             "t1",
             "Edit",
@@ -1180,8 +1260,9 @@ mod tests {
             )));
         }
         transcript.scroll_by(-1_000_000); // pin to the top
-        // A 2-row viewport over 3 one-row notes shows exactly the first two.
-        let content = render_to_string(&mut transcript, 20, 2);
+        // Each note owns a content row and a separator row. Three rows expose the first note,
+        // its separator, and the second note's content without leaking the third.
+        let content = render_to_string(&mut transcript, 20, 3);
         assert!(content.contains("note-0"));
         assert!(content.contains("note-1"));
         assert!(!content.contains("note-2"));
@@ -1256,7 +1337,12 @@ mod tests {
         transcript
     }
 
-    fn snapshot_at(expanded: bool, width: u16, height: u16) -> ratatui::buffer::Buffer {
+    fn snapshot_at(
+        expanded: bool,
+        width: u16,
+        height: u16,
+        theme_name: ThemeName,
+    ) -> ratatui::buffer::Buffer {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
@@ -1264,8 +1350,9 @@ mod tests {
         transcript.scroll_by(-1_000_000); // pin to the top: show every fixture item, not the tail
         let area = Rect::new(0, 0, width, height);
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let snapshot_theme = Theme::new(theme_name, ColorCapability::TrueColor);
         terminal
-            .draw(|frame| transcript.render(frame.buffer_mut(), area, &theme()))
+            .draw(|frame| transcript.render(frame.buffer_mut(), area, &snapshot_theme))
             .unwrap();
         terminal.backend().buffer().clone()
     }
@@ -1275,7 +1362,7 @@ mod tests {
         for (width, height) in [(80, 24), (120, 40), (200, 60)] {
             insta::assert_debug_snapshot!(
                 format!("transcript_collapsed_{width}x{height}"),
-                snapshot_at(false, width, height)
+                snapshot_at(false, width, height, ThemeName::Dark)
             );
         }
     }
@@ -1285,8 +1372,20 @@ mod tests {
         for (width, height) in [(80, 24), (120, 40), (200, 60)] {
             insta::assert_debug_snapshot!(
                 format!("transcript_expanded_{width}x{height}"),
-                snapshot_at(true, width, height)
+                snapshot_at(true, width, height, ThemeName::Dark)
             );
         }
+    }
+
+    #[test]
+    fn snapshot_mixed_transcript_in_dark_and_light_themes() {
+        insta::assert_debug_snapshot!(
+            "transcript_mixed_dark",
+            snapshot_at(true, 100, 32, ThemeName::Dark)
+        );
+        insta::assert_debug_snapshot!(
+            "transcript_mixed_lakes",
+            snapshot_at(true, 100, 32, ThemeName::Lakes)
+        );
     }
 }

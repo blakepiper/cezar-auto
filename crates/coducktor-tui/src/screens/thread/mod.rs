@@ -515,8 +515,6 @@ fn build_transcript_items(
                 &user_message.text,
             ));
         }
-        let mut agent_messages = Vec::new();
-        let mut final_response = None;
         for entry in &turn.items {
             match entry {
                 ThreadEntry::Item(UiItem::Message(message)) => {
@@ -527,29 +525,12 @@ fn build_transcript_items(
                     } else {
                         std::borrow::Cow::Borrowed(message.text.as_str())
                     };
-                    let is_final = projected
-                        .and_then(|turn| turn.response.as_ref())
-                        .is_some_and(|response| response.id == message.id);
-                    if message.role == coducktor_protocol::MessageRole::Assistant && !is_final {
-                        agent_messages.push(TranscriptItem::Note(NoteItem::new(
-                            message.id.clone(),
-                            text.into_owned(),
-                            TranscriptNoteTone::Dim,
-                        )));
-                    } else {
-                        // The runner opens the final-answer item early — often before it
-                        // dispatches the turn's tool calls — and streams text into it until
-                        // the turn ends, so its slot in `turn.items` reflects when it started,
-                        // not when it finished. Hold it back and place it after every other
-                        // activity in the turn so the summary the user reads always lands last.
-                        let message =
-                            reuse_message(existing, message.id.clone(), message.role, &text);
-                        if is_final {
-                            final_response = Some(message);
-                        } else {
-                            items.push(message);
-                        }
-                    }
+                    items.push(reuse_message(
+                        existing,
+                        message.id.clone(),
+                        message.role,
+                        &text,
+                    ));
                 }
                 ThreadEntry::Item(UiItem::Reasoning(reasoning)) => {
                     items.push(reuse_reasoning(
@@ -604,15 +585,6 @@ fn build_transcript_items(
             && let Some(outcome) = outcome_item(projected)
         {
             items.push(outcome);
-        }
-        // Agent-authored text is what the user needs to read and respond to. Providers may open
-        // a message before dispatching the tools that support it (legacy text events are also
-        // folded into one early item), so preserving raw item order can strand that text in the
-        // middle of a long activity list. Keep commentary together at the turn's tail and the
-        // final response last so sticky-bottom always exposes the agent's latest words.
-        items.append(&mut agent_messages);
-        if let Some(final_response) = final_response {
-            items.push(final_response);
         }
     }
     if let Some(prompt) = pending_prompt {
@@ -879,8 +851,38 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         .composer
         .height_for_width(area.width.saturating_sub(3))
         + 2;
-    let dock_height =
+    let base_dock_height =
         ask_height + review_height + auto_resume_height + hint_height + composer_height;
+
+    let base_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Length(step_rail_height),
+            Constraint::Min(3),
+            Constraint::Length(base_dock_height),
+        ])
+        .split(area);
+    let latest_message = if record.status == RunStatus::Waiting {
+        app.thread_ui
+            .transcript
+            .latest_assistant_message()
+            .map(|(id, text)| (id.to_owned(), text.to_owned()))
+            .filter(|(id, _)| {
+                !app.thread_ui.transcript.item_content_fully_visible(
+                    id,
+                    area.width,
+                    base_rows[2].height.saturating_sub(1),
+                )
+            })
+    } else {
+        None
+    };
+    let latest_message_height = latest_message
+        .as_ref()
+        .map(|(_, text)| widgets::latest_message_height(text, area.width))
+        .unwrap_or(0);
+    let dock_height = base_dock_height + latest_message_height;
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -957,6 +959,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             Constraint::Length(ask_height),
             Constraint::Length(review_height),
             Constraint::Length(auto_resume_height),
+            Constraint::Length(latest_message_height),
             Constraint::Length(hint_height),
             Constraint::Length(composer_height),
         ])
@@ -985,6 +988,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     if auto_resume_height > 0 {
         widgets::render_auto_resume_hint(frame, dock_rows[2], &run, &theme, &mut app.hitmap);
     }
+    if let Some((_, message)) = &latest_message {
+        widgets::render_latest_message(frame, dock_rows[3], message, &theme);
+    }
     if hint_height > 0 {
         let text = match record.status {
             RunStatus::Queued if app.thread_ui.cancel_pending => "Stopping the agent…",
@@ -998,7 +1004,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             }
             RunStatus::Review => "Enter starts a follow-up; review actions are above.",
         };
-        widgets::render_status_hint(frame, dock_rows[3], text, &theme);
+        widgets::render_status_hint(frame, dock_rows[4], text, &theme);
     }
     app.thread_ui
         .composer
@@ -1019,7 +1025,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         });
     app.thread_ui
         .composer
-        .render(frame, dock_rows[4], theme, &mut app.hitmap, 4);
+        .render(frame, dock_rows[5], theme, &mut app.hitmap, 4);
 
     if let Some(agent_id) = app.thread_ui.subagent_sheet.clone()
         && let Some(agent) = find_subagent(&app.thread_ui.data.state, &agent_id)
@@ -2282,55 +2288,76 @@ mod tests {
         let content = render_to_string(&mut app);
         assert!(content.contains("Waiting for your reply."));
         assert!(!content.contains("Working…"));
+        assert!(
+            !content.contains("LATEST MESSAGE"),
+            "visible prose is not duplicated in the dock"
+        );
     }
 
     #[test]
     fn waiting_session_keeps_agent_text_after_later_tool_activity() {
         let mut app = app_with_run(RunStatus::Waiting);
-        app.thread_ui.push_events([
-            (
+        app.thread_ui.push_event(
+            1.0,
+            event(
                 1.0,
-                event(
-                    1.0,
-                    "item.started",
-                    json!({
-                        "item": {
-                            "kind": "message",
-                            "id": "agent-question",
-                            "role": "assistant",
-                            "text": "Which export format should I use?",
-                            "phase": "commentary"
-                        }
-                    }),
-                ),
+                "item.started",
+                json!({
+                    "item": {
+                        "kind": "message",
+                        "id": "agent-question",
+                        "role": "assistant",
+                        "text": "Which export format should I use?",
+                        "phase": "commentary"
+                    }
+                }),
             ),
-            (
-                2.0,
-                event(
-                    2.0,
-                    "tool-call",
-                    json!({"id": "inspect", "tool": "shell", "input": {"cmd": "inspect"}}),
+        );
+        for index in 0..20 {
+            let sequence = f64::from(index * 2 + 2);
+            let id = format!("inspect-{index}");
+            app.thread_ui.push_events([
+                (
+                    sequence,
+                    event(
+                        sequence,
+                        "tool-call",
+                        json!({"id": id.clone(), "tool": "shell", "input": {"cmd": "inspect"}}),
+                    ),
                 ),
-            ),
-            (
-                3.0,
-                event(
-                    3.0,
-                    "tool-result",
-                    json!({"toolCallId": "inspect", "result": "done"}),
+                (
+                    sequence + 1.0,
+                    event(
+                        sequence + 1.0,
+                        "tool-result",
+                        json!({"toolCallId": id, "result": "done"}),
+                    ),
                 ),
-            ),
-        ]);
+            ]);
+        }
 
-        assert_eq!(
+        let ids: Vec<_> = app
+            .thread_ui
+            .transcript
+            .items()
+            .iter()
+            .map(TranscriptItem::id)
+            .collect();
+        assert!(
+            ids.iter().position(|id| *id == "agent-question")
+                < ids.iter().position(|id| *id == "inspect-0"),
+            "the transcript preserves reducer chronology"
+        );
+        assert!(matches!(
             app.thread_ui
                 .transcript
                 .items()
-                .last()
-                .map(TranscriptItem::id),
-            Some("agent-question")
-        );
+                .iter()
+                .find(|item| item.id() == "agent-question"),
+            Some(TranscriptItem::Message(_))
+        ));
         let content = render_to_string(&mut app);
+        assert!(content.contains("LATEST MESSAGE"));
         assert!(content.contains("Which export format should I use?"));
     }
 
