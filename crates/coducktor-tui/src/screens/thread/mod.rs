@@ -137,6 +137,7 @@ pub struct ThreadUi {
     pub subagent_sheet: Option<String>,
     pub steps_collapsed: bool,
     pub focus: ThreadFocus,
+    pub header_action_focus: Option<usize>,
     /// The transcript's inner rectangle from the last render, used to keep mouse-wheel input
     /// scoped to the task activity rather than the composer and other controls.
     pub(crate) transcript_area: Option<Rect>,
@@ -163,6 +164,7 @@ impl Default for ThreadUi {
             subagent_sheet: None,
             steps_collapsed: true,
             focus: ThreadFocus::Transcript,
+            header_action_focus: None,
             transcript_area: None,
             pending_prompt: None,
             pending_prompt_after_seq: -1.0,
@@ -215,6 +217,7 @@ impl ThreadUi {
         self.ask_selections.clear();
         self.ask_focus = (0, 0);
         self.subagent_sheet = None;
+        self.header_action_focus = None;
         self.focus = if same_thread {
             self.focus
         } else {
@@ -975,7 +978,14 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         ])
         .split(area);
 
-    widgets::render_header(frame, rows[0], &run, &theme, &mut app.hitmap);
+    widgets::render_header(
+        frame,
+        rows[0],
+        &run,
+        &theme,
+        &mut app.hitmap,
+        app.thread_ui.header_action_focus,
+    );
     if step_rail_height > 0 {
         widgets::render_step_rail(
             frame,
@@ -1187,6 +1197,35 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         }
         return true;
     }
+    if let Some(index) = app.thread_ui.header_action_focus {
+        match key.code {
+            KeyCode::Tab => {
+                cycle_header_action(app, true);
+            }
+            KeyCode::BackTab => {
+                cycle_header_action(app, false);
+            }
+            KeyCode::Enter => {
+                let action = app
+                    .thread_ui
+                    .data
+                    .run
+                    .as_ref()
+                    .and_then(|run| widgets::header_actions(run).get(index).cloned())
+                    .map(|(_, action)| action);
+                app.thread_ui.header_action_focus = None;
+                if let Some(action) = action {
+                    apply_hit(app, action);
+                }
+            }
+            KeyCode::Esc => app.thread_ui.header_action_focus = None,
+            _ => {
+                app.thread_ui.header_action_focus = None;
+                return false;
+            }
+        }
+        return true;
+    }
     if key.code == KeyCode::Esc && app.thread_ui.focus == ThreadFocus::Composer {
         app.thread_ui.composer.blur();
         app.thread_ui.focus = ThreadFocus::Transcript;
@@ -1199,6 +1238,18 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         ThreadFocus::Transcript => {}
     }
     match key.code {
+        KeyCode::Tab => {
+            if !cycle_header_action(app, true) {
+                app.thread_ui.transcript.select_next_expandable(1);
+            }
+            true
+        }
+        KeyCode::BackTab => {
+            if !cycle_header_action(app, false) {
+                app.thread_ui.transcript.select_next_expandable(-1);
+            }
+            true
+        }
         KeyCode::Char('i') => {
             app.thread_ui.focus = ThreadFocus::Composer;
             app.thread_ui.composer.focus();
@@ -1224,6 +1275,30 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     }
 }
 
+fn cycle_header_action(app: &mut App, forward: bool) -> bool {
+    let count = app
+        .thread_ui
+        .data
+        .run
+        .as_ref()
+        .map(|run| widgets::header_actions(run).len())
+        .unwrap_or_default();
+    if count == 0 {
+        app.thread_ui.header_action_focus = None;
+        return false;
+    }
+    let next = match (app.thread_ui.header_action_focus, forward) {
+        (Some(index), true) => (index + 1) % count,
+        (Some(0), false) | (None, false) => count - 1,
+        (Some(index), false) => index - 1,
+        (None, true) => 0,
+    };
+    app.thread_ui.composer.blur();
+    app.thread_ui.focus = ThreadFocus::Transcript;
+    app.thread_ui.header_action_focus = Some(next);
+    true
+}
+
 /// Deliver a bracketed-paste chunk to the focused composer.
 pub fn handle_paste(app: &mut App, text: &str) -> bool {
     if app.thread_ui.subagent_sheet.is_some() || app.thread_ui.focus != ThreadFocus::Composer {
@@ -1244,6 +1319,10 @@ pub fn handle_paste(app: &mut App, text: &str) -> bool {
 }
 
 fn handle_composer_key(app: &mut App, key: KeyEvent) -> bool {
+    if key.code == KeyCode::BackTab {
+        cycle_header_action(app, false);
+        return true;
+    }
     if is_clipboard_paste_key(key) {
         return handle_clipboard_paste(app);
     }
@@ -1253,6 +1332,14 @@ fn handle_composer_key(app: &mut App, key: KeyEvent) -> bool {
         mention_candidates: &[],
     };
     let event = app.thread_ui.composer.handle_key(key, &ctx);
+    if matches!(event, crate::widgets::composer::ComposerEvent::Blur) {
+        if key.code == KeyCode::Tab && cycle_header_action(app, true) {
+            return true;
+        }
+        app.thread_ui.composer.blur();
+        app.thread_ui.focus = ThreadFocus::Transcript;
+        return true;
+    }
     if let crate::widgets::composer::ComposerEvent::Submit { .. } = event {
         let text = app.thread_ui.composer.submission_text();
         let images = app.thread_ui.composer.image_inputs();
@@ -1711,6 +1798,40 @@ mod tests {
             id: "run-1".to_owned(),
         });
         app
+    }
+
+    #[test]
+    fn tab_and_shift_tab_cycle_header_actions_and_enter_activates_one() {
+        let mut app = app_with_run(RunStatus::Done);
+        app.thread_ui.focus = ThreadFocus::Transcript;
+        app.thread_ui.composer.blur();
+
+        assert!(handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+        ));
+        assert_eq!(app.thread_ui.header_action_focus, Some(0));
+        assert!(handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+        ));
+        assert_eq!(app.thread_ui.header_action_focus, Some(1));
+        assert!(handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+        ));
+        assert_eq!(app.thread_ui.header_action_focus, Some(0));
+
+        assert!(handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        ));
+        assert_eq!(app.thread_ui.header_action_focus, None);
+        assert!(matches!(
+            app.pending.last(),
+            Some(PendingAction::ContinueRun { project, id, .. })
+                if project == "main" && id == "run-1"
+        ));
     }
 
     #[test]

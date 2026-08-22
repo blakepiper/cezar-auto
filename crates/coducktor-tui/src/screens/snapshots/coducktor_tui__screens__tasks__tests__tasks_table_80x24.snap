@@ -8,7 +8,7 @@ Buffer {
         " [=] coducktor / main /p/main  [running 0] [needs 0]                            ",
         " Current 3  Needs you 1  Finished 1                                             ",
         "┌TASKS — main──────────────────────────────────────────────────────────────────┐",
-        "│ NEEDS YOU                                                                    │",
+        "│ NEEDS YOU                                                        [+ New task]│",
         "│┌────────────────────────────────────────────────────────────────────────────┐│",
         "││▶ ? waiting  Task 2 — a reasonably long title to truncate  153d             ││",
         "││  Implement task 2 with exact Unicode input — café 🦆 — while preserving all││", // hidden by multi-width symbols: [(54, " ")]
@@ -47,6 +47,8 @@ Buffer {
         x: 0, y: 2, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
         x: 1, y: 3, fg: Rgb(130, 139, 184), bg: Reset, underline: Reset, modifier: BOLD,
         x: 11, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 67, y: 3, fg: Rgb(122, 162, 247), bg: Reset, underline: Reset, modifier: NONE,
+        x: 79, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
         x: 1, y: 4, fg: Rgb(122, 162, 247), bg: Reset, underline: Reset, modifier: NONE,
         x: 79, y: 4, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
         x: 1, y: 5, fg: Rgb(122, 162, 247), bg: Reset, underline: Reset, modifier: NONE,

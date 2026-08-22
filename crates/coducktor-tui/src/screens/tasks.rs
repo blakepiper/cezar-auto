@@ -10,7 +10,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::app::{App, RowMenu, RowMenuItem};
+use crate::app::{App, NavItem, RowMenu, RowMenuItem};
 use crate::input::hitmap::HitAction;
 use crate::screens::runs_util::{
     Attention, TaskView, UsageKind, attention, clock_time, compare_groups, filter_runs,
@@ -19,7 +19,7 @@ use crate::screens::runs_util::{
 };
 use crate::theme::Theme;
 use crate::widgets::table::{ColumnId, SortState, Table, TableCell, TableRow};
-use crate::widgets::task_cards::{self, CardGroup, TaskCard};
+use crate::widgets::task_cards::{self, CardGroup, CardHeaderAction, TaskCard};
 
 /// The column set for the per-project table (§8.1).
 pub const COLUMNS: [ColumnId; 11] = [
@@ -42,6 +42,7 @@ pub struct TasksUi {
     pub query: String,
     pub table: Table,
     pub sort_picker: bool,
+    pub new_task_focused: bool,
 }
 
 impl Default for TasksUi {
@@ -53,6 +54,7 @@ impl Default for TasksUi {
             query: String::new(),
             table,
             sort_picker: false,
+            new_task_focused: false,
         }
     }
 }
@@ -396,6 +398,11 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             "No tasks match your search."
         },
         &theme,
+        Some(CardHeaderAction {
+            label: "+ New task",
+            focused: app.tasks_ui.new_task_focused,
+            action: HitAction::NewTask,
+        }),
     );
     render_compare_strips(frame, layout[2], app, view);
 }
@@ -516,17 +523,27 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
         return crate::app::handle_row_menu_key(app, &menu, key);
     }
     match key.code {
+        KeyCode::Tab | KeyCode::BackTab => {
+            app.tasks_ui.new_task_focused = !app.tasks_ui.new_task_focused;
+            true
+        }
         KeyCode::Char('j') | KeyCode::Down => {
+            app.tasks_ui.new_task_focused = false;
             app.tasks_ui.table.move_selection(1);
             remember_selection(app);
             true
         }
         KeyCode::Char('k') | KeyCode::Up => {
+            app.tasks_ui.new_task_focused = false;
             app.tasks_ui.table.move_selection(-1);
             remember_selection(app);
             true
         }
         KeyCode::Enter => {
+            if app.tasks_ui.new_task_focused {
+                app.navigate(NavItem::NewTask);
+                return true;
+            }
             if let Some((_, row)) = app.tasks_ui.table.selected_row() {
                 let id = row.key.clone();
                 let project = app.current_project().to_owned();
@@ -738,6 +755,30 @@ mod tests {
         app.execute_command("new");
         assert!(matches!(app.route(), crate::app::Route::NewTask { .. }));
         assert!(app.new_task_ui.composer_focused);
+    }
+
+    #[test]
+    fn new_task_button_is_reachable_from_the_task_list() {
+        let mut app = app_with_tasks(vec![api_run(1, RunStatus::Done, None)]);
+        assert!(!app.tasks_ui.new_task_focused);
+
+        assert!(handle_key(
+            &mut app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::BackTab,
+                crossterm::event::KeyModifiers::SHIFT,
+            ),
+        ));
+        assert!(app.tasks_ui.new_task_focused);
+
+        assert!(handle_key(
+            &mut app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        ));
+        assert!(matches!(app.route(), crate::app::Route::NewTask { .. }));
     }
 
     #[test]

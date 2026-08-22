@@ -70,7 +70,10 @@ accept their normal editing keys. `Ctrl-W` remains reserved for cockpit window n
 - Task Session, Changes, Files, and Commits use `gt`/`gT`. Repo Git, GitHub, Workflows, and
   Compare tabs use the same grammar.
 - Task transcripts use `j`/`k`, `gg`/`G`, `Ctrl-U`/`Ctrl-D`, `/`, `n`, and `N`. `Enter` toggles
-  a selected expandable item.
+  a selected expandable item. `Tab`/`Shift-Tab` move through the visible task lifecycle
+  buttons, and `Enter` activates the focused button.
+- On a project Tasks view, `Tab`/`Shift-Tab` move between the task cards and the New task
+  button; `Enter` opens the focused control.
 - The IDE tree uses `h` or `Left` to go to the parent and `Enter` or `Right` to open an entry.
 - Ask cards and confirmation dialogs retain their local selection/confirmation keys while open.
 - Composer and editor clipboard/editing shortcuts apply only while that text surface owns input.

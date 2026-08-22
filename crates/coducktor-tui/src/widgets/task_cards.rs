@@ -42,6 +42,13 @@ pub struct TaskCard {
     pub unread: bool,
 }
 
+/// Optional action shown at the far right of the first visible group heading.
+pub struct CardHeaderAction<'a> {
+    pub label: &'a str,
+    pub focused: bool,
+    pub action: HitAction,
+}
+
 /// Render whole cards only. `scroll` is a card index, which keeps selection and scrolling stable
 /// even when prompt wrapping changes between terminal sizes.
 #[allow(clippy::too_many_arguments)]
@@ -55,6 +62,7 @@ pub fn render(
     title: &str,
     empty_hint: &str,
     theme: &Theme,
+    header_action: Option<CardHeaderAction<'_>>,
 ) {
     let outer = Block::default().borders(Borders::ALL).title(title);
     let inner = outer.inner(area);
@@ -65,6 +73,7 @@ pub fn render(
             inner,
         );
         *scroll = 0;
+        render_header_action(frame, inner, hitmap, theme, header_action);
         return;
     }
 
@@ -81,6 +90,7 @@ pub fn render(
 
     let mut y = inner.y;
     let mut previous_group = None;
+    let mut header_action = header_action;
     for (index, card) in cards.iter().enumerate().skip(*scroll) {
         if previous_group != Some(card.group) {
             if y >= inner.bottom() {
@@ -94,6 +104,13 @@ pub fn render(
                         .add_modifier(Modifier::BOLD),
                 ))),
                 Rect::new(inner.x, y, inner.width, 1),
+            );
+            render_header_action(
+                frame,
+                Rect::new(inner.x, y, inner.width, 1),
+                hitmap,
+                theme,
+                header_action.take(),
             );
             y += 1;
             previous_group = Some(card.group);
@@ -174,4 +191,31 @@ pub fn render(
         hitmap.register(card_area, 2, HitAction::TableRow(index));
         y = y.saturating_add(height);
     }
+}
+
+fn render_header_action(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    hitmap: &mut HitMap,
+    theme: &Theme,
+    action: Option<CardHeaderAction<'_>>,
+) {
+    let Some(action) = action else {
+        return;
+    };
+    let label = format!("[{}]", action.label);
+    let width = label.chars().count() as u16;
+    if area.height == 0 || width > area.width {
+        return;
+    }
+    let rect = Rect::new(area.right().saturating_sub(width), area.y, width, 1);
+    let style = if action.focused {
+        Style::default()
+            .fg(theme.palette.accent)
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+    } else {
+        Style::default().fg(theme.palette.accent)
+    };
+    frame.render_widget(Paragraph::new(label).style(style), rect);
+    hitmap.register(rect, 4, action.action);
 }

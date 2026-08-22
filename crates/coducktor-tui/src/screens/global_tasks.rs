@@ -666,6 +666,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             "No tasks match your search."
         },
         &theme,
+        None,
     );
     render_tag_picker(frame, app);
 }

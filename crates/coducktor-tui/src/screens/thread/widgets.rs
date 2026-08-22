@@ -28,6 +28,7 @@ pub fn render_header(
     run: &ApiRun,
     theme: &Theme,
     hitmap: &mut crate::input::hitmap::HitMap,
+    action_focus: Option<usize>,
 ) -> u16 {
     if area.height == 0 {
         return 0;
@@ -132,42 +133,17 @@ pub fn render_header(
     }
     lines.push(Line::from(tab_spans));
 
-    let flags = run_action_flags(run);
-    let mut actions: Vec<(&str, ThreadAction)> = Vec::new();
-    if flags.finish {
-        actions.push(("Finish", ThreadAction::Finish));
-    }
-    if flags.continue_run {
-        actions.push(("Continue", ThreadAction::Continue));
-    }
-    if flags.terminal {
-        actions.push(("Terminal", ThreadAction::Terminal));
-    }
-    if flags.archive {
-        actions.push((
-            if record.archived {
-                "Restore"
-            } else {
-                "Archive"
-            },
-            ThreadAction::Archive,
-        ));
-    }
-    if flags.mark_unread {
-        actions.push(("Mark unread", ThreadAction::MarkUnread));
-    }
-    if flags.cancel {
-        actions.push(("Cancel", ThreadAction::Cancel));
-    }
-    if flags.delete_run {
-        actions.push(("Delete", ThreadAction::Delete));
-    }
+    let actions = header_actions(run);
     let mut action_spans = Vec::new();
-    for (label, _) in &actions {
-        action_spans.push(Span::styled(
-            format!("[{label}] "),
-            Style::default().fg(theme.palette.fg),
-        ));
+    for (index, (label, _)) in actions.iter().enumerate() {
+        let style = if action_focus == Some(index) {
+            Style::default()
+                .fg(theme.palette.accent)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else {
+            Style::default().fg(theme.palette.fg)
+        };
+        action_spans.push(Span::styled(format!("[{label}] "), style));
     }
     lines.push(Line::from(action_spans));
 
@@ -202,6 +178,41 @@ pub fn render_header(
         }
     }
     height
+}
+
+pub(crate) fn header_actions(run: &ApiRun) -> Vec<(&'static str, ThreadAction)> {
+    let record = &run.record;
+    let flags = run_action_flags(run);
+    let mut actions = Vec::new();
+    if flags.finish {
+        actions.push(("Finish", ThreadAction::Finish));
+    }
+    if flags.continue_run {
+        actions.push(("Continue", ThreadAction::Continue));
+    }
+    if flags.terminal {
+        actions.push(("Terminal", ThreadAction::Terminal));
+    }
+    if flags.archive {
+        actions.push((
+            if record.archived {
+                "Restore"
+            } else {
+                "Archive"
+            },
+            ThreadAction::Archive,
+        ));
+    }
+    if flags.mark_unread {
+        actions.push(("Mark unread", ThreadAction::MarkUnread));
+    }
+    if flags.cancel {
+        actions.push(("Cancel", ThreadAction::Cancel));
+    }
+    if flags.delete_run {
+        actions.push(("Delete", ThreadAction::Delete));
+    }
+    actions
 }
 
 fn agent_metadata(record: &RunRecord) -> Option<String> {

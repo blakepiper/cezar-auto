@@ -90,6 +90,14 @@ records what is implemented and which terminal observations remain unverified.
 
 ## Task experience smoke test
 
+- **80×24 pseudo-terminal, 2026-08-22 (task action focus).** Built and launched the real
+  `coducktor` binary against this repository with `DUCK_DRY_RUN=1`. The project Tasks view showed
+  `[+ New task]` flush right on the `DONE` heading. After moving focus out of the sidebar,
+  `Tab` applied the visible reverse-video focus style, `Shift-Tab` returned focus to the task
+  cards, and `Tab` then `Enter` opened the New Task composer. The temporary dry-run task created
+  while exercising the control was deleted through the product before exit; `:q` restored the
+  alternate screen.
+
 - **120×40 pseudo-terminal, 2026-08-22 (Phase 4 interaction model).** Built and launched the real
   `coducktor` binary against an isolated temporary Git repository and home with the bundled dry-run
   Claude session. Submitted `phase four interrupt gate mock:slow mock:done`, then typed `queued
