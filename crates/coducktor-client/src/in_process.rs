@@ -638,6 +638,12 @@ impl TurnDispatch {
     }
 
     fn drive_steps(&self, run_id: &str, step_id: &str, mut step: std::io::Result<TurnStep>) {
+        let cancellation = self
+            .cancellations
+            .lock()
+            .ok()
+            .and_then(|tokens| tokens.get(run_id).cloned())
+            .unwrap_or_default();
         loop {
             let active = match step {
                 Ok(TurnStep::Done) | Err(_) => break,
@@ -653,16 +659,16 @@ impl TurnDispatch {
                         active,
                         prompt,
                         images,
-                        &CancellationToken::default(),
+                        &cancellation,
                     );
                     continue;
                 }
                 Ok(TurnStep::GitAutoCommit(active)) => {
-                    self.run_git_auto_commit(run_id, step_id, active);
+                    self.run_git_auto_commit(run_id, step_id, active, &cancellation);
                     break;
                 }
             };
-            step = self.run_nudge(run_id, step_id, active, &CancellationToken::default());
+            step = self.run_nudge(run_id, step_id, active, &cancellation);
         }
     }
 
@@ -723,7 +729,7 @@ impl TurnDispatch {
                     continue;
                 }
                 Ok(TurnStep::GitAutoCommit(active)) => {
-                    self.run_git_auto_commit(&run_id, &step_id, active);
+                    self.run_git_auto_commit(&run_id, &step_id, active, &cancellation);
                     break;
                 }
             };
@@ -780,17 +786,26 @@ impl TurnDispatch {
         step
     }
 
-    fn run_git_auto_commit(&self, run_id: &str, step_id: &str, mut active: Box<RuntimeActive>) {
+    fn run_git_auto_commit(
+        &self,
+        run_id: &str,
+        step_id: &str,
+        mut active: Box<RuntimeActive>,
+        cancellation: &CancellationToken,
+    ) {
         let send_result =
             active
                 .session_mut()
                 .send_message(AUTOMATIC_COMMIT_MESSAGE_NUDGE, &[], &mut |event| {
                     self.apply_event(run_id, step_id, event)
                 });
-        let subject =
-            self.manager
-                .lock()
-                .apply_git_auto_commit_message(run_id, *active, send_result);
+        let subject = self.manager.lock().apply_git_auto_commit_message(
+            run_id,
+            *active,
+            send_result,
+            cancellation.is_requested(),
+        );
+        self.autosave_after_settlement(run_id);
         let result = match subject {
             Ok(Ok(GitAutoMessage::Subject(message))) => {
                 let root = {
@@ -812,6 +827,7 @@ impl TurnDispatch {
             Err(error) => Err(error.to_string()),
         };
         let _ = self.manager.lock().finish_git_auto(run_id, result);
+        self.autosave_after_settlement(run_id);
     }
 
     /// Applied under a fresh, brief lock per event — never the same lock the child process I/O
@@ -870,15 +886,22 @@ impl TurnDispatch {
                 .send_message(MONITORING_WAKE_PROMPT, &[], &mut |event| {
                     self.apply_event(&run_id, &step_id, event)
                 });
+        let cancellation = self
+            .cancellations
+            .lock()
+            .ok()
+            .and_then(|tokens| tokens.get(&run_id).cloned())
+            .unwrap_or_default();
         self.autosave_after_turn(&run_id, &send_result);
         let mut step = {
-            // A monitoring wake has no independent cancellation token the way an admitted turn's
-            // request does — `cancel_run` reaches it the same way it reaches any other parked
-            // session, through `RunManager::cancel`'s `self.active`/`in_flight` handling, not a
-            // signal this worker itself observes.
-            self.manager
-                .lock()
-                .apply_active_turn(&run_id, active, send_result, false)
+            // A monitoring wake reuses the cancellation token registered when its session opened,
+            // so cancellation wins even if the provider reports some other outcome while stopping.
+            self.manager.lock().apply_active_turn(
+                &run_id,
+                active,
+                send_result,
+                cancellation.is_requested(),
+            )
         };
         self.autosave_after_settlement(&run_id);
         loop {
@@ -896,16 +919,16 @@ impl TurnDispatch {
                         active,
                         prompt,
                         images,
-                        &CancellationToken::default(),
+                        &cancellation,
                     );
                     continue;
                 }
                 Ok(TurnStep::GitAutoCommit(active)) => {
-                    self.run_git_auto_commit(&run_id, &step_id, active);
+                    self.run_git_auto_commit(&run_id, &step_id, active, &cancellation);
                     break;
                 }
             };
-            step = self.run_nudge(&run_id, &step_id, active, &CancellationToken::default());
+            step = self.run_nudge(&run_id, &step_id, active, &cancellation);
         }
         self.redispatch();
     }
@@ -1051,6 +1074,15 @@ impl DiffInspector for ProductionDiffInspector {
         }
         git_capture(&self.repo_root, &["status", "--porcelain"])
             .is_ok_and(|status| !status.trim().is_empty())
+    }
+
+    fn has_uncommitted_diff(&mut self, run: &coducktor_contract::RunRecord) -> bool {
+        let root = run
+            .worktree_path
+            .as_deref()
+            .map(Path::new)
+            .unwrap_or(&self.repo_root);
+        git_capture(root, &["status", "--porcelain"]).is_ok_and(|status| !status.trim().is_empty())
     }
 }
 
@@ -6606,6 +6638,56 @@ mod tests {
         cancellation: CancellationToken,
     }
 
+    struct GitAutoBlockingFactory {
+        entered_commit_prompt: Arc<AtomicBool>,
+    }
+
+    struct GitAutoBlockingSession {
+        cwd: PathBuf,
+        cancellation: CancellationToken,
+        entered_commit_prompt: Arc<AtomicBool>,
+    }
+
+    impl AgentSession for GitAutoBlockingSession {
+        fn turn(
+            &mut self,
+            _on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
+        ) -> Result<SessionOutcome, String> {
+            std::fs::write(self.cwd.join("agent-change.txt"), "changed\n")
+                .map_err(|error| error.to_string())?;
+            Ok(SessionOutcome::Completed(
+                coducktor_core::workflows::run::SessionReport {
+                    turn_text: "work complete\n\nDUCK:DONE".to_owned(),
+                    decision: Some(coducktor_core::workflows::run::TurnMarkerDecision::Done),
+                    ..Default::default()
+                },
+            ))
+        }
+
+        fn send_message(
+            &mut self,
+            _prompt: &str,
+            _images: &[PromptImage],
+            _on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
+        ) -> Result<SessionOutcome, String> {
+            self.entered_commit_prompt.store(true, Ordering::Release);
+            while !self.cancellation.is_requested() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err("interrupted automatic commit prompt".to_owned())
+        }
+    }
+
+    impl SessionFactory for GitAutoBlockingFactory {
+        fn open(&self, request: SessionRequest) -> Result<Box<dyn AgentSession + Send>, String> {
+            Ok(Box::new(GitAutoBlockingSession {
+                cwd: request.cwd,
+                cancellation: request.cancellation,
+                entered_commit_prompt: self.entered_commit_prompt.clone(),
+            }))
+        }
+    }
+
     impl AgentSession for BlockingSession {
         fn turn(
             &mut self,
@@ -9318,6 +9400,67 @@ mod tests {
             "base",
         ]);
         dir
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_blocked_automatic_commit_prompt_settles_the_run_as_cancelled() {
+        let repo = fixture_repo();
+        let state = TempDir::new().unwrap();
+        let entered_commit_prompt = Arc::new(AtomicBool::new(false));
+        let engine = InProcessEngine::with_session_factory_at(
+            repo.path(),
+            "0.0.0-test",
+            GitAutoBlockingFactory {
+                entered_commit_prompt: entered_commit_prompt.clone(),
+            },
+            state.path().join("config.json"),
+        );
+        let mut input = steps_input("make a change and commit it automatically");
+        input.git_auto = Some(true);
+        let CreateRunResponse::Single(run) = engine.start_run(input).await.unwrap() else {
+            panic!("expected one run");
+        };
+        engine.activate_runs().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !entered_commit_prompt.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(engine.cancel_run(&run.id).await.unwrap().cancelled);
+        activate_until_terminal(&engine, &run.id).await;
+        assert_eq!(
+            engine.get_run(&run.id).await.unwrap().record.status,
+            coducktor_contract::RunStatus::Cancelled
+        );
+    }
+
+    #[tokio::test]
+    async fn a_clean_worktree_commit_is_not_an_automatic_commit_candidate() {
+        let repo = fixture_repo();
+        let state = TempDir::new().unwrap();
+        let engine = InProcessEngine::with_session_factory_at(
+            repo.path(),
+            "0.0.0-test",
+            FakeFactory,
+            state.path().join("config.json"),
+        );
+        let mut input = steps_input("inspect a committed worktree");
+        input.worktree = None;
+        let CreateRunResponse::Single(run) = engine.start_run(input).await.unwrap() else {
+            panic!("expected one run");
+        };
+        let worktree = Path::new(run.worktree_path.as_deref().unwrap());
+        std::fs::write(worktree.join("committed.txt"), "committed\n").unwrap();
+        commit_all_git(worktree, "agent committed this already");
+
+        let mut inspector = ProductionDiffInspector {
+            repo_root: repo.path().to_path_buf(),
+        };
+        assert!(inspector.has_diff(&run));
+        assert!(!inspector.has_uncommitted_diff(&run));
     }
 
     fn commit_all_git(root: &Path, message: &str) {

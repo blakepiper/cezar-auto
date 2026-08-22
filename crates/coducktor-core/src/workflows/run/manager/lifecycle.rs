@@ -298,6 +298,10 @@ impl RunManager {
                             EventInput::new("note")
                                 .field("message", "preparing automatic commit message"),
                         )?;
+                        // The worker keeps owning the live session while it asks for the synthetic
+                        // commit subject. Keep cancellation on the ordinary in-flight path until
+                        // that call reports back.
+                        self.in_flight.insert(run_id.to_owned());
                         return Ok(TurnStep::GitAutoCommit(Box::new(active)));
                     }
                     self.settle_success(run_id)?;
@@ -316,7 +320,7 @@ impl RunManager {
             && self
                 .diff_inspector
                 .as_mut()
-                .is_some_and(|inspector| inspector.has_diff(&run))
+                .is_some_and(|inspector| inspector.has_uncommitted_diff(&run))
     }
 
     /// Record the synthetic commit-subject turn and return its subject to the production
@@ -327,9 +331,13 @@ impl RunManager {
         run_id: &str,
         active: RuntimeActive,
         outcome: Result<SessionOutcome, String>,
+        cancellation_requested: bool,
     ) -> io::Result<Result<GitAutoMessage, String>> {
         self.in_flight.remove(run_id);
         let outcome = match outcome {
+            Ok(_) | Err(_) if cancellation_requested => {
+                SessionOutcome::Cancelled(SessionReport::default())
+            }
             Ok(outcome) => outcome,
             Err(message) => return Ok(Err(message)),
         };

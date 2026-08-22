@@ -814,6 +814,13 @@ pub trait CheckExecutor: Send {
 /// worktree I/O out of the runtime foundation while preserving the review decision.
 pub trait DiffInspector: Send {
     fn has_diff(&mut self, run: &RunRecord) -> bool;
+
+    /// Whether the run still has work that needs committing. A task worktree can have a clean
+    /// index and working tree while still differing from its base branch because the agent
+    /// committed the work itself; that is a review diff, but not an automatic-commit candidate.
+    fn has_uncommitted_diff(&mut self, run: &RunRecord) -> bool {
+        self.has_diff(run)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

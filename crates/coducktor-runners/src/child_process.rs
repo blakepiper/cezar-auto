@@ -300,9 +300,6 @@ impl Drop for ChildProcess {
     /// outlive the session that owned it. Once the child exits, reap it and join both pipe-reader
     /// threads so repeated lifecycle churn cannot accumulate detached readers.
     fn drop(&mut self) {
-        if let Some(cancellation) = &self.cancellation {
-            cancellation.deactivate();
-        }
         if !self.has_exited() {
             self.signal_kill();
             let _ = self.wait_exited_within(Duration::from_millis(250));
@@ -423,5 +420,32 @@ mod tests {
         assert!(started.elapsed() < Duration::from_millis(250));
         proc.signal_kill();
         proc.wait_for_exit();
+    }
+
+    #[test]
+    fn dropping_one_child_keeps_the_session_cancellation_token_live() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = SpawnConfig {
+            program: crate::test_node_program(),
+            args: vec!["-e".to_owned(), "setInterval(() => {}, 60000)".to_owned()],
+            eof_term_grace: Duration::from_millis(50),
+            eof_kill_grace: Duration::from_millis(50),
+        };
+        let cancellation = CancellationToken::default();
+        {
+            let mut process = ChildProcess::spawn(
+                &config,
+                Runner::Codex,
+                dir.path(),
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+            )
+            .unwrap();
+            process.set_cancellation(cancellation.clone());
+        }
+
+        // An AgentSession can spawn another child for send_message after this one exits. Only the
+        // session owner may deactivate its shared token.
+        assert!(cancellation.request());
     }
 }

@@ -90,6 +90,15 @@ records what is implemented and which terminal observations remain unverified.
 
 ## Task experience smoke test
 
+- **120×40 tmux pseudo-terminal, 2026-08-22 (confirmed active-run cancellation).** Built and
+  launched the real binary against an isolated temporary Git repository and home with the bundled
+  slow Claude process mock. Opened the running task's `[Cancel]` action with `Tab` and `Enter`, then
+  pressed `y` at the confirmation. The live count changed from `running 1` to `running 0`, the task
+  and Session header both changed to `Cancelled`, and the transcript appended `run cancelled`.
+  `:q` restored the alternate screen. Cancellation specifically during the synthetic automatic
+  commit-message turn is covered by a deterministic client regression plus the runner's real-child
+  token-lifetime regression because the bundled mock does not modify and commit a fixture repository.
+
 - **80×24 tmux pseudo-terminal, 2026-08-22 (follow-up composer mouse focus).** Built and
   launched the real binary against an isolated temporary repository with one failed dry-run task,
   opened its thread, and pressed `Esc` so the composer showed `FOLLOW UP (i to type)`. Injecting a
