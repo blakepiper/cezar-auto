@@ -53,6 +53,11 @@ records what is implemented and which terminal observations remain unverified.
   2026-08-18: `Ctrl+Right` changed the focus label from `SIDEBAR` to `TASKS`, `c` opened the New
   task composer, `Ctrl+Left` returned focus to `SIDEBAR`, and `q` exited cleanly. Project expansion
   and switching retain sidebar focus.
+- **Debug HUD.** Manually exercised at `80x24` in a real pseudo-terminal on 2026-08-22 with
+  `DUCK_DEBUG_HUD=1`: the status bar showed live `FRAME`, `PROJ`, `REDUCED`, and `DROPPED` values,
+  kept those diagnostics visible as the workspace snapshot populated the Tasks screen, and
+  restored the alternate screen on `q`. The ordinary focus hint followed the metrics and clipped
+  cleanly at the terminal edge.
 - **Embedded project terminals.** The per-project Terminal tab (`screens/terminal.rs` + `pty.rs`)
   runs a real `$SHELL` inside the cockpit — no external terminal emulator is spawned. Each
   project gets one persistent session (`portable-pty` master pair + a background reader thread
