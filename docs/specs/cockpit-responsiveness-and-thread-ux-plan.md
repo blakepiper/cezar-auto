@@ -1,6 +1,6 @@
 # Cockpit responsiveness and thread UX — implementation specification
 
-Status: ready for implementation (written 2026-08-22)
+Status: ready for implementation (written 2026-08-22, decisions closed 2026-08-22)
 
 Audience: the next implementation agent. Work directly on `main`, preserve unrelated changes,
 commit the completed work, and push `origin main` as required by `AGENTS.md`.
@@ -295,14 +295,28 @@ here.
    Change `run_history`'s existence check to read `run_snapshot` instead of the manager lock.
    Audit every remaining `self.manager.lock()` in `in_process.rs` and convert read-only uses to
    the snapshot.
-3. **Make the worker pool non-blocking.** With 1.1 and 1.2 done, no engine method blocks for a
-   turn. Either raise `BACKGROUND_WORKER_COUNT` and separate the fast read pool from the slow
-   mutating pool, or move engine calls onto `tokio::spawn` and keep a small blocking pool for
-   genuinely blocking work. A full queue must be a visible error, never a silent stall.
+3. **Split the worker pool.** With 1.1 and 1.2 done, no engine method blocks for a turn, but the
+   `spawn_blocking`-backed filesystem and Git work in `in_process.rs` still can. Keep
+   `BackgroundWorkers` rather than moving to `tokio::spawn` — the crate comment at
+   `runtime.rs:426-432` records why the native pool exists, and that reasoning still holds for
+   shutdown. Split it in two: a read pool sized for the refresh fan-out (list/get/history/index/
+   diff) and a smaller mutate pool (start/send/finish/cancel/git). A saturated read pool must never
+   delay a mutation, and a full queue must surface as a visible error, never a silent stall.
 4. **Incremental thread projection.** Give `reduce_thread` an incremental form: keep the
    `ThreadState` and its `items_by_key` index on `ThreadUi` and fold only newly arrived events.
    Full re-fold stays for `load` and `merge_earlier` (which prepends). Target: `rebuilt_events`
    grows linearly with events received. Today a 12,000-event thread reduces 9,006,000 events.
+
+   **Prerequisite — move marker stripping out of the fold.** `reduce_thread` ends with a
+   destructive post-pass over every turn (`reducer.rs:702-723`) that rewrites
+   `message.text = strip_done_marker(&message.text, strip_ask)`, where
+   `strip_ask = options.active_turn && index == last_index`. Both inputs change over the life of a
+   thread: a new turn demotes the previously-last turn, and `active_turn` flips when the run leaves
+   `Running`. Because stripping is destructive, an incremental fold cannot re-derive the correct
+   text once it has been applied — the marker is already gone. Before 1.4, keep the raw text in
+   `ThreadState` and apply `strip_done_marker` as a presentation step in `build_transcript_items`
+   (or in `projection`), where it can be recomputed per render from unmodified state. Existing
+   reducer tests that assert on stripped text must move with it.
 5. **Stop `reconcile` nuking the height cache.** The single biggest win, 18.5ms → 0.34ms per
    frame. Three changes to `Transcript::reconcile`: build a `HashMap<&str, usize>` of old ids once
    instead of scanning per item; key the height cache on `(item id, revision, width)` rather than
@@ -323,13 +337,14 @@ task, and cancel the run — all must respond immediately. Record the result in
 
 ### Phase 2 — stop lying about state (F4, F5, F6)
 
-1. **Split `Waiting`.** Add a distinct state for "the agent asked and is blocked on you" versus
-   "the turn ended and the session is parked". Preferred: add `RunStatus::Idle` and reserve
-   `Waiting` for a real `DUCK:ASK` or an explicit `TurnMarkerDecision::Waiting`. Per
-   `BACKWARD_COMPATIBILITY.md`, readers must accept records where `waiting` meant either — map a
-   legacy `waiting` to `Idle` unless a pending ask exists in the event log, and record the change
-   in `CHANGELOG.md`. Lower-risk alternative: keep `Waiting` and add a `needs_input: bool` that
-   every attention site reads instead of the status. Then update in one pass: `park_session`,
+1. **Split `Waiting`.** Add `RunStatus::Idle` for "the turn ended and the session is parked" and
+   reserve `Waiting` for a real `DUCK:ASK` or an explicit `TurnMarkerDecision::Waiting`.
+   `BACKWARD_COMPATIBILITY.md` promises that existing run records stay readable, not that a newer
+   record stays readable by an older binary, so a new variant is within policy: legacy `waiting`
+   records still parse, and are presented as `Idle` unless a pending ask exists in the event log.
+   Call the change out in `CHANGELOG.md` with that degradation path. (A `needs_input: bool`
+   alongside the existing status is the smaller change, but it leaves two sources of truth for one
+   question and every future reader has to know which wins.) Then update in one pass: `park_session`,
    `attention()`, `QuickTask::group()`, `notification_for_transition`, `needs_you_count`, the
    composer title, the hint line, and `derive_status`. Notifications and the title counter fire
    only for genuine needs-input and review.
@@ -356,10 +371,29 @@ transcript still converges to the durable event log. A test that a plain turn en
 1. **Agent prose is a message wherever it appears.** Delete the non-final-message → dim `NoteItem`
    branch. Every assistant message becomes a `MessageItem` with full markdown. Reserve `NoteItem`
    for system lifecycle lines.
-2. **Restore chronological order.** Delete the tail-append of `agent_messages` and the hold-back of
-   `final_response`; emit items in reducer order. Fix the cited cause at its source instead: order
-   items by the sequence of their first delta, not their `item.started`. Sticky-bottom already
-   keeps the newest text on screen.
+2. **Restore chronological order without regressing `1c68aa1e`.** The tail-append is not an
+   oversight — it is the fix in `1c68aa1e` ("keep agent text at thread bottom"), guarded by
+   `waiting_session_keeps_agent_text_after_later_tool_activity` (`thread/mod.rs:2031`). It solves a
+   real problem: an agent that asks a question in prose and *then* runs more tools has that
+   question stranded mid-list, where sticky-bottom never shows it. Reordering by first delta does
+   not help — in that test the message's first delta precedes the tools, so it would land in the
+   middle again and the test would correctly fail.
+
+   Separate the two concerns instead. The transcript returns to reducer order (delete the
+   `agent_messages` tail-append and the `final_response` hold-back). Reachability moves to the
+   dock, which already hosts the structured ask card: when a run is parked in a needs-input state
+   and the agent's last substantive message is not already visible, render it above the composer as
+   a "latest message" panel — the prose sibling of `render_ask_card`. This is also what the
+   original complaint asks for: one predictable place where text meant for the user to read and
+   reply to lives, separate from tool activity.
+
+   Rewrite `waiting_session_keeps_agent_text_after_later_tool_activity` to assert the agent text is
+   *reachable* (present in the dock panel) rather than that it is the last transcript item. Do not
+   delete it — it guards a real regression.
+
+   Cheaper fallback if the dock panel proves too large for this phase: keep chronological order and
+   anchor the transcript scroll to the agent's last message on entering a parked state, rather than
+   to the absolute bottom. Same test rewrite applies.
 3. **Give every item a gutter.** Reserve two columns on every transcript item for a role marker so
    the item type reads from the left edge before any text is parsed — `●` accent for assistant,
    `▌` in `border` for user (keep the existing left rule), `▸`/`▾` in `soft_fg` for tools and
@@ -386,13 +420,17 @@ which are tools and which are system notes, and the turn reads in the order it h
    `Queued`, from both focuses. First press interrupts; second press, or when idle, drops focus to
    the transcript. Show the existing `cancel_pending` "Stopping the agent…" state immediately —
    `cancel_run`'s `try_lock` path already makes this fast.
-3. **Make mid-turn sending true, or stop promising it.** Either implement it — queue the text on
-   the run record and have the turn worker deliver it at the next tool boundary, showing it in the
-   transcript as a pending user message, using the existing `queued_messages` plumbing plus
-   `edit_queued_message`/`remove_queued_message` — or defer it: change the hint to "Agent is
-   working · Enter queues a follow-up for the next turn", persist it as a queued message, and
-   deliver when the turn parks. Either way the composer must never lose typed text on a rejected
-   send.
+3. **Stop promising mid-turn steering; queue honestly instead.** Change the hint to "Agent is
+   working · Enter queues a follow-up for the next turn" and the composer title to `FOLLOW UP`.
+   Persist the text through the existing `queued_messages` plumbing
+   (`edit_queued_message`/`remove_queued_message` are already on the `Engine` trait), show it in
+   the transcript as a pending user message marked queued, and deliver it when the turn parks. The
+   composer must never lose typed text on a rejected send.
+
+   True mid-turn delivery — the worker handing the message to the live session at the next tool
+   boundary — is deliberately **out of scope** for this plan. It is the largest single item here
+   and it needs a new delivery path through `TurnDispatch`; it belongs in its own spec once
+   Phase 1 has settled the worker seam.
 4. **Say what is happening while it happens.** With F5 fixed, put a live one-line activity
    indicator directly above the composer: current phase, elapsed time, token count, running tool.
 
@@ -416,6 +454,22 @@ agent with `Esc`. Nothing is archived, nothing is finished, no typed text is los
 
 **Gate.** The full `SDLC.md` validation gate is clean with the new performance and
 lock-discipline tests included.
+
+## Known test and snapshot churn
+
+These exist today and will move. None should be deleted; each guards behavior that is still
+wanted, just expressed differently after the phase that touches it.
+
+| Asset | Phase | What must happen |
+| --- | --- | --- |
+| `doubling_accepted_events_does_not_quadruple_rebuild_time` (`thread/mod.rs:1513`) | 0.3 | Rewrite to feed frame-sized batches; assert `rebuilt_events` too. Fails until 1.4. |
+| `batched_projection_work_scales_linearly_with_accepted_events` (`thread/mod.rs:1483`) | 1.4 | Its `rebuilt_events` expectations change once folding is incremental. |
+| `waiting_session_keeps_agent_text_after_later_tool_activity` (`thread/mod.rs:2031`) | 3.2 | Rewrite to assert reachability in the dock, not last-item position. See 3.2. |
+| Reducer tests asserting stripped `DUCK:*` text (`thread/reducer.rs`) | 1.4 | Move with `strip_done_marker` to the presentation layer. |
+| `coducktor_tui__screens__thread__tests__thread_running_{80x24,120x40,200x60}.snap` | 3 | Regenerate; review the diff rather than accepting blindly, per `AGENTS.md`. |
+| `coducktor_tui__screens__thread__tests__thread_review_{80x24,120x40,200x60}.snap` | 2, 3 | Regenerate after the status split and the gutter change. |
+| `transcript.rs` unit tests for tool-card default-open and note tones | 3.3, 3.4 | Heights shift by the inter-item blank row and the gutter columns. |
+| `crates/coducktor-runners/tests/ui_parity.rs`, `golden.rs` | — | Must **not** change. If a phase needs them to, the change has leaked past the runner seam. |
 
 ## Out of scope
 
