@@ -947,7 +947,11 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             Constraint::Length(base_dock_height),
         ])
         .split(area);
-    let latest_message = if record.status == RunStatus::Waiting {
+    // Both `Waiting` (a genuine question) and `Idle` (an ordinary turn end, F4) park the
+    // session with the composer ready for a follow-up. Either way the agent's last word should
+    // be readable without hunting back through the transcript, so both statuses get the pinned
+    // duplicate when that message has scrolled out of view.
+    let latest_message = if matches!(record.status, RunStatus::Waiting | RunStatus::Idle) {
         app.thread_ui
             .transcript
             .latest_assistant_message()
@@ -2723,6 +2727,57 @@ mod tests {
         let content = render_to_string(&mut app);
         assert!(content.contains("LATEST MESSAGE"));
         assert!(content.contains("Which export format should I use?"));
+    }
+
+    /// An ordinary turn end — no question asked — parks as `Idle`, not `Waiting` (F4). The
+    /// final assistant message must still surface even though nobody needs to answer anything:
+    /// otherwise it scrolls out of view behind later tool activity and the user has to scroll
+    /// back up through the transcript to find text that was supposed to be the punchline.
+    #[test]
+    fn idle_session_keeps_agent_text_after_later_tool_activity() {
+        let mut app = app_with_run(RunStatus::Idle);
+        app.thread_ui.push_event(
+            1.0,
+            event(
+                1.0,
+                "item.started",
+                json!({
+                    "item": {
+                        "kind": "message",
+                        "id": "agent-summary",
+                        "role": "assistant",
+                        "text": "Done — the shell now ships with the new flag.",
+                        "phase": "commentary"
+                    }
+                }),
+            ),
+        );
+        for index in 0..20 {
+            let sequence = f64::from(index * 2 + 2);
+            let id = format!("inspect-{index}");
+            app.thread_ui.push_events([
+                (
+                    sequence,
+                    event(
+                        sequence,
+                        "tool-call",
+                        json!({"id": id.clone(), "tool": "shell", "input": {"cmd": "inspect"}}),
+                    ),
+                ),
+                (
+                    sequence + 1.0,
+                    event(
+                        sequence + 1.0,
+                        "tool-result",
+                        json!({"toolCallId": id, "result": "done"}),
+                    ),
+                ),
+            ]);
+        }
+
+        let content = render_to_string(&mut app);
+        assert!(content.contains("LATEST MESSAGE"));
+        assert!(content.contains("Done — the shell now ships with the new flag."));
     }
 
     #[test]
