@@ -1,6 +1,6 @@
 # Cockpit responsiveness and thread UX — implementation specification
 
-Status: Phase 0 guardrails implemented; Phase 1 is next (written 2026-08-22, updated 2026-08-22)
+Status: Phase 1 unfreeze implemented; Phase 2 is next (written 2026-08-22, updated 2026-08-22)
 
 Audience: the next implementation agent. Work directly on `main`, preserve unrelated changes,
 commit the completed work, and push `origin main` as required by `AGENTS.md`.
@@ -23,11 +23,15 @@ Two findings below correct entries the 2026-08-18 reliability audit
 
 ## Implementation progress
 
-Phase 0 now provides the live-thread benchmark, known-red frame/scaling/lock guards, the manager
-lock invariant, and the opt-in `DUCK_DEBUG_HUD=1` status readout. The known-red guards remain
-ignored so `main` stays green; Phase 1 must un-ignore them as it removes the measured defects.
-The HUD's dropped-event counter is present and stays at zero until Phase 2 exposes lag through the
-engine event stream. The prior audit's R1 and R3 rows already point to this specification.
+Phase 0 provides the live-thread benchmark, frame/scaling/lock guards, the manager lock invariant,
+and the opt-in `DUCK_DEBUG_HUD=1` status readout. Phase 1 moved follow-up and finish provider calls
+onto detached per-run workers, replaced manager-backed history reads with the durable snapshot/log,
+split background reads from mutations, made event reduction incremental, retained transcript
+render/height caches by stable id and revision, and retained one buffered append handle per open
+run. The three known-red guards are un-ignored and green: frame-batched reduction is linear, the
+optimized 12,000-event frame is under 8ms, and unrelated manager operations stay under 100ms while
+follow-up or finish sleeps for one second. The HUD's dropped-event counter stays at zero until Phase
+2 exposes lag through the engine event stream. The prior audit's R1 and R3 rows point here.
 
 ## Finding inventory
 
@@ -123,6 +127,9 @@ test must feed events in frame-sized batches.
 
 ### F1 — the manager mutex is held across a live provider turn (P0)
 
+**Resolved in Phase 1.** Follow-up and finish now detach the live session and run on a per-run
+worker; history/context reads use the snapshot and durable NDJSON directly.
+
 `InProcessEngine::send_message` (`in_process.rs:3807-3814`) takes `self.manager.lock()` and holds
 it across `RunManager::deliver_message`, which blocks in
 `ClaudeSession::send_message` → `read_until_turn_end`
@@ -139,6 +146,9 @@ The correct pattern already exists and documents itself: `TurnDispatch::run`
 session calls themselves, only around the brief, individual state mutations each one produces."
 
 ### F2 — the thread re-projects from zero and drops its caches every frame (P0)
+
+**Resolved in Phase 1.** Live batches fold only their accepted suffix, unchanged transcript items
+retain owned render state, and heights are cached by stable id, revision, and width.
 
 Three compounding layers:
 
@@ -158,6 +168,9 @@ it "steady state". During live streaming the cache is never warm. `ThreadProject
 already records `rebuild_time` and `rebuilt_events`; nothing reads them outside tests.
 
 ### F3 — the worker pool amplifies any slow call (P0)
+
+**Resolved in Phase 1.** Read refreshes use six dedicated workers and mutations use two independent
+workers, each with a bounded queue and visible saturation error.
 
 `BACKGROUND_WORKER_COUNT = 4` (`runtime.rs:34`) native threads each run
 `handle.block_on(future)` (`runtime.rs:474-505`). Four concurrent slow calls consume the pool;

@@ -13,6 +13,8 @@
 - Local GitHub reads and PR actions, project cloning, local skills, agent
   accounts, worktrees, workflows, and the headless task commands remain
   supported.
+- Follow-up and finish calls no longer freeze unrelated cockpit operations; live thread projection
+  is incremental, preserves render caches, and keeps reads isolated from mutation workers.
 
 Any future compatibility change belongs in this section with its migration or
 degradation path. Retired release notes and one-time implementation plans are

@@ -154,6 +154,23 @@ async fn wait_for_call(flag: &AtomicBool) {
     .unwrap();
 }
 
+async fn wait_for_terminal(engine: &InProcessEngine, run_id: &str) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let status = engine.get_run(run_id).await.unwrap().record.status;
+            if matches!(
+                status,
+                RunStatus::Done | RunStatus::Failed | RunStatus::Cancelled | RunStatus::Review
+            ) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
 async fn probe_manager_calls(engine: Arc<InProcessEngine>, run_id: String) -> bool {
     let history_engine = engine.clone();
     let history_id = run_id.clone();
@@ -207,7 +224,6 @@ async fn probe_manager_calls(engine: Arc<InProcessEngine>, run_id: String) -> bo
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-#[ignore = "baseline: run_history/archive_run wait about 1s behind send_message until Phase 1"]
 async fn manager_calls_do_not_wait_for_a_slow_follow_up() {
     let (_workspace, _repo, engine, run_id, calls) = parked_engine().await;
     let sender = engine.clone();
@@ -225,13 +241,13 @@ async fn manager_calls_do_not_wait_for_a_slow_follow_up() {
     });
     wait_for_call(&calls.sending).await;
 
-    let responsive = probe_manager_calls(engine, run_id).await;
+    let responsive = probe_manager_calls(engine.clone(), run_id.clone()).await;
     let _ = slow_call.await;
     assert!(responsive, "a manager call exceeded the 100ms budget");
+    wait_for_terminal(&engine, &run_id).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-#[ignore = "baseline: run_history/archive_run wait about 1s behind finish until Phase 1"]
 async fn manager_calls_do_not_wait_for_a_slow_finish() {
     let (_workspace, _repo, engine, run_id, calls) = parked_engine().await;
     let finisher = engine.clone();
@@ -239,7 +255,8 @@ async fn manager_calls_do_not_wait_for_a_slow_finish() {
     let slow_call = tokio::spawn(async move { finisher.finish_run(&finish_id).await });
     wait_for_call(&calls.finishing).await;
 
-    let responsive = probe_manager_calls(engine, run_id).await;
+    let responsive = probe_manager_calls(engine.clone(), run_id.clone()).await;
     let _ = slow_call.await;
     assert!(responsive, "a manager call exceeded the 100ms budget");
+    wait_for_terminal(&engine, &run_id).await;
 }

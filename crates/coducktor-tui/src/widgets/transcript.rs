@@ -544,27 +544,49 @@ impl Transcript {
         self.items.push(item);
     }
 
-    /// Reconcile against a freshly-built ordered item list. The thread screen rebuilds this on
-    /// every new batch of events): items whose id already exists keep their user-toggled
-    /// expand state; everything else is the new list verbatim. The height cache is dropped
-    /// wholesale since ids can be reordered or removed between rebuilds.
-    pub fn reconcile(&mut self, mut next: Vec<TranscriptItem>) {
+    /// Reconcile against a freshly-built ordered item list. Existing ids retain interactive and
+    /// markdown-render state, while id/revision/width keyed heights survive reordering.
+    pub fn reconcile(&mut self, next: Vec<TranscriptItem>) {
+        self.reconcile_reusing(|_| next);
+    }
+
+    /// Let a projection reuse unchanged owned items while it rebuilds ordering. This avoids
+    /// cloning large completed tool outputs and message strings on every live frame.
+    pub fn reconcile_reusing(
+        &mut self,
+        build: impl FnOnce(
+            &mut std::collections::HashMap<String, TranscriptItem>,
+        ) -> Vec<TranscriptItem>,
+    ) {
         let old_ids: std::collections::BTreeSet<String> =
             self.items.iter().map(|item| item.id().to_owned()).collect();
         let selected_id = self
             .selected
             .and_then(|index| self.items.get(index))
             .map(|item| item.id().to_owned());
+        let mut existing_by_id: std::collections::HashMap<String, TranscriptItem> = self
+            .items
+            .drain(..)
+            .map(|item| (item.id().to_owned(), item))
+            .collect();
+        let mut next = build(&mut existing_by_id);
         for item in &mut next {
-            let Some(existing) = self.items.iter().find(|old| old.id() == item.id()) else {
+            let Some(mut existing) = existing_by_id.remove(item.id()) else {
                 continue;
             };
-            match (existing, &mut *item) {
+            match (&mut existing, &mut *item) {
+                (TranscriptItem::Message(old), TranscriptItem::Message(new)) => {
+                    std::mem::swap(&mut old.cache, &mut new.cache);
+                }
                 (TranscriptItem::Reasoning(old), TranscriptItem::Reasoning(new)) => {
                     new.expanded = old.expanded;
+                    std::mem::swap(&mut old.cache, &mut new.cache);
                 }
                 (TranscriptItem::Tool(old), TranscriptItem::Tool(new)) => {
                     new.user_expanded = old.user_expanded;
+                }
+                (TranscriptItem::Image(_), TranscriptItem::Image(_)) => {
+                    *item = existing;
                 }
                 _ => {}
             }
@@ -580,7 +602,7 @@ impl Transcript {
         }
         self.selected =
             selected_id.and_then(|id| self.items.iter().position(|item| item.id() == id));
-        self.height_cache = HeightCache::default();
+        self.height_cache.retain(&self.items);
     }
 
     pub fn len(&self) -> usize {
@@ -674,7 +696,6 @@ impl Transcript {
             Some(TranscriptItem::Tool(item)) => item.user_expanded = Some(!item.open()),
             _ => {}
         }
-        self.height_cache = HeightCache::default();
     }
 
     /// Scroll position shared with the compact thread projection. The full transcript keeps
@@ -852,28 +873,31 @@ fn paint_clipped(
 
 #[derive(Default)]
 struct HeightCache {
-    width: u16,
-    entries: Vec<Option<(u64, u16)>>,
+    entries: std::collections::HashMap<(String, u64, u16), u16>,
 }
 
 impl HeightCache {
     fn get(&mut self, index: usize, items: &mut [TranscriptItem], width: u16) -> u16 {
-        if width != self.width {
-            self.entries.clear();
-            self.width = width;
-        }
-        if self.entries.len() <= index {
-            self.entries.resize(items.len(), None);
-        }
         let revision = items[index].revision();
-        if let Some((cached_revision, height)) = self.entries[index]
-            && cached_revision == revision
-        {
-            return height;
+        let key = (items[index].id().to_owned(), revision, width);
+        if let Some(height) = self.entries.get(&key) {
+            return *height;
         }
         let height = items[index].height(width);
-        self.entries[index] = Some((revision, height));
+        self.entries.insert(key, height);
         height
+    }
+
+    fn retain(&mut self, items: &[TranscriptItem]) {
+        let revisions: std::collections::HashMap<&str, u64> = items
+            .iter()
+            .map(|item| (item.id(), item.revision()))
+            .collect();
+        self.entries.retain(|(id, revision, _), _| {
+            revisions
+                .get(id.as_str())
+                .is_some_and(|current| current == revision)
+        });
     }
 }
 
@@ -1112,7 +1136,7 @@ mod tests {
     }
 
     #[test]
-    fn resizing_the_width_invalidates_the_whole_height_cache() {
+    fn resizing_keeps_a_separate_height_for_each_width() {
         let mut transcript = Transcript::new();
         transcript.push(TranscriptItem::Message(MessageItem::new(
             "m1",
@@ -1122,14 +1146,27 @@ mod tests {
         let narrow_area = Rect::new(0, 0, 20, 20);
         let mut narrow_buf = Buffer::empty(narrow_area);
         transcript.render(&mut narrow_buf, narrow_area, &theme());
-        let narrow_height = transcript.height_cache.entries[0].expect("cached").1;
+        let narrow_height = transcript
+            .height_cache
+            .entries
+            .iter()
+            .find(|((id, _, width), _)| id == "m1" && *width == 20)
+            .map(|(_, height)| *height)
+            .expect("narrow height cached");
 
         let wide_area = Rect::new(0, 0, 80, 20);
         let mut wide_buf = Buffer::empty(wide_area);
         transcript.render(&mut wide_buf, wide_area, &theme());
-        let wide_height = transcript.height_cache.entries[0].expect("cached").1;
+        let wide_height = transcript
+            .height_cache
+            .entries
+            .iter()
+            .find(|((id, _, width), _)| id == "m1" && *width == 80)
+            .map(|(_, height)| *height)
+            .expect("wide height cached");
 
         assert!(narrow_height > wide_height);
+        assert_eq!(transcript.height_cache.entries.len(), 2);
     }
 
     #[test]

@@ -945,6 +945,14 @@ pub enum TurnStep {
     GitAutoCommit(Box<RuntimeActive>),
 }
 
+/// The lock-held half of a user-requested finish. Runs without a process-local session can be
+/// settled immediately; a parked live session is detached so its blocking `finish` call happens
+/// on the production dispatcher and is later applied through [`RunManager::apply_finish_turn`].
+pub enum FinishStart {
+    Finished(bool),
+    Detached(Box<RuntimeActive>),
+}
+
 /// Result of the synthetic automatic-commit subject turn.
 pub enum GitAutoMessage {
     Subject(String),
@@ -987,6 +995,7 @@ pub struct RunManager {
     index_write_count: usize,
     index_write_bytes: u64,
     event_append_count: usize,
+    event_appenders: HashMap<String, events::BufferedEventAppender>,
 }
 
 impl RunManager {
@@ -1069,6 +1078,7 @@ impl RunManager {
             index_write_count: 0,
             index_write_bytes: 0,
             event_append_count: 0,
+            event_appenders: HashMap::new(),
         }
     }
 
@@ -1715,7 +1725,16 @@ impl RunManager {
             event_type: input.event_type,
             extra: input.extra,
         };
-        events::append_event(&path, &event)?;
+        if !self.event_appenders.contains_key(run_id) {
+            self.event_appenders.insert(
+                run_id.to_owned(),
+                events::BufferedEventAppender::open(&path)?,
+            );
+        }
+        self.event_appenders
+            .get_mut(run_id)
+            .ok_or_else(|| io::Error::other("event appender unavailable"))?
+            .append(&event)?;
         self.event_append_count += 1;
         // Event append is meaningful activity. Keep read/unread and archive mutations on their
         // separate timestamps by stamping here instead of in the generic record replacement.
@@ -3513,6 +3532,7 @@ impl RunManager {
         self.plan_checkpoints.remove(run_id);
         self.pending_context_prompts.remove(run_id);
         self.auto_routes.remove(run_id);
+        self.event_appenders.remove(run_id);
         self.release_workspace_hold(run_id);
         self.release_repository_hold(run_id);
     }
@@ -3641,12 +3661,11 @@ impl RunManager {
         Ok(())
     }
 
-    /// Finish a parked session, an accepted review, or a waiting record with no
-    /// process-local runtime. A successful finish continues any remaining
-    /// workflow steps, or performs the same review-gate settlement as a
-    /// naturally completed workflow.
-    pub fn finish(&mut self, run_id: &str) -> io::Result<bool> {
-        let Some(mut active) = self.active.remove(run_id) else {
+    /// Begin finishing a parked session without calling the provider. The returned live session
+    /// is marked in-flight and must be driven outside the manager lock, then returned through
+    /// [`Self::apply_finish_turn`].
+    pub fn begin_finish(&mut self, run_id: &str) -> io::Result<FinishStart> {
+        let Some(active) = self.active.remove(run_id) else {
             if self
                 .get_run(run_id)
                 .is_some_and(|run| run.status == RunStatus::Review)
@@ -3659,7 +3678,7 @@ impl RunManager {
                 )?;
                 self.cleanup_runtime(run_id);
                 self.pump()?;
-                return Ok(true);
+                return Ok(FinishStart::Finished(true));
             }
             if self
                 .get_run(run_id)
@@ -3668,25 +3687,40 @@ impl RunManager {
                 self.settle_steps(run_id, StepStatus::Done)?;
                 self.settle_success(run_id)?;
                 self.pump()?;
-                return Ok(true);
+                return Ok(FinishStart::Finished(true));
             }
-            return Ok(false);
+            return Ok(FinishStart::Finished(false));
         };
-        let step_id = active.workflow.steps[active.step_index].id.clone();
-        let finish_result = active
-            .session
-            .finish(&mut self.event_sink(run_id, &step_id));
+        self.in_flight.insert(run_id.to_owned());
+        Ok(FinishStart::Detached(Box::new(active)))
+    }
+
+    /// Apply the result of a detached user-requested finish. Waiting/running provider outcomes
+    /// are coerced to completion because the user explicitly closed the session.
+    pub fn apply_finish_turn(
+        &mut self,
+        run_id: &str,
+        active: RuntimeActive,
+        finish_result: Result<SessionOutcome, String>,
+    ) -> io::Result<TurnStep> {
         let outcome = match finish_result {
             Ok(outcome) => outcome,
             Err(error) => {
+                self.in_flight.remove(run_id);
                 self.active.insert(run_id.to_owned(), active);
-                return Err(io::Error::other(format!("finish failed: {error}")));
+                self.append_event(
+                    run_id,
+                    EventInput::new("error")
+                        .field("message", format!("could not finish session: {error}")),
+                )?;
+                return Ok(TurnStep::Done);
             }
         };
         if let Err(error) = self.append_event(
             run_id,
             EventInput::new("lifecycle").field("message", "session closed by user"),
         ) {
+            self.in_flight.remove(run_id);
             self.active.insert(run_id.to_owned(), active);
             return Err(error);
         }
@@ -3696,14 +3730,50 @@ impl RunManager {
             }
             other => other,
         };
-        self.drive_active_turn(run_id, active, outcome)?;
-        Ok(true)
+        self.apply_active_turn(run_id, active, Ok(outcome), false)
     }
 
-    /// Drive a synchronously resumed session (`finish`/`deliver_message`) through
+    #[cfg(test)]
+    pub fn finish(&mut self, run_id: &str) -> io::Result<bool> {
+        let mut active = match self.begin_finish(run_id)? {
+            FinishStart::Finished(finished) => return Ok(finished),
+            FinishStart::Detached(active) => *active,
+        };
+        let step_id = active.step_id().to_owned();
+        let result = active
+            .session_mut()
+            .finish(&mut self.event_sink(run_id, &step_id));
+        let mut step = self.apply_finish_turn(run_id, active, result)?;
+        loop {
+            match step {
+                TurnStep::Done => return Ok(true),
+                TurnStep::GitAutoCommit(_) => {
+                    self.finish_git_auto(
+                        run_id,
+                        Err(
+                            "automatic Git actions require the production engine dispatcher"
+                                .to_owned(),
+                        ),
+                    )?;
+                    return Ok(true);
+                }
+                TurnStep::Nudge(mut active) => {
+                    let step_id = active.step_id().to_owned();
+                    let result = active.session_mut().send_message(
+                        AUTONOMOUS_NUDGE,
+                        &[],
+                        &mut self.event_sink(run_id, &step_id),
+                    );
+                    step = self.apply_active_turn(run_id, *active, result, false)?;
+                }
+            }
+        }
+    }
+
+    /// Drive a synchronously resumed session in core unit tests through
     /// `continue_active_turn` to completion, sending any autonomous nudge inline under the same
-    /// lock hold this call already has — unlike a worker-driven turn, a resume is a single
-    /// foreground action with no separate admission to keep unblocked.
+    /// test-owned manager borrow. Production never compiles this path; it uses `TurnDispatch`.
+    #[cfg(test)]
     fn drive_active_turn(
         &mut self,
         run_id: &str,
@@ -3742,16 +3812,15 @@ impl RunManager {
         Ok(())
     }
 
-    /// Deliver a user follow-up to a parked active session. The session outcome owns the next
-    /// state transition: `Running` reacquires a slot, `Waiting`/monitoring releases it again, and
-    /// terminal outcomes use the same cleanup path as an initial turn.
+    /// Synchronous convenience used only by core unit tests. Production detaches through
+    /// [`Self::begin_message`] and drives the provider on `TurnDispatch`.
+    #[cfg(test)]
     pub fn send_message(&mut self, run_id: &str, prompt: impl Into<String>) -> io::Result<bool> {
         self.deliver_message(run_id, prompt, Vec::new())
     }
 
-    /// Backend-neutral delivery seam. A durable `user-message` event is written before invoking
-    /// the injected session, matching the transcript contract even when the session declines the
-    /// delivery. No active session means the caller should use `continue_run` instead.
+    /// Synchronous backend-neutral delivery seam used only by core unit tests.
+    #[cfg(test)]
     pub fn deliver_message(
         &mut self,
         run_id: &str,
@@ -3780,6 +3849,112 @@ impl RunManager {
         };
         self.drive_active_turn(run_id, active, outcome)?;
         Ok(true)
+    }
+
+    /// Durably append a follow-up and detach its parked session without calling the provider.
+    /// The caller owns the returned session until it reports the outcome through
+    /// [`Self::apply_active_turn`]. No active session means `continue_run` is the valid path.
+    pub fn begin_message(
+        &mut self,
+        run_id: &str,
+        prompt: impl Into<String>,
+        images: Vec<PromptImage>,
+    ) -> io::Result<Option<RuntimeActive>> {
+        let prompt = prompt.into();
+        let Some(active) = self.active.get(run_id) else {
+            return Ok(None);
+        };
+        let step_id = active.step_id().to_owned();
+        self.append_user_message(run_id, &step_id, &prompt, &images)?;
+        self.update_run(
+            run_id,
+            RunPatch::new()
+                .set("status", RunStatus::Running)
+                .clear("activity"),
+        )?;
+        self.update_step(
+            run_id,
+            &step_id,
+            StepPatch::new().set("status", StepStatus::Running),
+        )?;
+        let Some(active) = self.active.remove(run_id) else {
+            return Ok(None);
+        };
+        self.in_flight.insert(run_id.to_owned());
+        Ok(Some(active))
+    }
+
+    /// Apply a detached user follow-up while preserving the parked session on a provider-level
+    /// delivery error. Cancellation still wins and follows the ordinary cancelled-turn path.
+    pub fn apply_message_turn(
+        &mut self,
+        run_id: &str,
+        active: RuntimeActive,
+        send_result: Result<SessionOutcome, String>,
+        cancellation_requested: bool,
+    ) -> io::Result<TurnStep> {
+        let outcome = match send_result {
+            Ok(outcome) => outcome,
+            Err(error) if cancellation_requested => {
+                return self.apply_active_turn(run_id, active, Err(error), true);
+            }
+            Err(error) => {
+                self.in_flight.remove(run_id);
+                let step_id = active.step_id().to_owned();
+                self.update_run(run_id, RunPatch::new().set("status", RunStatus::Waiting))?;
+                self.update_step(
+                    run_id,
+                    &step_id,
+                    StepPatch::new().set("status", StepStatus::Waiting),
+                )?;
+                self.active.insert(run_id.to_owned(), active);
+                self.append_event(
+                    run_id,
+                    EventInput::new("error")
+                        .field("message", format!("could not deliver follow-up: {error}")),
+                )?;
+                return Ok(TurnStep::Done);
+            }
+        };
+        self.apply_active_turn(run_id, active, Ok(outcome), cancellation_requested)
+    }
+
+    /// Put a detached parked session back if the OS could not start its worker. The durable user
+    /// message remains in history, and the run remains available for retry or cancellation.
+    pub fn abandon_message(&mut self, run_id: &str, active: RuntimeActive) {
+        self.in_flight.remove(run_id);
+        let running = active.holds_slot;
+        let _ = self.update_run(
+            run_id,
+            RunPatch::new().set(
+                "status",
+                if running {
+                    RunStatus::Running
+                } else {
+                    RunStatus::Waiting
+                },
+            ),
+        );
+        let _ = self.update_step(
+            run_id,
+            active.step_id(),
+            StepPatch::new().set(
+                "status",
+                if running {
+                    StepStatus::Running
+                } else {
+                    StepStatus::Waiting
+                },
+            ),
+        );
+        self.active.insert(run_id.to_owned(), active);
+    }
+
+    /// Reattach a detached session whose finish worker could not be created. Finishing does not
+    /// change the durable status before dispatch, so no status rollback is required.
+    pub fn abandon_finish(&mut self, run_id: &str, active: RuntimeActive) {
+        self.in_flight.remove(run_id);
+        self.active.insert(run_id.to_owned(), active);
     }
 
     /// Reopen the last persisted session as a new synthetic step. Overrides are written before
@@ -4637,6 +4812,11 @@ mod tests {
             .append_event(&run.id, EventInput::new("note").field("message", "two"))
             .unwrap();
         assert_eq!(*observed.lock().unwrap(), vec![1.0, 2.0]);
+        assert_eq!(
+            manager.event_appenders.len(),
+            1,
+            "streamed events reuse one run-scoped append handle"
+        );
 
         let reopened = RunManager::open(dir.path());
         let continued = reopened.read_events(&run.id);

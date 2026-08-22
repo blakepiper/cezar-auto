@@ -123,6 +123,9 @@ pub struct SessionEnded {
 pub struct ThreadState {
     pub turns: Vec<ThreadTurn>,
     pub session_ended: Option<SessionEnded>,
+    items_by_key: HashMap<String, (usize, usize)>,
+    pending_ask: Option<(usize, usize)>,
+    turn_seq: u64,
 }
 
 /// What the strip under the thread says. Pure so the mapping is table-testable.
@@ -201,11 +204,23 @@ pub struct ThreadReduceOptions {
 }
 
 pub fn reduce_thread(events: &[RunEvent], options: ThreadReduceOptions) -> ThreadState {
-    let mut turns: Vec<ThreadTurn> = Vec::new();
-    let mut items_by_key: HashMap<String, (usize, usize)> = HashMap::new();
-    let mut pending_ask: Option<(usize, usize)> = None;
-    let mut session_ended: Option<SessionEnded> = None;
-    let mut turn_seq: u64 = 0;
+    let mut state = ThreadState::default();
+    reduce_thread_incremental(&mut state, events, options);
+    state
+}
+
+/// Fold an ordered suffix into an existing projection. The private lookup/index state travels
+/// with `ThreadState`, so item deltas and ask resolution remain correct across frame boundaries.
+pub fn reduce_thread_incremental(
+    state: &mut ThreadState,
+    events: &[RunEvent],
+    _options: ThreadReduceOptions,
+) {
+    let mut turns = std::mem::take(&mut state.turns);
+    let mut items_by_key = std::mem::take(&mut state.items_by_key);
+    let mut pending_ask = state.pending_ask.take();
+    let mut session_ended = state.session_ended.take();
+    let mut turn_seq = state.turn_seq;
 
     let new_turn = |turns: &mut Vec<ThreadTurn>, turn_seq: &mut u64, source_seq: Option<f64>| {
         *turn_seq += 1;
@@ -699,32 +714,11 @@ pub fn reduce_thread(events: &[RunEvent], options: ThreadReduceOptions) -> Threa
         }
     }
 
-    let last_index = turns.len().saturating_sub(1);
-    let turns: Vec<ThreadTurn> = turns
-        .into_iter()
-        .enumerate()
-        .map(|(index, mut turn)| {
-            let has_ask_card = turn
-                .items
-                .iter()
-                .any(|item| matches!(item, ThreadEntry::Ask(_)));
-            let provisional_ask = options.active_turn && index == last_index;
-            let strip_ask = has_ask_card || provisional_ask;
-            for item in &mut turn.items {
-                if let ThreadEntry::Item(UiItem::Message(message)) = item
-                    && message.role == coducktor_protocol::MessageRole::Assistant
-                {
-                    message.text = strip_done_marker(&message.text, strip_ask);
-                }
-            }
-            turn
-        })
-        .collect();
-
-    ThreadState {
-        turns,
-        session_ended,
-    }
+    state.turns = turns;
+    state.items_by_key = items_by_key;
+    state.pending_ask = pending_ask;
+    state.session_ended = session_ended;
+    state.turn_seq = turn_seq;
 }
 
 fn is_autonomous_continuation(text: &str) -> bool {
@@ -794,7 +788,7 @@ fn valid_ask_question(value: &Value) -> Option<UiAskQuestion> {
 /// task-reference marker lines (`DUCK:PR=` / `DUCK:ISSUE=` / `DUCK:TITLE=`). `strip_ask` gates
 /// the `DUCK:ASK` strip on the turn actually holding an ask card — a marker whose card never
 /// materialized stays visible as raw text.
-fn strip_done_marker(text: &str, strip_ask: bool) -> String {
+pub(super) fn strip_done_marker(text: &str, strip_ask: bool) -> String {
     let mut trailing = strip_trailing_marker(text, "DUCK:DONE");
     trailing = strip_trailing_marker(&trailing, "DUCK:MONITORING");
     if strip_ask {
@@ -899,6 +893,42 @@ mod tests {
             turn.completed.as_ref().unwrap().stop_reason,
             StopReason::EndTurn
         );
+    }
+
+    #[test]
+    fn frame_sized_incremental_folds_match_a_full_fold() {
+        let events = vec![
+            event(1.0, "user-message", json!({"text": "do the thing"})),
+            event(2.0, "turn.started", json!({"turnId": "t1"})),
+            event(
+                3.0,
+                "item.started",
+                json!({"item": {"kind": "message", "id": "m1", "role": "assistant", "text": "Sure"}}),
+            ),
+            event(
+                4.0,
+                "item.delta",
+                json!({"itemId": "m1", "field": "text", "delta": ", on it."}),
+            ),
+            event(
+                5.0,
+                "turn.completed",
+                json!({"turnId": "t1", "stopReason": "end_turn"}),
+            ),
+        ];
+        let expected = reduce_thread(&events, ThreadReduceOptions::default());
+        let mut incremental = ThreadState::default();
+        reduce_thread_incremental(
+            &mut incremental,
+            &events[..3],
+            ThreadReduceOptions::default(),
+        );
+        reduce_thread_incremental(
+            &mut incremental,
+            &events[3..],
+            ThreadReduceOptions::default(),
+        );
+        assert_eq!(incremental, expected);
     }
 
     #[test]
@@ -1048,7 +1078,7 @@ mod tests {
     }
 
     #[test]
-    fn done_and_monitoring_markers_are_stripped_from_assistant_text() {
+    fn reducer_retains_raw_markers_for_status_aware_presentation() {
         let events = vec![
             event(1.0, "user-message", json!({"text": "go"})),
             event(
@@ -1061,7 +1091,7 @@ mod tests {
         let ThreadEntry::Item(UiItem::Message(message)) = &state.turns[0].items[0] else {
             panic!("expected a message item");
         };
-        assert_eq!(message.text, "All set.");
+        assert_eq!(message.text, "All set.\nDUCK:DONE");
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! I/O and sequence-number bookkeeping; callers provide already-normalized [`RunEvent`] values.
 
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use coducktor_contract::events::RunEvent;
@@ -36,6 +36,31 @@ pub fn append_event(path: &Path, event: &RunEvent) -> io::Result<()> {
     let line = serde_json::to_string(event).map_err(io::Error::other)?;
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     writeln!(file, "{line}")
+}
+
+/// A run-scoped append handle. `RunManager` retains one while a run is open, avoiding an
+/// open/close pair for every streamed delta. Each complete NDJSON line is flushed before it is
+/// announced to observers so the durable log remains the source of truth after a crash.
+pub struct BufferedEventAppender {
+    writer: BufWriter<fs::File>,
+}
+
+impl BufferedEventAppender {
+    pub fn open(path: &Path) -> io::Result<Self> {
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        Ok(Self {
+            writer: BufWriter::new(file),
+        })
+    }
+
+    pub fn append(&mut self, event: &RunEvent) -> io::Result<()> {
+        let line = serde_json::to_string(event).map_err(io::Error::other)?;
+        writeln!(self.writer, "{line}")?;
+        self.writer.flush()
+    }
 }
 
 /// The highest `seq` persisted so far, or `0` for an empty/missing log. Mirrors

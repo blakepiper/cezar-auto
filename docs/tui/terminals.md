@@ -86,6 +86,13 @@ records what is implemented and which terminal observations remain unverified.
 
 ## Task experience smoke test
 
+- **80×24 pseudo-terminal, 2026-08-22 (Phase 1 responsiveness HUD).** Built and launched the real
+  `coducktor` binary against the coducktor repository with `DUCK_DRY_RUN=1` and
+  `DUCK_DEBUG_HUD=1`. The Tasks screen populated while the status bar continued repainting
+  `FRAME`, `PROJ`, `REDUCED`, and `DROPPED`; project switching completed without a blank or frozen
+  frame, and `q` restored the alternate screen. Slow follow-up/finish concurrency is exercised by
+  the un-ignored one-second-session integration tests so this smoke run made no external model call.
+
 - **80×24 pseudo-terminal, 2026-08-18 (completed-task follow-up).** Built and launched the real
   `duck` binary against an isolated temporary Git repository and a seeded completed dry-run
   Claude session. Opened the completed task, typed `second prompt mock:done`, and pressed Enter.

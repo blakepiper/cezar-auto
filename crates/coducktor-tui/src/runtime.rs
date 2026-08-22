@@ -32,7 +32,8 @@ const INPUT_ITEMS_PER_FRAME: usize = 64;
 const RECEIVER_ITEMS_PER_FRAME: usize = 256;
 const RECEIVER_TIME_BUDGET: Duration = Duration::from_millis(4);
 const PENDING_ACTIONS_PER_FRAME: usize = 16;
-const BACKGROUND_WORKER_COUNT: usize = 4;
+const BACKGROUND_READ_WORKER_COUNT: usize = 6;
+const BACKGROUND_MUTATE_WORKER_COUNT: usize = 2;
 /// Native jobs can outlive a frame, but must never form an unbounded memory backlog.
 const BACKGROUND_QUEUE_CAPACITY: usize = 128;
 /// How long a confirmed quit waits for in-flight turn/activation workers to notice their
@@ -424,19 +425,19 @@ type BackgroundJob = Box<dyn FnOnce(tokio::runtime::Handle) + Send>;
 /// methods intentionally retain synchronous run/session seams, so a Tokio task alone would only
 /// move the freeze to another runtime worker and still leave shutdown waiting on an agent process.
 /// The pool is deliberately never joined: a confirmed quit must not wait for a live agent call.
-struct BackgroundWorkers {
+struct WorkerPool {
     sender: SyncSender<BackgroundJob>,
     pending: Arc<AtomicUsize>,
     _handles: Vec<thread::JoinHandle<()>>,
 }
 
-impl BackgroundWorkers {
-    fn new(runtime_handle: tokio::runtime::Handle) -> Self {
+impl WorkerPool {
+    fn new(runtime_handle: tokio::runtime::Handle, worker_count: usize) -> Self {
         let (sender, receiver) = sync_channel::<BackgroundJob>(BACKGROUND_QUEUE_CAPACITY);
         let receiver = Arc::new(Mutex::new(receiver));
         let pending = Arc::new(AtomicUsize::new(0));
-        let mut handles = Vec::with_capacity(BACKGROUND_WORKER_COUNT);
-        for _ in 0..BACKGROUND_WORKER_COUNT {
+        let mut handles = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
             let receiver = Arc::clone(&receiver);
             let pending = Arc::clone(&pending);
             let runtime_handle = runtime_handle.clone();
@@ -460,15 +461,48 @@ impl BackgroundWorkers {
             _handles: handles,
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum BackgroundLane {
+    Read,
+    Mutate,
+}
+
+struct BackgroundWorkers {
+    read: WorkerPool,
+    mutate: WorkerPool,
+    lane: BackgroundLane,
+}
+
+impl BackgroundWorkers {
+    fn new(runtime_handle: tokio::runtime::Handle) -> Self {
+        Self {
+            read: WorkerPool::new(runtime_handle.clone(), BACKGROUND_READ_WORKER_COUNT),
+            mutate: WorkerPool::new(runtime_handle, BACKGROUND_MUTATE_WORKER_COUNT),
+            lane: BackgroundLane::Read,
+        }
+    }
+
+    fn select(&mut self, lane: BackgroundLane) {
+        self.lane = lane;
+    }
+
+    fn selected(&mut self) -> &mut WorkerPool {
+        match self.lane {
+            BackgroundLane::Read => &mut self.read,
+            BackgroundLane::Mutate => &mut self.mutate,
+        }
+    }
 
     #[cfg(test)]
     fn pending_count(&self) -> usize {
-        self.pending.load(Ordering::Acquire)
+        self.read.pending.load(Ordering::Acquire) + self.mutate.pending.load(Ordering::Acquire)
     }
 
     #[cfg(test)]
     fn worker_count(&self) -> usize {
-        self._handles.len()
+        self.read._handles.len() + self.mutate._handles.len()
     }
 }
 
@@ -483,15 +517,16 @@ where
     T: Send + 'static,
     M: FnOnce(T) -> BackgroundResult + Send + 'static,
 {
-    workers.pending.fetch_add(1, Ordering::Release);
+    let pool = workers.selected();
+    pool.pending.fetch_add(1, Ordering::Release);
     let sender = sender.clone();
     let completion_sender = sender.clone();
     let job = Box::new(move |handle: tokio::runtime::Handle| {
         let result = handle.block_on(future);
         let _ = completion_sender.send(map(result));
     });
-    if workers.sender.try_send(job).is_err() {
-        workers.pending.fetch_sub(1, Ordering::Release);
+    if pool.sender.try_send(job).is_err() {
+        pool.pending.fetch_sub(1, Ordering::Release);
         let _ = sender.send(BackgroundResult::AppUpdate(Box::new(|app| {
             app.notice = Some("background command queue is full; please retry".to_owned());
         })));
@@ -738,6 +773,7 @@ fn execute_pending(
     background_handle: &mut BackgroundWorkers,
 ) {
     for action in app.take_pending_up_to(PENDING_ACTIONS_PER_FRAME) {
+        background_handle.select(background_lane(&action));
         // A coalescable refresh already in flight from an earlier frame satisfies this one too —
         // `queue_pending`'s own dedup only ever sees the still-queued tail, not a request already
         // handed to a worker, and several call sites push onto `pending` directly rather than
@@ -2167,6 +2203,41 @@ fn execute_pending(
     }
 }
 
+fn background_lane(action: &PendingAction) -> BackgroundLane {
+    match action {
+        PendingAction::RefreshTasks { .. }
+        | PendingAction::RefreshIndex
+        | PendingAction::RefreshProjectRegistry
+        | PendingAction::RefreshNewTask { .. }
+        | PendingAction::LoadScratchpad { .. }
+        | PendingAction::RefreshModels { .. }
+        | PendingAction::LoadThread { .. }
+        | PendingAction::LoadEarlierThread { .. }
+        | PendingAction::LoadTaskGitChanges { .. }
+        | PendingAction::LoadTaskGitFiles { .. }
+        | PendingAction::LoadTaskGitCommits { .. }
+        | PendingAction::LoadTaskGitCommitDiff { .. }
+        | PendingAction::LoadRepoGit { .. }
+        | PendingAction::LoadRepoGitCommits { .. }
+        | PendingAction::LoadRepoGitCommitDiff { .. }
+        | PendingAction::LoadCompare { .. }
+        | PendingAction::LoadCompareVariantDiff { .. }
+        | PendingAction::LoadIdeDirectory { .. }
+        | PendingAction::LoadIdeFile { .. }
+        | PendingAction::LoadGithub { .. }
+        | PendingAction::LoadGithubPickers { .. }
+        | PendingAction::LoadGithubComments { .. }
+        | PendingAction::LoadGithubMergeState { .. }
+        | PendingAction::LoadGithubPrChanges { .. }
+        | PendingAction::LoadSkills { .. }
+        | PendingAction::LoadWorkflows { .. }
+        | PendingAction::LoadWorkflowSkills { .. }
+        | PendingAction::LoadSettings { .. }
+        | PendingAction::SettingsLoadConfigFile { .. } => BackgroundLane::Read,
+        _ => BackgroundLane::Mutate,
+    }
+}
+
 async fn load_new_task_snapshot(engine: Arc<dyn Engine>, project: &str) -> PrimeNewTaskSnapshot {
     let scope = Scope::Project(project.to_owned());
     let (config, skills, workflows, workspace_config, provider_status, ui_state, repo) = tokio::join!(
@@ -3291,8 +3362,8 @@ async fn run(
                 .as_micros()
                 .min(u128::from(u64::MAX)) as u64,
             projection_after
-                .rebuild_time
-                .saturating_sub(projection_before.rebuild_time)
+                .projection_time
+                .saturating_sub(projection_before.projection_time)
                 .as_micros()
                 .min(u128::from(u64::MAX)) as u64,
             projection_after
@@ -4331,8 +4402,56 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(workers.worker_count(), BACKGROUND_WORKER_COUNT);
+        assert_eq!(
+            workers.worker_count(),
+            BACKGROUND_READ_WORKER_COUNT + BACKGROUND_MUTATE_WORKER_COUNT
+        );
         assert_eq!(workers.pending_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn saturated_reads_do_not_delay_a_mutation() {
+        let (sender, receiver) = channel();
+        let mut workers = BackgroundWorkers::new(tokio::runtime::Handle::current());
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let started = Arc::new(AtomicUsize::new(0));
+        for _ in 0..BACKGROUND_READ_WORKER_COUNT {
+            let gate = gate.clone();
+            let started = started.clone();
+            spawn_background(
+                &mut workers,
+                &sender,
+                async move {
+                    started.fetch_add(1, Ordering::Release);
+                    gate.notified().await;
+                },
+                |()| BackgroundResult::AppUpdate(Box::new(|_| {})),
+            );
+        }
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while started.load(Ordering::Acquire) < BACKGROUND_READ_WORKER_COUNT {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        workers.select(BackgroundLane::Mutate);
+        spawn_background(&mut workers, &sender, async {}, |()| {
+            BackgroundResult::ActivateRuns { result: Ok(()) }
+        });
+        let result = tokio::time::timeout(Duration::from_millis(100), async {
+            loop {
+                if let Ok(result) = receiver.try_recv() {
+                    break result;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("mutation should have an independent worker");
+        assert!(matches!(result, BackgroundResult::ActivateRuns { .. }));
+        gate.notify_waiters();
     }
 
     /// R2's required scaling case: 1,000 identical refresh submissions must not spawn 1,000

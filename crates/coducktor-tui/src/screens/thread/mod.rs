@@ -30,7 +30,10 @@ use crate::widgets::transcript::{
 
 use actions::is_run_active;
 use projection::ThreadViewModel;
-use reducer::{NoteTone, ThreadAsk, ThreadEntry, ThreadReduceOptions, ThreadState, reduce_thread};
+use reducer::{
+    NoteTone, ThreadAsk, ThreadEntry, ThreadReduceOptions, ThreadState, reduce_thread,
+    reduce_thread_incremental, strip_done_marker,
+};
 
 /// A thread-screen control — a header action, an ask option, a review
 /// button. Routed by `apply_hit` and mirrored by keyboard shortcuts in `handle_key`.
@@ -97,7 +100,10 @@ pub struct ThreadProjectionMetrics {
     /// Number of durable events folded across all rebuilds. This makes accidental quadratic
     /// re-folding visible without retaining any event data.
     pub rebuilt_events: usize,
+    /// Time spent folding durable events into `ThreadState`.
     pub rebuild_time: Duration,
+    /// End-to-end projection and transcript reconciliation time.
+    pub projection_time: Duration,
 }
 
 pub struct ThreadUi {
@@ -188,7 +194,7 @@ impl ThreadUi {
             self.pending_composer = None;
         }
         self.cancel_pending = false;
-        self.rebuild();
+        self.rebuild_full();
     }
 
     pub fn set_pending_prompt(&mut self, text: String) {
@@ -196,7 +202,7 @@ impl ThreadUi {
         self.pending_prompt_after_seq = self.data.as_of_seq;
         self.pending_composer = None;
         self.delivery_error = false;
-        self.rebuild();
+        self.refresh_projection(0, Duration::ZERO);
     }
 
     fn set_pending_composer(&mut self, text: String) {
@@ -204,12 +210,12 @@ impl ThreadUi {
         self.pending_prompt_after_seq = self.data.as_of_seq;
         self.pending_composer = Some(self.composer.clone());
         self.delivery_error = false;
-        self.rebuild();
+        self.refresh_projection(0, Duration::ZERO);
     }
 
     pub fn set_project_root(&mut self, root: Option<PathBuf>) {
         self.project_root = root;
-        self.rebuild();
+        self.refresh_projection(0, Duration::ZERO);
     }
 
     pub fn restore_pending_prompt(&mut self, project: &str, run_id: &str) {
@@ -228,14 +234,14 @@ impl ThreadUi {
         self.pending_prompt = None;
         self.pending_prompt_after_seq = -1.0;
         self.delivery_error = true;
-        self.rebuild();
+        self.refresh_projection(0, Duration::ZERO);
     }
 
     /// Replace the loaded run record (a fresh engine read or a workspace run event
     /// for the currently-open thread).
     pub fn set_run(&mut self, run: ApiRun) {
         self.data.run = Some(run);
-        self.rebuild();
+        self.refresh_projection(0, Duration::ZERO);
     }
 
     pub fn clear_if_matches(&mut self, project: &str, run_id: &str) {
@@ -265,17 +271,28 @@ impl ThreadUi {
     /// Append a frame-sized live batch and re-fold once. This keeps projection cost linear in
     /// frames rather than rebuilding the complete transcript for every provider delta.
     pub fn push_events(&mut self, events: impl IntoIterator<Item = (f64, RunEvent)>) {
-        let mut changed = false;
+        let first_new = self.data.events.len();
         for (seq, event) in events {
             if seq <= self.data.as_of_seq {
                 continue;
             }
             self.data.as_of_seq = seq;
             self.data.events.push(event);
-            changed = true;
         }
-        if changed {
-            self.rebuild();
+        let accepted_len = self.data.events.len().saturating_sub(first_new);
+        if accepted_len > 0 {
+            let active_turn = self
+                .data
+                .run
+                .as_ref()
+                .is_some_and(|run| run.record.status == RunStatus::Running);
+            let started = Instant::now();
+            reduce_thread_incremental(
+                &mut self.data.state,
+                &self.data.events[first_new..],
+                ThreadReduceOptions { active_turn },
+            );
+            self.refresh_projection(accepted_len, started.elapsed());
         }
     }
 
@@ -298,7 +315,7 @@ impl ThreadUi {
         self.data.older_cursor = older_cursor;
         self.data.older_loading = false;
         self.data.older_error = None;
-        self.rebuild();
+        self.rebuild_full();
         self.transcript.preserve_after_prepend(added);
     }
 
@@ -307,7 +324,18 @@ impl ThreadUi {
         self.data.older_error = Some(error);
     }
 
-    fn rebuild(&mut self) {
+    fn rebuild_full(&mut self) {
+        let active_turn = self
+            .data
+            .run
+            .as_ref()
+            .is_some_and(|run| run.record.status == RunStatus::Running);
+        let started = Instant::now();
+        self.data.state = reduce_thread(&self.data.events, ThreadReduceOptions { active_turn });
+        self.refresh_projection(self.data.events.len(), started.elapsed());
+    }
+
+    fn refresh_projection(&mut self, reduced_events: usize, reduction_time: Duration) {
         let started = Instant::now();
         // The send request being accepted does not mean its user-message has reached the
         // transcript yet. Keep the optimistic prompt visible until the durable event arrives,
@@ -331,27 +359,26 @@ impl ThreadUi {
             self.pending_composer = None;
             self.delivery_error = false;
         }
-        let active_turn = self
-            .data
-            .run
-            .as_ref()
-            .is_some_and(|run| run.record.status == RunStatus::Running);
-        self.data.state = reduce_thread(&self.data.events, ThreadReduceOptions { active_turn });
         if let Some(run) = &self.data.run {
             self.data.view_model = projection::project_thread_with_root(
                 run,
                 &self.data.state,
                 self.project_root.as_deref(),
             );
-            self.transcript.reconcile(build_transcript_items(
-                run,
-                &self.data.state,
-                &self.data.view_model,
-                self.data.older_cursor.is_some(),
-                self.data.older_loading,
-                self.data.older_error.as_deref(),
-                self.pending_prompt.as_deref(),
-            ));
+            self.transcript.reconcile_reusing(|existing| {
+                build_transcript_items(
+                    run,
+                    &self.data.state,
+                    &self.data.view_model,
+                    EarlierHistory {
+                        available: self.data.older_cursor.is_some(),
+                        loading: self.data.older_loading,
+                        error: self.data.older_error.as_deref(),
+                    },
+                    self.pending_prompt.as_deref(),
+                    existing,
+                )
+            });
             // A resolved ask, or a fresh one under a different id, clears any stale in-progress
             // selections — a leftover partial answer must never attach to the NEXT question.
             if pending_ask(&self.data.state).is_none() {
@@ -359,8 +386,9 @@ impl ThreadUi {
             }
         }
         self.projection_metrics.rebuilds += 1;
-        self.projection_metrics.rebuilt_events += self.data.events.len();
-        self.projection_metrics.rebuild_time += started.elapsed();
+        self.projection_metrics.rebuilt_events += reduced_events;
+        self.projection_metrics.rebuild_time += reduction_time;
+        self.projection_metrics.projection_time += started.elapsed();
     }
 }
 
@@ -392,29 +420,34 @@ fn map_tone(tone: NoteTone) -> TranscriptNoteTone {
     }
 }
 
+struct EarlierHistory<'a> {
+    available: bool,
+    loading: bool,
+    error: Option<&'a str>,
+}
+
 fn build_transcript_items(
     run: &ApiRun,
     state: &ThreadState,
     view_model: &ThreadViewModel,
-    has_older: bool,
-    older_loading: bool,
-    older_error: Option<&str>,
+    earlier: EarlierHistory<'_>,
     pending_prompt: Option<&str>,
+    existing: &mut std::collections::HashMap<String, TranscriptItem>,
 ) -> Vec<TranscriptItem> {
     let mut items = Vec::new();
-    if older_loading {
+    if earlier.loading {
         items.push(TranscriptItem::Note(NoteItem::new(
             "history-loading",
             "Loading earlier history…",
             TranscriptNoteTone::Dim,
         )));
-    } else if let Some(error) = older_error {
+    } else if let Some(error) = earlier.error {
         items.push(TranscriptItem::Note(NoteItem::new(
             "history-error",
             format!("Earlier history failed: {error} — press R to retry"),
             TranscriptNoteTone::Danger,
         )));
-    } else if has_older {
+    } else if earlier.available {
         items.push(TranscriptItem::Note(NoteItem::new(
             "history-earlier",
             "Earlier history available — scroll to the top or press R to load",
@@ -422,13 +455,21 @@ fn build_transcript_items(
         )));
     }
     if !run.record.task.trim().is_empty() {
-        items.push(TranscriptItem::Message(MessageItem::new(
-            "task",
+        items.push(reuse_message(
+            existing,
+            "task".to_owned(),
             coducktor_protocol::MessageRole::User,
-            run.record.task.clone(),
-        )));
+            &run.record.task,
+        ));
     }
     for (turn_index, turn) in state.turns.iter().enumerate() {
+        let has_ask_card = turn
+            .items
+            .iter()
+            .any(|item| matches!(item, ThreadEntry::Ask(_)));
+        let active_last_turn =
+            run.record.status == RunStatus::Running && turn_index + 1 == state.turns.len();
+        let strip_ask = has_ask_card || active_last_turn;
         let projected = view_model
             .turns
             .iter()
@@ -439,24 +480,32 @@ fn build_transcript_items(
                     .flatten()
             });
         if let Some(user_message) = &turn.user_message {
-            items.push(TranscriptItem::Message(MessageItem::new(
+            items.push(reuse_message(
+                existing,
                 format!("um:{}", turn.id),
                 coducktor_protocol::MessageRole::User,
-                user_message.text.clone(),
-            )));
+                &user_message.text,
+            ));
         }
         let mut agent_messages = Vec::new();
         let mut final_response = None;
         for entry in &turn.items {
             match entry {
                 ThreadEntry::Item(UiItem::Message(message)) => {
+                    let text = if message.role == coducktor_protocol::MessageRole::Assistant
+                        && message.text.contains("DUCK:")
+                    {
+                        std::borrow::Cow::Owned(strip_done_marker(&message.text, strip_ask))
+                    } else {
+                        std::borrow::Cow::Borrowed(message.text.as_str())
+                    };
                     let is_final = projected
                         .and_then(|turn| turn.response.as_ref())
                         .is_some_and(|response| response.id == message.id);
                     if message.role == coducktor_protocol::MessageRole::Assistant && !is_final {
                         agent_messages.push(TranscriptItem::Note(NoteItem::new(
                             message.id.clone(),
-                            message.text.clone(),
+                            text.into_owned(),
                             TranscriptNoteTone::Dim,
                         )));
                     } else {
@@ -465,11 +514,8 @@ fn build_transcript_items(
                         // the turn ends, so its slot in `turn.items` reflects when it started,
                         // not when it finished. Hold it back and place it after every other
                         // activity in the turn so the summary the user reads always lands last.
-                        let message = TranscriptItem::Message(MessageItem::new(
-                            message.id.clone(),
-                            message.role,
-                            message.text.clone(),
-                        ));
+                        let message =
+                            reuse_message(existing, message.id.clone(), message.role, &text);
                         if is_final {
                             final_response = Some(message);
                         } else {
@@ -478,22 +524,14 @@ fn build_transcript_items(
                     }
                 }
                 ThreadEntry::Item(UiItem::Reasoning(reasoning)) => {
-                    items.push(TranscriptItem::Reasoning(ReasoningItem::new(
+                    items.push(reuse_reasoning(
+                        existing,
                         reasoning.id.clone(),
-                        reasoning.text.clone(),
-                    )));
+                        &reasoning.text,
+                    ));
                 }
                 ThreadEntry::Item(UiItem::Tool(tool)) => {
-                    let mut item = ToolItem::new(
-                        tool.id.clone(),
-                        &tool.name,
-                        tool.input.as_ref(),
-                        tool.status,
-                    );
-                    item.output = tool.output.clone();
-                    item.error = tool.error.clone();
-                    item.exit_code = tool.exit_code.map(|value| value as i64);
-                    items.push(TranscriptItem::Tool(item));
+                    items.push(reuse_tool(existing, tool));
                 }
                 ThreadEntry::Note(note) => {
                     items.push(TranscriptItem::Note(NoteItem::new(
@@ -561,14 +599,71 @@ fn build_transcript_items(
             TranscriptNoteTone::Dim,
         )));
     }
-    if let Some(TranscriptItem::Tool(item)) = items
-        .iter_mut()
-        .rev()
-        .find(|item| matches!(item, TranscriptItem::Tool(_)))
+    let mut latest_tool = None;
+    for (index, item) in items.iter_mut().enumerate() {
+        if let TranscriptItem::Tool(tool) = item {
+            tool.is_latest = false;
+            latest_tool = Some(index);
+        }
+    }
+    if let Some(index) = latest_tool
+        && let Some(TranscriptItem::Tool(item)) = items.get_mut(index)
     {
         item.is_latest = true;
     }
     items
+}
+
+fn reuse_message(
+    existing: &mut std::collections::HashMap<String, TranscriptItem>,
+    id: String,
+    role: coducktor_protocol::MessageRole,
+    text: &str,
+) -> TranscriptItem {
+    if let Some(TranscriptItem::Message(item)) = existing.remove(&id)
+        && item.role == role
+        && item.text == text
+    {
+        return TranscriptItem::Message(item);
+    }
+    TranscriptItem::Message(MessageItem::new(id, role, text))
+}
+
+fn reuse_reasoning(
+    existing: &mut std::collections::HashMap<String, TranscriptItem>,
+    id: String,
+    text: &str,
+) -> TranscriptItem {
+    if let Some(TranscriptItem::Reasoning(item)) = existing.remove(&id)
+        && item.text == text
+    {
+        return TranscriptItem::Reasoning(item);
+    }
+    TranscriptItem::Reasoning(ReasoningItem::new(id, text))
+}
+
+fn reuse_tool(
+    existing: &mut std::collections::HashMap<String, TranscriptItem>,
+    tool: &coducktor_protocol::UiToolItem,
+) -> TranscriptItem {
+    let id = tool.id.clone();
+    let candidate = ToolItem::new(id.clone(), &tool.name, tool.input.as_ref(), tool.status);
+    if let Some(TranscriptItem::Tool(item)) = existing.remove(&id)
+        && item.tool_kind == candidate.tool_kind
+        && item.title == candidate.title
+        && item.subtitle == candidate.subtitle
+        && item.status == tool.status
+        && item.output.as_deref() == tool.output.as_deref()
+        && item.error.as_deref() == tool.error.as_deref()
+        && item.exit_code == tool.exit_code.map(|value| value as i64)
+    {
+        return TranscriptItem::Tool(item);
+    }
+    let mut candidate = candidate;
+    candidate.output = tool.output.clone();
+    candidate.error = tool.error.clone();
+    candidate.exit_code = tool.exit_code.map(|value| value as i64);
+    TranscriptItem::Tool(candidate)
 }
 
 fn outcome_item(turn: &projection::TurnViewModel) -> Option<TranscriptItem> {
@@ -1531,6 +1626,7 @@ mod tests {
                 rebuilds: after.rebuilds - before.rebuilds,
                 rebuilt_events: after.rebuilt_events - before.rebuilt_events,
                 rebuild_time: after.rebuild_time.saturating_sub(before.rebuild_time),
+                projection_time: after.projection_time.saturating_sub(before.projection_time),
             }
         }
 
@@ -1542,11 +1638,9 @@ mod tests {
         assert_eq!(large.rebuilt_events, 2_000);
     }
 
-    /// Phase 0 guard for the production shape: events arrive across many frame-sized batches,
-    /// rather than in one call that can only demonstrate a linear single fold. Phase 1 makes this
-    /// hard-failing once incremental projection replaces whole-prefix rebuilds.
+    /// Production-shape guard: events arrive across many frame-sized batches, rather than in one
+    /// call that can only demonstrate a linear single fold.
     #[test]
-    #[ignore = "baseline: 1,000 events reduce 63,000; 2,000 reduce 251,000 until Phase 1"]
     fn doubling_accepted_events_does_not_quadruple_rebuild_time() {
         fn projection_work(event_count: u64) -> ThreadProjectionMetrics {
             let mut app = app_with_run(RunStatus::Running);
@@ -1563,6 +1657,7 @@ mod tests {
                 rebuilds: after.rebuilds - before.rebuilds,
                 rebuilt_events: after.rebuilt_events - before.rebuilt_events,
                 rebuild_time: after.rebuild_time.saturating_sub(before.rebuild_time),
+                projection_time: after.projection_time.saturating_sub(before.projection_time),
             }
         }
 
@@ -1570,8 +1665,8 @@ mod tests {
         let large = projection_work(2_000);
         assert_eq!(small.rebuilds, 125);
         assert_eq!(large.rebuilds, 250);
-        assert_eq!(small.rebuilt_events, 63_000);
-        assert_eq!(large.rebuilt_events, 251_000);
+        assert_eq!(small.rebuilt_events, 1_000);
+        assert_eq!(large.rebuilt_events, 2_000);
         assert!(
             large.rebuilt_events <= small.rebuilt_events * 3
                 && large.rebuild_time < small.rebuild_time * 3,
@@ -1581,7 +1676,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "release baseline: the next frame at 12,000 events measured 11.3ms; target is <8ms"]
     fn live_thread_frame_at_twelve_thousand_events_stays_under_eight_ms() {
         use ratatui::buffer::Buffer;
 
@@ -1610,9 +1704,14 @@ mod tests {
             .transcript
             .render(&mut buffer, viewport, &theme);
         let elapsed = started.elapsed();
+        let budget = if cfg!(debug_assertions) {
+            Duration::from_millis(30)
+        } else {
+            Duration::from_millis(8)
+        };
         assert!(
-            elapsed < Duration::from_millis(8),
-            "12,000-event live frame took {elapsed:?}; target is <8ms"
+            elapsed < budget,
+            "12,000-event live frame took {elapsed:?}; target is <8ms in the optimized profile"
         );
     }
 

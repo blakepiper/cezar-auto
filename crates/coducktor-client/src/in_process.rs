@@ -59,9 +59,10 @@ use coducktor_core::skills::discover_skills;
 use coducktor_core::workflows::load::{WORKFLOWS_DIR, load_workflows};
 use coducktor_core::workflows::run::{
     AUTOMATIC_COMMIT_MESSAGE_NUDGE, AUTONOMOUS_NUDGE, AdmittedTurn, CancellationToken,
-    CheckExecutor, CheckResult, DiffInspector, EventInput, GitAutoMessage, MONITORING_WAKE_PROMPT,
-    PromptImage, RepositoryRootLease, RunManager, RuntimeActive, RuntimeOptions, SessionFactory,
-    StartRunInput as CoreStartRunInput, TurnStep, WorkspaceSemaphore, review_gate_enabled,
+    CheckExecutor, CheckResult, DiffInspector, EventInput, FinishStart, GitAutoMessage,
+    MONITORING_WAKE_PROMPT, PromptImage, RepositoryRootLease, RunManager, RuntimeActive,
+    RuntimeOptions, SessionFactory, StartRunInput as CoreStartRunInput, TurnStep,
+    WorkspaceSemaphore, review_gate_enabled,
 };
 use coducktor_core::workflows::types::{parse_workflow_file_doc, steps_issue};
 use coducktor_core::workspace::agent_accounts::{
@@ -416,6 +417,133 @@ impl TurnDispatch {
                     );
                 }
             }
+        }
+    }
+
+    /// Dispatch an already-durable user follow-up and return as soon as its per-run worker has
+    /// taken ownership. The cell keeps the detached live session recoverable if thread creation
+    /// itself fails.
+    fn message(
+        &self,
+        run_id: String,
+        active: RuntimeActive,
+        prompt: String,
+        images: Vec<PromptImage>,
+    ) -> bool {
+        self.reap_finished();
+        let cell = Arc::new(Mutex::new(Some(active)));
+        let dispatch = self.clone();
+        let thread_cell = cell.clone();
+        let thread_run_id = run_id.clone();
+        let spawned = std::thread::Builder::new()
+            .name("coducktor-follow-up".to_owned())
+            .spawn(move || {
+                if let Some(active) = thread_cell.lock().ok().and_then(|mut cell| cell.take()) {
+                    dispatch.run_message(thread_run_id, active, prompt, images);
+                }
+            });
+        self.register_detached_worker(run_id, cell, spawned, true)
+    }
+
+    /// Dispatch a detached provider finish without making the engine call wait for process exit.
+    fn finish(&self, run_id: String, active: RuntimeActive) -> bool {
+        self.reap_finished();
+        let cell = Arc::new(Mutex::new(Some(active)));
+        let dispatch = self.clone();
+        let thread_cell = cell.clone();
+        let thread_run_id = run_id.clone();
+        let spawned = std::thread::Builder::new()
+            .name("coducktor-finish".to_owned())
+            .spawn(move || {
+                if let Some(active) = thread_cell.lock().ok().and_then(|mut cell| cell.take()) {
+                    dispatch.run_finish(thread_run_id, active);
+                }
+            });
+        self.register_detached_worker(run_id, cell, spawned, false)
+    }
+
+    fn register_detached_worker(
+        &self,
+        run_id: String,
+        cell: Arc<Mutex<Option<RuntimeActive>>>,
+        spawned: std::io::Result<std::thread::JoinHandle<()>>,
+        message: bool,
+    ) -> bool {
+        match spawned {
+            Ok(handle) => {
+                if let Ok(mut workers) = self.workers.lock() {
+                    workers.insert(run_id, handle);
+                }
+                true
+            }
+            Err(_) => {
+                if let Some(active) = cell.lock().ok().and_then(|mut cell| cell.take())
+                    && let Ok(mut manager) = self.manager.lock()
+                {
+                    if message {
+                        manager.abandon_message(&run_id, active);
+                    } else {
+                        manager.abandon_finish(&run_id, active);
+                    }
+                }
+                false
+            }
+        }
+    }
+
+    fn run_message(
+        &self,
+        run_id: String,
+        mut active: RuntimeActive,
+        prompt: String,
+        images: Vec<PromptImage>,
+    ) {
+        let step_id = active.step_id().to_owned();
+        let send_result = active
+            .session_mut()
+            .send_message(&prompt, &images, &mut |event| {
+                self.apply_event(&run_id, &step_id, event)
+            });
+        let cancellation_requested = self
+            .cancellations
+            .lock()
+            .ok()
+            .and_then(|tokens| tokens.get(&run_id).cloned())
+            .is_some_and(|token| token.is_requested());
+        let step = match self.manager.lock() {
+            Ok(mut manager) => {
+                manager.apply_message_turn(&run_id, active, send_result, cancellation_requested)
+            }
+            Err(_) => return,
+        };
+        self.drive_steps(&run_id, &step_id, step);
+        self.redispatch();
+    }
+
+    fn run_finish(&self, run_id: String, mut active: RuntimeActive) {
+        let step_id = active.step_id().to_owned();
+        let finish_result = active
+            .session_mut()
+            .finish(&mut |event| self.apply_event(&run_id, &step_id, event));
+        let step = match self.manager.lock() {
+            Ok(mut manager) => manager.apply_finish_turn(&run_id, active, finish_result),
+            Err(_) => return,
+        };
+        self.drive_steps(&run_id, &step_id, step);
+        self.redispatch();
+    }
+
+    fn drive_steps(&self, run_id: &str, step_id: &str, mut step: std::io::Result<TurnStep>) {
+        loop {
+            let active = match step {
+                Ok(TurnStep::Done) | Err(_) => break,
+                Ok(TurnStep::Nudge(active)) => active,
+                Ok(TurnStep::GitAutoCommit(active)) => {
+                    self.run_git_auto_commit(run_id, step_id, active);
+                    break;
+                }
+            };
+            step = self.run_nudge(run_id, step_id, active, &CancellationToken::default());
         }
     }
 
@@ -1807,10 +1935,21 @@ impl InProcessEngine {
         if manager.get_run(run_id).is_none() {
             return Err(EngineError::NotFound);
         }
-        let finished = manager.finish(run_id).map_err(io_err)?;
+        let finish = manager.begin_finish(run_id).map_err(io_err)?;
         let admitted = manager.take_pending_turns();
         drop(manager);
         self.turn_dispatch().dispatch(admitted);
+        let finished = match finish {
+            FinishStart::Finished(finished) => finished,
+            FinishStart::Detached(active) => {
+                if !self.turn_dispatch().finish(run_id.to_owned(), *active) {
+                    return Err(EngineError::Unavailable {
+                        reason: "could not start the finish worker".to_owned(),
+                    });
+                }
+                true
+            }
+        };
         Ok(FinishResponse { finished })
     }
 
@@ -2832,11 +2971,17 @@ impl InProcessEngine {
 
     pub async fn worktrees(&self) -> Result<WorktreesResponse, EngineError> {
         let keep = self.worktree_keep();
-        let manager = self.manager.lock().map_err(|_| lock_err())?;
+        let runs = self
+            .run_snapshot
+            .read()
+            .map_err(|_| lock_err())?
+            .get(&self.project_id)
+            .map(|runs| runs.values().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
         let mut worktrees = Vec::new();
         let mut any_size_unavailable = false;
         let mut total = 0_u64;
-        for run in manager.list_runs() {
+        for run in runs {
             let Some(path) = run.worktree_path.as_deref() else {
                 continue;
             };
@@ -2899,13 +3044,15 @@ impl InProcessEngine {
         run_id: &str,
     ) -> Result<RemoveWorktreeResponse, EngineError> {
         let run = self.run_record(run_id)?;
-        {
-            let manager = self.manager.lock().map_err(|_| lock_err())?;
-            if manager.is_active(run_id) {
-                return Err(EngineError::Conflict {
-                    reason: "run is active — cancel it first".to_owned(),
-                });
-            }
+        if matches!(
+            run.status,
+            coducktor_contract::RunStatus::Queued
+                | coducktor_contract::RunStatus::Running
+                | coducktor_contract::RunStatus::Waiting
+        ) {
+            return Err(EngineError::Conflict {
+                reason: "run is active — cancel it first".to_owned(),
+            });
         }
         if let Some(worktree) = run_worktree_of(&run) {
             let repo_root = self.repo_root.clone();
@@ -2936,11 +3083,15 @@ impl InProcessEngine {
         &self,
         group_id: &str,
     ) -> Result<Vec<coducktor_contract::RunRecord>, EngineError> {
-        let manager = self.manager.lock().map_err(|_| lock_err())?;
-        let mut runs: Vec<_> = manager
-            .list_runs()
+        let mut runs: Vec<_> = self
+            .run_snapshot
+            .read()
+            .map_err(|_| lock_err())?
+            .get(&self.project_id)
             .into_iter()
+            .flat_map(|runs| runs.values())
             .filter(|run| run.group_id.as_deref() == Some(group_id))
+            .cloned()
             .collect();
         runs.sort_by(|left, right| left.variant.cmp(&right.variant));
         Ok(runs)
@@ -3808,13 +3959,23 @@ impl InProcessEngine {
         if manager.get_run(run_id).is_none() {
             return Err(EngineError::NotFound);
         }
-        let result = manager.deliver_message(run_id, text, images);
+        let result = manager.begin_message(run_id, text.clone(), images.clone());
         let admitted = manager.take_pending_turns();
         drop(manager);
         self.turn_dispatch().dispatch(admitted);
         match result {
-            Ok(true) => Ok(MessageResponse::Delivered { delivered: true }),
-            Ok(false) => Err(EngineError::Conflict {
+            Ok(Some(active)) => {
+                if !self
+                    .turn_dispatch()
+                    .message(run_id.to_owned(), active, text, images)
+                {
+                    return Err(EngineError::Unavailable {
+                        reason: "could not start the follow-up worker".to_owned(),
+                    });
+                }
+                Ok(MessageResponse::Delivered { delivered: true })
+            }
+            Ok(None) => Err(EngineError::Conflict {
                 reason: "session closed".to_owned(),
             }),
             Err(error) => Err(io_err(error)),
@@ -4069,13 +4230,15 @@ impl InProcessEngine {
     /// Publish a draft PR via `coducktor-forge` and record the outcome on the run.
     pub async fn create_pr(&self, run_id: &str) -> Result<CreatePrResponse, EngineError> {
         let run = self.run_record(run_id)?;
-        {
-            let manager = self.manager.lock().map_err(|_| lock_err())?;
-            if manager.is_active(run_id) {
-                return Err(EngineError::Conflict {
-                    reason: "run is still active — wait for the review gate".to_owned(),
-                });
-            }
+        if matches!(
+            run.status,
+            coducktor_contract::RunStatus::Queued
+                | coducktor_contract::RunStatus::Running
+                | coducktor_contract::RunStatus::Waiting
+        ) {
+            return Err(EngineError::Conflict {
+                reason: "run is still active — wait for the review gate".to_owned(),
+            });
         }
         if run_worktree_of(&run).is_none() || run.branch.is_none() {
             return Err(EngineError::Conflict {
@@ -4140,15 +4303,7 @@ impl InProcessEngine {
         run_id: &str,
         cursor: Option<&str>,
     ) -> Result<RunHistoryPage, EngineError> {
-        if self
-            .manager
-            .lock()
-            .map_err(|_| lock_err())?
-            .get_run(run_id)
-            .is_none()
-        {
-            return Err(EngineError::NotFound);
-        }
+        let _ = self.run_record(run_id)?;
         self.read_history_page(run_id, cursor)
     }
 
@@ -4156,20 +4311,8 @@ impl InProcessEngine {
         &self,
         run_id: &str,
     ) -> Result<RunHistoryContext, EngineError> {
-        if self
-            .manager
-            .lock()
-            .map_err(|_| lock_err())?
-            .get_run(run_id)
-            .is_none()
-        {
-            return Err(EngineError::NotFound);
-        }
-        let events = self
-            .manager
-            .lock()
-            .map_err(|_| lock_err())?
-            .read_events(run_id);
+        let _ = self.run_record(run_id)?;
+        let events = coducktor_core::runs::events::read_events(&self.run_events_path(run_id));
         let mut latest_plan = None;
         let mut selected = BTreeMap::new();
         for event in events.iter() {
@@ -4250,11 +4393,7 @@ impl InProcessEngine {
             });
         }
 
-        let events = self
-            .manager
-            .lock()
-            .map_err(|_| lock_err())?
-            .read_events(run_id);
+        let events = coducktor_core::runs::events::read_events(&path);
         let mut units: Vec<usize> = events
             .iter()
             .enumerate()
