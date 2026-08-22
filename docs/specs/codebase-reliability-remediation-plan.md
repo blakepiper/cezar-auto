@@ -26,9 +26,9 @@ release claim.
 
 | Finding | Current state | What remains |
 | --- | --- | --- |
-| R1 provider turn monopolizes a manager | complete | Concurrent same-project opens and turns run without a manager or factory mutex; non-blocking admission remains in place (see evidence). |
+| R1 provider turn monopolizes a manager | **partially superseded** | Correct for *admitted* turns via `TurnDispatch`. The follow-up and finish paths were never routed through it and still block under the manager lock — measured 2026-08-22. See `cockpit-responsiveness-and-thread-ux-plan.md` (F1). |
 | R2 TUI awaits normal actions | complete | All four required scaling/staleness tests now exist and pass (see evidence), including a real bug the A→B→A test caught and fixed: the IDE's file/directory loads had no generation guard at all. |
-| R3 stream amplification | complete | All three required assertions now exist and pass (see evidence): 10,000 deltas retain the exact final transcript with a bounded number of index rewrites; doubling accepted events does not quadruple projection rebuild time; a 300-run project plus several sibling projects (one blocked) refreshes promptly. |
+| R3 stream amplification | **partially superseded** | The durable-append and cross-project assertions hold. `doubling_accepted_events_does_not_quadruple_rebuild_time` pushes one batch, which is linear by construction and cannot observe the per-frame quadratic the runtime actually performs — measured 2026-08-22. See `cockpit-responsiveness-and-thread-ux-plan.md` (F2). |
 | R4 worktree execution | complete | Do not redesign; preserve its integration coverage. |
 | R5 checks and review gate | complete | Do not redesign; preserve its integration coverage. |
 | R6 selected account environment | complete | Do not redesign; preserve its integration coverage. |
