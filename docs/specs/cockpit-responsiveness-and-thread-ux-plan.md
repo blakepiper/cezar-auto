@@ -1,6 +1,6 @@
 # Cockpit responsiveness and thread UX — implementation specification
 
-Status: Phase 4 interaction model implemented; Phase 5 is next (written 2026-08-22, updated 2026-08-22)
+Status: Phase 4 implemented; Phase 5 is next and Phase 6 is planned (written 2026-08-22, updated 2026-08-22)
 
 Audience: the next implementation agent. Work directly on `main`, preserve unrelated changes,
 commit the completed work, and push `origin main` as required by `AGENTS.md`.
@@ -520,6 +520,36 @@ agent with `Esc`. Nothing is archived, nothing is finished, no typed text is los
 
 **Gate.** The full `SDLC.md` validation gate is clean with the new performance and
 lock-discipline tests included.
+
+### Phase 6 — make navigation feel like vanilla Neovim
+
+This is a small, keyboard-only conformance refactor after the reliability work, not a new modal
+editor or a Vim-emulation framework. Mouse hit targets remain available for every product action,
+so users who do not know Neovim do not need to learn its normal mode.
+
+1. **Use Neovim's window grammar.** Replace the cockpit-only `Ctrl+Left` / `Ctrl+Right` panel
+   switching with a two-key `Ctrl+W` prefix followed by `h`, `j`, `k`, or `l`. Support `Ctrl+W w`
+   to cycle and `Ctrl+W p` to return to the previous panel. The prefix must be visible in the
+   status line, accept the same second key with or without releasing Ctrl, and cancel cleanly on
+   `Esc` or an invalid key.
+2. **Keep modes and motions unsurprising.** A task opens in composer insert mode; `Esc` returns to
+   normal mode and `i` re-enters insert mode. Normal-mode list and transcript motion is
+   `h`/`j`/`k`/`l`, `gg`, `G`, `Ctrl+U`, and `Ctrl+D`; `/`, `n`, and `N` own search. `gt` / `gT`
+   replace bracket shortcuts for task tabs. Do not bind printable normal-mode keys such as `a`,
+   `c`, `f`, `n`, or `q` directly to destructive or product-specific actions.
+3. **Use Ex commands for cockpit actions without a vanilla key.** Route quit/back, task stop,
+   finish, archive, delete, and route opening through discoverable commands such as `:q`, `:back`,
+   `:stop`, `:finish`, `:archive`, `:delete`, and the existing `:open`. Keep confirmation policy
+   unchanged. `:help` and the status line document the current mode and valid pending prefix.
+4. **Centralize and test the grammar.** Put multi-key prefix state and normal/insert dispatch in
+   the shared input layer instead of duplicating it per screen. Update `docs/tui/keymap.md` and
+   snapshots, and add table-driven tests comparing every supported chord with its vanilla Neovim
+   meaning. Retain mouse actions for every header, row-menu, tab, picker, and confirmation path.
+
+**Gate.** A Neovim user can enter/leave the composer with `i`/`Esc`, move across every cockpit
+panel with `Ctrl+W h/j/k/l`, move through content with ordinary motions, change task tabs with
+`gt`/`gT`, search with `/` then `n`/`N`, and leave with `:q` without encountering a conflicting
+bare-key action. The same flow remains fully operable with only the mouse.
 
 ## Known test and snapshot churn
 
