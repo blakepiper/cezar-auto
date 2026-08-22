@@ -33,7 +33,8 @@ The cockpit can:
 - Run Claude Code, Codex, OpenCode, or pi sessions through one normalized runner interface.
 - Select a model, reasoning effort, branch, worktree mode, and task mode.
 - Run up to three competing Git variants and compare their diffs before choosing one.
-- Run directly in the checkout by default, with isolated Git worktrees available when wanted.
+- Run tasks in isolated Git worktrees by default, with direct-checkout execution available when
+  explicitly wanted.
 - Stream agent text, tool activity, plans, questions, images, token counts, costs, and step status.
 - Persist run history and event transcripts so completed work remains inspectable after restart.
 - Continue, cancel, finish, archive, delete, or hand a completed session back to its native CLI.
@@ -115,11 +116,12 @@ git pull && ./install.sh
 6. Press Enter to send the task. Choose `planning` in the task-mode picker when you want a
    concise plan without repository changes.
 
-In a Git repository, normal tasks run directly in the current checkout by default. Enable worktree
-mode to use an isolated task worktree in Coducktor's per-user project state on a
-`duck/<run-id-prefix>` branch, leaving the original checkout alone while the agent works. The New
-Task screen shows whether a run will use a worktree or modify the checkout directly. Competing
-variants always use worktrees; without Git, the run executes in place.
+In a Git repository, normal tasks use an isolated task worktree by default. Each run gets its own
+worktree in Coducktor's per-user project state on a `duck/<run-id-prefix>` branch, so the workspace's
+parallel-session capacity can be used safely. Turn worktree mode off when you intentionally want
+the agent to modify the current checkout; those runs are serialized with other in-place runs. The
+New Task screen shows which mode a run will use. Competing variants always use worktrees; without
+Git, the run executes in place.
 
 ### Follow a run
 

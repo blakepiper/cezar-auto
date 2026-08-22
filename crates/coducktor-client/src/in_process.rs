@@ -5250,7 +5250,10 @@ fn workspace_config_response(
             autonomous: config.composer_defaults.autonomous,
             worktree: config.composer_defaults.worktree,
             inherited_autonomous: coducktor_contract::InheritedAutonomous::Value(true),
-            inherited_worktree: false,
+            // Isolate ordinary tasks by default so the workspace's parallel-session capacity is
+            // useful without letting two agents mutate the same checkout concurrently. Users
+            // can still explicitly select worktree: off for serialized in-place work.
+            inherited_worktree: true,
             git_auto: config.composer_defaults.git_auto,
         },
         resources: coducktor_contract::WorkspaceResources {
@@ -8271,6 +8274,13 @@ mod tests {
             Some(5)
         );
         assert!(!manager.runtime_options().auto_resume_on_usage_limit);
+    }
+
+    #[test]
+    fn workspace_composer_defaults_to_isolated_worktrees() {
+        let response = workspace_config_response(&WorkspaceConfig::default_for(&ProcessEnv));
+        assert_eq!(response.composer_defaults.worktree, None);
+        assert!(response.composer_defaults.inherited_worktree);
     }
 
     #[tokio::test]

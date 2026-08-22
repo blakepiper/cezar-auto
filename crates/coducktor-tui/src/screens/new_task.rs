@@ -4,7 +4,7 @@
 //! "What should the agent work on?", the shared composer card (auto-growing text
 //! area, pasted-image row — no Dictation, per decision 2), a pill row —
 //! `skill/workflow ▾` · `runner ▾` · `model ▾` · `reasoning ▾` · `×N variants ▾` ·
-//! `branch: <branch> ▾` · `worktree: off ▾` · `mode: autonomous ▾` · `git: manual ▾` —
+//! `branch: <branch> ▾` · `worktree: on ▾` · `mode: autonomous ▾` · `git: manual ▾` —
 //! then the send hint.
 
 use coducktor_contract::{
@@ -289,7 +289,7 @@ pub fn effective_values(draft: &NewTaskDraft, data: &NewTaskData) -> Effective {
             workspace_defaults
                 .map(|defaults| defaults.worktree.unwrap_or(defaults.inherited_worktree))
         })
-        .unwrap_or(false);
+        .unwrap_or(true);
     let (autonomous_on, worktree_on) = new_task_form::resolve_composer_run_mode(
         has_git,
         variants,
@@ -1646,6 +1646,7 @@ mod tests {
             app.new_task_ui.composer_focused,
             "hero auto-focuses the composer"
         );
+        assert!(effective_values(&app.new_task_ui.draft, &app.new_task_ui.data).worktree_on);
         for character in "ship the shell".chars() {
             app.handle_event(crossterm::event::Event::Key(key(character)));
         }
@@ -1666,7 +1667,6 @@ mod tests {
             serde_json::json!({
                 "task": "ship the shell",
                 "steps": [{ "id": "task", "name": "execution", "prompt": "{{task}}" }],
-                "worktree": false,
                 "autonomous": true,
             })
         );
@@ -1875,7 +1875,6 @@ mod tests {
             serde_json::json!({
                 "task": "fix the flake",
                 "steps": [{ "id": "task", "name": "om-fix", "skill": "om-fix", "prompt": "{{task}}" }],
-                "worktree": false,
                 "autonomous": true,
             })
         );
@@ -1997,8 +1996,8 @@ mod tests {
             "autonomous is the zero-config default"
         );
         assert!(
-            !effective.worktree_on,
-            "in-place is the zero-config default"
+            effective.worktree_on,
+            "isolated worktrees are the zero-config default"
         );
         assert_eq!(effective.base_branch, "main");
     }

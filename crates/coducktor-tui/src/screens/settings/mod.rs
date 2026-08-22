@@ -339,7 +339,7 @@ fn rows_agents(app: &App) -> Vec<Row> {
     let variants = composer.and_then(|defaults| defaults.variants).unwrap_or(1);
     let worktree = composer
         .map(|defaults| defaults.worktree.unwrap_or(defaults.inherited_worktree))
-        .unwrap_or(false);
+        .unwrap_or(true);
     let autonomous = composer
         .and_then(|defaults| {
             defaults.autonomous.or(match defaults.inherited_autonomous {
@@ -1354,7 +1354,7 @@ fn cycle_default_worktree(app: &mut App) {
                 .worktree
                 .unwrap_or(config.composer_defaults.inherited_worktree)
         })
-        .unwrap_or(false);
+        .unwrap_or(true);
     put_composer_defaults(
         app,
         ComposerDefaultsPatch {
