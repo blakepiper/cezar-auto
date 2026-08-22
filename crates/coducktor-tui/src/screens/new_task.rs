@@ -396,11 +396,21 @@ pub fn apply_hit(app: &mut App, action: NewTaskAction) {
         NewTaskAction::AutonomousPill => open_pill(app, PillId::Autonomous),
         NewTaskAction::GitModePill => open_pill(app, PillId::GitMode),
         NewTaskAction::Compose => {
-            app.new_task_ui.pill_focus = None;
-            app.new_task_ui.composer_focused = true;
-            app.new_task_ui.composer.focus();
+            focus_composer(app);
         }
     }
+}
+
+fn focus_composer(app: &mut App) {
+    app.new_task_ui.pill_focus = None;
+    app.new_task_ui.composer_focused = true;
+    app.new_task_ui.composer.focus();
+}
+
+fn focus_pill(app: &mut App, pill: PillId) {
+    app.new_task_ui.composer_focused = false;
+    app.new_task_ui.composer.blur();
+    app.new_task_ui.pill_focus = Some(pill);
 }
 
 pub fn pick_index(app: &mut App, index: usize) {
@@ -479,19 +489,52 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         // be restored from a per-project draft between frames, so relying on the cloned widget's
         // old `focused` bit made `i` look like it sometimes did nothing.
         app.new_task_ui.composer.focus();
+        if app.new_task_ui.composer.menu.is_none() {
+            match key.code {
+                KeyCode::Tab => {
+                    focus_pill(app, PillId::Source);
+                    return true;
+                }
+                KeyCode::BackTab => {
+                    focus_pill(app, PillId::GitMode);
+                    return true;
+                }
+                _ => {}
+            }
+        }
         return handle_composer_key(app, key);
     }
     match key.code {
-        KeyCode::Char('j') | KeyCode::Down => {
-            if let Some(pill) = app.new_task_ui.pill_focus {
-                app.new_task_ui.pill_focus = Some(pill.next());
+        KeyCode::Tab => {
+            match app.new_task_ui.pill_focus {
+                Some(PillId::GitMode) => focus_composer(app),
+                Some(pill) => focus_pill(app, pill.next()),
+                None => focus_pill(app, PillId::Source),
             }
             true
         }
-        KeyCode::Char('k') | KeyCode::Up => {
-            if let Some(pill) = app.new_task_ui.pill_focus {
-                app.new_task_ui.pill_focus = Some(pill.previous());
+        KeyCode::BackTab => {
+            match app.new_task_ui.pill_focus {
+                Some(PillId::Source) => focus_composer(app),
+                Some(pill) => focus_pill(app, pill.previous()),
+                None => focus_pill(app, PillId::GitMode),
             }
+            true
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            let pill = app
+                .new_task_ui
+                .pill_focus
+                .map_or(PillId::Source, PillId::next);
+            focus_pill(app, pill);
+            true
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            let pill = app
+                .new_task_ui
+                .pill_focus
+                .map_or(PillId::GitMode, PillId::previous);
+            focus_pill(app, pill);
             true
         }
         KeyCode::Char(' ') if app.new_task_ui.pill_focus == Some(PillId::Autonomous) => {
@@ -513,9 +556,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         KeyCode::Char('i') | KeyCode::Enter => {
-            app.new_task_ui.pill_focus = None;
-            app.new_task_ui.composer_focused = true;
-            app.new_task_ui.composer.focus();
+            focus_composer(app);
             true
         }
         _ => false,
@@ -678,7 +719,7 @@ fn toggle_git_auto(app: &mut App) {
 fn open_pill(app: &mut App, pill: PillId) {
     let mut picker = Picker::new(picker_title(pill));
     picker.searchable = matches!(pill, PillId::Source | PillId::Base);
-    app.new_task_ui.pill_focus = Some(pill);
+    focus_pill(app, pill);
     app.new_task_ui.picker = Some(match pill {
         PillId::Source => PickerKind::Source(picker),
         PillId::Runner => PickerKind::Runner(picker),
@@ -1440,7 +1481,7 @@ fn pill_row_height(width: u16, effective: &Effective) -> u16 {
 }
 
 fn action_row_height(width: u16) -> u16 {
-    let content = " Enter sends · Esc leaves the composer";
+    let content = " Tab options · Enter sends · Esc leaves the composer";
     wrapped_height(content, width)
 }
 
@@ -1452,7 +1493,7 @@ fn wrapped_height(content: &str, width: u16) -> u16 {
 fn render_actions(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = app.theme;
     let line = Line::from(Span::styled(
-        " Enter sends · Esc leaves the composer",
+        " Tab options · Enter sends · Esc leaves the composer",
         theme_soft(theme),
     ));
     frame.render_widget(
@@ -1658,6 +1699,46 @@ mod tests {
         app.new_task_ui.composer.blur();
         let _ = render(&mut app, 120, 40);
         assert!(app.new_task_ui.composer.focused);
+    }
+
+    #[test]
+    fn tab_moves_from_the_composer_through_every_task_option() {
+        let mut app = app_with_new_task("t-options");
+        let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+
+        for pill in PillId::ALL {
+            assert!(handle_key(&mut app, tab));
+            assert!(!app.new_task_ui.composer_focused);
+            assert_eq!(app.new_task_ui.pill_focus, Some(pill));
+        }
+
+        assert!(handle_key(&mut app, tab));
+        assert!(app.new_task_ui.composer_focused);
+        assert_eq!(app.new_task_ui.pill_focus, None);
+    }
+
+    #[test]
+    fn shift_tab_reverses_option_focus_and_enter_opens_the_picker() {
+        let mut app = app_with_new_task("t-options-reverse");
+        let back_tab = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
+
+        assert!(handle_key(&mut app, back_tab));
+        assert_eq!(app.new_task_ui.pill_focus, Some(PillId::GitMode));
+        assert!(handle_key(&mut app, enter_key()));
+        assert!(matches!(
+            app.new_task_ui.picker,
+            Some(PickerKind::GitMode(_))
+        ));
+
+        assert!(handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        ));
+        assert!(app.new_task_ui.picker.is_none());
+        assert_eq!(app.new_task_ui.pill_focus, Some(PillId::GitMode));
+
+        assert!(handle_key(&mut app, back_tab));
+        assert_eq!(app.new_task_ui.pill_focus, Some(PillId::Autonomous));
     }
 
     #[test]

@@ -90,6 +90,12 @@ records what is implemented and which terminal observations remain unverified.
 
 ## Task experience smoke test
 
+- **120×40 tmux pseudo-terminal, 2026-08-22 (New Task option focus).** Built and launched the
+  real `coducktor` binary against this repository with `DUCK_DRY_RUN=1`, opened New Task, and
+  confirmed the composer owned input. `Tab` moved focus to `source: execution`; `Enter` opened
+  the skill/workflow picker with execution selected. The screen also showed the new `Tab options`
+  hint, and the draft used for the check was cleared before exit.
+
 - **80×24 pseudo-terminal, 2026-08-22 (task action focus).** Built and launched the real
   `coducktor` binary against this repository with `DUCK_DRY_RUN=1`. The project Tasks view showed
   `[+ New task]` flush right on the `DONE` heading. After moving focus out of the sidebar,

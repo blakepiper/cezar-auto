@@ -74,6 +74,9 @@ accept their normal editing keys. `Ctrl-W` remains reserved for cockpit window n
   buttons, and `Enter` activates the focused button.
 - On a project Tasks view, `Tab`/`Shift-Tab` move between the task cards and the New task
   button; `Enter` opens the focused control.
+- On New Task, `Tab` moves from the composer through source, runner, model, reasoning, variants,
+  branch, worktree, task mode, and Git mode. `Shift-Tab` moves backward, and `Enter` opens the
+  focused option.
 - The IDE tree uses `h` or `Left` to go to the parent and `Enter` or `Right` to open an entry.
 - Ask cards and confirmation dialogs retain their local selection/confirmation keys while open.
 - Composer and editor clipboard/editing shortcuts apply only while that text surface owns input.
