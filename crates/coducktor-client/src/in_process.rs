@@ -50,6 +50,7 @@ use coducktor_contract::{
     WorktreeEntry, WorktreeEntryType, WorktreeInfo, WorktreeRunStatus, WorktreesResponse,
 };
 use coducktor_core::config::{RepoConfig, load_config};
+use coducktor_core::git::worktree::{AutosaveReason, AutosaveResult, autosave_commit};
 use coducktor_core::handoff::{append_handoff_heartbeat, handoff_progress_excerpt, read_handoff};
 use coducktor_core::paths::{
     ProcessEnv, agent_accounts_path, agent_home_paths, expand_tilde, is_absolute_config_dir,
@@ -61,7 +62,7 @@ use coducktor_core::workflows::run::{
     AUTOMATIC_COMMIT_MESSAGE_NUDGE, AUTONOMOUS_NUDGE, AdmittedTurn, CancellationToken,
     CheckExecutor, CheckResult, DiffInspector, EventInput, FinishStart, GitAutoMessage,
     MONITORING_WAKE_PROMPT, PromptImage, RepositoryRootLease, RunManager, RuntimeActive,
-    RuntimeOptions, SessionFactory, StartRunInput as CoreStartRunInput, TurnStep,
+    RuntimeOptions, SessionFactory, SessionOutcome, StartRunInput as CoreStartRunInput, TurnStep,
     WorkspaceSemaphore, review_gate_enabled,
 };
 use coducktor_core::workflows::types::{parse_workflow_file_doc, steps_issue};
@@ -440,6 +441,7 @@ impl TurnDispatch {
                     &step_id,
                     format!("could not start a turn worker: {error}"),
                 );
+                self.autosave_after_settlement(&run_id);
             }
         }
     }
@@ -514,6 +516,77 @@ impl TurnDispatch {
         }
     }
 
+    /// Flush agent changes at the end of every provider turn. Git I/O deliberately happens after
+    /// taking only the short lock needed to copy the isolated worktree path: a provider or Git
+    /// child must never run while the manager mutex is held.
+    fn autosave_after_turn(&self, run_id: &str, outcome: &Result<SessionOutcome, String>) {
+        // A final ordinary step is already the run-finalize boundary. Keeping that reason on the
+        // commit makes the durable recovery history say why the run stopped. Automatic Git runs
+        // are the exception: their dispatcher must see the agent's changes and create its own
+        // commit subject, so the final step is left for that path instead of being autosaved here.
+        let Some((final_step, git_auto)) = self.manager.lock().get_run(run_id).map(|run| {
+            let final_step = run.queued_messages.as_ref().is_none_or(Vec::is_empty)
+                && run.current_step_id.as_deref() == run.steps.last().map(|step| step.id.as_str());
+            (final_step, run.git_auto == Some(true))
+        }) else {
+            self.autosave_worktree(run_id, AutosaveReason::TurnEnd);
+            return;
+        };
+        if matches!(outcome, Ok(SessionOutcome::Completed(_))) && final_step && git_auto {
+            return;
+        }
+        let reason = if matches!(outcome, Ok(SessionOutcome::Completed(_))) && final_step {
+            AutosaveReason::RunFinalize
+        } else {
+            AutosaveReason::TurnEnd
+        };
+        self.autosave_worktree(run_id, reason);
+    }
+
+    /// A terminal transition is the final recovery boundary for failed, cancelled, and
+    /// successfully completed runs. Only materialized task worktrees are eligible; an in-place
+    /// run must never turn the user's repository-root edits into an automatic commit.
+    fn autosave_after_settlement(&self, run_id: &str) {
+        let terminal = self.manager.lock().get_run(run_id).is_some_and(|run| {
+            matches!(
+                run.status,
+                coducktor_contract::RunStatus::Done
+                    | coducktor_contract::RunStatus::Failed
+                    | coducktor_contract::RunStatus::Cancelled
+                    | coducktor_contract::RunStatus::Review
+            )
+        });
+        if terminal {
+            self.autosave_worktree(run_id, AutosaveReason::RunFinalize);
+        }
+    }
+
+    fn autosave_worktree(&self, run_id: &str, reason: AutosaveReason) {
+        let path = self
+            .manager
+            .lock()
+            .get_run(run_id)
+            .and_then(|run| run.worktree_path.clone());
+        let Some(path) = path else {
+            return;
+        };
+        let result = autosave_commit(Path::new(&path), reason);
+        if matches!(result, AutosaveResult::Refused | AutosaveResult::Failed) {
+            let detail = match result {
+                AutosaveResult::Refused => "worktree contains unresolved conflicts",
+                AutosaveResult::Failed => "git could not create the recovery commit",
+                AutosaveResult::Committed | AutosaveResult::NothingToDo => return,
+            };
+            let _ = self.manager.lock().append_event(
+                run_id,
+                EventInput::new("error").field(
+                    "message",
+                    format!("automatic {reason:?} autosave skipped — {detail}"),
+                ),
+            );
+        }
+    }
+
     fn run_message(
         &self,
         run_id: String,
@@ -529,6 +602,7 @@ impl TurnDispatch {
             .send_message(&prompt, &images, &mut |event| {
                 self.apply_event(&run_id, &step_id, event)
             });
+        self.autosave_after_turn(&run_id, &send_result);
         let cancellation_requested = self
             .cancellations
             .lock()
@@ -541,6 +615,7 @@ impl TurnDispatch {
             send_result,
             cancellation_requested,
         );
+        self.autosave_after_settlement(&run_id);
         self.drive_steps(&run_id, &step_id, step);
         self.redispatch();
     }
@@ -552,10 +627,12 @@ impl TurnDispatch {
         let finish_result = active
             .session_mut()
             .finish(&mut |event| self.apply_event(&run_id, &step_id, event));
+        self.autosave_after_turn(&run_id, &finish_result);
         let step = self
             .manager
             .lock()
             .apply_finish_turn(&run_id, active, finish_result);
+        self.autosave_after_settlement(&run_id);
         self.drive_steps(&run_id, &step_id, step);
         self.redispatch();
     }
@@ -612,17 +689,20 @@ impl TurnDispatch {
                     error,
                     cancellation.is_requested(),
                 );
+                self.autosave_after_settlement(&run_id);
                 self.redispatch();
                 return;
             }
         };
         let turn_result = session.turn(&mut |event| self.apply_event(&run_id, &step_id, event));
+        self.autosave_after_turn(&run_id, &turn_result);
         let mut step = self.manager.lock().apply_admitted_turn(
             admitted,
             session,
             turn_result,
             cancellation.is_requested(),
         );
+        self.autosave_after_settlement(&run_id);
         loop {
             let active = match step {
                 Ok(TurnStep::Done) | Err(_) => break,
@@ -664,12 +744,15 @@ impl TurnDispatch {
             .send_message(AUTONOMOUS_NUDGE, &[], &mut |event| {
                 self.apply_event(run_id, step_id, event)
             });
-        self.manager.lock().apply_active_turn(
+        self.autosave_after_turn(run_id, &send_result);
+        let step = self.manager.lock().apply_active_turn(
             run_id,
             *active,
             send_result,
             cancellation.is_requested(),
-        )
+        );
+        self.autosave_after_settlement(run_id);
+        step
     }
 
     fn run_queued_message(
@@ -686,12 +769,15 @@ impl TurnDispatch {
             .send_message(&prompt, &images, &mut |event| {
                 self.apply_event(run_id, step_id, event)
             });
-        self.manager.lock().apply_message_turn(
+        self.autosave_after_turn(run_id, &send_result);
+        let step = self.manager.lock().apply_message_turn(
             run_id,
             *active,
             send_result,
             cancellation.is_requested(),
-        )
+        );
+        self.autosave_after_settlement(run_id);
+        step
     }
 
     fn run_git_auto_commit(&self, run_id: &str, step_id: &str, mut active: Box<RuntimeActive>) {
@@ -784,6 +870,7 @@ impl TurnDispatch {
                 .send_message(MONITORING_WAKE_PROMPT, &[], &mut |event| {
                     self.apply_event(&run_id, &step_id, event)
                 });
+        self.autosave_after_turn(&run_id, &send_result);
         let mut step = {
             // A monitoring wake has no independent cancellation token the way an admitted turn's
             // request does — `cancel_run` reaches it the same way it reaches any other parked
@@ -793,6 +880,7 @@ impl TurnDispatch {
                 .lock()
                 .apply_active_turn(&run_id, active, send_result, false)
         };
+        self.autosave_after_settlement(&run_id);
         loop {
             let active = match step {
                 Ok(TurnStep::Done) | Err(_) => break,
@@ -6453,6 +6541,39 @@ mod tests {
         }
     }
 
+    struct WritingSession {
+        cwd: PathBuf,
+    }
+
+    impl AgentSession for WritingSession {
+        fn turn(
+            &mut self,
+            _on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
+        ) -> Result<SessionOutcome, String> {
+            std::fs::write(self.cwd.join("agent.txt"), "agent change\n")
+                .map_err(|error| error.to_string())?;
+            Ok(SessionOutcome::Completed(
+                coducktor_core::workflows::run::SessionReport {
+                    turn_text: "wrote agent.txt\n\nDUCK:DONE".to_owned(),
+                    decision: Some(coducktor_core::workflows::run::TurnMarkerDecision::Done),
+                    ..coducktor_core::workflows::run::SessionReport::default()
+                },
+            ))
+        }
+
+        fn session_id(&self) -> Option<String> {
+            Some("writing-session".to_owned())
+        }
+    }
+
+    struct WritingFactory;
+
+    impl SessionFactory for WritingFactory {
+        fn open(&self, request: SessionRequest) -> Result<Box<dyn AgentSession + Send>, String> {
+            Ok(Box::new(WritingSession { cwd: request.cwd }))
+        }
+    }
+
     struct RecordingFactory {
         cwds: Arc<Mutex<Vec<PathBuf>>>,
     }
@@ -9295,6 +9416,42 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(cwds.lock().unwrap().as_slice(), &[worktree]);
+    }
+
+    #[tokio::test]
+    async fn completed_isolated_run_autosaves_at_run_finalize_without_touching_repo_root() {
+        let repo = fixture_repo();
+        let state = TempDir::new().unwrap();
+        let engine = InProcessEngine::with_session_factory_at(
+            repo.path(),
+            "0.0.0-test",
+            WritingFactory,
+            state.path().join("config.json"),
+        );
+        let mut input = steps_input("save the isolated agent change");
+        input.worktree = None;
+        let CreateRunResponse::Single(run) = engine.start_run(input).await.unwrap() else {
+            panic!("expected one run");
+        };
+        let worktree = PathBuf::from(run.worktree_path.as_deref().unwrap());
+
+        activate_until_terminal(&engine, &run.id).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let subject =
+                    git_capture(&worktree, &["log", "-1", "--format=%s"]).unwrap_or_default();
+                if subject.trim() == "coducktor autosave (run finalize)" {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(worktree.join("agent.txt").is_file());
+        assert!(!repo.path().join("agent.txt").exists());
+        assert!(git_capture(repo.path(), &["diff", "--quiet"]).is_ok());
     }
 
     #[tokio::test]

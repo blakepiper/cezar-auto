@@ -22,14 +22,14 @@ arboard = { version = "3", features = ["wayland-data-control"] }
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 criterion = "0.8"
-crossterm = "0.28.1"
+crossterm = "0.29.0"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 # Real SIGTERM on Unix child processes — std::process::Child::kill only sends SIGKILL.
 libc = "0.2"
 # `unstable-rendered-line-info` powers `Paragraph::line_count`, the transcript's only way to
 # Measure a markdown block's wrapped height without rendering it.
-ratatui = { version = "0.29.0", features = ["unstable-rendered-line-info"] }
-ratatui-image = { version = "9.0.0", default-features = false, features = ["crossterm", "image-defaults"] }
+ratatui = { version = "0.30.1", features = ["unstable-rendered-line-info"] }
+ratatui-image = { version = "11.0.6", default-features = false, features = ["crossterm", "image-defaults"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # Syntax highlighting for the diff widget; `two-face` bundles `bat`'s syntax +
@@ -38,7 +38,7 @@ syntect = { version = "5.3", default-features = false, features = ["parsing", "r
 two-face = "0.5"
 # Word-level intra-line diff for changed lines.
 similar = "3.1"
-tui-markdown = "=0.3.6"
+tui-markdown = "=0.3.9"
 # Fuzzy matching for the command palette.
 nucleo = "0.5"
 # Desktop notifications for task state changes.

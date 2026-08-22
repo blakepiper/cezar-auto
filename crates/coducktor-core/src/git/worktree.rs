@@ -312,10 +312,9 @@ pub fn remove_worktree(repo_root: &Path, worktree_path: &Path, branch: Option<&s
     }
 }
 
-/// Why an autosave commit happened. Only `Periodic` is gated (behind `DUCK_AUTOSAVE=1`,
-/// #471) — the other three flushes always run so the branch ends holding the finished
-/// state. The message carries the reason so the opt-in periodic timer and the always-on
-/// flushes are distinguishable in `git log`.
+/// Why an autosave commit happened. Production recovery uses the turn-end, run-finalize, and
+/// pre-PR boundaries; `Periodic` remains available to explicit callers and tests. The message
+/// carries the reason so each recovery boundary is distinguishable in `git log`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutosaveReason {
     Periodic,

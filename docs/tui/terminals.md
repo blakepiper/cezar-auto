@@ -90,6 +90,14 @@ records what is implemented and which terminal observations remain unverified.
 
 ## Task experience smoke test
 
+- **80×24 → 55×24 → 80×24 tmux pseudo-terminal, 2026-08-22 (graphics artifact
+  regression).** Built and launched the real binary against the registered coducktor repository,
+  opened a live stored task, narrowed and restored the terminal, and returned focus to the
+  sidebar. The sidebar repainted completely at both widths with no retained black rectangle or
+  displaced text, and quitting restored the alternate screen. This pseudo-terminal did not expose
+  a native graphics protocol, so Kitty, iTerm2, and Sixel cleanup still require verification in
+  their respective terminal emulators.
+
 - **120×40 tmux pseudo-terminal, 2026-08-22 (New Task option focus).** Built and launched the
   real `coducktor` binary against this repository with `DUCK_DRY_RUN=1`, opened New Task, and
   confirmed the composer owned input. `Tab` moved focus to `source: execution`; `Enter` opened
