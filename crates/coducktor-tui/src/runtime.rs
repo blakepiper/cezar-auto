@@ -94,6 +94,7 @@ pub async fn entry() -> io::Result<()> {
     let user_keymap = Keymap::default_path();
     let keymap = Keymap::load(user_keymap.as_deref()).unwrap_or_default();
     let mut app = App::new("main", Theme::detect(), keymap);
+    app.set_debug_hud(env::var("DUCK_DEBUG_HUD").as_deref() == Ok("1"));
     app.set_boot_root(repo_root.clone());
     let in_process = Arc::new(InProcessEngine::new(repo_root, env!("CARGO_PKG_VERSION")));
     let engine: Arc<dyn Engine> = in_process.clone();
@@ -3121,6 +3122,7 @@ async fn run(
         cli.repo.is_none() && cli.workflow.is_none() && cli.model.is_none();
     while !app.should_quit() {
         let frame_started = Instant::now();
+        let projection_before = app.thread_ui.projection_metrics();
         app.now_epoch = current_epoch_seconds();
         app.animation_tick = app.animation_tick.wrapping_add(1);
         if let Some((_, receiver)) = bootstrap.as_mut()
@@ -3282,6 +3284,21 @@ async fn run(
             }
         }
         terminal.draw(|frame| app.render(frame))?;
+        let projection_after = app.thread_ui.projection_metrics();
+        app.record_frame_metrics(
+            frame_started
+                .elapsed()
+                .as_micros()
+                .min(u128::from(u64::MAX)) as u64,
+            projection_after
+                .rebuild_time
+                .saturating_sub(projection_before.rebuild_time)
+                .as_micros()
+                .min(u128::from(u64::MAX)) as u64,
+            projection_after
+                .rebuilt_events
+                .saturating_sub(projection_before.rebuilt_events),
+        );
         if bootstrap.is_none() && !app.should_quit() {
             bootstrap = Some(spawn_prime(engine.clone()));
         }

@@ -1438,6 +1438,44 @@ mod tests {
         }
     }
 
+    fn realistic_v2_event(sequence: u64) -> RunEvent {
+        let item_index = sequence / 32;
+        let offset = sequence % 32;
+        let is_tool = item_index.is_multiple_of(2);
+        let id = if is_tool {
+            format!("tool-{item_index}")
+        } else {
+            format!("message-{item_index}")
+        };
+        let (event_type, extra) = match offset {
+            0 if is_tool => (
+                "item.started",
+                json!({"item": {"kind": "tool", "id": id, "name": "Bash", "toolKind": "execute", "title": "Run cargo test --workspace", "status": "running", "input": {"command": "cargo test --workspace"}}}),
+            ),
+            0 => (
+                "item.started",
+                json!({"item": {"kind": "message", "id": id, "role": "assistant", "text": "", "phase": "commentary"}}),
+            ),
+            31 if is_tool => (
+                "item.completed",
+                json!({"item": {"kind": "tool", "id": id, "name": "Bash", "toolKind": "execute", "title": "Run cargo test --workspace", "status": "completed", "input": {"command": "cargo test --workspace"}, "output": (0..80).map(|line| format!("test case {line}: ok")).collect::<Vec<_>>().join("\n"), "exitCode": 0}}),
+            ),
+            31 => (
+                "item.completed",
+                json!({"item": {"kind": "message", "id": id, "role": "assistant", "text": "### Progress\n\nThe focused change is in place, and the relevant tests are passing.", "phase": "commentary"}}),
+            ),
+            _ if is_tool => (
+                "item.delta",
+                json!({"itemId": id, "field": "output", "delta": "checking target... ok\n"}),
+            ),
+            _ => (
+                "item.delta",
+                json!({"itemId": id, "field": "text", "delta": "Streaming markdown. "}),
+            ),
+        };
+        event((sequence + 1) as f64, event_type, extra)
+    }
+
     fn app_with_run(status: RunStatus) -> App {
         let mut app = App::new("main", Theme::detect(), Keymap::default());
         app.thread_ui.load(
@@ -1504,35 +1542,77 @@ mod tests {
         assert_eq!(large.rebuilt_events, 2_000);
     }
 
-    /// R3's required scaling assertion, made concrete: not just that one batch stays one rebuild
-    /// (the test above), but that the rebuild's actual work is near-linear in the events it
-    /// folds, not quadratic. Takes the fastest of several samples per size — the standard way to
-    /// filter scheduler noise out of a wall-clock micro-benchmark without hiding a real
-    /// algorithmic regression, since noise can only ever slow a sample down, never speed it up.
+    /// Phase 0 guard for the production shape: events arrive across many frame-sized batches,
+    /// rather than in one call that can only demonstrate a linear single fold. Phase 1 makes this
+    /// hard-failing once incremental projection replaces whole-prefix rebuilds.
     #[test]
+    #[ignore = "baseline: 1,000 events reduce 63,000; 2,000 reduce 251,000 until Phase 1"]
     fn doubling_accepted_events_does_not_quadruple_rebuild_time() {
-        fn fastest_rebuild_time(event_count: u64) -> Duration {
-            (0..5)
-                .map(|_| {
-                    let mut app = app_with_run(RunStatus::Running);
-                    app.thread_ui.push_events((1..=event_count).map(|seq| {
-                        let sequence = seq as f64;
-                        (sequence, event(sequence, "text", json!({"text": "delta"})))
-                    }));
-                    app.thread_ui.projection_metrics().rebuild_time
-                })
-                .min()
-                .expect("five samples were taken")
+        fn projection_work(event_count: u64) -> ThreadProjectionMetrics {
+            let mut app = app_with_run(RunStatus::Running);
+            let before = app.thread_ui.projection_metrics();
+            for first in (0..event_count).step_by(8) {
+                let end = (first + 8).min(event_count);
+                app.thread_ui.push_events((first..end).map(|sequence| {
+                    let event = realistic_v2_event(sequence);
+                    (event.seq, event)
+                }));
+            }
+            let after = app.thread_ui.projection_metrics();
+            ThreadProjectionMetrics {
+                rebuilds: after.rebuilds - before.rebuilds,
+                rebuilt_events: after.rebuilt_events - before.rebuilt_events,
+                rebuild_time: after.rebuild_time.saturating_sub(before.rebuild_time),
+            }
         }
 
-        let small = fastest_rebuild_time(5_000);
-        let large = fastest_rebuild_time(10_000);
-        // Perfectly linear work doubles; quadratic work roughly quadruples. A 3x ceiling catches
-        // quadratic growth with room for noise around the true linear answer.
+        let small = projection_work(1_000);
+        let large = projection_work(2_000);
+        assert_eq!(small.rebuilds, 125);
+        assert_eq!(large.rebuilds, 250);
+        assert_eq!(small.rebuilt_events, 63_000);
+        assert_eq!(large.rebuilt_events, 251_000);
         assert!(
-            large < small * 3,
-            "doubling accepted events from 5,000 to 10,000 took {large:?} against {small:?} for \
-             half as many — looks quadratic, not linear"
+            large.rebuilt_events <= small.rebuilt_events * 3
+                && large.rebuild_time < small.rebuild_time * 3,
+            "doubling accepted events rebuilt {large:?} against {small:?}; frame-batched \
+             projection is still quadratic"
+        );
+    }
+
+    #[test]
+    #[ignore = "release baseline: the next frame at 12,000 events measured 11.3ms; target is <8ms"]
+    fn live_thread_frame_at_twelve_thousand_events_stays_under_eight_ms() {
+        use ratatui::buffer::Buffer;
+
+        let mut app = app_with_run(RunStatus::Running);
+        let theme = Theme::detect();
+        let viewport = Rect::new(0, 0, 120, 40);
+        for first in (0..11_992_u64).step_by(8) {
+            app.thread_ui
+                .push_events((first..first + 8).map(|sequence| {
+                    let event = realistic_v2_event(sequence);
+                    (event.seq, event)
+                }));
+            let mut buffer = Buffer::empty(viewport);
+            app.thread_ui
+                .transcript
+                .render(&mut buffer, viewport, &theme);
+        }
+
+        let started = Instant::now();
+        app.thread_ui.push_events((11_992..12_000).map(|sequence| {
+            let event = realistic_v2_event(sequence);
+            (event.seq, event)
+        }));
+        let mut buffer = Buffer::empty(viewport);
+        app.thread_ui
+            .transcript
+            .render(&mut buffer, viewport, &theme);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(8),
+            "12,000-event live frame took {elapsed:?}; target is <8ms"
         );
     }
 

@@ -1,7 +1,7 @@
 //! Guards the terminal transcript performance target: a 5,000-item transcript must scroll
 //! at ≥30 fps, i.e. each render must fit inside a 33ms frame budget.
 //!
-//! `bench_scroll_steady_state` is the realistic case: the height cache is already warm
+//! `bench_static_scroll` is the static-scroll case: the height cache is already warm
 //! (as it is on every frame after the first at a given width) and only the viewport
 //! window's items need painting, but `total_height` still walks every cached entry to
 //! find the scroll bounds — this is what would regress if that summation, not just
@@ -77,14 +77,14 @@ fn theme() -> Theme {
     Theme::new(ThemeName::Dark, ColorCapability::TrueColor)
 }
 
-fn bench_scroll_steady_state(c: &mut Criterion) {
+fn bench_static_scroll(c: &mut Criterion) {
     let mut transcript = build_transcript();
     let theme = theme();
     let mut buf = Buffer::empty(VIEWPORT);
     // Warm the height cache the same way the real app would after its first frame.
     transcript.render(&mut buf, VIEWPORT, &theme);
 
-    c.bench_function("transcript_scroll_steady_state_5000_items", |b| {
+    c.bench_function("transcript_static_scroll_5000_items", |b| {
         b.iter(|| {
             transcript.scroll_by(black_box(3));
             let mut buf = Buffer::empty(VIEWPORT);
@@ -106,9 +106,5 @@ fn bench_first_render_cold_cache(c: &mut Criterion) {
     });
 }
 
-criterion_group!(
-    benches,
-    bench_scroll_steady_state,
-    bench_first_render_cold_cache
-);
+criterion_group!(benches, bench_static_scroll, bench_first_render_cold_cache);
 criterion_main!(benches);

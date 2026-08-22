@@ -56,3 +56,7 @@ tempfile = "3.23"
 [[bench]]
 name = "transcript"
 harness = false
+
+[[bench]]
+name = "thread_frame"
+harness = false

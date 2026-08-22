@@ -55,6 +55,8 @@ remove those shims or widen them into a second writer vocabulary.
   A corrupt file is left in place after one warning and the process boots with defaults.
 - Shell commands use argument arrays and bounded input. Git helpers degrade where their API says
   they do; worktree creation is the deliberate loud exception.
+- No engine method may hold the `RunManager` mutex across an `AgentSession` call or any
+  child-process wait.
 - Agent child output is never inherited by the user's terminal. The final product has no service
   child, no listening socket and no browser startup path.
 - Do not reintroduce deleted network, hosted-deployment, browser, release-publishing or remote

@@ -1,6 +1,6 @@
 # Cockpit responsiveness and thread UX — implementation specification
 
-Status: ready for implementation (written 2026-08-22, decisions closed 2026-08-22)
+Status: Phase 0 guardrails implemented; Phase 1 is next (written 2026-08-22, updated 2026-08-22)
 
 Audience: the next implementation agent. Work directly on `main`, preserve unrelated changes,
 commit the completed work, and push `origin main` as required by `AGENTS.md`.
@@ -20,6 +20,14 @@ change named here is local to code that already exists and is already tested.
 Two findings below correct entries the 2026-08-18 reliability audit
 (`codebase-reliability-remediation-plan.md`) records as complete. Read
 [Corrections to the prior audit](#corrections-to-the-prior-audit) before trusting R1 or R3.
+
+## Implementation progress
+
+Phase 0 now provides the live-thread benchmark, known-red frame/scaling/lock guards, the manager
+lock invariant, and the opt-in `DUCK_DEBUG_HUD=1` status readout. The known-red guards remain
+ignored so `main` stays green; Phase 1 must un-ignore them as it removes the measured defects.
+The HUD's dropped-event counter is present and stays at zero until Phase 2 exposes lag through the
+engine event stream. The prior audit's R1 and R3 rows already point to this specification.
 
 ## Finding inventory
 

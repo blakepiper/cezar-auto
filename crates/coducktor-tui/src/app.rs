@@ -626,6 +626,10 @@ pub enum WorkspaceEvent {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AppRuntimeMetrics {
     pub coalesced_workspace_run_updates: usize,
+    pub frame_micros: u64,
+    pub projection_micros: u64,
+    pub events_reduced: usize,
+    pub dropped_events: usize,
 }
 
 /// A mutation the shell or a screen wants the engine loop to run next frame.
@@ -1107,6 +1111,7 @@ pub struct App {
     /// the action reached the queue.
     in_flight_coalescable: Vec<PendingAction>,
     runtime_metrics: AppRuntimeMetrics,
+    debug_hud: bool,
     /// The absolute path main.rs should hand to `$EDITOR` (set by the `OpenIdeInEditor`
     /// handler; consumed by the run loop, which owns the terminal).
     pub editor_handoff: Option<String>,
@@ -1197,6 +1202,7 @@ impl App {
             pending: Vec::new(),
             in_flight_coalescable: Vec::new(),
             runtime_metrics: AppRuntimeMetrics::default(),
+            debug_hud: false,
             editor_handoff: None,
             filter_mode: false,
             sort_picker_index: 0,
@@ -1214,6 +1220,30 @@ impl App {
     /// Return sanitized runtime counters for diagnostics and scaling tests.
     pub fn runtime_metrics(&self) -> AppRuntimeMetrics {
         self.runtime_metrics
+    }
+
+    /// Enable the sanitized status-bar diagnostics requested by `DUCK_DEBUG_HUD=1`.
+    pub fn set_debug_hud(&mut self, enabled: bool) {
+        self.debug_hud = enabled;
+    }
+
+    /// Record the previous frame's total and thread-projection work for the next HUD paint.
+    pub fn record_frame_metrics(
+        &mut self,
+        frame_micros: u64,
+        projection_micros: u64,
+        events_reduced: usize,
+    ) {
+        self.runtime_metrics.frame_micros = frame_micros;
+        self.runtime_metrics.projection_micros = projection_micros;
+        self.runtime_metrics.events_reduced = events_reduced;
+    }
+
+    /// Account for live events the engine reports as dropped. Phase 2 wires the event bus to
+    /// this counter; defining it with the HUD keeps that later change additive.
+    pub fn record_dropped_events(&mut self, count: usize) {
+        self.runtime_metrics.dropped_events =
+            self.runtime_metrics.dropped_events.saturating_add(count);
     }
 
     /// Account for superseded whole-record updates after a bounded receiver batch is folded.
@@ -2304,6 +2334,19 @@ impl App {
                 self.theme.name.label(),
                 self.provider_summary(),
             )
+        };
+        let line = if self.debug_hud {
+            let metrics = self.runtime_metrics;
+            format!(
+                " FRAME {:.1}ms  PROJ {:.1}ms  REDUCED {}  DROPPED {} ·{}",
+                metrics.frame_micros as f64 / 1_000.0,
+                metrics.projection_micros as f64 / 1_000.0,
+                metrics.events_reduced,
+                metrics.dropped_events,
+                line,
+            )
+        } else {
+            line
         };
         frame.render_widget(
             Paragraph::new(line).style(
@@ -3682,6 +3725,26 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use super::*;
+
+    #[test]
+    fn debug_hud_renders_sanitized_frame_metrics_in_the_status_bar() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.set_debug_hud(true);
+        app.record_frame_metrics(12_345, 4_567, 256);
+        app.record_dropped_events(3);
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let status: String = buffer.content[(23 * 120)..]
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(status.contains("FRAME 12.3ms"), "got: {status}");
+        assert!(status.contains("PROJ 4.6ms"), "got: {status}");
+        assert!(status.contains("REDUCED 256"), "got: {status}");
+        assert!(status.contains("DROPPED 3"), "got: {status}");
+    }
 
     #[test]
     fn taking_a_bounded_pending_batch_preserves_the_fifo_tail() {
