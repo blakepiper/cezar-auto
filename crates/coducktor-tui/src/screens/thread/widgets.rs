@@ -588,6 +588,25 @@ pub fn render_status_hint(frame: &mut Frame<'_>, area: Rect, text: &str, theme: 
     1
 }
 
+pub fn render_live_activity(frame: &mut Frame<'_>, area: Rect, text: &str, theme: &Theme) -> u16 {
+    if area.height == 0 || text.is_empty() {
+        return 0;
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("● ", Style::default().fg(theme.palette.running)),
+            Span::styled(
+                text.to_owned(),
+                Style::default()
+                    .fg(theme.palette.fg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+    1
+}
+
 /// A compact duplicate of assistant prose that has scrolled out of a parked session's
 /// transcript. It sits next to the other reply affordances instead of changing event order.
 pub fn latest_message_height(text: &str, width: u16) -> u16 {

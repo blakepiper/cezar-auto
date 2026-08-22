@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 
 use coducktor_contract::events::RunEvent;
 use coducktor_contract::runs::{
-    MarkerRefs, RunActivity, RunRecord, RunStatus, StepKind, StepState, StepStatus,
+    MarkerRefs, QueuedMessage, RunActivity, RunRecord, RunStatus, StepKind, StepState, StepStatus,
 };
 use coducktor_contract::workflows::WorkflowDef;
 use coducktor_contract::{
@@ -940,6 +940,14 @@ pub enum TurnStep {
     /// `active.session_mut().send_message(..)` (no lock held) and report the result back through
     /// [`RunManager::apply_active_turn`].
     Nudge(Box<RuntimeActive>),
+    /// A user follow-up arrived while the provider turn was in flight. The manager has removed
+    /// it from the durable queue and appended its user-message event; the caller must deliver it
+    /// through this same live session before reporting the result through `apply_message_turn`.
+    QueuedMessage {
+        active: Box<RuntimeActive>,
+        prompt: String,
+        images: Vec<PromptImage>,
+    },
     /// Ask the completed session for the one-line subject used by the production dispatcher to
     /// commit and push this run's changes.
     GitAutoCommit(Box<RuntimeActive>),
@@ -2319,8 +2327,14 @@ impl RunManager {
         let mut step =
             self.apply_admitted_turn(admitted, session, turn_result, cancellation_requested)?;
         loop {
-            let TurnStep::Nudge(boxed) = step else {
-                if matches!(step, TurnStep::GitAutoCommit(_)) {
+            let (mut active, prompt, images, queued) = match step {
+                TurnStep::Nudge(active) => (active, AUTONOMOUS_NUDGE.to_owned(), Vec::new(), false),
+                TurnStep::QueuedMessage {
+                    active,
+                    prompt,
+                    images,
+                } => (active, prompt, images, true),
+                TurnStep::GitAutoCommit(_) => {
                     self.finish_git_auto(
                         &run_id,
                         Err(
@@ -2328,18 +2342,21 @@ impl RunManager {
                                 .to_owned(),
                         ),
                     )?;
+                    break;
                 }
-                break;
+                TurnStep::Done => break,
             };
-            let mut active = *boxed;
             step_id = active.workflow.steps[active.step_index].id.clone();
-            let send_result =
-                active
-                    .session_mut()
-                    .send_message(AUTONOMOUS_NUDGE, &[], &mut |event| {
-                        self.apply_turn_event(&run_id, &step_id, event)
-                    });
-            step = self.apply_active_turn(&run_id, active, send_result, false)?;
+            let send_result = active
+                .session_mut()
+                .send_message(&prompt, &images, &mut |event| {
+                    self.apply_turn_event(&run_id, &step_id, event)
+                });
+            step = if queued {
+                self.apply_message_turn(&run_id, *active, send_result, false)?
+            } else {
+                self.apply_active_turn(&run_id, *active, send_result, false)?
+            };
         }
         Ok(())
     }
@@ -2716,6 +2733,7 @@ impl RunManager {
                 reasoning_effort,
                 cancellation: cancellation.clone(),
             };
+            self.acknowledge_queued_messages(run_id, &step.id)?;
             let mut run_affinity = RunPatch::new();
             if let Some(backend) = concrete_runner(runner) {
                 run_affinity = run_affinity.set("runner", backend);
@@ -3139,6 +3157,50 @@ impl RunManager {
         Ok(())
     }
 
+    fn begin_queued_message_turn(
+        &mut self,
+        run_id: &str,
+        mut active: RuntimeActive,
+        message: QueuedMessage,
+    ) -> io::Result<TurnStep> {
+        active.failover = None;
+        active.auto_continues = 0;
+        let step_id = active.step_id().to_owned();
+        let images = message
+            .images
+            .iter()
+            .flatten()
+            .filter_map(|url| PromptImage::from_data_url(url))
+            .collect::<Vec<_>>();
+        self.append_user_message(run_id, &step_id, &message.text, &images)?;
+        self.edit_run(run_id, |record| {
+            let mut empty = false;
+            if let Some(messages) = record.queued_messages.as_mut() {
+                messages.retain(|candidate| candidate.id != message.id);
+                empty = messages.is_empty();
+            }
+            if empty {
+                record.queued_messages = None;
+            }
+        })?;
+        self.update_run(
+            run_id,
+            RunPatch::new()
+                .set("status", RunStatus::Running)
+                .clear("activity"),
+        )?;
+        self.update_step(
+            run_id,
+            &step_id,
+            StepPatch::new().set("status", StepStatus::Running),
+        )?;
+        Ok(TurnStep::QueuedMessage {
+            active: Box::new(active),
+            prompt: message.text,
+            images,
+        })
+    }
+
     /// Apply one turn's outcome to a live, in-progress session and decide what happens next.
     /// Shared by both a freshly admitted turn's worker (`apply_admitted_turn`/`apply_active_turn`,
     /// where `active.failover` carries the original open attempt's failover eligibility) and the
@@ -3157,6 +3219,17 @@ impl RunManager {
         let report = session_outcome_report(&outcome).clone();
         self.apply_session_report(run_id, &step_id, &report, active.session.session_id())?;
         self.apply_session_markers(run_id, &report.turn_text)?;
+        if matches!(
+            outcome,
+            SessionOutcome::Completed(_) | SessionOutcome::Running(_) | SessionOutcome::Waiting(_)
+        ) && let Some(message) = self
+            .get_run(run_id)
+            .and_then(|run| run.queued_messages.as_ref())
+            .and_then(|messages| messages.first())
+            .cloned()
+        {
+            return self.begin_queued_message_turn(run_id, active, message);
+        }
         let refresh_prompt = if self.intelligent_context_refresh {
             report.plan_entries.as_deref().and_then(|entries| {
                 context_refresh::observe_plan(&mut active.plan_checkpoint, entries, true)
@@ -3784,6 +3857,19 @@ impl RunManager {
                     );
                     step = self.apply_active_turn(run_id, *active, result, false)?;
                 }
+                TurnStep::QueuedMessage {
+                    mut active,
+                    prompt,
+                    images,
+                } => {
+                    let step_id = active.step_id().to_owned();
+                    let result = active.session_mut().send_message(
+                        &prompt,
+                        &images,
+                        &mut self.event_sink(run_id, &step_id),
+                    );
+                    step = self.apply_message_turn(run_id, *active, result, false)?;
+                }
             }
         }
     }
@@ -3800,8 +3886,14 @@ impl RunManager {
     ) -> io::Result<()> {
         let mut step = self.continue_active_turn(run_id, active, outcome)?;
         loop {
-            let TurnStep::Nudge(boxed) = step else {
-                if matches!(step, TurnStep::GitAutoCommit(_)) {
+            let (mut active, prompt, images, queued) = match step {
+                TurnStep::Nudge(active) => (active, AUTONOMOUS_NUDGE.to_owned(), Vec::new(), false),
+                TurnStep::QueuedMessage {
+                    active,
+                    prompt,
+                    images,
+                } => (active, prompt, images, true),
+                TurnStep::GitAutoCommit(_) => {
                     self.finish_git_auto(
                         run_id,
                         Err(
@@ -3809,23 +3901,21 @@ impl RunManager {
                                 .to_owned(),
                         ),
                     )?;
+                    break;
                 }
-                break;
+                TurnStep::Done => break,
             };
-            let mut active = *boxed;
             let step_id = active.workflow.steps[active.step_index].id.clone();
-            let next = match active.session_mut().send_message(
-                AUTONOMOUS_NUDGE,
-                &[],
+            let result = active.session_mut().send_message(
+                &prompt,
+                &images,
                 &mut self.event_sink(run_id, &step_id),
-            ) {
-                Ok(outcome) => outcome,
-                Err(error) => SessionOutcome::Failed {
-                    message: error,
-                    report: SessionReport::default(),
-                },
+            );
+            step = if queued {
+                self.apply_message_turn(run_id, *active, result, false)?
+            } else {
+                self.apply_active_turn(run_id, *active, result, false)?
             };
-            step = self.continue_active_turn(run_id, active, next)?;
         }
         Ok(())
     }
@@ -3900,6 +3990,38 @@ impl RunManager {
         };
         self.in_flight.insert(run_id.to_owned());
         Ok(Some(active))
+    }
+
+    /// Persist a follow-up that cannot be delivered until the current turn boundary. Queued and
+    /// running are the only honest states for this operation: parked sessions use
+    /// [`Self::begin_message`] directly, while terminal runs require `continue_run`.
+    pub fn queue_message(
+        &mut self,
+        run_id: &str,
+        prompt: String,
+        images: Vec<PromptImage>,
+    ) -> io::Result<Option<QueuedMessage>> {
+        let Some(run) = self.get_run(run_id) else {
+            return Ok(None);
+        };
+        if !matches!(run.status, RunStatus::Queued | RunStatus::Running) {
+            return Ok(None);
+        }
+        let message = QueuedMessage {
+            id: new_queued_message_id(),
+            text: prompt,
+            images: (!images.is_empty())
+                .then(|| images.iter().map(PromptImage::data_url).collect::<Vec<_>>()),
+            created_at: now_iso8601(),
+        };
+        let queued = message.clone();
+        self.edit_run(run_id, |record| {
+            record
+                .queued_messages
+                .get_or_insert_with(Vec::new)
+                .push(queued);
+        })?;
+        Ok(Some(message))
     }
 
     /// Apply a detached user follow-up while preserving the parked session on a provider-level
@@ -4177,6 +4299,30 @@ impl RunManager {
                 .field("imageCount", image_urls.len())
                 .field("images", image_urls),
         )
+    }
+
+    /// Queued input folded into a not-yet-started prompt still needs its own transcript row.
+    /// Append those durable user events immediately before admission, then clear the queue so a
+    /// later workflow step cannot fold the same messages into its prompt again.
+    fn acknowledge_queued_messages(&mut self, run_id: &str, step_id: &str) -> io::Result<()> {
+        let messages = self
+            .get_run(run_id)
+            .and_then(|run| run.queued_messages.clone())
+            .unwrap_or_default();
+        if messages.is_empty() {
+            return Ok(());
+        }
+        for message in &messages {
+            let images = message
+                .images
+                .iter()
+                .flatten()
+                .filter_map(|url| PromptImage::from_data_url(url))
+                .collect::<Vec<_>>();
+            self.append_user_message(run_id, step_id, &message.text, &images)?;
+        }
+        self.edit_run(run_id, |record| record.queued_messages = None)?;
+        Ok(())
     }
 
     /// Apply parsed agent-owned PR/issue markers to a record. URL candidate discovery remains a
@@ -4590,6 +4736,16 @@ fn new_run_id() -> String {
         .unwrap_or_default()
         .as_nanos();
     format!("run-{nanos:x}-{counter:x}")
+}
+
+fn new_queued_message_id() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("message-{nanos:x}-{counter:x}")
 }
 
 #[cfg(test)]

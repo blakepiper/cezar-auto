@@ -128,19 +128,22 @@ The Scratchpad is a free-form editor that saves after every edit. Notes live und
 
 ### Task thread (`screens/thread/mod.rs`)
 
+Newly opened task threads focus the composer. Header and row-menu actions remain the route for
+finish and archive; neither action has a bare printable-key shortcut.
+
 | Key | Action |
 |---|---|
+| Printable keys (composer focused) | Edit the follow-up draft |
+| `Enter` (composer focused) | Send now, or queue a follow-up for the next boundary of an active turn |
 | `i` | Focus the composer |
 | `Ctrl+V` / `Alt+V` (composer focused) | Paste clipboard text or attach a clipboard image |
-| `j`/`Down`, `k`/`Up` | Scroll the transcript |
+| `j`/`Down`, `k`/`Up` (transcript focused) | Scroll the transcript |
 | `G` | Jump to bottom (re-enables sticky-bottom) |
 | `Tab` / `Shift+Tab` | Select the next/previous expandable tool or reasoning item |
-| `Enter` | Toggle the selected timeline item |
+| `Enter` (transcript focused) | Toggle the selected timeline item |
 | `R` | Retry/load the previous history page |
-| `f` | Finish the run |
-| `a` | Archive |
-| `[` / `]` | Step-rail / hit-map navigation |
-| `Esc` | Return focus to the transcript |
+| `[` / `]` | Open Changes / Commits for this task |
+| `Esc` | Interrupt a running/queued task on the first press; otherwise return focus to the transcript |
 | Ask card: `j`/`k`/`Down`/`Up` | Move between options |
 | Ask card: `Tab`/`Right`, `Shift+Tab`/`Left` | Move between questions |
 | Ask card: `Enter` | Toggle the focused option |

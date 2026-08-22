@@ -37,10 +37,11 @@ the timeline. Final assistant messages use the Markdown message renderer and out
 name completion, failure, interruption, or an unobserved legacy outcome.
 
 Routine tool and reasoning details default closed after completion. Failures remain visible in
-their row even while details are closed. The active turn exposes its current running tool or
-latest progress. A persistent composer says `GUIDANCE`, `ANSWER`, or `FOLLOW UP` according to the
-run lifecycle, with explicit sending and retry states. A durable question or review action places
-its focused controls directly above the composer.
+their row even while details are closed. The active turn exposes its current phase, elapsed time,
+token count, and running tool directly above the composer. A persistent composer says `FOLLOW UP`
+for active and follow-up-capable runs or `ANSWER` when waiting for input, with explicit queueing,
+sending, and retry states. A durable question or review action places its focused controls
+directly above the composer.
 
 Scrolling up disengages live-tail following. `G` returns to the tail and clears its unseen count.
 `Tab` and `BackTab` select expandable reasoning/tool items and `Enter` toggles the selected item.

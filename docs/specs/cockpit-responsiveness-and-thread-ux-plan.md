@@ -1,6 +1,6 @@
 # Cockpit responsiveness and thread UX — implementation specification
 
-Status: Phase 3 transcript readability implemented; Phase 4 is next (written 2026-08-22, updated 2026-08-22)
+Status: Phase 4 interaction model implemented; Phase 5 is next (written 2026-08-22, updated 2026-08-22)
 
 Audience: the next implementation agent. Work directly on `main`, preserve unrelated changes,
 commit the completed work, and push `origin main` as required by `AGENTS.md`.
@@ -36,7 +36,10 @@ genuine needs-input, keeps running response text non-terminal, and isolates each
 explicit lag/sequence-gap recovery from durable history. The prior audit's R1 and R3 rows point
 here. Phase 3 restores reducer chronology, renders all assistant prose as markdown messages, gives
 every row a role gutter and spacing, colors tool verbs by kind, and keeps an off-screen question
-reachable in the needs-input dock.
+reachable in the needs-input dock. Phase 4 opens every task in its composer, makes `Esc` an
+immediate active-run interrupt, removes destructive bare transcript keys, durably queues an
+in-flight follow-up for the next turn boundary, and places live phase/elapsed/token/tool activity
+directly above the composer.
 
 ## Finding inventory
 
@@ -262,12 +265,20 @@ uses it for exactly one thing: whether to print an exit code. `ThemePalette`
 
 ### F9 — the thread opens in a destructive navigator (P1)
 
+**Resolved in Phase 4.** A newly opened thread focuses the composer, same-thread refreshes retain
+the chosen focus, and bare `a`/`f` have no task-thread action. Transcript navigation remains
+available after `Esc`, with `i` returning to the composer.
+
 `ThreadUi::load` (`thread/mod.rs:183`) sets `focus = ThreadFocus::Transcript` on every entry, so
 opening a task — or navigating back — lands in a vim-style navigator, not the composer. In that
 mode (`thread/mod.rs:927-1000`) `a` = Archive, `f` = Finish, `R` = reload history,
 `G` = jump to bottom. Typing a reply without pressing `i` first triggers destructive actions.
 
 ### F10 — no keyboard interrupt (P1)
+
+**Resolved in Phase 4.** The first `Esc` in a running or queued task immediately marks cancellation
+pending and dispatches one cancel request from either transcript or composer focus. A second
+press, or the first press on an idle task, moves focus to the transcript.
 
 `ThreadAction::Cancel` exists and works (`thread/mod.rs:1317-1322`) but nothing in `handle_key`
 is bound to it. In transcript focus `Esc` does nothing; in the composer `Esc` only blurs
@@ -276,6 +287,11 @@ is bound to it. In transcript focus `Esc` does nothing; in the composer `Esc` on
 header or opening a row menu.
 
 ### F11 — mid-turn sending is advertised, not implemented (P1)
+
+**Resolved in Phase 4.** Messages submitted while the provider owns the live session are appended
+to `queued_messages`, rendered as pending user turns, and delivered FIFO through that same session
+as soon as its current turn returns. Failed request dispatch restores the full composer draft,
+including image attachments.
 
 While a run is `Running` the hint reads "Agent is working · Enter sends guidance to the active
 turn" (`thread/mod.rs:862`). But the turn worker takes ownership of the session at dispatch
@@ -454,6 +470,12 @@ transcript still converges to the durable event log. A test that a plain turn en
 which are tools and which are system notes, and the turn reads in the order it happened.
 
 ### Phase 4 — fix the interaction model (F9, F10, F11)
+
+**Implemented 2026-08-22.** The interaction tests cover composer-first entry, focus retention,
+single-shot `Esc` cancellation, inert bare destructive keys, optimistic-to-durable queue
+reconciliation, live activity, and draft restoration. The engine integration test blocks a live
+provider turn, queues a follow-up, and proves it is delivered at the next boundary before the run
+finishes.
 
 1. **Open in the composer.** Focus the composer in `ThreadUi::load` and preserve focus across
    navigation instead of resetting it. Put transcript navigation behind an explicit

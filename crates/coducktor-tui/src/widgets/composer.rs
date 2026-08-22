@@ -128,7 +128,7 @@ pub struct Composer {
     /// Byte index of the caret.
     pub caret: usize,
     pub focused: bool,
-    /// Host-provided semantic label, such as `GUIDANCE` or `FOLLOW UP`.
+    /// Host-provided semantic label, such as `FOLLOW UP` or `ANSWER`.
     pub title: String,
     pub attachments: Vec<Attachment>,
     /// Large clipboard payloads keyed by the compact placeholder shown in `text`.

@@ -564,6 +564,15 @@ impl Transcript {
         })
     }
 
+    pub fn latest_running_tool_title(&self) -> Option<&str> {
+        self.items.iter().rev().find_map(|item| match item {
+            TranscriptItem::Tool(tool) if tool.status == ToolStatus::Running => {
+                Some(tool.title.as_str())
+            }
+            _ => None,
+        })
+    }
+
     /// Whether an item's content (excluding its separator row) falls inside the current viewport.
     /// This uses the same cached geometry and sticky-bottom policy as rendering, so dock
     /// affordances can avoid repeating prose that the user can already read in the transcript.

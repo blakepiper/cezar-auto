@@ -86,6 +86,16 @@ records what is implemented and which terminal observations remain unverified.
 
 ## Task experience smoke test
 
+- **120×40 pseudo-terminal, 2026-08-22 (Phase 4 interaction model).** Built and launched the real
+  `coducktor` binary against an isolated temporary Git repository and home with the bundled dry-run
+  Claude session. Submitted `phase four interrupt gate mock:slow mock:done`, then typed `queued
+  while active` directly into the opened task without pressing `i`. Enter rendered that exact text
+  once with `Queued for the next turn`; the dock simultaneously showed the live `Thinking…`,
+  elapsed-time, and token line. Pressing `Esc` cancelled the slow provider turn immediately, left
+  the queued text durable for a later Continue, and did not archive or finish the task. A separate
+  idle `Esc` changed the composer title to `FOLLOW UP (i to type)`, and `q` then restored the
+  alternate screen. No external model call was made.
+
 - **120×40 pseudo-terminal, 2026-08-22 (Phase 3 transcript readability).** Built and launched the
   real `coducktor` binary against the registered coducktor repository, opened a stored finished
   task, and verified its event order directly: assistant prose used the accent `●` gutter and full

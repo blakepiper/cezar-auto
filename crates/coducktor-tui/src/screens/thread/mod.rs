@@ -130,6 +130,7 @@ pub struct ThreadUi {
     pub(crate) transcript_area: Option<Rect>,
     pub pending_prompt: Option<String>,
     pending_prompt_after_seq: f64,
+    pending_prompt_queued: bool,
     pending_composer: Option<crate::widgets::composer::Composer>,
     pub delivery_error: bool,
     pub cancel_pending: bool,
@@ -153,6 +154,7 @@ impl Default for ThreadUi {
             transcript_area: None,
             pending_prompt: None,
             pending_prompt_after_seq: -1.0,
+            pending_prompt_queued: false,
             pending_composer: None,
             delivery_error: false,
             cancel_pending: false,
@@ -201,11 +203,21 @@ impl ThreadUi {
         self.ask_selections.clear();
         self.ask_focus = (0, 0);
         self.subagent_sheet = None;
-        self.focus = ThreadFocus::Transcript;
+        self.focus = if same_thread {
+            self.focus
+        } else {
+            ThreadFocus::Composer
+        };
+        if self.focus == ThreadFocus::Composer {
+            self.composer.focus();
+        } else {
+            self.composer.blur();
+        }
         self.transcript_area = None;
         if !same_thread {
             self.pending_prompt = None;
             self.pending_prompt_after_seq = -1.0;
+            self.pending_prompt_queued = false;
             self.pending_composer = None;
         }
         self.cancel_pending = false;
@@ -216,14 +228,16 @@ impl ThreadUi {
     pub fn set_pending_prompt(&mut self, text: String) {
         self.pending_prompt = Some(text);
         self.pending_prompt_after_seq = self.data.as_of_seq;
+        self.pending_prompt_queued = false;
         self.pending_composer = None;
         self.delivery_error = false;
         self.refresh_projection(0, Duration::ZERO);
     }
 
-    fn set_pending_composer(&mut self, text: String) {
+    fn set_pending_composer(&mut self, text: String, queued: bool) {
         self.pending_prompt = Some(text);
         self.pending_prompt_after_seq = self.data.as_of_seq;
+        self.pending_prompt_queued = queued;
         self.pending_composer = Some(self.composer.clone());
         self.delivery_error = false;
         self.refresh_projection(0, Duration::ZERO);
@@ -249,6 +263,7 @@ impl ThreadUi {
         }
         self.pending_prompt = None;
         self.pending_prompt_after_seq = -1.0;
+        self.pending_prompt_queued = false;
         self.delivery_error = true;
         self.refresh_projection(0, Duration::ZERO);
     }
@@ -275,6 +290,7 @@ impl ThreadUi {
         self.transcript = Transcript::new();
         self.pending_prompt = None;
         self.pending_prompt_after_seq = -1.0;
+        self.pending_prompt_queued = false;
         self.pending_composer = None;
         self.delivery_error = false;
     }
@@ -368,8 +384,19 @@ impl ThreadUi {
         // The send request being accepted does not mean its user-message has reached the
         // transcript yet. Keep the optimistic prompt visible until the durable event arrives,
         // then let that event replace it without briefly hiding what the agent is working on.
-        let pending_is_durable = self.pending_prompt.as_deref().is_some_and(|prompt| {
-            self.data.events.iter().any(|event| {
+        let queued_prompt_is_durable = self.pending_prompt_queued
+            && self.pending_prompt.as_deref().is_some_and(|prompt| {
+                self.data.run.as_ref().is_some_and(|run| {
+                    run.record
+                        .queued_messages
+                        .iter()
+                        .flatten()
+                        .any(|message| queued_prompt_label(message) == prompt)
+                })
+            });
+        let pending_is_durable = queued_prompt_is_durable
+            || self.pending_prompt.as_deref().is_some_and(|prompt| {
+                self.data.events.iter().any(|event| {
                 event.seq > self.pending_prompt_after_seq
                     && event.event_type == "user-message"
                     && durable_prompt_label(event) == prompt
@@ -379,11 +406,13 @@ impl ThreadUi {
             // writes the user-message before it can append any later event, so this is still a
             // durable acknowledgement; without it the optimistic UI could remain "Sending…"
             // forever after a missed live notification.
-            || self.data.as_of_seq > self.pending_prompt_after_seq
-        });
+            || (!self.pending_prompt_queued
+                && self.data.as_of_seq > self.pending_prompt_after_seq)
+            });
         if pending_is_durable {
             self.pending_prompt = None;
             self.pending_prompt_after_seq = -1.0;
+            self.pending_prompt_queued = false;
             self.pending_composer = None;
             self.delivery_error = false;
         }
@@ -404,6 +433,7 @@ impl ThreadUi {
                         error: self.data.older_error.as_deref(),
                     },
                     self.pending_prompt.as_deref(),
+                    self.pending_prompt_queued,
                     existing,
                 )
             });
@@ -440,6 +470,19 @@ fn durable_prompt_label(event: &RunEvent) -> &str {
     }
 }
 
+fn queued_prompt_label(message: &coducktor_contract::QueuedMessage) -> &str {
+    if message.text.is_empty()
+        && message
+            .images
+            .as_ref()
+            .is_some_and(|images| !images.is_empty())
+    {
+        "[Image]"
+    } else {
+        &message.text
+    }
+}
+
 fn map_tone(tone: NoteTone) -> TranscriptNoteTone {
     match tone {
         NoteTone::Dim => TranscriptNoteTone::Dim,
@@ -460,6 +503,7 @@ fn build_transcript_items(
     view_model: &ThreadViewModel,
     earlier: EarlierHistory<'_>,
     pending_prompt: Option<&str>,
+    pending_prompt_queued: bool,
     existing: &mut std::collections::HashMap<String, TranscriptItem>,
 ) -> Vec<TranscriptItem> {
     let mut items = Vec::new();
@@ -587,6 +631,19 @@ fn build_transcript_items(
             items.push(outcome);
         }
     }
+    for message in run.record.queued_messages.iter().flatten() {
+        items.push(reuse_message(
+            existing,
+            format!("queued:{}", message.id),
+            coducktor_protocol::MessageRole::User,
+            queued_prompt_label(message),
+        ));
+        items.push(TranscriptItem::Note(NoteItem::new(
+            format!("queued-state:{}", message.id),
+            "Queued for the next turn",
+            TranscriptNoteTone::Dim,
+        )));
+    }
     if let Some(prompt) = pending_prompt {
         items.push(TranscriptItem::Message(MessageItem::new(
             "pending-prompt",
@@ -595,7 +652,11 @@ fn build_transcript_items(
         )));
         items.push(TranscriptItem::Note(NoteItem::new(
             "pending-prompt-state",
-            "Sending…",
+            if pending_prompt_queued {
+                "Queueing…"
+            } else {
+                "Sending…"
+            },
             TranscriptNoteTone::Dim,
         )));
     }
@@ -846,13 +907,21 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         0
     };
     let hint_height = 1;
+    let live_activity_height = u16::from(matches!(
+        record.status,
+        RunStatus::Queued | RunStatus::Running
+    ));
     let composer_height = app
         .thread_ui
         .composer
         .height_for_width(area.width.saturating_sub(3))
         + 2;
-    let base_dock_height =
-        ask_height + review_height + auto_resume_height + hint_height + composer_height;
+    let base_dock_height = ask_height
+        + review_height
+        + auto_resume_height
+        + hint_height
+        + live_activity_height
+        + composer_height;
 
     let base_rows = Layout::default()
         .direction(Direction::Vertical)
@@ -919,6 +988,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                 detail.push(elapsed);
             }
         }
+        if detail.is_empty() {
+            detail.push("0s".to_owned());
+        }
         detail.push(format!("{} tok", record.tokens_used as i64));
         format!(
             "{throbber} {} · {}",
@@ -961,6 +1033,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             Constraint::Length(auto_resume_height),
             Constraint::Length(latest_message_height),
             Constraint::Length(hint_height),
+            Constraint::Length(live_activity_height),
             Constraint::Length(composer_height),
         ])
         .split(rows[3]);
@@ -998,7 +1071,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             RunStatus::Idle => "Session is ready for a follow-up.",
             RunStatus::Waiting => "Waiting for your reply.",
             RunStatus::Running if app.thread_ui.cancel_pending => "Stopping the agent…",
-            RunStatus::Running => "Agent is working · Enter sends guidance to the active turn.",
+            RunStatus::Running => "Agent is working · Enter queues a follow-up for the next turn.",
             RunStatus::Done | RunStatus::Failed | RunStatus::Cancelled => {
                 "Enter starts a follow-up turn."
             }
@@ -1006,18 +1079,49 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         };
         widgets::render_status_hint(frame, dock_rows[4], text, &theme);
     }
+    if live_activity_height > 0 {
+        let mut detail = Vec::new();
+        if let Some(started_at) = record.started_at.as_deref() {
+            let elapsed = crate::screens::runs_util::short_age(started_at, app.now_epoch);
+            if !elapsed.is_empty() {
+                detail.push(elapsed);
+            }
+        }
+        if detail.is_empty() {
+            detail.push("0s".to_owned());
+        }
+        detail.push(format!("{} tok", record.tokens_used as i64));
+        if let Some(tool) = app.thread_ui.transcript.latest_running_tool_title() {
+            detail.push(tool.to_owned());
+        }
+        let phase = if app.thread_ui.cancel_pending {
+            "Stopping…"
+        } else {
+            app.thread_ui.data.view_model.current_status.as_str()
+        };
+        let activity = if detail.is_empty() {
+            phase.to_owned()
+        } else {
+            format!("{phase} · {}", detail.join(" · "))
+        };
+        widgets::render_live_activity(frame, dock_rows[5], &activity, &theme);
+    }
     app.thread_ui
         .composer
         .set_title(if app.thread_ui.pending_prompt.is_some() {
-            "SENDING"
+            if app.thread_ui.pending_prompt_queued {
+                "QUEUEING"
+            } else {
+                "SENDING"
+            }
         } else if app.thread_ui.delivery_error {
             "SEND FAILED · RETRY"
         } else {
             match record.status {
-                RunStatus::Queued => "QUEUED",
+                RunStatus::Queued => "FOLLOW UP",
                 RunStatus::Idle => "FOLLOW UP",
                 RunStatus::Waiting => "ANSWER",
-                RunStatus::Running => "GUIDANCE",
+                RunStatus::Running => "FOLLOW UP",
                 RunStatus::Review | RunStatus::Done | RunStatus::Failed | RunStatus::Cancelled => {
                     "FOLLOW UP"
                 }
@@ -1025,7 +1129,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         });
     app.thread_ui
         .composer
-        .render(frame, dock_rows[5], theme, &mut app.hitmap, 4);
+        .render(frame, dock_rows[6], theme, &mut app.hitmap, 4);
 
     if let Some(agent_id) = app.thread_ui.subagent_sheet.clone()
         && let Some(agent) = find_subagent(&app.thread_ui.data.state, &agent_id)
@@ -1071,6 +1175,14 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         }
         return true;
     }
+    if key.code == KeyCode::Esc
+        && matches!(
+            app.thread_ui.focus,
+            ThreadFocus::Composer | ThreadFocus::Transcript
+        )
+    {
+        return interrupt_or_focus_transcript(app);
+    }
     match app.thread_ui.focus {
         ThreadFocus::Composer => return handle_composer_key(app, key),
         ThreadFocus::ReviewNotes => return handle_review_notes_key(app, key),
@@ -1114,10 +1226,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             request_earlier(app);
             true
         }
-        KeyCode::Char('f') => {
-            apply_action(app, ThreadAction::Finish);
-            true
-        }
         KeyCode::Char(']') => {
             apply_hit(
                 app,
@@ -1133,12 +1241,28 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => false,
-        KeyCode::Char('a') => {
-            apply_action(app, ThreadAction::Archive);
-            true
-        }
         _ => false,
     }
+}
+
+fn interrupt_or_focus_transcript(app: &mut App) -> bool {
+    let active = app
+        .thread_ui
+        .data
+        .run
+        .as_ref()
+        .is_some_and(|run| matches!(run.record.status, RunStatus::Queued | RunStatus::Running));
+    if active && !app.thread_ui.cancel_pending {
+        app.thread_ui.cancel_pending = true;
+        app.pending.push(PendingAction::CancelRun {
+            project: app.thread_ui.data.project.clone(),
+            id: app.thread_ui.data.run_id.clone(),
+        });
+    } else {
+        app.thread_ui.composer.blur();
+        app.thread_ui.focus = ThreadFocus::Transcript;
+    }
+    true
 }
 
 /// Deliver a bracketed-paste chunk to the focused composer.
@@ -1161,10 +1285,6 @@ pub fn handle_paste(app: &mut App, text: &str) -> bool {
 }
 
 fn handle_composer_key(app: &mut App, key: KeyEvent) -> bool {
-    if key.code == KeyCode::Esc {
-        app.thread_ui.focus = ThreadFocus::Transcript;
-        return true;
-    }
     if is_clipboard_paste_key(key) {
         return handle_clipboard_paste(app);
     }
@@ -1228,7 +1348,8 @@ fn submit_composer(app: &mut App, text: String, images: Vec<ImageInput>) -> bool
         text.clone()
     };
     if is_run_active(run.record.status) {
-        app.thread_ui.set_pending_composer(pending_label);
+        let queued = matches!(run.record.status, RunStatus::Queued | RunStatus::Running);
+        app.thread_ui.set_pending_composer(pending_label, queued);
         app.pending.push(PendingAction::SendMessage {
             project,
             id,
@@ -1241,7 +1362,7 @@ fn submit_composer(app: &mut App, text: String, images: Vec<ImageInput>) -> bool
     } else {
         // No prior session just means the engine starts a fresh step in this same run/worktree
         // instead of resuming a transcript — still delivered as a follow-up, not a new task.
-        app.thread_ui.set_pending_composer(pending_label);
+        app.thread_ui.set_pending_composer(pending_label, false);
         app.pending.push(PendingAction::ContinueRun {
             project,
             id,
@@ -2068,6 +2189,138 @@ mod tests {
         let mut app = app_with_run(RunStatus::Queued);
         let content = render_to_string(&mut app);
         assert!(content.contains("folded into the prompt"));
+    }
+
+    #[test]
+    fn a_fresh_thread_focuses_the_composer_and_refresh_preserves_focus() {
+        let mut app = app_with_run(RunStatus::Running);
+        assert_eq!(app.thread_ui.focus, ThreadFocus::Composer);
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.thread_ui.composer.text, "x");
+
+        app.thread_ui.focus = ThreadFocus::Transcript;
+        app.thread_ui.composer.blur();
+        let current = app.thread_ui.data.run.clone().unwrap();
+        app.thread_ui.load(
+            "main".to_owned(),
+            "run-1".to_owned(),
+            current,
+            Vec::new(),
+            -1.0,
+            None,
+        );
+        assert_eq!(app.thread_ui.focus, ThreadFocus::Transcript);
+    }
+
+    #[test]
+    fn escape_interrupts_once_then_moves_focus_to_the_transcript() {
+        let mut app = app_with_run(RunStatus::Running);
+        assert!(handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+        ));
+        assert!(app.thread_ui.cancel_pending);
+        assert_eq!(app.thread_ui.focus, ThreadFocus::Composer);
+        assert!(matches!(
+            app.pending.as_slice(),
+            [PendingAction::CancelRun { project, id }]
+                if project == "main" && id == "run-1"
+        ));
+        assert!(app.confirm.is_none());
+
+        assert!(handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+        ));
+        assert_eq!(app.thread_ui.focus, ThreadFocus::Transcript);
+        assert_eq!(app.pending.len(), 1);
+
+        let mut queued = app_with_run(RunStatus::Queued);
+        queued.thread_ui.focus = ThreadFocus::Transcript;
+        queued.thread_ui.composer.blur();
+        assert!(handle_key(
+            &mut queued,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+        ));
+        assert!(queued.thread_ui.cancel_pending);
+        assert!(matches!(
+            queued.pending.as_slice(),
+            [PendingAction::CancelRun { project, id }]
+                if project == "main" && id == "run-1"
+        ));
+    }
+
+    #[test]
+    fn idle_escape_only_drops_focus_and_bare_archive_finish_keys_are_inert() {
+        let mut app = app_with_run(RunStatus::Idle);
+        assert!(handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+        ));
+        assert_eq!(app.thread_ui.focus, ThreadFocus::Transcript);
+        assert!(app.pending.is_empty());
+
+        assert!(!handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)
+        ));
+        assert!(!handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE)
+        ));
+        assert!(app.pending.is_empty());
+        assert!(app.confirm.is_none());
+    }
+
+    #[test]
+    fn running_follow_up_is_optimistic_then_visible_in_the_durable_queue() {
+        let mut app = app_with_run(RunStatus::Running);
+        app.thread_ui.composer.set_text("check the compact layout");
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            app.pending.as_slice(),
+            [PendingAction::SendMessage { input, .. }]
+                if input.text.as_deref() == Some("check the compact layout")
+        ));
+        let pending = render_to_string(&mut app);
+        assert!(pending.contains("Queueing…"));
+        assert!(pending.contains("QUEUEING"));
+
+        let mut durable = app.thread_ui.data.run.clone().unwrap();
+        durable.record.queued_messages = Some(vec![coducktor_contract::QueuedMessage {
+            id: "queued-1".to_owned(),
+            text: "check the compact layout".to_owned(),
+            images: None,
+            created_at: "2026-08-15T00:00:01Z".to_owned(),
+        }]);
+        app.thread_ui.set_run(durable);
+        let content = render_to_string(&mut app);
+        assert!(app.thread_ui.pending_prompt.is_none());
+        assert!(content.contains("Queued for the next turn"));
+        assert_eq!(content.matches("check the compact layout").count(), 1);
+    }
+
+    #[test]
+    fn live_activity_line_includes_the_running_tool_and_usage() {
+        let mut app = app_with_run(RunStatus::Running);
+        app.thread_ui.push_event(
+            1.0,
+            event(
+                1.0,
+                "item.started",
+                json!({"item": {"kind": "tool", "id": "t1", "name": "Bash", "toolKind": "execute", "title": "Run cargo test -p coducktor-tui", "status": "running", "input": {"command": "cargo test -p coducktor-tui"}}}),
+            ),
+        );
+        let content = render_to_string(&mut app);
+        assert!(
+            content.contains(
+                "● Running cargo test -p coducktor-tui · 0s · 0 tok · Ran cargo test -p coducktor-tui"
+            ),
+            "rendered thread: {content}"
+        );
     }
 
     #[test]

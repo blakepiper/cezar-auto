@@ -552,6 +552,21 @@ impl TurnDispatch {
             let active = match step {
                 Ok(TurnStep::Done) | Err(_) => break,
                 Ok(TurnStep::Nudge(active)) => active,
+                Ok(TurnStep::QueuedMessage {
+                    active,
+                    prompt,
+                    images,
+                }) => {
+                    step = self.run_queued_message(
+                        run_id,
+                        step_id,
+                        active,
+                        prompt,
+                        images,
+                        &CancellationToken::default(),
+                    );
+                    continue;
+                }
                 Ok(TurnStep::GitAutoCommit(active)) => {
                     self.run_git_auto_commit(run_id, step_id, active);
                     break;
@@ -601,6 +616,21 @@ impl TurnDispatch {
             let active = match step {
                 Ok(TurnStep::Done) | Err(_) => break,
                 Ok(TurnStep::Nudge(active)) => active,
+                Ok(TurnStep::QueuedMessage {
+                    active,
+                    prompt,
+                    images,
+                }) => {
+                    step = self.run_queued_message(
+                        &run_id,
+                        &step_id,
+                        active,
+                        prompt,
+                        images,
+                        &cancellation,
+                    );
+                    continue;
+                }
                 Ok(TurnStep::GitAutoCommit(active)) => {
                     self.run_git_auto_commit(&run_id, &step_id, active);
                     break;
@@ -627,6 +657,26 @@ impl TurnDispatch {
             .lock()
             .map_err(|_| std::io::Error::other("manager unavailable"))?
             .apply_active_turn(run_id, *active, send_result, cancellation.is_requested())
+    }
+
+    fn run_queued_message(
+        &self,
+        run_id: &str,
+        step_id: &str,
+        mut active: Box<RuntimeActive>,
+        prompt: String,
+        images: Vec<PromptImage>,
+        cancellation: &CancellationToken,
+    ) -> std::io::Result<TurnStep> {
+        let send_result = active
+            .session_mut()
+            .send_message(&prompt, &images, &mut |event| {
+                self.apply_event(run_id, step_id, event)
+            });
+        self.manager
+            .lock()
+            .map_err(|_| std::io::Error::other("manager unavailable"))?
+            .apply_message_turn(run_id, *active, send_result, cancellation.is_requested())
     }
 
     fn run_git_auto_commit(&self, run_id: &str, step_id: &str, mut active: Box<RuntimeActive>) {
@@ -738,6 +788,21 @@ impl TurnDispatch {
             let active = match step {
                 Ok(TurnStep::Done) | Err(_) => break,
                 Ok(TurnStep::Nudge(active)) => active,
+                Ok(TurnStep::QueuedMessage {
+                    active,
+                    prompt,
+                    images,
+                }) => {
+                    step = self.run_queued_message(
+                        &run_id,
+                        &step_id,
+                        active,
+                        prompt,
+                        images,
+                        &CancellationToken::default(),
+                    );
+                    continue;
+                }
                 Ok(TurnStep::GitAutoCommit(active)) => {
                     self.run_git_auto_commit(&run_id, &step_id, active);
                     break;
@@ -3980,15 +4045,22 @@ impl InProcessEngine {
             });
         }
         let mut manager = self.manager.lock().map_err(|_| lock_err())?;
-        if manager.get_run(run_id).is_none() {
+        let Some(run) = manager.get_run(run_id).cloned() else {
             return Err(EngineError::NotFound);
+        };
+        if run.status == coducktor_contract::RunStatus::Queued {
+            let message = queue_message_on_manager(&mut manager, &run, text, images)?;
+            return Ok(MessageResponse::Queued {
+                queued: true,
+                message,
+            });
         }
         let result = manager.begin_message(run_id, text.clone(), images.clone());
         let admitted = manager.take_pending_turns();
-        drop(manager);
-        self.turn_dispatch().dispatch(admitted);
         match result {
             Ok(Some(active)) => {
+                drop(manager);
+                self.turn_dispatch().dispatch(admitted);
                 if !self
                     .turn_dispatch()
                     .message(run_id.to_owned(), active, text, images)
@@ -3999,9 +4071,22 @@ impl InProcessEngine {
                 }
                 Ok(MessageResponse::Delivered { delivered: true })
             }
-            Ok(None) => Err(EngineError::Conflict {
-                reason: "session closed".to_owned(),
-            }),
+            Ok(None) if run.status == coducktor_contract::RunStatus::Running => {
+                let message = queue_message_on_manager(&mut manager, &run, text, images)?;
+                drop(manager);
+                self.turn_dispatch().dispatch(admitted);
+                Ok(MessageResponse::Queued {
+                    queued: true,
+                    message,
+                })
+            }
+            Ok(None) => {
+                drop(manager);
+                self.turn_dispatch().dispatch(admitted);
+                Err(EngineError::Conflict {
+                    reason: "session closed".to_owned(),
+                })
+            }
             Err(error) => Err(io_err(error)),
         }
     }
@@ -4658,6 +4743,52 @@ fn folded_task_length(task: &str, messages: &[coducktor_contract::QueuedMessage]
 
 fn valid_queued_text(text: &str) -> bool {
     text.chars().count() <= 100_000
+}
+
+fn queue_message_on_manager(
+    manager: &mut RunManager,
+    run: &coducktor_contract::RunRecord,
+    text: String,
+    images: Vec<PromptImage>,
+) -> Result<coducktor_contract::QueuedMessage, EngineError> {
+    if !valid_queued_text(&text) {
+        return Err(EngineError::Conflict {
+            reason: "queued message exceeds the 100,000 character limit".to_owned(),
+        });
+    }
+    let queued = run.queued_messages.as_deref().unwrap_or_default();
+    let queued_images = queued
+        .iter()
+        .map(|message| message.images.as_ref().map_or(0, Vec::len))
+        .sum::<usize>();
+    if queued_images.saturating_add(images.len()) > MAX_QUEUED_IMAGES {
+        return Err(EngineError::Conflict {
+            reason: format!("queued messages exceed the {MAX_QUEUED_IMAGES} image limit"),
+        });
+    }
+    let prospective = queued
+        .iter()
+        .cloned()
+        .chain(std::iter::once(coducktor_contract::QueuedMessage {
+            id: String::new(),
+            text: text.clone(),
+            images: None,
+            created_at: String::new(),
+        }))
+        .collect::<Vec<_>>();
+    if folded_task_length(&run.task, &prospective) > MAX_FOLDED_TASK_CHARS {
+        return Err(EngineError::Conflict {
+            reason: format!(
+                "task and queued messages exceed the {MAX_FOLDED_TASK_CHARS} character limit"
+            ),
+        });
+    }
+    manager
+        .queue_message(&run.id, text, images)
+        .map_err(io_err)?
+        .ok_or_else(|| EngineError::Conflict {
+            reason: "run is no longer accepting queued messages".to_owned(),
+        })
 }
 
 fn commit_all(root: &Path, message: &str) -> Result<String, String> {
@@ -9732,6 +9863,63 @@ mod tests {
         }
     }
 
+    struct FollowUpBoundaryFactory {
+        entered: Arc<AtomicBool>,
+        release: Arc<AtomicBool>,
+        messages: Arc<Mutex<Vec<String>>>,
+    }
+
+    struct FollowUpBoundarySession {
+        entered: Arc<AtomicBool>,
+        release: Arc<AtomicBool>,
+        messages: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl AgentSession for FollowUpBoundarySession {
+        fn turn(
+            &mut self,
+            _on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
+        ) -> Result<SessionOutcome, String> {
+            self.entered.store(true, Ordering::Release);
+            while !self.release.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok(SessionOutcome::Completed(
+                coducktor_core::workflows::run::SessionReport {
+                    turn_text: "initial turn complete\n\nDUCK:DONE".to_owned(),
+                    decision: Some(coducktor_core::workflows::run::TurnMarkerDecision::Done),
+                    ..coducktor_core::workflows::run::SessionReport::default()
+                },
+            ))
+        }
+
+        fn send_message(
+            &mut self,
+            prompt: &str,
+            _images: &[PromptImage],
+            _on_event: &mut dyn FnMut(EventInput) -> io::Result<()>,
+        ) -> Result<SessionOutcome, String> {
+            self.messages.lock().unwrap().push(prompt.to_owned());
+            Ok(SessionOutcome::Completed(
+                coducktor_core::workflows::run::SessionReport {
+                    turn_text: "follow-up complete\n\nDUCK:DONE".to_owned(),
+                    decision: Some(coducktor_core::workflows::run::TurnMarkerDecision::Done),
+                    ..coducktor_core::workflows::run::SessionReport::default()
+                },
+            ))
+        }
+    }
+
+    impl SessionFactory for FollowUpBoundaryFactory {
+        fn open(&self, _request: SessionRequest) -> Result<Box<dyn AgentSession + Send>, String> {
+            Ok(Box::new(FollowUpBoundarySession {
+                entered: self.entered.clone(),
+                release: self.release.clone(),
+                messages: self.messages.clone(),
+            }))
+        }
+    }
+
     /// Models a provider setup that is blocked before it can return an `AgentSession`.
     /// Cancellation must use the token captured by `SharedSessionFactory` before it entered the
     /// factory.
@@ -9867,6 +10055,98 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_millis(100));
         assert_eq!(run.status, coducktor_contract::RunStatus::Queued);
         assert!(engine.activation_workers.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_in_flight_follow_up_is_queued_and_delivered_at_the_turn_boundary() {
+        let dir = TempDir::new().unwrap();
+        let entered = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(false));
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        let engine = InProcessEngine::with_session_factory(
+            dir.path(),
+            "0.0.0-test",
+            FollowUpBoundaryFactory {
+                entered: entered.clone(),
+                release: release.clone(),
+                messages: messages.clone(),
+            },
+        );
+        let CreateRunResponse::Single(run) = engine
+            .start_run(steps_input("wait for a follow-up"))
+            .await
+            .unwrap()
+        else {
+            panic!("expected one run");
+        };
+        engine.activate_runs().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !entered.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let response = engine
+            .send_message(
+                &run.id,
+                MessageInput {
+                    text: Some("use the compact layout".to_owned()),
+                    images: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            response,
+            MessageResponse::Queued { queued: true, .. }
+        ));
+        let second = engine
+            .send_message(
+                &run.id,
+                MessageInput {
+                    text: Some("then verify the narrow layout".to_owned()),
+                    images: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            second,
+            MessageResponse::Queued { queued: true, .. }
+        ));
+        assert_eq!(
+            engine
+                .get_run(&run.id)
+                .await
+                .unwrap()
+                .record
+                .queued_messages
+                .as_deref()
+                .map(|queued| queued.len()),
+            Some(2)
+        );
+
+        release.store(true, Ordering::Release);
+        activate_until_terminal(&engine, &run.id).await;
+        assert_eq!(
+            messages.lock().unwrap().as_slice(),
+            &["use the compact layout", "then verify the narrow layout"]
+        );
+        let finished = engine.get_run(&run.id).await.unwrap();
+        assert_eq!(finished.record.status, coducktor_contract::RunStatus::Done);
+        assert!(finished.record.queued_messages.is_none());
+        let history = engine.run_history(&run.id, None).await.unwrap();
+        assert!(history.events.iter().any(|event| {
+            event.event_type == "user-message"
+                && event.extra.get("text").and_then(Value::as_str) == Some("use the compact layout")
+        }));
+        assert!(history.events.iter().any(|event| {
+            event.event_type == "user-message"
+                && event.extra.get("text").and_then(Value::as_str)
+                    == Some("then verify the narrow layout")
+        }));
     }
 
     #[tokio::test]
