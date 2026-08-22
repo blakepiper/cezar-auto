@@ -23,9 +23,10 @@ use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::{App, PendingAction};
+use crate::widgets::run_end::RunOutcome;
 use crate::widgets::transcript::{
-    MessageItem, NoteItem, NoteTone as TranscriptNoteTone, ReasoningItem, ToolItem, Transcript,
-    TranscriptItem,
+    MessageItem, NoteItem, NoteTone as TranscriptNoteTone, ReasoningItem, RunEndItem, ToolItem,
+    Transcript, TranscriptItem,
 };
 
 use actions::is_run_active;
@@ -675,6 +676,15 @@ fn build_transcript_items(
             TranscriptNoteTone::Dim,
         )));
     }
+    // The dock's copy of this rule is ephemeral — it is gone the moment a follow-up starts — so
+    // mirror it here, after everything the run produced, to mark where the run terminated.
+    if let Some(outcome) = RunOutcome::from_status(run.record.status) {
+        items.push(TranscriptItem::RunEnd(RunEndItem::new(
+            format!("run-end:{}", run.record.id),
+            outcome,
+            widgets::run_end_detail(&run.record),
+        )));
+    }
     let mut latest_tool = None;
     for (index, item) in items.iter_mut().enumerate() {
         if let TranscriptItem::Tool(tool) = item {
@@ -922,10 +932,10 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         0
     };
     let hint_height = 1;
-    let live_activity_height = u16::from(matches!(
-        record.status,
-        RunStatus::Queued | RunStatus::Running
-    ));
+    // One row, always reserved. During a run it holds the live-activity line; the moment the run
+    // reaches a terminal status the same row converts into the run-end rule. Reserving it
+    // unconditionally is what keeps that conversion from shifting the composer under the cursor.
+    let live_activity_height = 1;
     let composer_height = app
         .thread_ui
         .composer
@@ -1098,14 +1108,23 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             RunStatus::Waiting => "Waiting for your reply.",
             RunStatus::Running if app.thread_ui.cancel_pending => "Stopping the agent…",
             RunStatus::Running => "Agent is working · Enter queues a follow-up for the next turn.",
-            RunStatus::Done | RunStatus::Failed | RunStatus::Cancelled => {
-                "Enter starts a follow-up turn."
+            // The rule directly below says the run stopped and how, so the hint is down to the
+            // one thing it alone can say: the keybinding.
+            RunStatus::Done | RunStatus::Failed | RunStatus::Cancelled | RunStatus::Review => {
+                "Enter · follow up"
             }
-            RunStatus::Review => "Enter starts a follow-up; review actions are above.",
         };
         widgets::render_status_hint(frame, dock_rows[4], text, &theme);
     }
-    if live_activity_height > 0 {
+    if let Some(outcome) = RunOutcome::from_status(record.status) {
+        widgets::render_run_end_banner(
+            frame,
+            dock_rows[5],
+            outcome,
+            &widgets::run_end_detail(record),
+            &theme,
+        );
+    } else if matches!(record.status, RunStatus::Queued | RunStatus::Running) {
         let mut detail = Vec::new();
         if let Some(started_at) = record.started_at.as_deref() {
             let elapsed = crate::screens::runs_util::short_age(started_at, app.now_epoch);
@@ -2513,6 +2532,85 @@ mod tests {
         assert!(
             !content.contains("fn a() {}"),
             "the earlier tool call stays collapsed"
+        );
+    }
+
+    #[test]
+    fn every_terminal_status_ends_the_run_with_its_own_word() {
+        for (status, word) in [
+            (RunStatus::Done, "RUN COMPLETE"),
+            (RunStatus::Failed, "RUN FAILED"),
+            (RunStatus::Cancelled, "RUN CANCELLED"),
+            (RunStatus::Review, "PAUSED FOR REVIEW"),
+        ] {
+            let mut app = app_with_run(status);
+            let content = render_to_string(&mut app);
+            assert!(
+                content.contains(word),
+                "{status:?} says how the run stopped"
+            );
+        }
+    }
+
+    #[test]
+    fn a_run_still_working_has_no_run_end_rule() {
+        for status in [RunStatus::Running, RunStatus::Queued, RunStatus::Idle] {
+            let mut app = app_with_run(status);
+            let content = render_to_string(&mut app);
+            assert!(
+                !content.contains("RUN COMPLETE") && !content.contains("RUN CANCELLED"),
+                "{status:?} is mid-flight"
+            );
+        }
+    }
+
+    /// The dock's rule is ephemeral, so the transcript keeps its own copy of where the run
+    /// terminated. Both are built from the same outcome and detail.
+    #[test]
+    fn the_run_end_rule_is_mirrored_into_the_transcript() {
+        let mut app = app_with_run(RunStatus::Done);
+        let mirrored: Vec<_> = app
+            .thread_ui
+            .transcript
+            .items()
+            .iter()
+            .filter_map(|item| match item {
+                TranscriptItem::RunEnd(item) => Some(item),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(mirrored.len(), 1, "exactly one boundary per run");
+        assert_eq!(mirrored[0].outcome, RunOutcome::Done);
+
+        let content = render_to_string(&mut app);
+        assert_eq!(
+            content.matches("RUN COMPLETE").count(),
+            2,
+            "the dock line and the transcript item"
+        );
+    }
+
+    /// The row the rule lands in is reserved during the run too, so a run finishing under the
+    /// user's cursor does not move the composer out from under it.
+    #[test]
+    fn finishing_a_run_does_not_shift_the_composer() {
+        let composer_row = |status| {
+            let mut app = app_with_run(status);
+            let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+            terminal.draw(|frame| app.render(frame)).unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            (0..40)
+                .find(|row| {
+                    (0..120)
+                        .map(|column| buffer[(column, *row)].symbol())
+                        .collect::<String>()
+                        .contains("FOLLOW UP")
+                })
+                .expect("the composer is on screen")
+        };
+        assert_eq!(
+            composer_row(RunStatus::Running),
+            composer_row(RunStatus::Done)
         );
     }
 

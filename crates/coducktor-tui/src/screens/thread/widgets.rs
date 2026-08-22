@@ -14,8 +14,9 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::input::hitmap::HitAction;
-use crate::screens::runs_util::{attention, run_title};
+use crate::screens::runs_util::{attention, compact_tokens, parse_iso_seconds, run_title};
 use crate::theme::Theme;
+use crate::widgets::run_end::{self, RunOutcome};
 
 use super::ThreadAction;
 use super::actions::{resume_hint, run_action_flags};
@@ -594,6 +595,52 @@ pub fn render_status_hint(frame: &mut Frame<'_>, area: Rect, text: &str, theme: 
             text.to_owned(),
             Style::default().fg(theme.palette.soft_fg),
         )),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+    1
+}
+
+/// `4m12s · 18.2k tok` — how long the run took and what it spent. Elapsed is omitted until the
+/// server has stamped both ends, so the line never invents a duration from a half-written record.
+pub fn run_end_detail(record: &RunRecord) -> String {
+    let mut parts = Vec::new();
+    if let (Some(started), Some(finished)) = (
+        record.started_at.as_deref().and_then(parse_iso_seconds),
+        record.finished_at.as_deref().and_then(parse_iso_seconds),
+    ) {
+        parts.push(format_duration((finished - started).max(0)));
+    }
+    parts.push(format!("{} tok", compact_tokens(record.tokens_used)));
+    parts.join(" \u{b7} ")
+}
+
+/// `12s`, `4m12s`, `1h04m` — coarser as it grows, but never so coarse that a four-minute run and
+/// a four-second one read the same.
+fn format_duration(seconds: i64) -> String {
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3600 {
+        format!("{}m{:02}s", seconds / 60, seconds % 60)
+    } else {
+        format!("{}h{:02}m", seconds / 3600, (seconds % 3600) / 60)
+    }
+}
+
+/// The full-width rule that replaces the live-activity row the moment a run stops. The row it
+/// takes over is always reserved, so the conversion from `● Working · 2m10s` into the rule is
+/// the attention grab — nothing below it moves.
+pub fn render_run_end_banner(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    outcome: RunOutcome,
+    detail: &str,
+    theme: &Theme,
+) -> u16 {
+    if area.height == 0 || area.width == 0 {
+        return 0;
+    }
+    frame.render_widget(
+        Paragraph::new(run_end::banner_line(outcome, detail, area.width, theme)),
         Rect::new(area.x, area.y, area.width, 1),
     );
     1

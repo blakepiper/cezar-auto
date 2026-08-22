@@ -75,6 +75,17 @@ fn sound_command() -> (&'static str, &'static [&'static str]) {
     ("/usr/bin/afplay", &["/System/Library/Sounds/Glass.aiff"])
 }
 
+/// Ring the terminal bell.
+///
+/// Distinct from [`play_sound`], which targets the desktop: a bell is what marks a background
+/// tmux window or terminal tab as having activity, so it is the only signal that reaches a user
+/// whose run finished in a pane they are not looking at. Best-effort like everything else here.
+pub fn bell() {
+    let mut output = stdout();
+    let _ = output.write_all(b"\x07");
+    let _ = output.flush();
+}
+
 /// The always-on title, reflecting how many of the current project's tasks need the user —
 /// unconditional on the notification permission toggle.
 pub fn title_for(needs_you: usize) -> String {

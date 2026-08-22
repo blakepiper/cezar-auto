@@ -1135,6 +1135,9 @@ pub struct App {
     pub notifications_enabled: bool,
     /// (summary, body) pairs main.rs drains once per tick and fires via `notify-rust`.
     pub pending_notifications: Vec<(String, String)>,
+    /// Set when a run reached a terminal status off-screen; drained by the render loop, which
+    /// owns the terminal.
+    pub pending_bell: bool,
     pub pending: Vec<PendingAction>,
     /// Coalescable refresh actions the runtime has already dispatched to a background worker and
     /// not yet resolved. `queue_pending`'s dedup only sees `pending` itself, so it cannot stop a
@@ -1236,6 +1239,7 @@ impl App {
             palette: crate::overlay::Palette::default(),
             notifications_enabled: false,
             pending_notifications: Vec::new(),
+            pending_bell: false,
             pending: Vec::new(),
             in_flight_coalescable: Vec::new(),
             runtime_metrics: AppRuntimeMetrics::default(),
@@ -1301,6 +1305,15 @@ impl App {
 
     pub fn route(&self) -> &Route {
         self.history.current()
+    }
+
+    /// Whether the user is currently looking at this run's thread.
+    pub fn is_thread_focused(&self, project: &str, run_id: &str) -> bool {
+        matches!(
+            self.route(),
+            Route::Thread { project: route_project, id }
+                if route_project == project && id == run_id
+        )
     }
 
     pub fn current_project(&self) -> &str {
@@ -1640,6 +1653,10 @@ impl App {
         std::mem::take(&mut self.pending_notifications)
     }
 
+    pub fn take_pending_bell(&mut self) -> bool {
+        std::mem::take(&mut self.pending_bell)
+    }
+
     /// Navigate, guarding the IDE's unsaved draft: leaving a dirty file asks
     /// first, and the confirm's action resolves into the deferred `history.navigate` in
     /// main.rs. Every path that can move the app away from `Route::Ide` routes through this
@@ -1872,6 +1889,16 @@ impl App {
                     *existing = task.clone();
                     if let Some((summary, body)) = notification_for_transition(old_status, &task) {
                         self.pending_notifications.push((summary, body));
+                    }
+                    // The run-end rule is the recognition half of "this run stopped"; it only
+                    // works on a thread the user is looking at. A bell is the other half —
+                    // it marks the terminal tab or tmux window so the signal survives being
+                    // off-screen.
+                    if old_status != task.status
+                        && crate::widgets::run_end::RunOutcome::from_status(task.status).is_some()
+                        && !self.is_thread_focused(&project, &task.id)
+                    {
+                        self.pending_bell = true;
                     }
                 } else {
                     self.quick_tasks.push(task);

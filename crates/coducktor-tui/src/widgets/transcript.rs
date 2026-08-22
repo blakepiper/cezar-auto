@@ -23,6 +23,7 @@ use crate::input::hitmap::{HitAction, HitMap};
 use crate::markdown::RenderCache;
 use crate::screens::thread::ThreadAction;
 use crate::theme::Theme;
+use crate::widgets::run_end::{self, RunOutcome};
 
 /// Finished tool output beyond this many lines clamps with a "+N more" note (mirrors
 /// The output clamp limit; the separate "Show all" toggle is
@@ -44,6 +45,7 @@ pub enum TranscriptItem {
     Tool(ToolItem),
     Note(NoteItem),
     Image(ImageItem),
+    RunEnd(RunEndItem),
 }
 
 impl TranscriptItem {
@@ -54,6 +56,7 @@ impl TranscriptItem {
             Self::Tool(item) => &item.id,
             Self::Note(item) => &item.id,
             Self::Image(item) => &item.id,
+            Self::RunEnd(item) => &item.id,
         }
     }
 
@@ -70,6 +73,7 @@ impl TranscriptItem {
             }
             Self::Note(item) => contains(&item.text),
             Self::Image(_) => false,
+            Self::RunEnd(item) => contains(&item.detail),
         }
     }
 
@@ -102,6 +106,8 @@ impl TranscriptItem {
             Self::Note(item) => item.text.len() as u64,
             // Immutable once decoded: there is nothing that can change its height.
             Self::Image(_) => 0,
+            // Always one row, whatever the outcome or detail.
+            Self::RunEnd(_) => 0,
         }
     }
 
@@ -127,6 +133,7 @@ impl TranscriptItem {
             Self::Tool(item) => tool_card_height(item, content_width),
             Self::Note(item) => wrapped_line_count(&item.text, content_width).max(1),
             Self::Image(item) => image_height(item, content_width),
+            Self::RunEnd(_) => 1,
         };
         if content_height == 0 {
             0
@@ -137,6 +144,13 @@ impl TranscriptItem {
 
     fn paint(&mut self, buf: &mut Buffer, area: Rect, theme: &Theme) {
         if area.height <= ITEM_SPACING || area.width == 0 {
+            return;
+        }
+        // The one item with no gutter marker: a rule that stops short of the left edge reads as
+        // another message rather than a boundary, so it takes the whole width.
+        if let Self::RunEnd(item) = self {
+            run_end::banner_line(item.outcome, &item.detail, area.width, theme)
+                .render(Rect::new(area.x, area.y, area.width, 1), buf);
             return;
         }
         let marker = match self {
@@ -155,6 +169,8 @@ impl TranscriptItem {
                 },
             ),
             Self::Image(_) => ("·", theme.palette.border),
+            // Handled above: it draws its own full-width line.
+            Self::RunEnd(_) => return,
         };
         Line::from(Span::styled(marker.0, Style::default().fg(marker.1)))
             .render(Rect::new(area.x, area.y, 1.min(area.width), 1), buf);
@@ -170,6 +186,7 @@ impl TranscriptItem {
             Self::Tool(item) => paint_tool_card(item, buf, content, theme),
             Self::Note(item) => paint_note(item, buf, content, theme),
             Self::Image(item) => paint_image(item, buf, content, theme),
+            Self::RunEnd(_) => {}
         }
     }
 }
@@ -294,6 +311,24 @@ impl NoteItem {
             id: id.into(),
             text: text.into(),
             tone,
+        }
+    }
+}
+
+/// The transcript half of the run-end rule. The dock's copy is ephemeral — it is gone as soon
+/// as a follow-up starts — so the same line is mirrored here to mark where the run terminated.
+pub struct RunEndItem {
+    pub id: String,
+    pub outcome: RunOutcome,
+    pub detail: String,
+}
+
+impl RunEndItem {
+    pub fn new(id: impl Into<String>, outcome: RunOutcome, detail: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            outcome,
+            detail: detail.into(),
         }
     }
 }

@@ -3382,6 +3382,9 @@ async fn run(
             crate::notify::notify(app.notifications_enabled, &summary, &body);
             crate::notify::play_sound(app.notifications_enabled);
         }
+        if app.take_pending_bell() {
+            crate::notify::bell();
+        }
         let needs_you = app.needs_you_count();
         if needs_you != last_needs_you {
             crate::notify::set_title(&crate::notify::title_for(needs_you));
