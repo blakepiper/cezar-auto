@@ -1154,6 +1154,14 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         return handle_model_picker_key(app, key);
     }
     match key.code {
+        KeyCode::Char('l') if app.screen_focus() == 0 => {
+            app.set_screen_focus(1);
+            true
+        }
+        KeyCode::Char('h') if app.screen_focus() == 1 => {
+            app.set_screen_focus(0);
+            true
+        }
         KeyCode::Char('j') | KeyCode::Down if app.screen_focus() == 0 => {
             let len = visible_sections(app).len();
             app.settings_ui.section = (app.settings_ui.section + 1).min(len.saturating_sub(1));
@@ -2510,6 +2518,31 @@ mod tests {
             KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
         );
         assert_eq!(current_section(&app), *SECTIONS.last().unwrap());
+    }
+
+    #[test]
+    fn h_and_l_move_between_settings_sections_and_values() {
+        for mut app in [app_with_settings(), app_with_global_settings()] {
+            app.set_screen_focus(0);
+
+            app.handle_event(crossterm::event::Event::Key(KeyEvent::new(
+                KeyCode::Char('l'),
+                KeyModifiers::NONE,
+            )));
+            assert_eq!(app.screen_focus(), 1);
+
+            app.handle_event(crossterm::event::Event::Key(KeyEvent::new(
+                KeyCode::Char('j'),
+                KeyModifiers::NONE,
+            )));
+            assert_eq!(app.settings_ui.row, 1);
+
+            app.handle_event(crossterm::event::Event::Key(KeyEvent::new(
+                KeyCode::Char('h'),
+                KeyModifiers::NONE,
+            )));
+            assert_eq!(app.screen_focus(), 0);
+        }
     }
 
     #[test]

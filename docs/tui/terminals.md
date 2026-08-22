@@ -200,6 +200,13 @@ records what is implemented and which terminal observations remain unverified.
   focused its file tree. With `.cargo` selected, `l` descended into `/.cargo` and displayed
   `config.toml`; `h` returned to `IDE — project root`.
 
+## Settings smoke test
+
+- **120×40 tmux pseudo-terminal, 2026-08-22 (Vim pane navigation).** Built and launched the
+  real `coducktor` binary against this repository with `DUCK_DRY_RUN=1` and opened Global
+  Settings. `h` moved focus from `SETTINGS VALUES` to `SETTINGS NAV`; `l` moved it back to the
+  values panel. The active border and status-bar focus label changed with both motions.
+
 ## Known gaps — not yet wired, not a detection failure
 
 - **Kitty keyboard protocol.** `PushKeyboardEnhancementFlags` is not enabled.

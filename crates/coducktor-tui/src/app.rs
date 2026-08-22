@@ -3928,9 +3928,9 @@ impl App {
             Route::Github { .. } => ("GITHUB DETAIL", "j/k scroll · Ctrl-W h list · gt tabs"),
             Route::Settings { .. } | Route::GlobalSettings => {
                 if self.current_screen_pane() == 0 {
-                    ("SETTINGS NAV", "j/k choose section · Ctrl-W l values")
+                    ("SETTINGS NAV", "j/k choose section · l values")
                 } else {
-                    ("SETTINGS VALUES", "↑↓ choose setting · ←/→ change")
+                    ("SETTINGS VALUES", "j/k choose · h sections · ←/→ change")
                 }
             }
             _ => ("CONTENT", "Ctrl-W h/l changes window"),

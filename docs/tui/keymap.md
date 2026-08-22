@@ -79,6 +79,8 @@ accept their normal editing keys. `Ctrl-W` remains reserved for cockpit window n
   focused option.
 - The IDE tree uses `h` or `Left` to go to the parent and `l`, `Enter`, or `Right` to open an
   entry.
+- In project and Global Settings, `l` moves from the section list into its values and `h` moves
+  back to the section list. Arrow keys on a value continue to change that value.
 - Ask cards and confirmation dialogs retain their local selection/confirmation keys while open.
 - Composer and editor clipboard/editing shortcuts apply only while that text surface owns input.
 
