@@ -45,6 +45,7 @@ nucleo = "0.5"
 notify-rust = "4"
 # Open URLs in the OS default handler for external GitHub links.
 open = "5"
+parking_lot = "0.12"
 # Embedded per-project terminals: the PTY seam (WezTerm's own library) and the
 # pure-Rust escape-sequence parser that turns the shell stream into a cell grid.
 portable-pty = "0.9"

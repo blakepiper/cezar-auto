@@ -902,9 +902,24 @@ impl RuntimeActive {
     /// The step this turn belongs to — a caller sending a message against it (an autonomous
     /// nudge, a monitoring wake) needs this to tag durable events with the same step the manager
     /// itself will look for when it applies the result.
-    pub fn step_id(&self) -> &str {
-        &self.workflow.steps[self.step_index].id
+    pub fn step_id(&self) -> io::Result<&str> {
+        workflow_step(&self.workflow, self.step_index).map(|step| step.id.as_str())
     }
+}
+
+fn workflow_step(
+    workflow: &WorkflowDef,
+    step_index: usize,
+) -> io::Result<&coducktor_contract::workflows::WorkflowStepDef> {
+    workflow.steps.get(step_index).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "workflow runtime referenced missing step {step_index} of {}",
+                workflow.steps.len()
+            ),
+        )
+    })
 }
 
 /// Everything [`RunManager::execute_job`] has already computed for a step by the time it needs a
@@ -1605,7 +1620,13 @@ impl RunManager {
             return Ok(false);
         };
         let mut next = previous.clone();
-        edit(&mut next.steps[step_index]);
+        let step = next.steps.get_mut(step_index).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "run step disappeared during edit",
+            )
+        })?;
+        edit(step);
         recompute_aggregates(&mut next);
         self.replace_record(run_id, previous, next)?;
         Ok(true)
@@ -2346,7 +2367,7 @@ impl RunManager {
                 }
                 TurnStep::Done => break,
             };
-            step_id = active.workflow.steps[active.step_index].id.clone();
+            step_id = self.checked_active_step_id(&run_id, &active)?;
             let send_result = active
                 .session_mut()
                 .send_message(&prompt, &images, &mut |event| {
@@ -2522,7 +2543,7 @@ impl RunManager {
         let continuation_step = continuation.is_some();
 
         while index < workflow.steps.len() {
-            let step = workflow.steps[index].clone();
+            let step = workflow_step(&workflow, index)?.clone();
             self.update_run(
                 run_id,
                 RunPatch::new().set("currentStepId", step.id.clone()),
@@ -2881,7 +2902,14 @@ impl RunManager {
             Err(_) if cancellation_requested => SessionOutcome::Cancelled(SessionReport::default()),
             Err(error) => {
                 self.in_flight.remove(&run_id);
-                let step_id = resume.workflow.steps[resume.index].id.clone();
+                let step_id = match workflow_step(&resume.workflow, resume.index) {
+                    Ok(step) => step.id.clone(),
+                    Err(error) => {
+                        self.in_flight.remove(&run_id);
+                        self.fail_run(&run_id, None, error.to_string())?;
+                        return Ok(TurnStep::Done);
+                    }
+                };
                 if self.try_auto_failover(&run_id, &step_id, resume.concrete, &error, false)? {
                     self.requeue_for_retry(
                         &run_id,
@@ -3126,9 +3154,10 @@ impl RunManager {
                 .set("activity", activity)
                 .set("monitoringWakeAt", monitoring_wake_at.flatten()),
         )?;
+        let step_id = self.checked_active_step_id(run_id, &active)?;
         self.update_step(
             run_id,
-            &active.workflow.steps[active.step_index].id,
+            &step_id,
             StepPatch::new().set(
                 "status",
                 if running {
@@ -3165,7 +3194,7 @@ impl RunManager {
     ) -> io::Result<TurnStep> {
         active.failover = None;
         active.auto_continues = 0;
-        let step_id = active.step_id().to_owned();
+        let step_id = self.checked_active_step_id(run_id, &active)?;
         let images = message
             .images
             .iter()
@@ -3215,7 +3244,7 @@ impl RunManager {
         mut active: RuntimeActive,
         outcome: SessionOutcome,
     ) -> io::Result<TurnStep> {
-        let step_id = active.workflow.steps[active.step_index].id.clone();
+        let step_id = self.checked_active_step_id(run_id, &active)?;
         let report = session_outcome_report(&outcome).clone();
         self.apply_session_report(run_id, &step_id, &report, active.session.session_id())?;
         self.apply_session_markers(run_id, &report.turn_text)?;
@@ -3411,7 +3440,7 @@ impl RunManager {
             Err(message) => return Ok(Err(message)),
         };
         let report = session_outcome_report(&outcome).clone();
-        let step_id = active.workflow.steps[active.step_index].id.clone();
+        let step_id = self.checked_active_step_id(run_id, &active)?;
         self.apply_session_report(run_id, &step_id, &report, active.session.session_id())?;
         self.apply_session_markers(run_id, &report.turn_text)?;
         match outcome {
@@ -3591,6 +3620,29 @@ impl RunManager {
         Ok(())
     }
 
+    fn checked_active_step_id(
+        &mut self,
+        run_id: &str,
+        active: &RuntimeActive,
+    ) -> io::Result<String> {
+        match active.step_id() {
+            Ok(step_id) => Ok(step_id.to_owned()),
+            Err(error) => {
+                self.fail_invalid_runtime(run_id, &error)?;
+                Err(error)
+            }
+        }
+    }
+
+    /// Settle a detached turn whose workflow cursor no longer points at a real step. This is a
+    /// corruption boundary: callers retain ownership of the session so it can be dropped only
+    /// after their manager guard has been released.
+    pub fn fail_invalid_runtime(&mut self, run_id: &str, error: &io::Error) -> io::Result<()> {
+        self.in_flight.remove(run_id);
+        self.fail_run(run_id, None, error.to_string())?;
+        self.pump()
+    }
+
     fn cancel_run_after_session(&mut self, run_id: &str, step_id: &str) -> io::Result<()> {
         let finished_at = now_iso8601();
         self.update_step(
@@ -3723,7 +3775,8 @@ impl RunManager {
             return Ok(false);
         };
         active.session.cancel();
-        self.cancel_run_after_session(run_id, &active.workflow.steps[active.step_index].id)?;
+        let step_id = self.checked_active_step_id(run_id, &active)?;
+        self.cancel_run_after_session(run_id, &step_id)?;
         self.pump()?;
         Ok(true)
     }
@@ -3830,7 +3883,7 @@ impl RunManager {
             FinishStart::Finished(finished) => return Ok(finished),
             FinishStart::Detached(active) => *active,
         };
-        let step_id = active.step_id().to_owned();
+        let step_id = active.step_id()?.to_owned();
         let result = active
             .session_mut()
             .finish(&mut self.event_sink(run_id, &step_id));
@@ -3849,7 +3902,7 @@ impl RunManager {
                     return Ok(true);
                 }
                 TurnStep::Nudge(mut active) => {
-                    let step_id = active.step_id().to_owned();
+                    let step_id = active.step_id()?.to_owned();
                     let result = active.session_mut().send_message(
                         AUTONOMOUS_NUDGE,
                         &[],
@@ -3862,7 +3915,7 @@ impl RunManager {
                     prompt,
                     images,
                 } => {
-                    let step_id = active.step_id().to_owned();
+                    let step_id = active.step_id()?.to_owned();
                     let result = active.session_mut().send_message(
                         &prompt,
                         &images,
@@ -3905,7 +3958,7 @@ impl RunManager {
                 }
                 TurnStep::Done => break,
             };
-            let step_id = active.workflow.steps[active.step_index].id.clone();
+            let step_id = self.checked_active_step_id(run_id, &active)?;
             let result = active.session_mut().send_message(
                 &prompt,
                 &images,
@@ -3939,7 +3992,14 @@ impl RunManager {
         let Some(active) = self.active.get(run_id) else {
             return Ok(false);
         };
-        let step_id = active.workflow.steps[active.step_index].id.clone();
+        let step_id = active.step_id().map(str::to_owned);
+        let step_id = match step_id {
+            Ok(step_id) => step_id,
+            Err(error) => {
+                self.fail_invalid_runtime(run_id, &error)?;
+                return Ok(false);
+            }
+        };
         self.append_user_message(run_id, &step_id, &prompt, &images)?;
         let Some(mut active) = self.active.remove(run_id) else {
             return Ok(false);
@@ -3972,7 +4032,13 @@ impl RunManager {
         let Some(active) = self.active.get(run_id) else {
             return Ok(None);
         };
-        let step_id = active.step_id().to_owned();
+        let step_id = match active.step_id() {
+            Ok(step_id) => step_id.to_owned(),
+            Err(error) => {
+                self.fail_invalid_runtime(run_id, &error)?;
+                return Ok(None);
+            }
+        };
         self.append_user_message(run_id, &step_id, &prompt, &images)?;
         self.update_run(
             run_id,
@@ -4040,7 +4106,7 @@ impl RunManager {
             }
             Err(error) => {
                 self.in_flight.remove(run_id);
-                let step_id = active.step_id().to_owned();
+                let step_id = self.checked_active_step_id(run_id, &active)?;
                 self.update_run(run_id, RunPatch::new().set("status", RunStatus::Idle))?;
                 self.update_step(
                     run_id,
@@ -4075,9 +4141,16 @@ impl RunManager {
                 },
             ),
         );
+        let step_id = match active.step_id() {
+            Ok(step_id) => step_id.to_owned(),
+            Err(error) => {
+                let _ = self.fail_invalid_runtime(run_id, &error);
+                return;
+            }
+        };
         let _ = self.update_step(
             run_id,
-            active.step_id(),
+            &step_id,
             StepPatch::new().set(
                 "status",
                 if running {
@@ -4551,7 +4624,13 @@ fn apply_step_patch(
     step_index: usize,
     patch: &Map<String, Value>,
 ) -> io::Result<()> {
-    let value = serde_json::to_value(&run.steps[step_index]).map_err(|error| {
+    let step = run.steps.get(step_index).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "run step disappeared before patch",
+        )
+    })?;
+    let value = serde_json::to_value(step).map_err(|error| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("could not serialize step before patch: {error}"),
@@ -4566,12 +4645,19 @@ fn apply_step_patch(
     for (field, value) in patch {
         object.insert(field.clone(), value.clone());
     }
-    run.steps[step_index] = serde_json::from_value(Value::Object(object)).map_err(|error| {
+    let patched = serde_json::from_value(Value::Object(object)).map_err(|error| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("invalid step patch: {error}"),
         )
     })?;
+    let step = run.steps.get_mut(step_index).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "run step disappeared during patch",
+        )
+    })?;
+    *step = patched;
     Ok(())
 }
 
@@ -5472,6 +5558,16 @@ mod tests {
             command: None,
             on_fail: None,
         }
+    }
+
+    #[test]
+    fn missing_runtime_step_is_reported_instead_of_indexing() {
+        let workflow = workflow_with_steps(vec![agent_workflow_step("work")]);
+
+        let error = workflow_step(&workflow, 4).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("missing step 4 of 1"));
     }
 
     fn check_workflow_step(

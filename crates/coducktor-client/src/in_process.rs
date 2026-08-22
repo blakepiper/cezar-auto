@@ -80,6 +80,7 @@ use coducktor_forge::{
     ForgePrMergeStateResult, GithubDriver, resolve_forge,
 };
 use coducktor_runners::session_factory::DefaultSessionFactory;
+use parking_lot::Mutex as RunManagerMutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tokio::sync::broadcast;
@@ -109,7 +110,7 @@ pub struct InProcessEngine {
     state_home: PathBuf,
     workspace_config_path: PathBuf,
     version: String,
-    manager: Arc<Mutex<RunManager>>,
+    manager: Arc<RunManagerMutex<RunManager>>,
     managers: Arc<Mutex<BTreeMap<String, ProjectManager>>>,
     session_factory: Arc<dyn SessionFactory>,
     cancellations: Arc<Mutex<BTreeMap<String, CancellationToken>>>,
@@ -131,7 +132,7 @@ pub struct InProcessEngine {
 #[derive(Clone)]
 struct ProjectManager {
     root: PathBuf,
-    manager: Arc<Mutex<RunManager>>,
+    manager: Arc<RunManagerMutex<RunManager>>,
 }
 
 /// Process-wide workspace admission. Each manager receives a cheap clone, while the held run
@@ -357,7 +358,7 @@ impl SessionFactory for SharedSessionFactory {
 /// admitted turn a just-applied outcome unblocked.
 #[derive(Clone)]
 struct TurnDispatch {
-    manager: Arc<Mutex<RunManager>>,
+    manager: Arc<RunManagerMutex<RunManager>>,
     session_factory: Arc<dyn SessionFactory>,
     state_home: PathBuf,
     cancellations: Arc<Mutex<BTreeMap<String, CancellationToken>>>,
@@ -365,6 +366,17 @@ struct TurnDispatch {
 }
 
 impl TurnDispatch {
+    fn active_step_id(&self, run_id: &str, active: &RuntimeActive) -> Option<String> {
+        match active.step_id() {
+            Ok(step_id) => Some(step_id.to_owned()),
+            Err(error) => {
+                let _ = self.manager.lock().fail_invalid_runtime(run_id, &error);
+                self.redispatch();
+                None
+            }
+        }
+    }
+
     /// Spawn one worker per admitted turn. Safe to call with an empty list — the common case,
     /// since most manager operations admit nothing new. Also reaps every finished worker still
     /// sitting in the registry first: a run's own worker cannot safely remove itself (a
@@ -423,13 +435,11 @@ impl TurnDispatch {
                 // returns `Err` — a local resource failure, so there is no provider error to
                 // auto-failover from anyway. A run stuck `Running` forever with no worker would be
                 // worse than a fast, visible failure.
-                if let Ok(mut manager) = self.manager.lock() {
-                    let _ = manager.fail_admission(
-                        &run_id,
-                        &step_id,
-                        format!("could not start a turn worker: {error}"),
-                    );
-                }
+                let _ = self.manager.lock().fail_admission(
+                    &run_id,
+                    &step_id,
+                    format!("could not start a turn worker: {error}"),
+                );
             }
         }
     }
@@ -491,9 +501,8 @@ impl TurnDispatch {
                 true
             }
             Err(_) => {
-                if let Some(active) = cell.lock().ok().and_then(|mut cell| cell.take())
-                    && let Ok(mut manager) = self.manager.lock()
-                {
+                if let Some(active) = cell.lock().ok().and_then(|mut cell| cell.take()) {
+                    let mut manager = self.manager.lock();
                     if message {
                         manager.abandon_message(&run_id, active);
                     } else {
@@ -512,7 +521,9 @@ impl TurnDispatch {
         prompt: String,
         images: Vec<PromptImage>,
     ) {
-        let step_id = active.step_id().to_owned();
+        let Some(step_id) = self.active_step_id(&run_id, &active) else {
+            return;
+        };
         let send_result = active
             .session_mut()
             .send_message(&prompt, &images, &mut |event| {
@@ -524,25 +535,27 @@ impl TurnDispatch {
             .ok()
             .and_then(|tokens| tokens.get(&run_id).cloned())
             .is_some_and(|token| token.is_requested());
-        let step = match self.manager.lock() {
-            Ok(mut manager) => {
-                manager.apply_message_turn(&run_id, active, send_result, cancellation_requested)
-            }
-            Err(_) => return,
-        };
+        let step = self.manager.lock().apply_message_turn(
+            &run_id,
+            active,
+            send_result,
+            cancellation_requested,
+        );
         self.drive_steps(&run_id, &step_id, step);
         self.redispatch();
     }
 
     fn run_finish(&self, run_id: String, mut active: RuntimeActive) {
-        let step_id = active.step_id().to_owned();
+        let Some(step_id) = self.active_step_id(&run_id, &active) else {
+            return;
+        };
         let finish_result = active
             .session_mut()
             .finish(&mut |event| self.apply_event(&run_id, &step_id, event));
-        let step = match self.manager.lock() {
-            Ok(mut manager) => manager.apply_finish_turn(&run_id, active, finish_result),
-            Err(_) => return,
-        };
+        let step = self
+            .manager
+            .lock()
+            .apply_finish_turn(&run_id, active, finish_result);
         self.drive_steps(&run_id, &step_id, step);
         self.redispatch();
     }
@@ -594,24 +607,22 @@ impl TurnDispatch {
         let mut session = match opened {
             Ok(session) => session,
             Err(error) => {
-                if let Ok(mut manager) = self.manager.lock() {
-                    let _ =
-                        manager.apply_open_failure(admitted, error, cancellation.is_requested());
-                }
+                let _ = self.manager.lock().apply_open_failure(
+                    admitted,
+                    error,
+                    cancellation.is_requested(),
+                );
                 self.redispatch();
                 return;
             }
         };
         let turn_result = session.turn(&mut |event| self.apply_event(&run_id, &step_id, event));
-        let mut step = match self.manager.lock() {
-            Ok(mut manager) => manager.apply_admitted_turn(
-                admitted,
-                session,
-                turn_result,
-                cancellation.is_requested(),
-            ),
-            Err(_) => return,
-        };
+        let mut step = self.manager.lock().apply_admitted_turn(
+            admitted,
+            session,
+            turn_result,
+            cancellation.is_requested(),
+        );
         loop {
             let active = match step {
                 Ok(TurnStep::Done) | Err(_) => break,
@@ -653,10 +664,12 @@ impl TurnDispatch {
             .send_message(AUTONOMOUS_NUDGE, &[], &mut |event| {
                 self.apply_event(run_id, step_id, event)
             });
-        self.manager
-            .lock()
-            .map_err(|_| std::io::Error::other("manager unavailable"))?
-            .apply_active_turn(run_id, *active, send_result, cancellation.is_requested())
+        self.manager.lock().apply_active_turn(
+            run_id,
+            *active,
+            send_result,
+            cancellation.is_requested(),
+        )
     }
 
     fn run_queued_message(
@@ -673,10 +686,12 @@ impl TurnDispatch {
             .send_message(&prompt, &images, &mut |event| {
                 self.apply_event(run_id, step_id, event)
             });
-        self.manager
-            .lock()
-            .map_err(|_| std::io::Error::other("manager unavailable"))?
-            .apply_message_turn(run_id, *active, send_result, cancellation.is_requested())
+        self.manager.lock().apply_message_turn(
+            run_id,
+            *active,
+            send_result,
+            cancellation.is_requested(),
+        )
     }
 
     fn run_git_auto_commit(&self, run_id: &str, step_id: &str, mut active: Box<RuntimeActive>) {
@@ -686,17 +701,18 @@ impl TurnDispatch {
                 .send_message(AUTOMATIC_COMMIT_MESSAGE_NUDGE, &[], &mut |event| {
                     self.apply_event(run_id, step_id, event)
                 });
-        let subject = match self.manager.lock() {
-            Ok(mut manager) => manager.apply_git_auto_commit_message(run_id, *active, send_result),
-            Err(_) => return,
-        };
+        let subject =
+            self.manager
+                .lock()
+                .apply_git_auto_commit_message(run_id, *active, send_result);
         let result = match subject {
             Ok(Ok(GitAutoMessage::Subject(message))) => {
-                let root = self.manager.lock().ok().and_then(|manager| {
+                let root = {
+                    let manager = self.manager.lock();
                     manager
                         .get_run(run_id)
                         .and_then(|run| manager.working_directory_for(run))
-                });
+                };
                 match root {
                     Some(root) => commit_all(&root, &message)
                         .and_then(|_| push_current_branch(&root).map(|_| ())),
@@ -709,28 +725,20 @@ impl TurnDispatch {
             Ok(Err(reason)) => Err(reason),
             Err(error) => Err(error.to_string()),
         };
-        if let Ok(mut manager) = self.manager.lock() {
-            let _ = manager.finish_git_auto(run_id, result);
-        }
+        let _ = self.manager.lock().finish_git_auto(run_id, result);
     }
 
     /// Applied under a fresh, brief lock per event — never the same lock the child process I/O
     /// between events runs under.
     fn apply_event(&self, run_id: &str, step_id: &str, event: EventInput) -> std::io::Result<()> {
-        self.manager
-            .lock()
-            .map_err(|_| std::io::Error::other("manager unavailable"))?
-            .apply_turn_event(run_id, step_id, event)
+        self.manager.lock().apply_turn_event(run_id, step_id, event)
     }
 
     /// Drain whatever the manager admitted while this worker was running — its own next step, or
     /// unrelated queued work this run finishing freed capacity for — and dispatch it. Cheap and a
     /// no-op when nothing is pending, so it is safe to call unconditionally at the end of a run.
     fn redispatch(&self) {
-        let admitted = match self.manager.lock() {
-            Ok(mut manager) => manager.take_pending_turns(),
-            Err(_) => return,
-        };
+        let admitted = self.manager.lock().take_pending_turns();
         self.dispatch(admitted);
     }
 
@@ -759,30 +767,31 @@ impl TurnDispatch {
                 }
             }
             Err(_) => {
-                if let Some(active) = cell.lock().ok().and_then(|mut cell| cell.take())
-                    && let Ok(mut manager) = self.manager.lock()
-                {
-                    manager.abandon_monitoring_wake(&run_id, active);
+                if let Some(active) = cell.lock().ok().and_then(|mut cell| cell.take()) {
+                    self.manager.lock().abandon_monitoring_wake(&run_id, active);
                 }
             }
         }
     }
 
     fn run_wake(&self, run_id: String, mut active: RuntimeActive) {
-        let step_id = active.step_id().to_owned();
+        let Some(step_id) = self.active_step_id(&run_id, &active) else {
+            return;
+        };
         let send_result =
             active
                 .session_mut()
                 .send_message(MONITORING_WAKE_PROMPT, &[], &mut |event| {
                     self.apply_event(&run_id, &step_id, event)
                 });
-        let mut step = match self.manager.lock() {
+        let mut step = {
             // A monitoring wake has no independent cancellation token the way an admitted turn's
             // request does — `cancel_run` reaches it the same way it reaches any other parked
             // session, through `RunManager::cancel`'s `self.active`/`in_flight` handling, not a
             // signal this worker itself observes.
-            Ok(mut manager) => manager.apply_active_turn(&run_id, active, send_result, false),
-            Err(_) => return,
+            self.manager
+                .lock()
+                .apply_active_turn(&run_id, active, send_result, false)
         };
         loop {
             let active = match step {
@@ -1106,7 +1115,7 @@ impl InProcessEngine {
             eprintln!("coducktor: could not apply run retention: {error}");
         }
         let live_event_topics = Arc::new(Mutex::new(BTreeMap::new()));
-        let manager = Arc::new(Mutex::new(manager));
+        let manager = Arc::new(RunManagerMutex::new(manager));
         let managers = Arc::new(Mutex::new(BTreeMap::new()));
         let run_snapshot = Arc::new(RwLock::new(BTreeMap::new()));
         let engine = Self {
@@ -1145,7 +1154,12 @@ impl InProcessEngine {
         self.project_manager(scope).map(|entry| entry.root)
     }
 
-    fn attach_manager(&self, project_id: String, manager: Arc<Mutex<RunManager>>, root: PathBuf) {
+    fn attach_manager(
+        &self,
+        project_id: String,
+        manager: Arc<RunManagerMutex<RunManager>>,
+        root: PathBuf,
+    ) {
         self.wire_manager(&project_id, &manager);
         if let Ok(mut managers) = self.managers.lock() {
             managers.insert(project_id, ProjectManager { root, manager });
@@ -1163,10 +1177,9 @@ impl InProcessEngine {
     /// Subscribe a manager before publishing it in the registry. Callers that hold the registry
     /// lock use this helper so two concurrent first uses cannot replace one another's live
     /// manager after sessions have been opened.
-    fn wire_manager(&self, project_id: &str, manager: &Arc<Mutex<RunManager>>) {
-        if let Ok(manager_guard) = manager.lock()
-            && let Ok(mut snapshot) = self.run_snapshot.write()
-        {
+    fn wire_manager(&self, project_id: &str, manager: &Arc<RunManagerMutex<RunManager>>) {
+        if let Ok(mut snapshot) = self.run_snapshot.write() {
+            let manager_guard = manager.lock();
             snapshot.insert(
                 project_id.to_owned(),
                 manager_guard
@@ -1178,7 +1191,8 @@ impl InProcessEngine {
         }
         let event_topics = self.live_event_topics.clone();
         let topic_project = project_id.to_owned();
-        if let Ok(mut manager_guard) = manager.lock() {
+        {
+            let mut manager_guard = manager.lock();
             manager_guard.subscribe_events(move |notification| {
                 let topic = format!("run:{topic_project}:{}", notification.run_id);
                 publish_live_event(
@@ -1195,7 +1209,8 @@ impl InProcessEngine {
         let run_topics = self.live_event_topics.clone();
         let event_project = project_id.to_owned();
         let run_snapshot = self.run_snapshot.clone();
-        if let Ok(mut manager_guard) = manager.lock() {
+        {
+            let mut manager_guard = manager.lock();
             manager_guard.subscribe_runs(move |run| {
                 if let Ok(mut snapshot) = run_snapshot.write() {
                     snapshot
@@ -1275,7 +1290,7 @@ impl InProcessEngine {
         if let Err(error) = manager.prune_stale_runs() {
             eprintln!("coducktor: could not apply run retention: {error}");
         }
-        let manager = Arc::new(Mutex::new(manager));
+        let manager = Arc::new(RunManagerMutex::new(manager));
         self.wire_manager(&project_id, &manager);
         managers.insert(
             project_id,
@@ -1298,7 +1313,7 @@ impl InProcessEngine {
             .reconfigure(workspace.resources.max_parallel as usize);
         let managers = self.managers.lock().map_err(|_| lock_err())?;
         for (project_id, entry) in managers.iter() {
-            let mut manager = entry.manager.lock().map_err(|_| lock_err())?;
+            let mut manager = entry.manager.lock();
             configure_production_manager(
                 &mut manager,
                 &entry.root,
@@ -1510,7 +1525,7 @@ impl InProcessEngine {
             });
         }
         let created = {
-            let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+            let mut manager = self.manager.lock();
             if variants > 1.0 {
                 manager
                     .enqueue_variants(&workflow, core_input, variants as usize)
@@ -1617,7 +1632,7 @@ impl InProcessEngine {
             };
             created_worktrees.push((PathBuf::from(&info.path), Some(info.branch.clone())));
             let update_result = (|| {
-                let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+                let mut manager = self.manager.lock();
                 manager
                     .update_run_value(
                         &run.id,
@@ -1654,10 +1669,9 @@ impl InProcessEngine {
                 branch.as_deref(),
             );
         }
-        if let Ok(mut manager) = self.manager.lock() {
-            for run in runs {
-                let _ = manager.remove_run(&run.id);
-            }
+        let mut manager = self.manager.lock();
+        for run in runs {
+            let _ = manager.remove_run(&run.id);
         }
     }
 
@@ -1679,12 +1693,10 @@ impl InProcessEngine {
         let worker = std::thread::Builder::new()
             .name("coducktor-runner".to_owned())
             .spawn(move || {
-                let admitted = match dispatch.manager.lock() {
-                    Ok(mut manager) => {
-                        let _ = manager.pump();
-                        manager.take_pending_turns()
-                    }
-                    Err(_) => return,
+                let admitted = {
+                    let mut manager = dispatch.manager.lock();
+                    let _ = manager.pump();
+                    manager.take_pending_turns()
                 };
                 dispatch.dispatch(admitted);
             })
@@ -1705,7 +1717,7 @@ impl InProcessEngine {
     /// monitoring scheduler dispatches across every currently open project's manager while every
     /// other field (the session factory, state home, cancellation registry, worker registry) is
     /// shared engine-wide, not per-project.
-    fn turn_dispatch_for(&self, manager: Arc<Mutex<RunManager>>) -> TurnDispatch {
+    fn turn_dispatch_for(&self, manager: Arc<RunManagerMutex<RunManager>>) -> TurnDispatch {
         TurnDispatch {
             manager,
             session_factory: self.session_factory.clone(),
@@ -1744,7 +1756,7 @@ impl InProcessEngine {
                 loop {
                     std::thread::sleep(interval);
                     let now = coducktor_core::time::now_iso8601();
-                    let snapshot: Vec<Arc<Mutex<RunManager>>> = match managers.lock() {
+                    let snapshot: Vec<Arc<RunManagerMutex<RunManager>>> = match managers.lock() {
                         Ok(managers) => managers
                             .values()
                             .map(|entry| entry.manager.clone())
@@ -1752,10 +1764,7 @@ impl InProcessEngine {
                         Err(_) => continue,
                     };
                     for manager in snapshot {
-                        let due = match manager.lock() {
-                            Ok(manager) => manager.due_monitoring_wakes(&now),
-                            Err(_) => continue,
-                        };
+                        let due = manager.lock().due_monitoring_wakes(&now);
                         if due.is_empty() {
                             continue;
                         }
@@ -1767,9 +1776,8 @@ impl InProcessEngine {
                             workers: workers.clone(),
                         };
                         for run_id in due {
-                            let active = manager.lock().ok().and_then(|mut manager| {
-                                manager.begin_monitoring_wake(&run_id).ok().flatten()
-                            });
+                            let active =
+                                manager.lock().begin_monitoring_wake(&run_id).ok().flatten();
                             if let Some(active) = active {
                                 dispatch.wake(run_id, active);
                             }
@@ -1869,7 +1877,7 @@ impl InProcessEngine {
     }
 
     pub async fn archive_run(&self, run_id: &str, archived: bool) -> Result<ApiRun, EngineError> {
-        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        let mut manager = self.manager.lock();
         manager
             .archive(run_id, archived)
             .map_err(io_err)?
@@ -1878,7 +1886,7 @@ impl InProcessEngine {
     }
 
     pub async fn delete_run(&self, run_id: &str) -> Result<DeleteRunResponse, EngineError> {
-        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        let mut manager = self.manager.lock();
         if manager.get_run(run_id).is_none() {
             return Err(EngineError::NotFound);
         }
@@ -1907,7 +1915,7 @@ impl InProcessEngine {
     }
 
     async fn mutate_read(&self, run_id: &str, read: bool) -> Result<ApiRun, EngineError> {
-        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        let mut manager = self.manager.lock();
         let result = if read {
             manager.mark_read(run_id)
         } else {
@@ -1920,7 +1928,7 @@ impl InProcessEngine {
     }
 
     pub async fn archive_finished(&self) -> Result<ArchiveFinishedResponse, EngineError> {
-        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        let mut manager = self.manager.lock();
         let archived = manager.archive_finished().map_err(io_err)?;
         Ok(ArchiveFinishedResponse {
             archived: archived as f64,
@@ -1928,7 +1936,7 @@ impl InProcessEngine {
     }
 
     pub async fn mark_all_read(&self) -> Result<MarkAllReadResponse, EngineError> {
-        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        let mut manager = self.manager.lock();
         let read = manager.mark_all_read().map_err(io_err)?;
         Ok(MarkAllReadResponse { read: read as f64 })
     }
@@ -1938,7 +1946,7 @@ impl InProcessEngine {
         run_id: &str,
         input: PatchRunInput,
     ) -> Result<ApiRun, EngineError> {
-        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        let mut manager = self.manager.lock();
         let current = manager
             .get_run(run_id)
             .cloned()
@@ -1983,16 +1991,15 @@ impl InProcessEngine {
             self.session_factory.request_cancel(run_id)
         };
         let mut manager = match self.manager.try_lock() {
-            Ok(manager) => manager,
-            Err(std::sync::TryLockError::WouldBlock) if signalled => {
+            Some(manager) => manager,
+            None if signalled => {
                 return Ok(CancelResponse { cancelled: true });
             }
-            Err(std::sync::TryLockError::WouldBlock) => {
+            None => {
                 return Err(EngineError::Unavailable {
                     reason: "run is busy and could not be interrupted".to_owned(),
                 });
             }
-            Err(std::sync::TryLockError::Poisoned(_)) => return Err(lock_err()),
         };
         if manager.get_run(run_id).is_none() {
             return Err(EngineError::NotFound);
@@ -2005,7 +2012,7 @@ impl InProcessEngine {
     }
 
     pub async fn finish_run(&self, run_id: &str) -> Result<FinishResponse, EngineError> {
-        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        let mut manager = self.manager.lock();
         if manager.get_run(run_id).is_none() {
             return Err(EngineError::NotFound);
         }
@@ -3107,7 +3114,7 @@ impl InProcessEngine {
 
     pub async fn reclaim_worktrees(&self) -> Result<ReclaimWorktreesResponse, EngineError> {
         let keep = self.worktree_keep();
-        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        let mut manager = self.manager.lock();
         let runs = manager.list_runs();
         let reclaimed = coducktor_core::runs::retention::reclaim_worktrees(
             &self.repo_root,
@@ -3156,7 +3163,7 @@ impl InProcessEngine {
             .await
             .map_err(|error| EngineError::Transport(error.to_string()))?;
         }
-        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        let mut manager = self.manager.lock();
         manager
             .update_run_value(
                 run_id,
@@ -3236,7 +3243,7 @@ impl InProcessEngine {
                 reason: "runId is required".to_owned(),
             });
         }
-        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        let mut manager = self.manager.lock();
         let runs: Vec<_> = manager
             .list_runs()
             .into_iter()
@@ -4044,7 +4051,7 @@ impl InProcessEngine {
                 reason: "message exceeds the 4 image limit".to_owned(),
             });
         }
-        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        let mut manager = self.manager.lock();
         let Some(run) = manager.get_run(run_id).cloned() else {
             return Err(EngineError::NotFound);
         };
@@ -4108,7 +4115,7 @@ impl InProcessEngine {
             runner: input.runner,
             model: input.model,
         };
-        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        let mut manager = self.manager.lock();
         if manager.get_run(run_id).is_none() {
             return Err(EngineError::NotFound);
         }
@@ -4200,7 +4207,7 @@ impl InProcessEngine {
             .iter()
             .find(|message| message.id == message_id)
             .cloned();
-        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        let mut manager = self.manager.lock();
         if manager
             .edit_run(run_id, |record| record.queued_messages = Some(prospective))
             .ok()
@@ -4234,7 +4241,7 @@ impl InProcessEngine {
                 reason: "run already started".to_owned(),
             });
         }
-        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        let mut manager = self.manager.lock();
         let updated = manager
             .edit_run(run_id, |record| {
                 if let Some(messages) = record.queued_messages.as_mut() {
@@ -4255,7 +4262,7 @@ impl InProcessEngine {
         &self,
         run_id: &str,
     ) -> Result<CancelAutoResumeResponse, EngineError> {
-        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        let mut manager = self.manager.lock();
         if manager.get_run(run_id).is_none() {
             return Err(EngineError::NotFound);
         }
@@ -4384,7 +4391,7 @@ impl InProcessEngine {
         let finished_at = run
             .finished_at
             .unwrap_or_else(coducktor_core::time::now_iso8601);
-        let mut manager = self.manager.lock().map_err(|_| lock_err())?;
+        let mut manager = self.manager.lock();
         manager
             .update_run_value(
                 run_id,
@@ -9946,6 +9953,21 @@ mod tests {
         )
     }
 
+    #[test]
+    fn run_manager_lock_remains_available_after_an_owner_panics() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let manager = engine.manager.clone();
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = manager.lock();
+            panic!("simulate a failed manager owner");
+        }));
+
+        assert!(panic.is_err());
+        assert!(engine.manager.lock().list_runs().is_empty());
+    }
+
     async fn activate_until_terminal(engine: &InProcessEngine, run_id: &str) {
         engine.activate_runs().unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -10301,7 +10323,7 @@ mod tests {
             panic!("expected one run");
         };
         {
-            let mut manager = engine.manager.lock().unwrap();
+            let mut manager = engine.manager.lock();
             manager
                 .update_run_value(
                     &first.id,
@@ -10353,15 +10375,7 @@ mod tests {
                 release: release.clone(),
             },
         );
-        assert_eq!(
-            engine
-                .manager
-                .lock()
-                .unwrap()
-                .runtime_options()
-                .max_parallel,
-            2
-        );
+        assert_eq!(engine.manager.lock().runtime_options().max_parallel, 2);
 
         let CreateRunResponse::Single(first) =
             engine.start_run(steps_input("first")).await.unwrap()
@@ -10378,7 +10392,7 @@ mod tests {
         // defect under test here. Give each an independent worktree path so only the runtime
         // parallelism limit (not the repository lease) gates their concurrency.
         {
-            let mut manager = engine.manager.lock().unwrap();
+            let mut manager = engine.manager.lock();
             manager
                 .update_run_value(
                     &first.id,
@@ -10437,15 +10451,7 @@ mod tests {
             },
             config_path,
         );
-        assert_eq!(
-            engine
-                .manager
-                .lock()
-                .unwrap()
-                .runtime_options()
-                .max_parallel,
-            1
-        );
+        assert_eq!(engine.manager.lock().runtime_options().max_parallel, 1);
 
         let CreateRunResponse::Single(first) =
             engine.start_run(steps_input("first")).await.unwrap()
@@ -10947,7 +10953,7 @@ mod tests {
             MonitoringFactory { sent: sent.clone() },
         );
         {
-            let mut manager = engine.manager.lock().unwrap();
+            let mut manager = engine.manager.lock();
             let mut options = manager.runtime_options();
             // A zero-minute interval means the deadline is already due the instant it parks —
             // deterministic without needing to wait out a real interval.
@@ -11407,7 +11413,7 @@ mod tests {
             FakeFactory,
             config_path,
         );
-        let manager = engine.manager.lock().unwrap();
+        let manager = engine.manager.lock();
         assert_eq!(manager.runtime_options().max_parallel, 1);
         assert_eq!(manager.runtime_options().max_monitoring_sessions, 1);
         assert_eq!(
@@ -11442,7 +11448,7 @@ mod tests {
             .await
             .unwrap();
 
-        let manager = engine.manager.lock().unwrap();
+        let manager = engine.manager.lock();
         assert_eq!(manager.runtime_options().max_parallel, 1);
         assert_eq!(manager.runtime_options().max_monitoring_sessions, 1);
         assert_eq!(
@@ -11580,7 +11586,6 @@ mod tests {
         let run = engine
             .manager
             .lock()
-            .unwrap()
             .create_run(coducktor_core::workflows::run::CreateRunInput {
                 title: "Flooded thread".to_owned(),
                 workflow: "manual".to_owned(),
@@ -11595,7 +11600,7 @@ mod tests {
         let mut workspace_stream = engine.subscribe(Topic::Named("workspace".to_owned()));
         let flood_count = LIVE_TOPIC_CAPACITY + 64;
         {
-            let mut manager = engine.manager.lock().unwrap();
+            let mut manager = engine.manager.lock();
             for index in 0..flood_count {
                 manager
                     .append_event(
@@ -13242,7 +13247,7 @@ mod tests {
     // `group_routes_compare_variants_and_archive_losers_on_pick`) -----------------------------
 
     fn seed_group(engine: &InProcessEngine, group_id: &str) -> Vec<String> {
-        let mut manager = engine.manager.lock().unwrap();
+        let mut manager = engine.manager.lock();
         let mut ids = Vec::new();
         for (variant, title) in [("A", "first"), ("B", "second")] {
             let run = manager
@@ -14231,7 +14236,7 @@ mod tests {
         // (genuinely never requested) so the NO_WORKTREE conflict this test actually means to
         // exercise is the one that fires, matching `create_pr`'s own equivalent test right below.
         {
-            let mut manager = engine.manager.lock().unwrap();
+            let mut manager = engine.manager.lock();
             manager
                 .update_run_value(&run.id, json!({ "worktree": null }))
                 .unwrap();

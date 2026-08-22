@@ -672,6 +672,7 @@ dependencies = [
  "coducktor-protocol",
  "coducktor-runners",
  "futures-core",
+ "parking_lot",
  "reqwest",
  "serde",
  "serde_json",
