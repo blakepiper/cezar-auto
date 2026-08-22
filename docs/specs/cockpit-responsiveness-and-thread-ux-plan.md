@@ -1,6 +1,6 @@
 # Cockpit responsiveness and thread UX — implementation specification
 
-Status: Phase 4 implemented; Phase 5 is next and Phase 6 is planned (written 2026-08-22, updated 2026-08-22)
+Status: Phase 5 implemented; Phase 6 is next (written 2026-08-22, updated 2026-08-22)
 
 Audience: the next implementation agent. Work directly on `main`, preserve unrelated changes,
 commit the completed work, and push `origin main` as required by `AGENTS.md`.

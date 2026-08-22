@@ -15,6 +15,9 @@ and pushed to `origin main`.
 ## Validation gate
 
 ```text
+cargo test -p coducktor-client --test manager_lock_discipline
+cargo test -p coducktor-tui --lib live_thread_frame_at_twelve_thousand_events_stays_under_eight_ms
+cargo test -p coducktor-tui --bench thread_frame
 cargo test --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
