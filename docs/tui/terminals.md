@@ -90,6 +90,13 @@ records what is implemented and which terminal observations remain unverified.
 
 ## Task experience smoke test
 
+- **80×24 tmux pseudo-terminal, 2026-08-22 (follow-up composer mouse focus).** Built and
+  launched the real binary against an isolated temporary repository with one failed dry-run task,
+  opened its thread, and pressed `Esc` so the composer showed `FOLLOW UP (i to type)`. Injecting a
+  real SGR left-button event into the composer's interior changed it to `FOLLOW UP`; the next `x`
+  key appeared in the editor and the status changed to `INSERT`. Quitting restored the alternate
+  screen, and the isolated state was removed afterward.
+
 - **80×24 → 55×24 → 80×24 tmux pseudo-terminal, 2026-08-22 (graphics artifact
   regression).** Built and launched the real binary against the registered coducktor repository,
   opened a live stored task, narrowed and restored the terminal, and returned focus to the

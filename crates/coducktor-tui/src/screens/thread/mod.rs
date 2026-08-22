@@ -1152,6 +1152,11 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     app.thread_ui
         .composer
         .render(frame, dock_rows[6], theme, &mut app.hitmap, 4);
+    app.hitmap.register(
+        dock_rows[6],
+        3,
+        crate::input::hitmap::HitAction::ThreadScreen(ThreadAction::FocusComposer),
+    );
 
     if let Some(agent_id) = app.thread_ui.subagent_sheet.clone()
         && let Some(agent) = find_subagent(&app.thread_ui.data.state, &agent_id)
@@ -2293,6 +2298,40 @@ mod tests {
             None,
         );
         assert_eq!(app.thread_ui.focus, ThreadFocus::Transcript);
+    }
+
+    #[test]
+    fn clicking_the_follow_up_card_focuses_the_composer() {
+        let mut app = app_with_run(RunStatus::Running);
+        app.thread_ui.focus = ThreadFocus::Transcript;
+        app.thread_ui.composer.blur();
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        let composer_cell = (0..40)
+            .flat_map(|row| (0..120).map(move |column| (column, row)))
+            .find(|(column, row)| {
+                app.hitmap.hit(*column, *row)
+                    == Some(crate::input::hitmap::HitAction::ThreadScreen(
+                        ThreadAction::FocusComposer,
+                    ))
+            })
+            .expect("the rendered follow-up card is clickable");
+
+        app.handle_event(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: composer_cell.0,
+            row: composer_cell.1,
+            modifiers: KeyModifiers::NONE,
+        }));
+
+        assert_eq!(app.thread_ui.focus, ThreadFocus::Composer);
+        assert!(app.thread_ui.composer.focused);
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('x'),
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.thread_ui.composer.text, "x");
     }
 
     #[test]
