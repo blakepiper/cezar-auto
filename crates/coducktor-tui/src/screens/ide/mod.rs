@@ -376,7 +376,7 @@ fn handle_tree_key(app: &mut App, key: KeyEvent) -> bool {
             app.ide_ui.tree_selected = app.ide_ui.tree_selected.saturating_sub(1);
             true
         }
-        KeyCode::Enter | KeyCode::Right => {
+        KeyCode::Char('l') | KeyCode::Enter | KeyCode::Right => {
             open_selected(app);
             true
         }
@@ -719,6 +719,42 @@ mod tests {
         assert_eq!(app.ide_ui.directory_path, "");
         apply_hit(&mut app, IdeAction::GoUp);
         assert_eq!(app.ide_ui.directory_path, "");
+    }
+
+    #[test]
+    fn vim_horizontal_motions_match_tree_arrow_navigation() {
+        let mut vim = app_with_entries();
+        vim.pending.clear();
+        vim.handle_event(crossterm::event::Event::Key(KeyEvent::new(
+            KeyCode::Char('l'),
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(vim.ide_ui.directory_path, "src");
+        assert!(vim.pending.iter().any(|action| {
+            matches!(action, PendingAction::LoadIdeDirectory { path: Some(path), .. } if path == "src")
+        }));
+
+        vim.pending.clear();
+        vim.handle_event(crossterm::event::Event::Key(KeyEvent::new(
+            KeyCode::Char('h'),
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(vim.ide_ui.directory_path, "");
+        assert!(vim.pending.iter().any(|action| {
+            matches!(action, PendingAction::LoadIdeDirectory { path: Some(path), .. } if path.is_empty())
+        }));
+
+        let mut arrows = app_with_entries();
+        arrows.handle_event(crossterm::event::Event::Key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(arrows.ide_ui.directory_path, "src");
+        arrows.handle_event(crossterm::event::Event::Key(KeyEvent::new(
+            KeyCode::Left,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(arrows.ide_ui.directory_path, "");
     }
 
     #[test]

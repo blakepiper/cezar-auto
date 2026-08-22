@@ -77,7 +77,8 @@ accept their normal editing keys. `Ctrl-W` remains reserved for cockpit window n
 - On New Task, `Tab` moves from the composer through source, runner, model, reasoning, variants,
   branch, worktree, task mode, and Git mode. `Shift-Tab` moves backward, and `Enter` opens the
   focused option.
-- The IDE tree uses `h` or `Left` to go to the parent and `Enter` or `Right` to open an entry.
+- The IDE tree uses `h` or `Left` to go to the parent and `l`, `Enter`, or `Right` to open an
+  entry.
 - Ask cards and confirmation dialogs retain their local selection/confirmation keys while open.
 - Composer and editor clipboard/editing shortcuts apply only while that text surface owns input.
 

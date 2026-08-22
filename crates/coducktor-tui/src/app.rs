@@ -3905,7 +3905,7 @@ impl App {
                 "type notes · Shift+arrows select · Ctrl+K clear",
             ),
             Route::Ide { .. } if self.current_screen_pane() == 0 => {
-                ("FILE TREE", "↑↓ choose file · Enter open")
+                ("FILE TREE", "j/k choose · h/← up · l/→ open")
             }
             Route::Ide { .. } => ("EDITOR", "edit file · Ctrl+S save"),
             Route::RepoGit { tab, .. } if self.current_screen_pane() == 0 => match tab {
