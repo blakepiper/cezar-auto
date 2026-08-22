@@ -1,6 +1,6 @@
 # Cockpit responsiveness and thread UX — implementation specification
 
-Status: Phase 1 unfreeze implemented; Phase 2 is next (written 2026-08-22, updated 2026-08-22)
+Status: Phase 2 state honesty implemented; Phase 3 is next (written 2026-08-22, updated 2026-08-22)
 
 Audience: the next implementation agent. Work directly on `main`, preserve unrelated changes,
 commit the completed work, and push `origin main` as required by `AGENTS.md`.
@@ -31,7 +31,10 @@ render/height caches by stable id and revision, and retained one buffered append
 run. The three known-red guards are un-ignored and green: frame-batched reduction is linear, the
 optimized 12,000-event frame is under 8ms, and unrelated manager operations stay under 100ms while
 follow-up or finish sleeps for one second. The HUD's dropped-event counter stays at zero until Phase
-2 exposes lag through the engine event stream. The prior audit's R1 and R3 rows point here.
+2 exposes lag through the engine event stream. Phase 2 separates neutral parked sessions from
+genuine needs-input, keeps running response text non-terminal, and isolates each live topic with
+explicit lag/sequence-gap recovery from durable history. The prior audit's R1 and R3 rows point
+here.
 
 ## Finding inventory
 
@@ -180,6 +183,10 @@ workers on the same mutex and the data layer goes dark.
 
 ### F4 — `Waiting` means two different things (P0)
 
+**Resolved in Phase 2.** Ordinary unmarked turn ends park as neutral `Idle`; only structured asks
+or an explicit waiting decision enter `Waiting`, and legacy records are classified from their
+durable pending-ask history.
+
 `RunManager::park_session` (`workflows/run/mod.rs:3030-3085`) sets `RunStatus::Waiting` whenever a
 turn ends and the run neither holds a slot nor is monitoring — the ordinary end of a turn. The
 marker layer already distinguishes the cases (`TurnMarkerDecision` in
@@ -194,12 +201,19 @@ counter (`app.rs:1967-1972`, `runtime.rs:3264-3268`), sorts into `NEEDS YOU`
 
 ### F5 — `derive_status` reports `Completed` mid-turn (P1)
 
+**Resolved in Phase 2.** Running response text reads `Writing response…`; `Completed` is now
+derived only from a terminal run status, with live elapsed time and tokens beside the throbber.
+
 `derive_status` (`screens/thread/projection.rs:584-612`) checks a running activity node, then a
 pending question, then `if turn.response.text is non-empty → "Completed"`. That third branch never
 consults `status`. Mid-turn, after the agent has streamed final-answer text but between tool
 calls, the header reports `Completed` on a `Running` run.
 
 ### F6 — live events are dropped on lag with no resync (P0)
+
+**Resolved in Phase 2.** Workspace and run topics have independent bounded channels, lag is an
+explicit engine event, and the thread refuses sequence holes until a durable history reload
+restores a contiguous watermark.
 
 One `broadcast::channel(512)` (`in_process.rs:901`) carries every event of every topic — health,
 workspace, and the delta firehose of every running task. `subscribe()`

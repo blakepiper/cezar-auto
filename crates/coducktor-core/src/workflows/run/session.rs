@@ -12,6 +12,7 @@ pub enum TurnMarkerDecision {
     Done,
     Ask,
     Monitoring,
+    Idle,
     Waiting,
     AutonomousContinue,
 }
@@ -28,7 +29,9 @@ pub const TASK_CONTROL_INSTRUCTIONS: &str = "## Coducktor task controls
 
 The user's request defines the whole task. Do not invent, start, or search for unrelated follow-up work. A request that only asks a question is fully complete once you have answered it; no repository change is required.
 
-When the task is fully complete and verified, end your final response with a line containing exactly DUCK:DONE. Do not emit DUCK:DONE while anything remains unfinished or unverified. If you need a user reply, end normally without that marker.
+When the task is fully complete and verified, end your final response with a line containing exactly DUCK:DONE. Do not emit DUCK:DONE while anything remains unfinished or unverified or you need a user reply.
+
+If you need a user reply, use the structured DUCK:ASK control described in your handoff instructions rather than asking only in prose.
 
 If you end a turn only because your own downstream work is still running, end with a line containing exactly DUCK:MONITORING. Use it only while monitoring work that does not need user input, and never combine it with DUCK:DONE.";
 
@@ -102,7 +105,7 @@ pub fn decide_turn_marker(
     if trailing_marker(turn_text, "MONITORING") {
         return TurnMarkerDecision::Monitoring;
     }
-    TurnMarkerDecision::Waiting
+    TurnMarkerDecision::Idle
 }
 
 /// Turn-end precedence with the autonomous nudge inserted below `DONE`, `ASK`, and monitoring.
@@ -115,7 +118,7 @@ pub fn autonomous_turn_decision(
     valid_ask: bool,
 ) -> TurnMarkerDecision {
     let decision = decide_turn_marker(turn_text, session_open, valid_ask);
-    if autonomous && decision == TurnMarkerDecision::Waiting && continues < max_continues {
+    if autonomous && decision == TurnMarkerDecision::Idle && continues < max_continues {
         TurnMarkerDecision::AutonomousContinue
     } else {
         decision
@@ -158,7 +161,7 @@ mod tests {
         );
         assert_eq!(
             autonomous_turn_decision("progress", true, true, 1, 1, false),
-            TurnMarkerDecision::Waiting
+            TurnMarkerDecision::Idle
         );
         assert_eq!(
             autonomous_turn_decision("progress", false, true, 0, 1, false),

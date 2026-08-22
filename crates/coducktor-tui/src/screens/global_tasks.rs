@@ -248,7 +248,9 @@ fn entry_group(entry: &RunIndexEntry, view: TaskView) -> CardGroup {
         CardGroup::NeedsYou
     } else if matches!(
         entry.status,
-        coducktor_contract::RunStatus::Queued | coducktor_contract::RunStatus::Running
+        coducktor_contract::RunStatus::Queued
+            | coducktor_contract::RunStatus::Running
+            | coducktor_contract::RunStatus::Idle
     ) {
         CardGroup::Working
     } else {
@@ -275,6 +277,7 @@ fn entry_status_glyph(status: coducktor_contract::RunStatus) -> &'static str {
         coducktor_contract::RunStatus::Review => "!",
         coducktor_contract::RunStatus::Queued => "○",
         coducktor_contract::RunStatus::Running => "●",
+        coducktor_contract::RunStatus::Idle => "·",
         coducktor_contract::RunStatus::Done => "✓",
         coducktor_contract::RunStatus::Failed => "✗",
         coducktor_contract::RunStatus::Cancelled => "×",
@@ -287,6 +290,7 @@ fn entry_status_label(status: coducktor_contract::RunStatus) -> &'static str {
         coducktor_contract::RunStatus::Review => "needs review",
         coducktor_contract::RunStatus::Queued => "queued",
         coducktor_contract::RunStatus::Running => "running",
+        coducktor_contract::RunStatus::Idle => "idle",
         coducktor_contract::RunStatus::Done => "done",
         coducktor_contract::RunStatus::Failed => "failed",
         coducktor_contract::RunStatus::Cancelled => "cancelled",
@@ -323,10 +327,11 @@ fn status_order(status: coducktor_contract::RunStatus) -> u8 {
         coducktor_contract::RunStatus::Waiting => 0,
         coducktor_contract::RunStatus::Review => 1,
         coducktor_contract::RunStatus::Running => 2,
-        coducktor_contract::RunStatus::Queued => 3,
-        coducktor_contract::RunStatus::Done => 4,
-        coducktor_contract::RunStatus::Failed => 5,
-        coducktor_contract::RunStatus::Cancelled => 6,
+        coducktor_contract::RunStatus::Idle => 3,
+        coducktor_contract::RunStatus::Queued => 4,
+        coducktor_contract::RunStatus::Done => 5,
+        coducktor_contract::RunStatus::Failed => 6,
+        coducktor_contract::RunStatus::Cancelled => 7,
     }
 }
 
@@ -429,7 +434,9 @@ fn run_cells(
 fn usage_cells_for(entry: &RunIndexEntry, sample: Option<&ProcessUsage>) -> (UsageCell, UsageCell) {
     if matches!(
         entry.status,
-        coducktor_contract::RunStatus::Running | coducktor_contract::RunStatus::Waiting
+        coducktor_contract::RunStatus::Running
+            | coducktor_contract::RunStatus::Idle
+            | coducktor_contract::RunStatus::Waiting
     ) && let Some(live) = sample
     {
         return (
@@ -490,6 +497,11 @@ fn attention_entry(entry: &RunIndexEntry) -> crate::screens::runs_util::Attentio
             label: "running",
             tone: crate::screens::runs_util::AttentionTone::Violet,
             pulse: true,
+        },
+        coducktor_contract::RunStatus::Idle => crate::screens::runs_util::Attention {
+            label: "idle",
+            tone: crate::screens::runs_util::AttentionTone::Neutral,
+            pulse: false,
         },
         coducktor_contract::RunStatus::Queued => crate::screens::runs_util::Attention {
             label: "queued",
@@ -1023,6 +1035,7 @@ fn request_delete(app: &mut App) {
         entry.status,
         coducktor_contract::RunStatus::Queued
             | coducktor_contract::RunStatus::Running
+            | coducktor_contract::RunStatus::Idle
             | coducktor_contract::RunStatus::Waiting
     ) {
         app.notice = Some("run is active — cancel it first".to_owned());

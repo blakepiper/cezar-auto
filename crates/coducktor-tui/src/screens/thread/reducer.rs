@@ -157,7 +157,7 @@ pub fn thread_footer(
             label: "Session closed".to_owned(),
             danger: false,
         }),
-        RunStatus::Queued | RunStatus::Running => None,
+        RunStatus::Queued | RunStatus::Running | RunStatus::Idle => None,
     }
 }
 

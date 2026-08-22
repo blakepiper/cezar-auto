@@ -173,6 +173,7 @@ pub enum WorktreeEntry {
 pub enum WorktreeRunStatus {
     Queued,
     Running,
+    Idle,
     Waiting,
     Review,
     Done,

@@ -106,6 +106,15 @@ pub struct ThreadProjectionMetrics {
     pub projection_time: Duration,
 }
 
+/// Result of folding one live batch. A sequence hole leaves the watermark at the last durable
+/// contiguous event so the runtime can reload from that point instead of cementing the gap.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ThreadPushResult {
+    pub accepted: usize,
+    pub dropped_events: usize,
+    pub refresh_required: bool,
+}
+
 pub struct ThreadUi {
     pub data: ThreadData,
     pub transcript: Transcript,
@@ -126,6 +135,7 @@ pub struct ThreadUi {
     pub cancel_pending: bool,
     pub project_root: Option<PathBuf>,
     projection_metrics: ThreadProjectionMetrics,
+    load_revision: u64,
 }
 
 impl Default for ThreadUi {
@@ -148,6 +158,7 @@ impl Default for ThreadUi {
             cancel_pending: false,
             project_root: None,
             projection_metrics: ThreadProjectionMetrics::default(),
+            load_revision: 0,
         }
     }
 }
@@ -156,6 +167,10 @@ impl ThreadUi {
     /// Return local projection accounting for diagnostics and scaling tests.
     pub fn projection_metrics(&self) -> ThreadProjectionMetrics {
         self.projection_metrics
+    }
+
+    pub fn load_revision(&self) -> u64 {
+        self.load_revision
     }
 
     /// Called on thread entry, from a fresh run record and the first history page.
@@ -194,6 +209,7 @@ impl ThreadUi {
             self.pending_composer = None;
         }
         self.cancel_pending = false;
+        self.load_revision = self.load_revision.wrapping_add(1);
         self.rebuild_full();
     }
 
@@ -264,22 +280,33 @@ impl ThreadUi {
     }
 
     /// Append one live run event and re-fold.
-    pub fn push_event(&mut self, seq: f64, event: RunEvent) {
-        self.push_events(std::iter::once((seq, event)));
+    pub fn push_event(&mut self, seq: f64, event: RunEvent) -> ThreadPushResult {
+        self.push_events(std::iter::once((seq, event)))
     }
 
     /// Append a frame-sized live batch and re-fold once. This keeps projection cost linear in
     /// frames rather than rebuilding the complete transcript for every provider delta.
-    pub fn push_events(&mut self, events: impl IntoIterator<Item = (f64, RunEvent)>) {
+    pub fn push_events(
+        &mut self,
+        events: impl IntoIterator<Item = (f64, RunEvent)>,
+    ) -> ThreadPushResult {
         let first_new = self.data.events.len();
+        let mut result = ThreadPushResult::default();
         for (seq, event) in events {
             if seq <= self.data.as_of_seq {
                 continue;
+            }
+            let expected = self.data.as_of_seq + 1.0;
+            if self.data.as_of_seq >= 0.0 && seq > expected {
+                result.dropped_events = (seq - expected).round().max(1.0) as usize;
+                result.refresh_required = true;
+                break;
             }
             self.data.as_of_seq = seq;
             self.data.events.push(event);
         }
         let accepted_len = self.data.events.len().saturating_sub(first_new);
+        result.accepted = accepted_len;
         if accepted_len > 0 {
             let active_turn = self
                 .data
@@ -294,6 +321,7 @@ impl ThreadUi {
             );
             self.refresh_projection(accepted_len, started.elapsed());
         }
+        result
     }
 
     pub fn begin_load_earlier(&mut self) -> Option<String> {
@@ -882,9 +910,18 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let status = if app.thread_ui.cancel_pending {
         format!("{throbber} Stopping…")
     } else if active {
+        let mut detail = Vec::new();
+        if let Some(started_at) = record.started_at.as_deref() {
+            let elapsed = crate::screens::runs_util::short_age(started_at, app.now_epoch);
+            if !elapsed.is_empty() {
+                detail.push(elapsed);
+            }
+        }
+        detail.push(format!("{} tok", record.tokens_used as i64));
         format!(
-            "{throbber} {}",
-            app.thread_ui.data.view_model.current_status
+            "{throbber} {} · {}",
+            app.thread_ui.data.view_model.current_status,
+            detail.join(" · ")
         )
     } else {
         app.thread_ui.data.view_model.current_status.clone()
@@ -952,6 +989,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         let text = match record.status {
             RunStatus::Queued if app.thread_ui.cancel_pending => "Stopping the agent…",
             RunStatus::Queued => widgets::queue_hint(true),
+            RunStatus::Idle => "Session is ready for a follow-up.",
             RunStatus::Waiting => "Waiting for your reply.",
             RunStatus::Running if app.thread_ui.cancel_pending => "Stopping the agent…",
             RunStatus::Running => "Agent is working · Enter sends guidance to the active turn.",
@@ -971,6 +1009,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         } else {
             match record.status {
                 RunStatus::Queued => "QUEUED",
+                RunStatus::Idle => "FOLLOW UP",
                 RunStatus::Waiting => "ANSWER",
                 RunStatus::Running => "GUIDANCE",
                 RunStatus::Review | RunStatus::Done | RunStatus::Failed | RunStatus::Cancelled => {
@@ -1610,6 +1649,45 @@ mod tests {
         assert!(metrics.rebuild_time >= metrics_before.rebuild_time);
         assert_eq!(app.thread_ui.data.events.len(), 1_000);
         assert_eq!(app.thread_ui.data.as_of_seq, 1_000.0);
+    }
+
+    #[test]
+    fn a_sequence_hole_preserves_the_last_good_watermark_until_durable_reload() {
+        let durable = (1..=4)
+            .map(|seq| {
+                event(
+                    seq as f64,
+                    "note",
+                    json!({"message": format!("line {seq}")}),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.thread_ui.load(
+            "main".to_owned(),
+            "run-1".to_owned(),
+            run(RunStatus::Running, "Ship the shell"),
+            durable[..2].to_vec(),
+            2.0,
+            None,
+        );
+
+        let result = app.thread_ui.push_event(4.0, durable[3].clone());
+        assert_eq!(result.dropped_events, 1);
+        assert!(result.refresh_required);
+        assert_eq!(app.thread_ui.data.as_of_seq, 2.0);
+        assert_eq!(app.thread_ui.data.events.len(), 2);
+
+        app.thread_ui.load(
+            "main".to_owned(),
+            "run-1".to_owned(),
+            run(RunStatus::Running, "Ship the shell"),
+            durable,
+            4.0,
+            None,
+        );
+        assert_eq!(app.thread_ui.data.as_of_seq, 4.0);
+        assert_eq!(app.thread_ui.data.events.len(), 4);
     }
 
     #[test]

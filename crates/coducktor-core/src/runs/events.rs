@@ -26,6 +26,21 @@ pub fn read_events(path: &Path) -> Vec<RunEvent> {
         .collect()
 }
 
+/// Whether the durable log ends with a structured question that has not received a user reply.
+/// Used only when upgrading legacy `waiting` records, whose status predated the idle/needs-input
+/// split. A later user message resolves the latest question just as the thread reducer does.
+pub fn has_pending_ask(path: &Path) -> bool {
+    let mut pending = false;
+    for event in read_events(path) {
+        match event.event_type.as_str() {
+            "ask.requested" => pending = true,
+            "user-message" if pending => pending = false,
+            _ => {}
+        }
+    }
+    pending
+}
+
 /// Append one already-sequenced, already-redacted event line. The
 /// synchronous append — local NDJSON appends at agent-event rates are effectively free, so
 /// local append is synchronous and creates `<dataDir>/runs/` on first use.
@@ -138,5 +153,15 @@ mod tests {
         append_event(&path, &event(5.0, "message")).unwrap();
         append_event(&path, &event(3.0, "message")).unwrap();
         assert_eq!(rehydrate_seq(&path), 5.0);
+    }
+
+    #[test]
+    fn pending_ask_tracks_the_latest_question_and_user_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = events_path(dir.path(), "r1");
+        append_event(&path, &event(1.0, "ask.requested")).unwrap();
+        assert!(has_pending_ask(&path));
+        append_event(&path, &event(2.0, "user-message")).unwrap();
+        assert!(!has_pending_ask(&path));
     }
 }

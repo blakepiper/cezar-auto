@@ -160,6 +160,7 @@ fn status_label(status: coducktor_contract::RunStatus) -> &'static str {
     match status {
         Queued => "queued",
         Running => "running",
+        Idle => "idle",
         Waiting => "waiting",
         Review => "review",
         Done => "done",

@@ -169,7 +169,10 @@ fn card_group(run: &ApiRun, view: TaskView) -> CardGroup {
     }
     if matches!(run.record.status, RunStatus::Waiting | RunStatus::Review) {
         CardGroup::NeedsYou
-    } else if matches!(run.record.status, RunStatus::Queued | RunStatus::Running) {
+    } else if matches!(
+        run.record.status,
+        RunStatus::Queued | RunStatus::Running | RunStatus::Idle
+    ) {
         CardGroup::Working
     } else {
         CardGroup::Done
@@ -195,6 +198,7 @@ fn status_glyph(status: RunStatus) -> &'static str {
         RunStatus::Review => "!",
         RunStatus::Queued => "○",
         RunStatus::Running => "●",
+        RunStatus::Idle => "·",
         RunStatus::Done => "✓",
         RunStatus::Failed => "✗",
         RunStatus::Cancelled => "×",
@@ -207,6 +211,7 @@ fn status_label(status: RunStatus) -> &'static str {
         RunStatus::Review => "needs review",
         RunStatus::Queued => "queued",
         RunStatus::Running => "running",
+        RunStatus::Idle => "idle",
         RunStatus::Done => "done",
         RunStatus::Failed => "failed",
         RunStatus::Cancelled => "cancelled",
@@ -236,10 +241,11 @@ fn attention_status_order(status: RunStatus) -> u8 {
         RunStatus::Waiting => 0,
         RunStatus::Review => 1,
         RunStatus::Running => 2,
-        RunStatus::Queued => 3,
-        RunStatus::Done => 4,
-        RunStatus::Failed => 5,
-        RunStatus::Cancelled => 6,
+        RunStatus::Idle => 3,
+        RunStatus::Queued => 4,
+        RunStatus::Done => 5,
+        RunStatus::Failed => 6,
+        RunStatus::Cancelled => 7,
     }
 }
 
@@ -619,7 +625,7 @@ fn request_delete(app: &mut App) {
     };
     if matches!(
         run.record.status,
-        RunStatus::Queued | RunStatus::Running | RunStatus::Waiting
+        RunStatus::Queued | RunStatus::Running | RunStatus::Idle | RunStatus::Waiting
     ) {
         app.notice = Some("run is active — cancel it first".to_owned());
         return;

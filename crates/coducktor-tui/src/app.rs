@@ -574,7 +574,7 @@ impl QuickTask {
 
     fn group(&self) -> TaskGroup {
         match self.status {
-            RunStatus::Queued | RunStatus::Running => TaskGroup::Working,
+            RunStatus::Queued | RunStatus::Running | RunStatus::Idle => TaskGroup::Working,
             RunStatus::Waiting | RunStatus::Review => TaskGroup::NeedsYou,
             RunStatus::Done | RunStatus::Failed | RunStatus::Cancelled => TaskGroup::Done,
         }
@@ -618,6 +618,9 @@ pub enum WorkspaceEvent {
     ProviderStatus {
         provider: String,
         available: bool,
+    },
+    Lagged {
+        count: usize,
     },
 }
 
@@ -1903,6 +1906,13 @@ impl App {
                         available,
                     });
                 }
+            }
+            WorkspaceEvent::Lagged { count } => {
+                self.record_dropped_events(count);
+                self.queue_pending(PendingAction::RefreshTasks {
+                    project: self.current_project().to_owned(),
+                });
+                self.queue_pending(PendingAction::RefreshIndex);
             }
         }
     }
@@ -3926,6 +3936,40 @@ mod tests {
             id: "run-1".to_owned(),
         });
         assert_eq!(app.needs_you_count(), 0);
+    }
+
+    #[test]
+    fn idle_turn_end_needs_no_attention_but_a_structured_ask_does() {
+        let mut app = App::new("main", Theme::detect(), Keymap::default());
+        app.apply_workspace_event(run_event(
+            "main",
+            "run-1",
+            "Answer plainly",
+            RunStatus::Running,
+            None,
+        ));
+        app.apply_workspace_event(run_event(
+            "main",
+            "run-1",
+            "Answer plainly",
+            RunStatus::Idle,
+            None,
+        ));
+        assert_eq!(app.needs_you_count(), 0);
+        assert!(app.take_pending_notifications().is_empty());
+
+        app.apply_workspace_event(run_event(
+            "main",
+            "run-1",
+            "Answer plainly",
+            RunStatus::Waiting,
+            None,
+        ));
+        assert_eq!(app.needs_you_count(), 1);
+        assert_eq!(
+            app.take_pending_notifications(),
+            vec![("Needs your answer".to_owned(), "Answer plainly".to_owned())]
+        );
     }
 
     fn run_event(

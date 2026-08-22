@@ -90,6 +90,19 @@ use crate::error::EngineError;
 use crate::events::EngineEvent;
 use crate::{Scope, Topic};
 
+const LIVE_TOPIC_CAPACITY: usize = 512;
+type LiveEventTopics = Arc<Mutex<BTreeMap<String, broadcast::Sender<EngineEvent>>>>;
+
+fn publish_live_event(topics: &LiveEventTopics, topic: &str, data: Value) {
+    let sender = topics
+        .lock()
+        .ok()
+        .and_then(|topics| topics.get(topic).cloned());
+    if let Some(sender) = sender {
+        let _ = sender.send(EngineEvent::data(topic, data));
+    }
+}
+
 /// Version string this engine reports through `health()`, set once at construction.
 pub struct InProcessEngine {
     repo_root: PathBuf,
@@ -107,7 +120,8 @@ pub struct InProcessEngine {
     /// One worker thread per run currently running a live turn outside any manager lock. Keyed
     /// by run id, matching `RunManager`'s own `in_flight` bookkeeping — a run has at most one.
     turn_workers: Arc<Mutex<BTreeMap<String, std::thread::JoinHandle<()>>>>,
-    live_events: broadcast::Sender<EngineEvent>,
+    /// Independent bounded channels keep workspace updates out of each run's delta firehose.
+    live_event_topics: LiveEventTopics,
     model_catalog: Arc<Mutex<Vec<CachedModelCatalog>>>,
     usage_cache: Arc<Mutex<Option<CachedWorkspaceUsage>>>,
     workspace_admission: SharedWorkspaceAdmission,
@@ -1026,7 +1040,7 @@ impl InProcessEngine {
         if let Err(error) = manager.prune_stale_runs() {
             eprintln!("coducktor: could not apply run retention: {error}");
         }
-        let (live_events, _) = broadcast::channel(512);
+        let live_event_topics = Arc::new(Mutex::new(BTreeMap::new()));
         let manager = Arc::new(Mutex::new(manager));
         let managers = Arc::new(Mutex::new(BTreeMap::new()));
         let run_snapshot = Arc::new(RwLock::new(BTreeMap::new()));
@@ -1044,7 +1058,7 @@ impl InProcessEngine {
             run_snapshot,
             activation_workers: Arc::new(Mutex::new(BTreeMap::new())),
             turn_workers: Arc::new(Mutex::new(BTreeMap::new())),
-            live_events,
+            live_event_topics,
             model_catalog: Arc::new(Mutex::new(Vec::new())),
             usage_cache: Arc::new(Mutex::new(None)),
             workspace_admission,
@@ -1097,22 +1111,23 @@ impl InProcessEngine {
                     .collect(),
             );
         }
-        let event_sender = self.live_events.clone();
+        let event_topics = self.live_event_topics.clone();
         let topic_project = project_id.to_owned();
         if let Ok(mut manager_guard) = manager.lock() {
             manager_guard.subscribe_events(move |notification| {
-                let event = EngineEvent {
-                    topic: format!("run:{topic_project}:{}", notification.run_id),
-                    data: json!({
+                let topic = format!("run:{topic_project}:{}", notification.run_id);
+                publish_live_event(
+                    &event_topics,
+                    &topic,
+                    json!({
                         "type": "run-event",
                         "projectId": topic_project,
                         "event": notification.event
                     }),
-                };
-                let _ = event_sender.send(event);
+                );
             });
         }
-        let run_sender = self.live_events.clone();
+        let run_topics = self.live_event_topics.clone();
         let event_project = project_id.to_owned();
         let run_snapshot = self.run_snapshot.clone();
         if let Ok(mut manager_guard) = manager.lock() {
@@ -1128,15 +1143,9 @@ impl InProcessEngine {
                     "projectId": event_project,
                     "run": run
                 });
-                let event = EngineEvent {
-                    topic: format!("run:{event_project}:{}", run.id),
-                    data: data.clone(),
-                };
-                let _ = run_sender.send(event);
-                let _ = run_sender.send(EngineEvent {
-                    topic: "workspace".to_owned(),
-                    data,
-                });
+                let topic = format!("run:{event_project}:{}", run.id);
+                publish_live_event(&run_topics, &topic, data.clone());
+                publish_live_event(&run_topics, "workspace", data);
             });
         }
     }
@@ -1260,7 +1269,7 @@ impl InProcessEngine {
             run_snapshot: self.run_snapshot.clone(),
             activation_workers: self.activation_workers.clone(),
             turn_workers: self.turn_workers.clone(),
-            live_events: self.live_events.clone(),
+            live_event_topics: self.live_event_topics.clone(),
             model_catalog: self.model_catalog.clone(),
             usage_cache: self.usage_cache.clone(),
             workspace_admission: self.workspace_admission.clone(),
@@ -2650,23 +2659,37 @@ impl InProcessEngine {
         .map_err(|error| EngineError::Transport(error.to_string()))?
     }
 
-    // ---- live events (Topic::Health/Todos/Run/Named -> the in-process broadcast channel) ---
+    // ---- live events (Topic::Health/Todos/Run/Named -> per-topic in-process channels) -------
 
     /// Mirrors the former network engine's topic-string convention, but the transport is
-    /// a plain in-process `tokio::sync::broadcast` receiver instead of a WS frame — no
-    /// reconnect/resubscribe machinery needed, there is no connection to lose.
+    /// a plain in-process `tokio::sync::broadcast` receiver instead of a WS frame. Each topic has
+    /// its own bounded channel, and lag is an explicit stream item so callers can resynchronize.
     pub fn subscribe(&self, topic: Topic) -> futures_core::stream::BoxStream<'static, EngineEvent> {
         let topic_str = match topic {
             Topic::Health => "health".to_owned(),
             Topic::Run { project, id } => format!("run:{project}:{id}"),
             Topic::Named(topic) => topic,
         };
-        let receiver = self.live_events.subscribe();
-        Box::pin(
-            BroadcastStream::new(receiver)
-                .filter_map(|item| item.ok())
-                .filter(move |event: &EngineEvent| event.topic == topic_str),
-        )
+        let receiver = match self.live_event_topics.lock() {
+            Ok(mut topics) => topics
+                .entry(topic_str.clone())
+                .or_insert_with(|| broadcast::channel(LIVE_TOPIC_CAPACITY).0)
+                .subscribe(),
+            Err(_) => {
+                let (sender, receiver) = broadcast::channel(1);
+                drop(sender);
+                receiver
+            }
+        };
+        Box::pin(BroadcastStream::new(receiver).map(move |item| match item {
+            Ok(event) => event,
+            Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(count)) => {
+                EngineEvent::Lagged {
+                    topic: topic_str.clone(),
+                    count,
+                }
+            }
+        }))
     }
 
     // ---- IDE: project file browser + editor ------------------------------------------------
@@ -3048,6 +3071,7 @@ impl InProcessEngine {
             run.status,
             coducktor_contract::RunStatus::Queued
                 | coducktor_contract::RunStatus::Running
+                | coducktor_contract::RunStatus::Idle
                 | coducktor_contract::RunStatus::Waiting
         ) {
             return Err(EngineError::Conflict {
@@ -4234,6 +4258,7 @@ impl InProcessEngine {
             run.status,
             coducktor_contract::RunStatus::Queued
                 | coducktor_contract::RunStatus::Running
+                | coducktor_contract::RunStatus::Idle
                 | coducktor_contract::RunStatus::Waiting
         ) {
             return Err(EngineError::Conflict {
@@ -6338,6 +6363,7 @@ fn worktree_run_status(status: coducktor_contract::RunStatus) -> WorktreeRunStat
     match status {
         coducktor_contract::RunStatus::Queued => WorktreeRunStatus::Queued,
         coducktor_contract::RunStatus::Running => WorktreeRunStatus::Running,
+        coducktor_contract::RunStatus::Idle => WorktreeRunStatus::Idle,
         coducktor_contract::RunStatus::Waiting => WorktreeRunStatus::Waiting,
         coducktor_contract::RunStatus::Review => WorktreeRunStatus::Review,
         coducktor_contract::RunStatus::Done => WorktreeRunStatus::Done,
@@ -10970,7 +10996,10 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
-        assert_eq!(event.data["projectId"], "project-b");
+        assert_eq!(
+            event.payload().and_then(|data| data.get("projectId")),
+            Some(&json!("project-b"))
+        );
 
         let index = engine.runs_index().await.unwrap();
         assert_eq!(
@@ -11256,18 +11285,61 @@ mod tests {
         // starts a run through the same `manager.subscribe_events`/`subscribe_runs` wiring
         // this constructs); publishing directly here isolates the transport itself.
         let mut stream = engine.subscribe(Topic::Health);
-        engine
-            .live_events
-            .send(EngineEvent {
-                topic: "health".to_owned(),
-                data: json!({ "ok": true }),
-            })
-            .unwrap();
+        publish_live_event(&engine.live_event_topics, "health", json!({ "ok": true }));
         let event = tokio::time::timeout(std::time::Duration::from_secs(1), stream.next())
             .await
             .expect("event should arrive")
             .expect("stream should not end");
-        assert_eq!(event.data, json!({ "ok": true }));
+        assert_eq!(event.payload(), Some(&json!({ "ok": true })));
+    }
+
+    #[tokio::test]
+    async fn lag_is_explicit_topic_local_and_the_durable_log_remains_complete() {
+        let dir = TempDir::new().unwrap();
+        let engine = engine(&dir);
+        let run = engine
+            .manager
+            .lock()
+            .unwrap()
+            .create_run(coducktor_core::workflows::run::CreateRunInput {
+                title: "Flooded thread".to_owned(),
+                workflow: "manual".to_owned(),
+                task: "stream many events".to_owned(),
+                ..coducktor_core::workflows::run::CreateRunInput::default()
+            })
+            .unwrap();
+        let mut run_stream = engine.subscribe(Topic::Run {
+            project: "default".to_owned(),
+            id: run.id.clone(),
+        });
+        let mut workspace_stream = engine.subscribe(Topic::Named("workspace".to_owned()));
+        let flood_count = LIVE_TOPIC_CAPACITY + 64;
+        {
+            let mut manager = engine.manager.lock().unwrap();
+            for index in 0..flood_count {
+                manager
+                    .append_event(
+                        &run.id,
+                        EventInput::new("note").field("message", format!("event {index}")),
+                    )
+                    .unwrap();
+            }
+            assert_eq!(manager.read_events(&run.id).len(), flood_count);
+        }
+
+        let event = run_stream.next().await.unwrap();
+        assert!(matches!(
+            event,
+            EngineEvent::Lagged { count, .. } if count >= 64
+        ));
+
+        publish_live_event(
+            &engine.live_event_topics,
+            "workspace",
+            json!({ "type": "probe" }),
+        );
+        let workspace_event = workspace_stream.next().await.unwrap();
+        assert!(matches!(workspace_event, EngineEvent::Data { .. }));
     }
 
     #[tokio::test]
@@ -12708,6 +12780,10 @@ mod tests {
         assert_eq!(
             worktree_run_status(RunStatus::Running),
             WorktreeRunStatus::Running
+        );
+        assert_eq!(
+            worktree_run_status(RunStatus::Idle),
+            WorktreeRunStatus::Idle
         );
         assert_eq!(
             worktree_run_status(RunStatus::Waiting),

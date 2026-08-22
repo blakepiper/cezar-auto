@@ -6,7 +6,8 @@ use coducktor_contract::{ApiRun, DiffStat, ProcessUsage, RunStatus};
 
 /// The statuses whose usage sample is current — a session is registered while
 /// running AND while parked at `waiting` (the CLI process stays alive).
-const USAGE_LIVE_STATUSES: [RunStatus; 2] = [RunStatus::Running, RunStatus::Waiting];
+const USAGE_LIVE_STATUSES: [RunStatus; 3] =
+    [RunStatus::Running, RunStatus::Idle, RunStatus::Waiting];
 
 /// Finished outcomes, not gates — a `review` run still wants a human.
 const FINISHED_STATUSES: [RunStatus; 3] =
@@ -95,6 +96,11 @@ pub fn attention(run: &ApiRun) -> Attention {
             label: "running",
             tone: AttentionTone::Violet,
             pulse: true,
+        },
+        RunStatus::Idle => Attention {
+            label: "idle",
+            tone: AttentionTone::Neutral,
+            pulse: false,
         },
         RunStatus::Queued => Attention {
             label: "queued",
@@ -511,6 +517,7 @@ fn status_weight(run: &ApiRun) -> u8 {
         RunStatus::Waiting => 0,
         RunStatus::Review => 1,
         RunStatus::Running => 2,
+        RunStatus::Idle => 3,
         RunStatus::Queued => 4,
         RunStatus::Done => 5,
         RunStatus::Failed => 6,

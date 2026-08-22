@@ -215,7 +215,7 @@ pub fn reconcile_loaded_run(mut run: RunRecord, keep_live: bool) -> RunRecord {
     }
     if !matches!(
         run.status,
-        RunStatus::Running | RunStatus::Waiting | RunStatus::Queued
+        RunStatus::Running | RunStatus::Idle | RunStatus::Waiting | RunStatus::Queued
     ) {
         run.activity = None;
         run.monitoring_wake_at = None;
@@ -230,7 +230,7 @@ pub fn reconcile_loaded_run(mut run: RunRecord, keep_live: bool) -> RunRecord {
 fn is_live_status(status: RunStatus) -> bool {
     matches!(
         status,
-        RunStatus::Running | RunStatus::Queued | RunStatus::Waiting
+        RunStatus::Running | RunStatus::Queued | RunStatus::Idle | RunStatus::Waiting
     )
 }
 

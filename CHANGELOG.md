@@ -15,6 +15,11 @@
   supported.
 - Follow-up and finish calls no longer freeze unrelated cockpit operations; live thread projection
   is incremental, preserves render caches, and keeps reads isolated from mutation workers.
+- Parked sessions now use `idle`; `waiting` is reserved for real user input, so ordinary turn
+  endings no longer raise needs-you notifications. Legacy `waiting` records remain readable and
+  load as `idle` unless their durable event log contains an unanswered structured ask.
+- Live events use independent per-topic channels. Receiver lag and sequence holes are visible in
+  the debug HUD and trigger a durable thread/workspace refresh instead of silently losing output.
 
 Any future compatibility change belongs in this section with its migration or
 degradation path. Retired release notes and one-time implementation plans are

@@ -20,7 +20,7 @@ pub fn action(run: &RunRecord, workflow_available: bool) -> RecoveryAction {
                 RecoveryAction::FailMissingWorkflow
             }
         }
-        RunStatus::Waiting => RecoveryAction::SettleWaiting,
+        RunStatus::Idle | RunStatus::Waiting => RecoveryAction::SettleWaiting,
         RunStatus::Running => {
             if run.steps.iter().any(|step| {
                 step.session_id.is_some()
@@ -70,6 +70,10 @@ mod tests {
         assert_eq!(
             action(&live(RunStatus::Queued), false),
             RecoveryAction::FailMissingWorkflow
+        );
+        assert_eq!(
+            action(&live(RunStatus::Idle), true),
+            RecoveryAction::SettleWaiting
         );
         assert_eq!(
             action(&live(RunStatus::Waiting), true),

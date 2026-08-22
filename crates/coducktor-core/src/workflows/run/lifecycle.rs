@@ -6,6 +6,7 @@ use coducktor_contract::runs::{RunRecord, RunStatus, StepStatus};
 pub enum LifecycleState {
     Queued,
     Running,
+    Idle,
     Waiting,
     Review,
     Terminal,
@@ -15,6 +16,7 @@ pub fn lifecycle_state(status: RunStatus) -> LifecycleState {
     match status {
         RunStatus::Queued => LifecycleState::Queued,
         RunStatus::Running => LifecycleState::Running,
+        RunStatus::Idle => LifecycleState::Idle,
         RunStatus::Waiting => LifecycleState::Waiting,
         RunStatus::Review => LifecycleState::Review,
         RunStatus::Done | RunStatus::Failed | RunStatus::Cancelled => LifecycleState::Terminal,
@@ -31,7 +33,7 @@ pub fn is_terminal(status: RunStatus) -> bool {
 pub fn is_live(status: RunStatus) -> bool {
     matches!(
         status,
-        RunStatus::Queued | RunStatus::Running | RunStatus::Waiting
+        RunStatus::Queued | RunStatus::Running | RunStatus::Idle | RunStatus::Waiting
     )
 }
 
@@ -59,6 +61,7 @@ mod tests {
     #[test]
     fn lifecycle_states_are_total_and_terminal_review_is_distinct() {
         assert_eq!(lifecycle_state(RunStatus::Queued), LifecycleState::Queued);
+        assert_eq!(lifecycle_state(RunStatus::Idle), LifecycleState::Idle);
         assert_eq!(lifecycle_state(RunStatus::Waiting), LifecycleState::Waiting);
         assert_eq!(lifecycle_state(RunStatus::Review), LifecycleState::Review);
         assert!(is_terminal(RunStatus::Failed));

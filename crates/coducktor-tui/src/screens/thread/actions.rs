@@ -10,7 +10,7 @@ use crate::screens::runs_util::{can_be_unread, is_unread};
 pub fn is_run_active(status: RunStatus) -> bool {
     matches!(
         status,
-        RunStatus::Running | RunStatus::Queued | RunStatus::Waiting
+        RunStatus::Running | RunStatus::Queued | RunStatus::Idle | RunStatus::Waiting
     )
 }
 
@@ -85,7 +85,10 @@ pub fn run_action_flags(run: &coducktor_contract::ApiRun) -> RunActionFlags {
     let active = is_run_active(run.record.status);
     let has_session = last_session_id(&run.record).is_some();
     RunActionFlags {
-        finish: matches!(run.record.status, RunStatus::Waiting | RunStatus::Review),
+        finish: matches!(
+            run.record.status,
+            RunStatus::Idle | RunStatus::Waiting | RunStatus::Review
+        ),
         // A finished run can always take a follow-up: the engine starts a fresh step in the same
         // worktree even without a prior session to resume. Only the terminal hand-off needs a
         // real session id, since it literally runs `<runner> --resume <session_id>`.
@@ -197,17 +200,18 @@ mod tests {
     }
 
     #[test]
-    fn review_is_not_active_but_running_and_queued_and_waiting_are() {
+    fn review_is_not_active_but_running_queued_idle_and_waiting_are() {
         assert!(!is_run_active(RunStatus::Review));
         assert!(is_run_active(RunStatus::Running));
         assert!(is_run_active(RunStatus::Queued));
+        assert!(is_run_active(RunStatus::Idle));
         assert!(is_run_active(RunStatus::Waiting));
         assert!(!is_run_active(RunStatus::Done));
     }
 
     #[test]
-    fn finish_offered_only_at_waiting_and_review() {
-        for status in [RunStatus::Waiting, RunStatus::Review] {
+    fn finish_offered_only_at_parked_and_review() {
+        for status in [RunStatus::Idle, RunStatus::Waiting, RunStatus::Review] {
             assert!(run_action_flags(&run(status, false, None)).finish);
         }
         for status in [
@@ -244,7 +248,12 @@ mod tests {
 
     #[test]
     fn cancel_and_delete_are_exact_complements_of_active() {
-        for status in [RunStatus::Queued, RunStatus::Running, RunStatus::Waiting] {
+        for status in [
+            RunStatus::Queued,
+            RunStatus::Running,
+            RunStatus::Idle,
+            RunStatus::Waiting,
+        ] {
             let flags = run_action_flags(&run(status, false, None));
             assert!(flags.cancel);
             assert!(!flags.delete_run);

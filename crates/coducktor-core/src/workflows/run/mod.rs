@@ -1041,7 +1041,17 @@ impl RunManager {
                 index_path.display()
             );
         }
-        let loaded = load.records().to_vec();
+        let mut loaded = load.records().to_vec();
+        // `waiting` used to mean any parked session. On upgrade, retain attention only when the
+        // durable transcript proves that a structured ask is still unanswered; every other
+        // legacy record becomes the new neutral parked state.
+        for run in &mut loaded {
+            if run.status == RunStatus::Waiting
+                && !events::has_pending_ask(&events::events_path(&data_dir, &run.id))
+            {
+                run.status = RunStatus::Idle;
+            }
+        }
         let runs = loaded
             .into_iter()
             .map(|run| (run.id.clone(), run))
@@ -2031,7 +2041,12 @@ impl RunManager {
                 let status = self.get_run(run_id).map(|run| run.status);
                 if matches!(
                     status,
-                    Some(RunStatus::Queued | RunStatus::Running | RunStatus::Waiting)
+                    Some(
+                        RunStatus::Queued
+                            | RunStatus::Running
+                            | RunStatus::Idle
+                            | RunStatus::Waiting,
+                    )
                 ) {
                     self.update_run(run_id, RunPatch::new().set("autoResumeAttempts", attempts))?;
                     self.append_event(
@@ -2081,7 +2096,7 @@ impl RunManager {
             .filter(|run| {
                 matches!(
                     run.status,
-                    RunStatus::Queued | RunStatus::Waiting | RunStatus::Running
+                    RunStatus::Queued | RunStatus::Idle | RunStatus::Waiting | RunStatus::Running
                 )
             })
             .collect::<Vec<_>>();
@@ -2132,7 +2147,7 @@ impl RunManager {
                     self.enqueue(run.id.clone());
                     report.queued.push(run.id);
                 }
-                RunStatus::Waiting => {
+                RunStatus::Idle | RunStatus::Waiting => {
                     let finished_at = now_iso8601();
                     for step in &run.steps {
                         if matches!(step.status, StepStatus::Waiting | StepStatus::Running) {
@@ -3050,12 +3065,12 @@ impl RunManager {
         &mut self,
         run_id: &str,
         mut active: RuntimeActive,
-        requested_monitoring: bool,
+        decision: Option<TurnMarkerDecision>,
     ) -> io::Result<()> {
         // Failover eligibility belongs to the live turn that hit the failure, never to a later,
         // separately triggered resume (`deliver_message`/`finish`) of this same parked session.
         active.failover = None;
-        let monitoring = requested_monitoring
+        let monitoring = decision == Some(TurnMarkerDecision::Monitoring)
             && self
                 .runs
                 .iter()
@@ -3072,8 +3087,13 @@ impl RunManager {
         let running = monitoring || active.holds_slot;
         let status = if running {
             RunStatus::Running
-        } else {
+        } else if matches!(
+            decision,
+            Some(TurnMarkerDecision::Ask | TurnMarkerDecision::Waiting)
+        ) {
             RunStatus::Waiting
+        } else {
+            RunStatus::Idle
         };
         let activity = monitoring.then_some(RunActivity::Monitoring);
         let monitoring_wake_at = monitoring.then(|| {
@@ -3109,8 +3129,10 @@ impl RunManager {
                     "session parked for monitoring"
                 } else if running {
                     "session remains active"
-                } else {
+                } else if status == RunStatus::Waiting {
                     "session waiting for input"
+                } else {
+                    "session ready for follow-up"
                 },
             ),
         )?;
@@ -3195,7 +3217,7 @@ impl RunManager {
                 &outcome,
                 SessionOutcome::Waiting(report)
                     if report.decision.is_none()
-                        || report.decision == Some(TurnMarkerDecision::Waiting)
+                        || report.decision == Some(TurnMarkerDecision::Idle)
             )
             && active.auto_continues < MAX_AUTONOMOUS_CONTINUES;
         if should_nudge {
@@ -3244,17 +3266,13 @@ impl RunManager {
             SessionOutcome::Running(_) => {
                 self.in_flight.remove(run_id);
                 active.holds_slot = true;
-                self.park_session(run_id, active, false)?;
+                self.park_session(run_id, active, None)?;
                 Ok(TurnStep::Done)
             }
             SessionOutcome::Waiting(report) => {
                 self.in_flight.remove(run_id);
                 active.holds_slot = false;
-                self.park_session(
-                    run_id,
-                    active,
-                    report.decision == Some(TurnMarkerDecision::Monitoring),
-                )?;
+                self.park_session(run_id, active, report.decision)?;
                 Ok(TurnStep::Done)
             }
             SessionOutcome::Completed(_) => {
@@ -3610,7 +3628,7 @@ impl RunManager {
             if self.get_run(run_id).is_some_and(|run| {
                 matches!(
                     run.status,
-                    RunStatus::Queued | RunStatus::Running | RunStatus::Waiting
+                    RunStatus::Queued | RunStatus::Running | RunStatus::Idle | RunStatus::Waiting
                 )
             }) {
                 self.settle_steps(run_id, StepStatus::Cancelled)?;
@@ -3682,7 +3700,7 @@ impl RunManager {
             }
             if self
                 .get_run(run_id)
-                .is_some_and(|run| run.status == RunStatus::Waiting)
+                .is_some_and(|run| matches!(run.status, RunStatus::Idle | RunStatus::Waiting))
             {
                 self.settle_steps(run_id, StepStatus::Done)?;
                 self.settle_success(run_id)?;
@@ -3901,7 +3919,7 @@ impl RunManager {
             Err(error) => {
                 self.in_flight.remove(run_id);
                 let step_id = active.step_id().to_owned();
-                self.update_run(run_id, RunPatch::new().set("status", RunStatus::Waiting))?;
+                self.update_run(run_id, RunPatch::new().set("status", RunStatus::Idle))?;
                 self.update_step(
                     run_id,
                     &step_id,
@@ -3931,7 +3949,7 @@ impl RunManager {
                 if running {
                     RunStatus::Running
                 } else {
-                    RunStatus::Waiting
+                    RunStatus::Idle
                 },
             ),
         );
@@ -4269,6 +4287,7 @@ fn run_status_name(status: RunStatus) -> &'static str {
     match status {
         RunStatus::Queued => "queued",
         RunStatus::Running => "running",
+        RunStatus::Idle => "idle",
         RunStatus::Waiting => "waiting",
         RunStatus::Review => "review",
         RunStatus::Done => "done",
@@ -4362,7 +4381,7 @@ fn apply_run_patch(record: &RunRecord, patch: &Map<String, Value>) -> io::Result
     if patch.contains_key("status") {
         if matches!(
             next.status,
-            RunStatus::Running | RunStatus::Waiting | RunStatus::Queued
+            RunStatus::Running | RunStatus::Idle | RunStatus::Waiting | RunStatus::Queued
         ) {
             next.auto_resume_at = None;
         } else {
@@ -4940,6 +4959,10 @@ mod tests {
         assert_eq!(
             decide_turn_marker("work\nDUCK:MONITORING", true, false),
             TurnMarkerDecision::Monitoring
+        );
+        assert_eq!(
+            decide_turn_marker("ordinary final answer", true, false),
+            TurnMarkerDecision::Idle
         );
         assert!(!review_gate_enabled(None, Some("true")));
         assert!(review_gate_enabled(None, Some("1")));
@@ -5769,7 +5792,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_delivers_followup_from_waiting_to_running_then_finish() {
+    fn runtime_delivers_followup_from_idle_to_running_then_finish() {
         let dir = tempdir().unwrap();
         let (factory, _requests) =
             fake_factory_with_followups(vec![waiting_session(None)], vec![running_session()]);
@@ -5778,7 +5801,7 @@ mod tests {
         let run = manager
             .start_run(&workflow, start_input("park first"))
             .unwrap();
-        assert_eq!(run.status, RunStatus::Waiting);
+        assert_eq!(run.status, RunStatus::Idle);
         assert_eq!(
             manager.get_run(&run.id).unwrap().steps[0].status,
             StepStatus::Waiting
@@ -5802,6 +5825,64 @@ mod tests {
         assert!(manager.finish(&run.id).unwrap());
         assert_eq!(manager.get_run(&run.id).unwrap().status, RunStatus::Done);
         assert!(!manager.is_active(&run.id));
+    }
+
+    #[test]
+    fn structured_ask_parks_in_needs_input_while_a_plain_turn_parks_idle() {
+        let dir = tempdir().unwrap();
+        let (factory, _requests) = fake_factory(vec![
+            waiting_session(None),
+            waiting_session(Some(TurnMarkerDecision::Ask)),
+        ]);
+        let mut manager = RunManager::with_session_factory(dir.path(), factory);
+        let workflow = workflow_with_steps(vec![agent_workflow_step("work")]);
+
+        let plain = manager
+            .start_run(&workflow, start_input("plain response"))
+            .unwrap();
+        let ask = manager
+            .start_run(&workflow, start_input("structured question"))
+            .unwrap();
+
+        assert_eq!(plain.status, RunStatus::Idle);
+        assert_eq!(ask.status, RunStatus::Waiting);
+    }
+
+    #[test]
+    fn legacy_waiting_records_upgrade_to_idle_unless_the_log_has_a_pending_ask() {
+        let dir = tempdir().unwrap();
+        let (plain_id, ask_id) = {
+            let mut manager = RunManager::new(dir.path());
+            let plain = manager.create_run(create_input()).unwrap();
+            let mut ask_input = create_input();
+            ask_input.title = "question".to_owned();
+            let ask = manager.create_run(ask_input).unwrap();
+            manager
+                .update_run(&plain.id, RunPatch::new().set("status", RunStatus::Waiting))
+                .unwrap();
+            manager
+                .append_event(
+                    &ask.id,
+                    EventInput::new("ask.requested")
+                        .field("requestId", "question-1")
+                        .field(
+                            "questions",
+                            vec![serde_json::json!({"question": "Choose?"})],
+                        ),
+                )
+                .unwrap();
+            manager
+                .update_run(&ask.id, RunPatch::new().set("status", RunStatus::Waiting))
+                .unwrap();
+            (plain.id, ask.id)
+        };
+
+        let reopened = RunManager::open(dir.path());
+        assert_eq!(reopened.get_run(&plain_id).unwrap().status, RunStatus::Idle);
+        assert_eq!(
+            reopened.get_run(&ask_id).unwrap().status,
+            RunStatus::Waiting
+        );
     }
 
     #[test]
@@ -5988,7 +6069,7 @@ mod tests {
         let second = manager
             .start_run(&workflow, start_input("second monitor"))
             .unwrap();
-        assert_eq!(second.status, RunStatus::Waiting);
+        assert_eq!(second.status, RunStatus::Idle);
         assert!(second.activity.is_none());
     }
 

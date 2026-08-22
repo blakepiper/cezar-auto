@@ -86,6 +86,15 @@ records what is implemented and which terminal observations remain unverified.
 
 ## Task experience smoke test
 
+- **80×24 pseudo-terminal, 2026-08-22 (Phase 2 state/event honesty).** Launched the real
+  `coducktor` binary against the coducktor repository with `DUCK_DRY_RUN=1` and
+  `DUCK_DEBUG_HUD=1`. The workspace settled at `running 0` / `needs 0`, switching from the
+  fallback project to coducktor populated all 18 finished tasks without a false needs-you pulse,
+  and the HUD continued repainting with `DROPPED 0`. `q` restored the alternate screen. The
+  `Idle` versus structured-ask transition and forced channel-lag recovery use deterministic
+  manager/client/TUI tests because this repository had no parked task to mutate during the smoke
+  run.
+
 - **80×24 pseudo-terminal, 2026-08-22 (Phase 1 responsiveness HUD).** Built and launched the real
   `coducktor` binary against the coducktor repository with `DUCK_DRY_RUN=1` and
   `DUCK_DEBUG_HUD=1`. The Tasks screen populated while the status bar continued repainting

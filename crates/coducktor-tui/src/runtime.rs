@@ -125,12 +125,19 @@ pub async fn entry() -> io::Result<()> {
 }
 
 fn parse_workspace_event(event: EngineEvent, fallback_project: &str) -> Option<WorkspaceEvent> {
-    if event.data.get("type")?.as_str()? != "run" {
+    let data = match event {
+        EngineEvent::Data { data, .. } => data,
+        EngineEvent::Lagged { count, .. } => {
+            return Some(WorkspaceEvent::Lagged {
+                count: usize::try_from(count).unwrap_or(usize::MAX),
+            });
+        }
+    };
+    if data.get("type")?.as_str()? != "run" {
         return None;
     }
-    let record = serde_json::from_value(event.data.get("run")?.clone()).ok()?;
-    let project = event
-        .data
+    let record = serde_json::from_value(data.get("run")?.clone()).ok()?;
+    let project = data
         .get("projectId")
         .and_then(serde_json::Value::as_str)
         .filter(|project| !project.is_empty())
@@ -3146,6 +3153,7 @@ struct ThreadListener {
     handle: JoinHandle<()>,
     receiver: UnboundedReceiver<EngineEvent>,
     pending_events: Vec<coducktor_contract::RunEvent>,
+    resync_load_revision: Option<u64>,
 }
 
 async fn open_run_listener(engine: Arc<dyn Engine>, project: String, id: String) -> ThreadListener {
@@ -3171,7 +3179,20 @@ async fn open_run_listener(engine: Arc<dyn Engine>, project: String, id: String)
         handle,
         receiver,
         pending_events: Vec::new(),
+        resync_load_revision: None,
     }
+}
+
+fn request_thread_resync(app: &mut App, listener: &mut ThreadListener, dropped_events: usize) {
+    if listener.resync_load_revision.is_some() {
+        return;
+    }
+    app.record_dropped_events(dropped_events);
+    listener.resync_load_revision = Some(app.thread_ui.load_revision());
+    app.queue_pending(PendingAction::LoadThread {
+        project: listener.project.clone(),
+        id: listener.id.clone(),
+    });
 }
 
 async fn run(
@@ -3272,7 +3293,14 @@ async fn run(
             }
         }
         if let Some(listener) = thread_listener.as_mut() {
+            if listener
+                .resync_load_revision
+                .is_some_and(|revision| revision != app.thread_ui.load_revision())
+            {
+                listener.resync_load_revision = None;
+            }
             let mut live_batch = Vec::new();
+            let mut lagged_events = 0_usize;
             let started = Instant::now();
             for index in 0..RECEIVER_ITEMS_PER_FRAME {
                 if started.elapsed() >= RECEIVER_TIME_BUDGET {
@@ -3282,10 +3310,18 @@ async fn run(
                 let Ok(event) = listener.receiver.try_recv() else {
                     break;
                 };
-                if event.data.get("type").and_then(serde_json::Value::as_str) != Some("run-event") {
+                let data = match event {
+                    EngineEvent::Data { data, .. } => data,
+                    EngineEvent::Lagged { count, .. } => {
+                        lagged_events = lagged_events
+                            .saturating_add(usize::try_from(count).unwrap_or(usize::MAX));
+                        continue;
+                    }
+                };
+                if data.get("type").and_then(serde_json::Value::as_str) != Some("run-event") {
                     continue;
                 }
-                let Some(run_event) = event.data.get("event").cloned().and_then(|event| {
+                let Some(run_event) = data.get("event").cloned().and_then(|event| {
                     serde_json::from_value::<coducktor_contract::RunEvent>(event).ok()
                 }) else {
                     continue;
@@ -3307,7 +3343,16 @@ async fn run(
                     receiver_backlog = true;
                 }
             }
-            app.thread_ui.push_events(live_batch);
+            if lagged_events > 0 {
+                listener.pending_events.clear();
+                app.record_dropped_events(lagged_events);
+                request_thread_resync(app, listener, 0);
+            } else {
+                let result = app.thread_ui.push_events(live_batch);
+                if result.refresh_required {
+                    request_thread_resync(app, listener, result.dropped_events);
+                }
+            }
         }
         // Bracketed paste is enabled for the whole TUI so composers receive multiline clipboard
         // contents as one event, while the embedded Terminal tab forwards that same event to its
@@ -3320,7 +3365,10 @@ async fn run(
             let pending = std::mem::take(&mut listener.pending_events)
                 .into_iter()
                 .map(|event| (event.seq, event));
-            app.thread_ui.push_events(pending);
+            let result = app.thread_ui.push_events(pending);
+            if result.refresh_required {
+                request_thread_resync(app, listener, result.dropped_events);
+            }
         }
         if !app.pending.is_empty() {
             execute_pending(
@@ -4572,9 +4620,9 @@ mod tests {
     #[test]
     fn in_process_workspace_events_decode_shell_badges() {
         let run = parse_workspace_event(
-            EngineEvent {
-                topic: "workspace".to_owned(),
-                data: serde_json::json!({
+            EngineEvent::data(
+                "workspace",
+                serde_json::json!({
                     "type": "run",
                     "run": {
                         "id": "run-1",
@@ -4588,7 +4636,7 @@ mod tests {
                         "steps": []
                     }
                 }),
-            },
+            ),
             "main",
         );
         assert_eq!(
@@ -4615,10 +4663,7 @@ mod tests {
 
         assert!(
             parse_workspace_event(
-                EngineEvent {
-                    topic: "workspace".to_owned(),
-                    data: serde_json::json!({"type": "provider-status"}),
-                },
+                EngineEvent::data("workspace", serde_json::json!({"type": "provider-status"}),),
                 "main",
             )
             .is_none()

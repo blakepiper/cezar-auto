@@ -13,6 +13,9 @@ pub enum RunStatus {
     #[default]
     Queued,
     Running,
+    /// The provider turn ended with its session still open and no user input requested.
+    Idle,
+    /// The provider explicitly requested user input.
     Waiting,
     Review,
     Done,

@@ -524,7 +524,7 @@ fn outcome_for(
     }
     match run_status {
         RunStatus::Queued | RunStatus::Running => TurnOutcome::Running,
-        RunStatus::Waiting => TurnOutcome::Unknown,
+        RunStatus::Idle | RunStatus::Waiting => TurnOutcome::Unknown,
         RunStatus::Cancelled => TurnOutcome::Interrupted,
         RunStatus::Failed => TurnOutcome::Failed {
             reason: None,
@@ -588,21 +588,25 @@ fn derive_status(status: RunStatus, turn: Option<&TurnViewModel>) -> String {
         {
             return node.presentation.title.clone();
         }
-        if turn.activity.iter().any(|node| {
-            node.presentation.kind == ActivityKind::Question
-                && node.presentation.status == ActivityStatus::Pending
-        }) {
+        if status == RunStatus::Waiting
+            && turn.activity.iter().any(|node| {
+                node.presentation.kind == ActivityKind::Question
+                    && node.presentation.status == ActivityStatus::Pending
+            })
+        {
             return "Waiting for your answer".to_owned();
         }
-        if let Some(response) = &turn.response
+        if status == RunStatus::Running
+            && let Some(response) = &turn.response
             && !response.text.is_empty()
         {
-            return "Completed".to_owned();
+            return "Writing response…".to_owned();
         }
     }
     match status {
         RunStatus::Queued => "Queued".to_owned(),
         RunStatus::Running => "Thinking…".to_owned(),
+        RunStatus::Idle => "Ready for follow-up".to_owned(),
         RunStatus::Waiting => "Waiting for your answer".to_owned(),
         RunStatus::Review => "Waiting for review".to_owned(),
         RunStatus::Done => "Completed".to_owned(),
@@ -671,6 +675,22 @@ mod tests {
 
         assert_eq!(view.current_status, "Waiting for your answer");
         assert!(matches!(view.turns[0].outcome, TurnOutcome::Unknown));
+    }
+
+    #[test]
+    fn streamed_final_text_does_not_report_completed_while_the_run_is_running() {
+        let state = super::super::reducer::reduce_thread(
+            &[event(
+                1.0,
+                "item.updated",
+                json!({"item": {"kind":"message","id":"final","role":"assistant","text":"Almost there","phase":"final"}}),
+            )],
+            Default::default(),
+        );
+        let view = project_thread(&run("initial", RunStatus::Running), &state);
+
+        assert_eq!(view.current_status, "Writing response…");
+        assert_ne!(view.current_status, "Completed");
     }
 
     #[test]
